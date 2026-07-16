@@ -255,6 +255,25 @@ struct PrepackParams {
   bool        dynamic_quant = false;
   data_type_t compute_dtype = data_type_t::none;
 
+  // Per-group DQ-INT8 quant group size (K-elements per quant group).
+  //
+  //   * `0` — per-channel / per-token int8 (or bf16 / non-int8).  The
+  //     default; every legacy caller and the per-token DQ-INT8 path
+  //     leave it here, so the int8 warmer packs the per-channel arena
+  //     exactly as before.
+  //   * `> 0` — per-group symmetric DQ-INT8 (wei scale `{G, N}`,
+  //     `group_size = K / G`).  Either forwarded by a call site that
+  //     already resolved the per-group engage verdict, or DERIVED by
+  //     `build_prepack_params` from the per-group `{G, N}` weight scale
+  //     (`K / dims[0]`).  Reusing that value keeps the prepack's
+  //     per-group AOCL sym-quant cache key bit-identical to the runtime's.
+  //
+  // Folded into the prepack `fingerprint` so a per-channel and a
+  // per-group warm of the same weight pool are distinct configurations
+  // (mirrors the AOCL sym-quant / CK pack cache key, which distinguishes
+  // them via `n_groups`).
+  int group_size = 0;
+
   // Per-call OMP team size — taken straight from the dispatcher's
   // entry-API `num_threads` argument.  Only consumed by
   // `prepack_for_algo_3` to compute
@@ -345,7 +364,13 @@ inline PrepackParams build_prepack_params(
     // u8 follows the src_zp presence on the runtime side and the
     // wei dtype on the warm side).
     bool                             dynamic_quant = false,
-    data_type_t                      compute_dtype = data_type_t::none) {
+    data_type_t                      compute_dtype = data_type_t::none,
+    // Per-group DQ-INT8 group size — 0 (per-channel/per-token) by default.
+    // A call site that already resolved the per-group verdict may forward
+    // it; otherwise `build_prepack_params` DERIVES it below from the
+    // per-group `{G, N}` weight scale so the per-group AOCL sym-quant pack
+    // cache key the warmer builds is bit-identical to the runtime's.
+    int                              group_size    = 0) {
   PrepackParams p;
   p.weight           = &weight;
   p.K                = &K;
@@ -358,8 +383,25 @@ inline PrepackParams build_prepack_params(
   p.alpha            = alpha;
   p.beta             = beta;
 
+  // Representative expert for DQ-INT8 quant-mode classification = the
+  // FIRST ACTIVE expert (M[i] > 0), mirroring flat_n_tile's `rep`
+  // selection (group_matmul_n_tile.cpp).  The grouped / per-expert DQ
+  // pre-pass rewrites ONLY active experts to `src=s8` + cleared
+  // `dynamic_quant`; a leading INACTIVE expert (M==0, common in MoE
+  // decode) keeps its pre-quant bf16 src, so reading `params[0]` blindly
+  // for the src / dynamic_quant / compute classification would
+  // misclassify the whole call as non-int8 and SKIP the int8 warm — even
+  // though the runtime (which keys the same decision off the first active
+  // expert) WILL engage the int8 path.  Also the source the per-group
+  // group_size is derived from (below): an inactive expert 0 may carry no
+  // `{G, N}` wei scale.  wei / dst / bias dtypes are uniform across active
+  // AND inactive experts, so they stay on index 0.
+  size_t rep = 0;
+  for (size_t i = 0; i < params.size(); ++i) {
+    if (i < M.size() && M[i] > 0) { rep = i; break; }
+  }
   if (!params.empty()) {
-    p.src_dtype  = params[0].dtypes.src;
+    p.src_dtype  = params[rep].dtypes.src;
     p.wei_dtype  = params[0].dtypes.wei;
     p.dst_dtype  = params[0].dtypes.dst;
     p.bias_dtype = params[0].dtypes.bias;
@@ -418,6 +460,21 @@ inline PrepackParams build_prepack_params(
   p.nr_align         = nr_align;
   p.act              = act;
   p.act_dtype        = act_dtype;
+  // Per-group group size.  Prefer the caller-supplied value; otherwise
+  // DERIVE it from the per-group `{G, N}` weight scale so EVERY ALGO's
+  // prepack (1/2/4/5 as well as 3) — none of which pass an explicit
+  // group_size — still warms the correct per-group layout.  Mirrors the
+  // runtime AOCL sym-quant key derivation (`run_dlp`: src_grp =
+  // K / (nelems / M) = K / G), so a per-group layer warms the AOCL
+  // per-group reorder keyed on the same K/G the runtime call reads.
+  p.group_size = group_size;
+  if (p.group_size <= 0 && !params.empty() && rep < K.size()) {
+    const auto &ws = params[rep].quant_params.wei_scale;
+    if (ws.buff != nullptr && ws.dims.size() == 2 && ws.dims[0] > 1) {
+      const int G = static_cast<int>(ws.dims[0]);
+      if (G > 0 && (K[rep] % G) == 0) p.group_size = K[rep] / G;
+    }
+  }
 
   // DQ-INT8 discriminators (Gap A — int8/bf16 cross-warm parity).
   //
@@ -444,19 +501,22 @@ inline PrepackParams build_prepack_params(
   // fingerprint and missing cross-warm (the same trap the runtime
   // resolver's comment in `group_matmul_n_tile.cpp` documents).
   if (!params.empty()) {
-    p.dynamic_quant = params[0].dynamic_quant;
+    // Key off the first ACTIVE expert `rep` (see the classification note
+    // above): its `dynamic_quant` / `dtypes.compute` reflect the DQ pre-
+    // pass rewrite that a leading inactive expert 0 would not.
+    p.dynamic_quant = params[rep].dynamic_quant;
     const bool is_dq_int8 =
-        params[0].dynamic_quant
-        || (params[0].dtypes.wei == data_type_t::s8
-            && (params[0].dtypes.compute == data_type_t::s8
-                || params[0].dtypes.compute == data_type_t::u8));
+        params[rep].dynamic_quant
+        || (params[rep].dtypes.wei == data_type_t::s8
+            && (params[rep].dtypes.compute == data_type_t::s8
+                || params[rep].dtypes.compute == data_type_t::u8));
     // DQ-INT8 (either form): carry the runtime compute dtype so the
     // fingerprint marks it int8 (not bf16) and `ck_eligible_int8` /
     // `int8_aocl_warm_candidate` recognise it.  Plain bf16 (or a
     // non-DQ s8 combo we don't warm) forces `none` so a stale trailing
     // `compute_dtype` can't skew the fingerprint and split the bf16
     // cache.
-    p.compute_dtype = is_dq_int8 ? params[0].dtypes.compute
+    p.compute_dtype = is_dq_int8 ? params[rep].dtypes.compute
                                  : data_type_t::none;
   } else {
     p.dynamic_quant = dynamic_quant;

@@ -19,7 +19,7 @@
 /// Input file format (CSV, one line per config):
 ///   num_ops, M, K, N, iters, src_dt:wei_dt:dst_dt, is_weights_const, warmup
 ///       [, moe_topk[, gated_act[, N_down[, use_internal_alloc[,
-///          total_experts[, dynamic_quant[, compute_dt]]]]]]]
+///          total_experts[, dynamic_quant[, compute_dt[, group_size]]]]]]]]
 ///
 /// M can be a single int (all experts same) or colon-separated per-expert:
 ///   8, 4, 4096, 14336, 200, bf16:bf16:bf16, true, 50                    <- plain GEMM
@@ -27,8 +27,9 @@
 ///   8, 4, 4096, 28672, 200, bf16:bf16:bf16, true, 50, 2, 1, 4096        <- fused (caller-alloc)
 ///   8, 4, 4096, 28672, 200, bf16:bf16:bf16, true, 50, 2, 1, 4096, 1     <- fused (lib-alloc)
 ///   4, 32, 2880, 5760,  200, bf16:bf16:bf16, true, 50, 4, 3, 2880, 1, 32 <- prepack-extras (4/32)
-///   8, 4, 4096, 14336, 200, bf16:s8:bf16,    true, 50, 0, 0, 0,    0, 0, 1, s8  <- DQ-INT8 sym
-///   8, 4, 4096, 14336, 200, bf16:s8:bf16,    true, 50, 0, 0, 0,    0, 0, 1, u8  <- DQ-INT8 asym
+///   8, 4, 4096, 14336, 200, bf16:s8:bf16,    true, 50, 0, 0, 0,    0, 0, 1, s8  <- DQ-INT8 sym (per-token)
+///   8, 4, 4096, 14336, 200, bf16:s8:bf16,    true, 50, 0, 0, 0,    0, 0, 1, u8  <- DQ-INT8 asym (per-token)
+///   8, 4, 4096, 14336, 200, bf16:s8:bf16,    true, 50, 2, 0, 0,    0, 0, 1, s8, 128 <- per-group MoE (G=32)
 ///
 /// moe_topk (optional, default 0): 0 = no MoE post-op, >0 = fused weighted-reduce.
 /// gated_act (optional, default 0): 0 = off, 1 = silu_and_mul, 2 = gelu_and_mul,
@@ -71,6 +72,17 @@
 ///     "s8" → kS8_S8_BF16_SYM (symmetric; no src zero-point)
 ///     "u8" → kU8_S8_BF16_ASYM (asymmetric; hoist allocates src_zp)
 ///   Ignored when dynamic_quant=0.
+/// group_size (optional, default 0; only when dynamic_quant=1): quant
+///   group width in K-elements for PER-GROUP symmetric int8.
+///     0 → per-token / per-channel (src_scale {M,1}, wei_scale {1,N}).
+///     >0 → per-group: G = K/group_size groups; the driver fills a G×N
+///          f32 wei_scale ({G, N}) and requests a {M, G} src_scale
+///          (buff null — the N-tile hoist quantizes the bf16 src
+///          per-group at call time).  Runs the AOCL DLP sym-quant GEMM
+///          via the N-tile `do_tile` {G, n_tile} per-column repack.
+///   Requires compute_dt=s8 (symmetric-only), 0 < group_size < K, and
+///   K % group_size == 0; the parser refuses anything else.  Reported
+///   in the results as "pg<group_size>" (e.g. pg128).
 ///
 /// Env vars (all read by the library, not parsed by this driver):
 ///   ZENDNNL_GRP_MATMUL_ALGO=0|1|2|3|4|5 - select parallel strategy
@@ -359,38 +371,56 @@ static bool run_config(const GrpMatmulConfig &cfg, std::ostream &csv,
     // time — restrict both to the active prefix.
     std::vector<AlignedBuffer> wei_scale_buf(n);
     if (cfg.dynamic_quant) {
-        // Allocate + fill wei_scale for the active experts only.  Per-
-        // channel along N (dims = {1, N}), f32, length `N`.  Seed
-        // offsets keep the per-expert scales distinct so cache aliasing
-        // on a hash-keyed prepack lookup would surface as a measurable
+        // Number of K-groups the weight scale carries:
+        //   * per-token (group_size==0): 1 (per-channel {1, N}).
+        //   * per-group (group_size>0) : G = K/group_size ({G, N}).
+        // parse_config already guaranteed K % group_size == 0 and
+        // 0 < group_size < K for the per-group case, so G >= 2.
+        const int64_t G = (cfg.group_size > 0)
+                              ? static_cast<int64_t>(cfg.K) / cfg.group_size
+                              : 1;
+        // Allocate + fill wei_scale for the active experts only.  f32,
+        // laid out group-major: `G` rows of `N` per-channel scales
+        // (row-major, matching the `{G, N}` the N-tile `do_tile` column
+        // slicer expects).  For per-token G==1 this collapses to the
+        // legacy per-channel `{1, N}` (length N) buffer.  Seed offsets
+        // keep the per-expert scales distinct so cache aliasing on a
+        // hash-keyed prepack lookup would surface as a measurable
         // regression rather than a silent hit.
+        const size_t wsc_elems = static_cast<size_t>(G)
+                                 * static_cast<size_t>(cfg.N);
         for (int e = 0; e < n; ++e) {
-            wei_scale_buf[e].alloc(static_cast<size_t>(cfg.N) * sizeof(float));
+            wei_scale_buf[e].alloc(wsc_elems * sizeof(float));
             fill_quant_scale_f32(static_cast<float *>(wei_scale_buf[e].ptr),
-                                 static_cast<size_t>(cfg.N),
+                                 wsc_elems,
                                  311 + e * 13);
         }
         for (int i = 0; i < n; ++i) {
             params[i].dynamic_quant = true;
             params[i].dtypes.compute = cfg.compute_dt;
-            // src_scale: per-token {M, 1}, f32; buff stays nullptr —
-            // hoist-allocates at call time.
+            // src_scale: per-token {M, 1} or per-group {M, G}, f32; buff
+            // stays nullptr — the N-tile hoist (reorder_quantization_
+            // wrapper) reads the trailing dim, quantizes the bf16 src at
+            // the matching granularity, and allocates the scale at call
+            // time.
             params[i].quant_params.src_scale.buff = nullptr;
-            params[i].quant_params.src_scale.dims = {cfg.M_per_op[i], 1};
+            params[i].quant_params.src_scale.dims = {cfg.M_per_op[i], G};
             params[i].quant_params.src_scale.dt   = data_type_t::f32;
-            // wei_scale: per-channel {1, N}, f32; buff is the per-
-            // expert allocation above.  `matmul_quant_t::buff` is a
-            // `const void *`, so the `void *` arena pointer converts
+            // wei_scale: per-channel {1, N} or per-group {G, N}, f32; buff
+            // is the per-expert allocation above.  `matmul_quant_t::buff`
+            // is a `const void *`, so the `void *` arena pointer converts
             // implicitly (no cast needed; read-only on the library side).
             params[i].quant_params.wei_scale.buff = wei_scale_buf[i].ptr;
             params[i].quant_params.wei_scale.dims =
-                {1, static_cast<int64_t>(cfg.N)};
+                {G, static_cast<int64_t>(cfg.N)};
             params[i].quant_params.wei_scale.dt   = data_type_t::f32;
-            // Asym: src_zp dims/dt populated but buff stays null —
-            // the hoist allocates the per-token zp alongside the
-            // s8/u8 reorder when `compute_dt = u8`.  For sym we
-            // leave the field default-constructed (all-null), which
-            // resolve_variant() reads as "no asym correction".
+            // Asym: src_zp dims/dt populated but buff stays null — the
+            // hoist allocates the per-token zp alongside the s8/u8
+            // reorder when `compute_dt = u8`.  For sym (incl. every
+            // per-group config) we leave the field default-constructed
+            // (all-null), which resolve_variant() reads as "no asym
+            // correction".  Per-group is symmetric-only (enforced in
+            // parse_config), so this branch never fires when group_size>0.
             if (cfg.compute_dt == data_type_t::u8) {
                 params[i].quant_params.src_zp.buff = nullptr;
                 params[i].quant_params.src_zp.dims = {cfg.M_per_op[i], 1};
@@ -726,11 +756,18 @@ static bool run_config(const GrpMatmulConfig &cfg, std::ostream &csv,
     // DQ-INT8 column — surfaces the variant on the console / CSV so
     // a sweep that mixes bf16 and int8 lines is visually self-
     // describing.  "bf16" is the default (no DQ-INT8); "dq8s" / "dq8u"
-    // distinguish sym vs asym so a tuning script can plot the two
-    // families separately without re-reading the input file.
+    // distinguish per-token/per-channel sym vs asym; "pg<group_size>"
+    // (e.g. pg128) marks the per-group sym-only variant.  A tuning
+    // script can plot the families separately without re-reading the
+    // input file.
     std::string quant_str = "bf16";
     if (cfg.dynamic_quant) {
-        quant_str = (cfg.compute_dt == data_type_t::u8) ? "dq8u" : "dq8s";
+        if (cfg.group_size > 0)
+            // per-group is symmetric-only; "pg<group_size>" (e.g. pg128)
+            // names the granularity + group in one compact token.
+            quant_str = "pg" + std::to_string(cfg.group_size);
+        else
+            quant_str = (cfg.compute_dt == data_type_t::u8) ? "dq8u" : "dq8s";
     }
 
     // Console
@@ -836,7 +873,8 @@ int bench(const std::string &in_filename, const std::string &out_filename,
     std::cout << "  (fused column: 'N_down=X' = caller-allocated, "
                  "'N_down=X*' = library-allocated + src-reuse;\n"
                  "   quant column: bf16 = standard bf16 path, "
-                 "dq8s/dq8u = DQ-INT8 sym/asym custom kernel)"
+                 "dq8s/dq8u = DQ-INT8 per-token/channel sym/asym, "
+                 "pg<group_size> = per-group sym (e.g. pg128))"
               << std::endl;
 
     // ── HW perf counters: open once per process ─────────────────────

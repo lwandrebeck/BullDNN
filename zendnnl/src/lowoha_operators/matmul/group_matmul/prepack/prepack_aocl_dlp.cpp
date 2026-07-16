@@ -253,7 +253,8 @@ status_t warm_pack_all_aocl_dlp_experts_sym_quant(
     const std::vector<bool>         &is_weights_const,
     int                              total_count,
     data_type_t                      wei_dtype,
-    AoclDlpPackProbeStats           &stats) {
+    AoclDlpPackProbeStats           &stats,
+    int                              group_size) {
 
   if (total_count <= 0) return status_t::success;
 
@@ -310,17 +311,24 @@ status_t warm_pack_all_aocl_dlp_experts_sym_quant(
       continue;
     }
 
-    // Cache key matches `run_dlp(...)` (aocl_kernel.cpp:621-628) for
-    // the per-token symmetric shape: src_grp == K, so
-    // extra_input_hash = hash(K[i]).
+    // Cache key matches `run_dlp(...)` (aocl_kernel.cpp:869-877, 913-923).
+    // The sym-quant reorder keys on the SOURCE quant-group span `src_grp`:
+    //   * per-token  (group_size == 0): src_grp = K[i];
+    //   * per-group  (group_size  > 0): src_grp = group_size (= K/G).
+    // `extra_input_hash = hash(src_grp)` and `DLP_SYMM_STAT_QUANT.group_size
+    // = src_grp` — byte-identical to the runtime key, so the warmed slot is
+    // the one the runtime per-group / per-token call reads.
+    const int64_t src_grp =
+        (group_size > 0) ? static_cast<int64_t>(group_size)
+                         : static_cast<int64_t>(K[i]);
     const size_t cache_extra_hash =
-        std::hash<int64_t>{}(static_cast<int64_t>(K[i]));
+        std::hash<int64_t>{}(src_grp);
     Key_matmul key(transB[i], K[i], N[i], ldb[i], weight[i],
                    static_cast<uint32_t>(matmul_algo_t::aocl_dlp_blocked),
                    cache_extra_hash);
 
     DLP_SYMM_STAT_QUANT symq_meta;
-    symq_meta.group_size = K[i];
+    symq_meta.group_size = static_cast<int>(src_grp);
 
     void *reordered_unused = nullptr;
     // `reorderAndCacheWeightsSymQuant` returns `true` when the entry was
@@ -594,7 +602,8 @@ status_t warm_pack_all_aocl_dlp_experts_n_tile_sym_quant(
     int                              num_threads,
     int                              stable,
     int                              nr_align,
-    AoclDlpPackProbeStats           &stats) {
+    AoclDlpPackProbeStats           &stats,
+    int                              group_size) {
 
   if (total_count <= 0 || num_threads <= 0
       || stable <= 0 || nr_align <= 0) {
@@ -680,17 +689,23 @@ status_t warm_pack_all_aocl_dlp_experts_n_tile_sym_quant(
           static_cast<const char *>(weight[i]) + wei_off;
 
       // Sym-quant per-tile key: same (transB, K, n_tile, ldb, w_tile)
-      // as the bf16 per-tile key, plus `extra_input_hash = hash(K[i])`
-      // (per-token symmetric `src_grp == K`) to match the runtime
-      // `run_dlp(...)` sym-quant key.
+      // as the bf16 per-tile key, plus `extra_input_hash = hash(src_grp)`
+      // matching the runtime `run_dlp(...)` sym-quant key.  `src_grp` is
+      // the SOURCE quant-group span, which is N-independent, so it is the
+      // same per-token (K[i]) / per-group (group_size = K/G) value the
+      // full-weight sym-quant warmer uses — the N-tile slicing only
+      // changes n_tile / w_tile, never src_grp.
+      const int64_t src_grp =
+          (group_size > 0) ? static_cast<int64_t>(group_size)
+                           : static_cast<int64_t>(K[i]);
       const size_t cache_extra_hash =
-          std::hash<int64_t>{}(static_cast<int64_t>(K[i]));
+          std::hash<int64_t>{}(src_grp);
       Key_matmul key(transB[i], K[i], n_tile, ldb[i], w_tile,
                      static_cast<uint32_t>(matmul_algo_t::aocl_dlp_blocked),
                      cache_extra_hash);
 
       DLP_SYMM_STAT_QUANT symq_meta;
-      symq_meta.group_size = K[i];
+      symq_meta.group_size = static_cast<int>(src_grp);
 
       void *reordered_unused = nullptr;
       // See the full-weight sym-quant warmer above: `false` is only

@@ -230,6 +230,16 @@ inline size_t fingerprint(const PrepackParams &p, int scheduling_algo) {
   // the two regimes are independent fingerprints from the start.
   s = mix_hash(s, static_cast<size_t>(p.dynamic_quant ? 1u : 0u));
   s = mix_hash(s, static_cast<size_t>(p.compute_dtype));
+  // Per-group group size — a per-channel int8 warm (group_size == 0,
+  // `n_groups == 1`) and a per-group warm (group_size > 0, `n_groups =
+  // K/group_size`) pack into DISTINCT LRU slots for the same
+  // (weight, K, N, transB) tuple (the pack key folds `n_groups`).
+  // Without this term a process that runs the per-channel path first
+  // would mark the fingerprint warmed and the per-group call would
+  // short-circuit with its arena left cold.  Mirror the pack cache
+  // key's discriminator here so the two granularities are independent
+  // fingerprints.
+  s = mix_hash(s, static_cast<size_t>(p.group_size));
   // Fold the runtime-mutable weight-cache toggle into the fingerprint.
   // `matmul_config_t::set_weight_cache(...)` can flip this mid-process
   // and BOTH the AOCL DLP warmer (`prepack_aocl_dlp.cpp`) AND the
@@ -565,9 +575,13 @@ inline aocl_dlp::AoclDlpPackProbeStats warm_aocl(const PrepackParams &p) {
 inline aocl_dlp::AoclDlpPackProbeStats warm_aocl_sym_quant(
     const PrepackParams &p) {
   aocl_dlp::AoclDlpPackProbeStats st;
+  // `p.group_size` (0 = per-token; > 0 = per-group K/G) selects the
+  // sym-quant reorder granularity so the warmed AOCL slot matches the
+  // runtime key for a per-group `{M,G}` src / `{G,N}` wei call (the
+  // fallback a per-group layer routed to ALGO 1/2/4/5 will read).
   aocl_dlp::warm_pack_all_aocl_dlp_experts_sym_quant(
       *p.weight, *p.K, *p.N, *p.ldb, *p.transB, warm_iwc(p),
-      p.num_ops_total, p.wei_dtype, st);
+      p.num_ops_total, p.wei_dtype, st, p.group_size);
   return st;
 }
 
@@ -600,10 +614,12 @@ inline aocl_dlp::AoclDlpPackProbeStats warm_aocl_n_tile(
 inline aocl_dlp::AoclDlpPackProbeStats warm_aocl_n_tile_sym_quant(
     const PrepackParams &p, int stable, int nr_align_eff) {
   aocl_dlp::AoclDlpPackProbeStats st;
+  // `p.group_size` selects per-token (0) vs per-group (K/G) sym-quant
+  // reorder granularity — same contract as `warm_aocl_sym_quant`.
   aocl_dlp::warm_pack_all_aocl_dlp_experts_n_tile_sym_quant(
       *p.weight, *p.K, *p.N, *p.ldb, *p.transB, warm_iwc(p),
       p.num_ops_total, p.wei_dtype,
-      p.num_threads, stable, nr_align_eff, st);
+      p.num_threads, stable, nr_align_eff, st, p.group_size);
   return st;
 }
 
@@ -1145,6 +1161,17 @@ inline bool ck_eligible_bf16(const PrepackParams &p) {
 inline bool ck_eligible_int8(const PrepackParams &p) {
   if (!p.custom_kernel_on) return false;
   if (!get_grp_matmul_custom_kernel_int8()) return false;
+  // Per-group (group_size > 0) is AOCL-only on this path: the runtime
+  // forces the AOCL DLP `do_tile` sym-quant GEMM for a per-group `{G, N}`
+  // wei scale (`ck_per_group` in group_matmul_n_tile.cpp sets
+  // use_custom=false — the custom int8 microkernel slices the source scale
+  // one-scalar-per-row, i.e. per-token only).  So the prepack must NOT
+  // warm the custom-kernel pack for per-group; return false here and let
+  // `int8_aocl_warm_candidate` route the warm to the AOCL sym-quant per-
+  // tile LRU (keyed on the same K/G the runtime `do_tile` reads).  Mirrors
+  // the runtime executor exactly.  (When the custom kernel gains per-group
+  // support, this guard and the runtime `ck_per_group` guard lift together.)
+  if (p.group_size > 0) return false;
   // Two int8 entry forms reach the CK microkernel (mirror
   // resolve_variant in custom_kernel/dispatch.cpp):
   //   * runtime hoist     — `dynamic_quant=true` with bf16 src;

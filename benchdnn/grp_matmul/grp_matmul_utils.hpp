@@ -120,6 +120,23 @@ struct GrpMatmulConfig {
     /// "s8" / "u8" for human-friendly input files.
     data_type_t compute_dt = data_type_t::s8;
 
+    /// Per-group DQ-INT8 quant group size (K-elements per quant group).
+    /// Only consulted when `dynamic_quant == 1`.
+    ///   * `0` (default) — PER-TOKEN / per-channel: `src_scale` dims
+    ///     `{M, 1}`, `wei_scale` dims `{1, N}` (the setup above).
+    ///   * `> 0`         — PER-GROUP symmetric: the weight is quantized
+    ///     with one scale per `group_size` K-elements, so
+    ///     `G = K / group_size` groups.  The driver sets
+    ///     `src_scale` dims `{M, G}` (buff null — the N-tile hoist
+    ///     quantizes the bf16 src per-group at call time) and
+    ///     `wei_scale` dims `{G, N}` (a G×N f32 buffer, filled by the
+    ///     driver).  Symmetric only (`compute_dt = s8`); the per-group
+    ///     N-tile path runs the AOCL DLP sym-quant GEMM with a
+    ///     `{G, n_tile}` per-column repack (`do_tile`).
+    /// Requires (enforced at parse time): `dynamic_quant == 1`,
+    /// `compute_dt == s8`, `0 < group_size < K`, and `K % group_size == 0`.
+    int group_size = 0;
+
     int max_M() const { return *std::max_element(M_per_op.begin(), M_per_op.end()); }
     int total_M() const { return std::accumulate(M_per_op.begin(), M_per_op.end(), 0); }
     bool is_uniform_M() const {

@@ -1242,6 +1242,28 @@ status_t group_matmul_direct(const std::vector<char> &layout,
       if (fused_any_ggml) {
         const grp_matmul_gated_act_t fused_act =
             run_gated_act ? gated_act->act : grp_matmul_gated_act_t::none;
+        // Mirror the non-fused GGML layout choice (see `ggml_skip_reorder`
+        // below): hand back RAW s8 ('n') when the call may run on N-tile
+        // (ALGO 3 pinned, or AUTO where the per-phase selector picks ALGO 3 for
+        // decode) so the two-pass legacy dispatch N-tiles each op's per-group
+        // weight via `do_tile`'s per-tile repack; pinned non-N-tile algos
+        // (1/2/4/5) keep the full-weight reorder ('r').  GGML is per-group, so
+        // vertical fusion (per-token only) always declines and the call always
+        // lands on the two-pass dispatch — the SAME contract as the non-fused
+        // path, which is why both Op1 and Op2 share one skip_reorder verdict.
+        //
+        // CROSS-FILE INVARIANT (keep in sync with setup_op2_dispatch_scratch()
+        // in group_matmul/group_matmul_fused_moe.cpp): the RAW-s8 path
+        // (skip_reorder) clears `packing.pack_format_b` to 0 on the unpacked
+        // Op1 params, so setup_op2_dispatch_scratch's `pack_format_b == 1`
+        // check takes the else branch and gives Op2 `mem_format_b='n'`/pack 0
+        // (matching the raw-s8 down weight); the REORDER path leaves
+        // pack_format_b==1 so Op2 inherits `mem_format_b='r'`.  Op2's layout is
+        // thus derived entirely from Op1's post-unpack flags — if that raw-s8
+        // clear ever changes, Op2 would be mis-told its weight layout.
+        const int fused_ggml_algo = get_grp_matmul_algo();
+        const bool fused_ggml_skip_reorder =
+            (fused_ggml_algo == 3 || fused_ggml_algo == 0);
         fused_weight_unpacked = weight;
         fused_params_unpacked = exec_params;
         fused_moe_unpacked = *fused_moe;
@@ -1288,7 +1310,7 @@ status_t group_matmul_direct(const std::vector<char> &layout,
           const void *w1 = fused_weight_unpacked[i];
           status_t un1 = unpack_ggml_weights_and_cache(
               w1, N[i], K[i], ldb[i], transB[i] ? 't' : 'n',
-              fused_params_unpacked[i]);
+              fused_params_unpacked[i], fused_ggml_skip_reorder);
           if (un1 != status_t::success) {
             if (active) return un1;
             continue;  // warming failure on a cold expert: leave it packed
@@ -1302,7 +1324,7 @@ status_t group_matmul_direct(const std::vector<char> &layout,
           status_t un2 = unpack_ggml_weights_and_cache(
               w2, fused_moe_unpacked.N_down[i], k_down,
               fused_moe_unpacked.ldb_down[i], transB[i] ? 't' : 'n',
-              w2_params);
+              w2_params, fused_ggml_skip_reorder);
           if (un2 != status_t::success) {
             if (active) return un2;
             continue;
@@ -1384,32 +1406,64 @@ status_t group_matmul_direct(const std::vector<char> &layout,
       // check on the first expert suffices instead of scanning all of them.
       const bool any_ggml =
           num_ops > 0 && exec_params[0].packing.pack_format_b == 1;
+      // Hand GGML weights back as RAW s8 (un-reordered) when the call may run
+      // on N-tile (ALGO 3 pinned, or AUTO where the selector can pick ALGO 3):
+      // the flat_n_tile per-group path then reorders each weight INTERNALLY per
+      // N-tile (`do_tile`'s `{G, n_tile}` sym-quant repack) — the GEMM handles
+      // the reorder after N-tiling, exactly like a caller-provided per-group s8
+      // weight.  Pinned non-N-tile algos (1/2/4/5) keep the full-weight
+      // reorder-at-unpack (they consume the reordered 'r' weight directly).
+      const int ggml_grp_algo = get_grp_matmul_algo();
+      const bool ggml_skip_reorder =
+          (ggml_grp_algo == 3 || ggml_grp_algo == 0);
       if (any_ggml) {
         weight_unpacked = weight;
         for (size_t i = 0; i < num_ops; ++i) {
           if (exec_params[i].packing.pack_format_b != 1) continue;
-          // Inactive experts (no routed tokens) are skipped by the GEMM
-          // dispatch, so there is nothing to unpack for them — and their
-          // src_scale may legitimately be empty, which `ggml_is_sym_quant`
-          // would reject.  Leave the packed bytes untouched.
-          if (M_eff[i] == 0) continue;
-          if (validate_ggml_packed_inputs(exec_params[i],
-                                          is_weights_const[i], 1,
-                                          transB[i]) != status_t::success) {
-            return status_t::failure;
+
+          // Warm EVERY expert's weight — active AND currently-cold (M==0) —
+          // so a later decode iteration that routes to a now-cold expert hits
+          // the unpack/reorder cache instead of paying the first-fire unpack
+          // spike (rotating-experts MoE).  The weight unpack needs only the
+          // packed weight + shape (NOT the src_scale), so a cold expert —
+          // whose src_scale may legitimately be empty, which
+          // `ggml_is_sym_quant` would reject — is still warmable; its
+          // redirected pointer / {G,N} scale is unused this call (the GEMM
+          // skips M==0) and only primes the cache for a future routing.
+          const bool active = (M_eff[i] > 0);
+          if (active) {
+            // Active expert MUST be a valid sym-quant per-group int8 shape.
+            if (validate_ggml_packed_inputs(exec_params[i],
+                                            is_weights_const[i], 1,
+                                            transB[i]) != status_t::success) {
+              return status_t::failure;
+            }
+            if (!ggml_is_sym_quant(exec_params[i])) {
+              log_error("group_matmul_direct: GGML packed weights on expert ", i,
+                        " require sym-quant per-group int8 with an s8 source "
+                        "(enable ZENDNNL_ENABLE_GROUP_DQ so the source is "
+                        "quantized to s8 before the unpack).");
+              return status_t::failure;
+            }
+          } else {
+            // Cold expert: warm opportunistically; skip silently when its
+            // weight is absent or not const-cacheable.
+            const bool warmable =
+                weight_unpacked[i] != nullptr
+                && (is_weights_const.empty()
+                    || (i < is_weights_const.size() && is_weights_const[i]))
+                && transB[i];
+            if (!warmable) continue;
           }
-          if (!ggml_is_sym_quant(exec_params[i])) {
-            log_error("group_matmul_direct: GGML packed weights on expert ", i,
-                      " require sym-quant per-group int8 with an s8 source "
-                      "(enable ZENDNNL_ENABLE_GROUP_DQ so the source is "
-                      "quantized to s8 before the unpack).");
-            return status_t::failure;
-          }
+
           const void *w = weight_unpacked[i];
           status_t un = unpack_ggml_weights_and_cache(
               w, N[i], K[i], ldb[i], transB[i] ? 't' : 'n',
-              exec_params[i]);
-          if (un != status_t::success) return un;
+              exec_params[i], ggml_skip_reorder);
+          if (un != status_t::success) {
+            if (active) return un;
+            continue;  // cold-expert warming failure: leave it packed
+          }
           weight_unpacked[i] = w;
         }
         weight_eff = &weight_unpacked;

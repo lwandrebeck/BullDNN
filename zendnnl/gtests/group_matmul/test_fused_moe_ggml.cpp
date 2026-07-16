@@ -40,7 +40,10 @@
 
 #include "gtest_utils.hpp"
 #include "moe_test_utils.hpp"
+#include "lowoha_operators/common/omp_thread_control.hpp"
 #include "lowoha_operators/matmul/ggml_weight_unpack.hpp"
+#include "lowoha_operators/matmul/group_matmul/group_matmul_parallel_common.hpp"
+#include "lowoha_operators/matmul/group_matmul/prepack/prepack.hpp"
 
 namespace {
 
@@ -109,7 +112,8 @@ matmul_params make_ggml_dyn_params(int M, int K) {
 ///     fall-back) and still checks the result against the ALGO-1 reference.
 void run_fused_ggml_scenario(const std::string &label,
                              const std::vector<int> &rows, int H, int dim,
-                             int act_int, bool use_vertical_fusion = false) {
+                             int act_int, bool use_vertical_fusion = false,
+                             int ntile_algo_pin = -1) {
   ASSERT_EQ(H % kBlk, 0) << label << ": H must be a multiple of 32";
   ASSERT_GE(H / kBlk, 2) << label;
   const int N_gate_up = 2 * dim;       // gate + up
@@ -252,7 +256,19 @@ void run_fused_ggml_scenario(const std::string &label,
     std::unique_ptr<AlgoEnvGuard> fused_algo;
     std::unique_ptr<moe_test_utils::MoEVerticalFusionOverride> vf_guard;
     std::unique_ptr<moe_test_utils::MoEPipelineScratchKbOverride> scratch_guard;
-    if (use_vertical_fusion) {
+    std::unique_ptr<moe_test_utils::LastInvocationCaptureGuard> prepack_cap;
+    if (ntile_algo_pin >= 0) {
+      // N-tile mode: pin ALGO 3 (or AUTO=0, which routes this decode-class
+      // shape to ALGO 3) so the fused two-pass N-tiles each op's per-group
+      // weight via do_tile's per-tile repack.  Capture the prepack stats to
+      // assert engagement (+ cross-warm under AUTO).
+      fused_algo = std::make_unique<AlgoEnvGuard>(ntile_algo_pin);
+      prepack_cap =
+          std::make_unique<moe_test_utils::LastInvocationCaptureGuard>();
+      namespace prepack = zendnnl::lowoha::matmul::group_matmul_prepack;
+      prepack::clear_fingerprint_cache_for_test();
+      prepack::test_api::clear_last_invocation_stats();
+    } else if (use_vertical_fusion) {
       fused_algo = std::make_unique<AlgoEnvGuard>(2);
       vf_guard =
           std::make_unique<moe_test_utils::MoEVerticalFusionOverride>(1);
@@ -293,6 +309,31 @@ void run_fused_ggml_scenario(const std::string &label,
         << label << ": fused call";
     mtile_tag = zendnnl::lowoha::matmul::test_api::s_last_m_tile_path.load(
         std::memory_order_relaxed);
+    if (ntile_algo_pin >= 0) {
+      namespace prepack = zendnnl::lowoha::matmul::group_matmul_prepack;
+      const auto stats = prepack::test_api::get_last_invocation_stats();
+      ASSERT_TRUE(stats.valid)
+          << label << ": prepack must run for the fused GGML N-tile call";
+      // Both modes AOT-warm the per-tile sym-quant layout
+      // (num_experts * stable), far exceeding a one-per-expert full-weight warm.
+      EXPECT_GT(stats.aocl.total_attempted, E)
+          << label << ": per-tile AOCL sym-quant warm did not run";
+      if (ntile_algo_pin == 3) {
+        // Pinned ALGO 3: the fused two-pass N-tiles each op's per-group weight.
+        // The LAST prepack captured is Op2 (act=none), a clean ALGO-3 warm.
+        EXPECT_EQ(stats.scheduling_algo, 3)
+            << label << ": fused GGML two-pass did NOT route to ALGO 3 (N-tile)";
+      } else {  // ntile_algo_pin == 0 (AUTO)
+        // AUTO fused-MoE GGML: the per-group DYNAMIC quant trips the auto
+        // n_tile gate, so the EXECUTED algo clamps to ALGO 1 — but cross-warm
+        // (AUTO-only) still AOT-warms the ALGO-3 per-tile layout for a later
+        // pinned/decode call.  That proves the prepack + cross-warm wiring on
+        // the fused path (the N-tile executor itself is covered by the pinned
+        // ALGO-3 scenario above).
+        EXPECT_NE(stats.cross_warm_regime, prepack::CrossWarmRegime::none)
+            << label << ": cross-warm did not fire under AUTO (env_algo=0)";
+      }
+    }
   }
 
   // The opt-in path MUST have engaged the DQ-INT8 vertical-fusion executor on
@@ -338,10 +379,16 @@ void run_fused_ggml_scenario(const std::string &label,
   //    owns valid const weights; the 2-call reference above only warmed the
   //    active subset via the active-only non-fused path, so reaching 2*E
   //    proves the fused call warmed the inactive experts too.) ──
-  EXPECT_EQ(zendnnl::lowoha::matmul::ggml_weight_unpack_cache_size(),
-            static_cast<size_t>(2 * E))
-      << label << ": expected all " << E
-      << " experts warmed (gate/up + down = " << (2 * E) << " cache entries)";
+  // In N-tile mode the ALGO-1 reference ('r' layout) and the ALGO-3/AUTO test
+  // ('n' layout) cache under DISTINCT keys (native_gemm vs aocl_dlp_blocked),
+  // so the total is not 2*E; the full-pool warm invariant is already covered by
+  // the two-pass / vertical-fusion modes above.
+  if (ntile_algo_pin < 0) {
+    EXPECT_EQ(zendnnl::lowoha::matmul::ggml_weight_unpack_cache_size(),
+              static_cast<size_t>(2 * E))
+        << label << ": expected all " << E
+        << " experts warmed (gate/up + down = " << (2 * E) << " cache entries)";
+  }
 
   // ── GGML packed weights are read-only on both passes ──
   for (int e = 0; e < E; ++e) {
@@ -433,4 +480,47 @@ TEST(FusedMoEGgml, VerticalFusionVariedGeluBF16) {
 TEST(FusedMoEGgml, VerticalFusionDenseSwigluBF16) {
   run_fused_ggml_scenario("VF dense/4 swiglu", std::vector<int>(4, 128), 64, 64,
                           3, /*use_vertical_fusion=*/true);
+}
+
+// ── N-tile (ALGO 3) coverage for the fused-MoE flow ────────────────────────
+// GGML is per-group, so the fused call always lands on the two-pass legacy
+// dispatch (vertical fusion is per-token only).  With the Op1/Op2 unpack now
+// handing back RAW s8 ('n') under ALGO 3 / AUTO, each op's per-group weight is
+// N-tiled by `do_tile` — exactly like a caller-provided per-group s8 weight.
+// N is sized to the live thread team (`N >= stable * nr_align`) so both Op1
+// (N=2*dim) and Op2 (N=H) clear the narrow-N escape and actually split;
+// stable < 2 hosts can't demonstrate a split, so skip.  The fused result is
+// validated against the ALGO-1 two-pass reference inside the scenario.
+TEST(FusedMoEGgml, NtileDenseSiluBF16) {
+  const int stable = zendnnl::lowoha::matmul::aocl_stable_n_thr(
+      zendnnl::lowoha::thread_guard::max_threads(), /*N=*/0);
+  if (stable < 2) {
+    GTEST_SKIP() << "fused GGML N-tile needs stable >= 2 (stable=" << stable
+                 << "); too few threads to split a single op's N.";
+  }
+  const int H = stable * 64;    // Op2 N = H, and Op1 K = H (both wide)
+  const int dim = stable * 32;  // Op1 N = 2*dim = stable*64; Op2 K_down = dim
+  run_fused_ggml_scenario("N-tile dense/4 silu", std::vector<int>(4, 16), H, dim,
+                          /*act=*/1, /*use_vertical_fusion=*/false,
+                          /*ntile_algo_pin=*/3);
+}
+
+// AUTO (env_algo=0) fused-MoE GGML: AOT prepack + cross-warm.  The per-group
+// DYNAMIC quant makes the auto n_tile gate clamp the EXECUTED algo to ALGO 1,
+// but cross-warm (AUTO-only) still AOT-warms the ALGO-3 per-tile layout for a
+// future pinned/decode call (cross_warm_regime != none).  This proves the
+// prepack + cross-warm wiring on the fused GGML path; the N-tile executor
+// itself is covered by `NtileDenseSiluBF16` above.
+TEST(FusedMoEGgml, AutoCrossWarmDenseSiluBF16) {
+  const int stable = zendnnl::lowoha::matmul::aocl_stable_n_thr(
+      zendnnl::lowoha::thread_guard::max_threads(), /*N=*/0);
+  if (stable < 2) {
+    GTEST_SKIP() << "fused GGML AUTO cross-warm needs stable >= 2 (stable="
+                 << stable << ").";
+  }
+  const int H = stable * 64;
+  const int dim = stable * 32;
+  run_fused_ggml_scenario("AUTO cross-warm dense/4 silu",
+                          std::vector<int>(4, 16), H, dim, /*act=*/1,
+                          /*use_vertical_fusion=*/false, /*ntile_algo_pin=*/0);
 }

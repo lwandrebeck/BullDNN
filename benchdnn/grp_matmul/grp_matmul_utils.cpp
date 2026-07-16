@@ -136,6 +136,27 @@ bool parse_config(const std::string &line, GrpMatmulConfig &cfg) {
                 return false;
             }
         }
+        // 16th column (optional): group_size for PER-GROUP DQ-INT8.
+        //   "0" / empty → per-token/per-channel (default).
+        //   > 0         → per-group: src_scale {M, K/group_size},
+        //                 wei_scale {K/group_size, N}, symmetric.
+        // Validation (dynamic_quant, compute_dt=s8, 0<group_size<K,
+        // K%group_size==0) happens below with the other DQ-INT8 checks.
+        std::string gs_str = next();
+        if (!gs_str.empty()) {
+            // std::stoi accepts negatives; a negative group_size would slip
+            // past the `group_size > 0` per-group gate below and silently run
+            // as per-token/per-channel instead of failing.  Reject it here so
+            // a malformed config fails fast rather than quietly switching
+            // quantization schemes.  (0 = per-token/per-channel; >0 = per-group.)
+            cfg.group_size = std::stoi(gs_str);
+            if (cfg.group_size < 0) {
+                std::cerr << "parse_config: group_size=" << cfg.group_size
+                          << " must be >= 0 (0 = per-token/per-channel, "
+                             ">0 = per-group).\n";
+                return false;
+            }
+        }
         cfg.M_per_op = parse_M(m_str, cfg.num_ops);
     } catch (...) {
         return false;
@@ -204,6 +225,32 @@ bool parse_config(const std::string &line, GrpMatmulConfig &cfg) {
                          "(int8 microkernel reduces in 4-byte VPDPBUSD "
                          "lanes); got K="
                       << cfg.K << "\n";
+            return false;
+        }
+    }
+
+    // Per-group DQ-INT8 contract.  Per-group is a DQ-INT8-only,
+    // symmetric-only mode: the N-tile per-group path runs the AOCL DLP
+    // sym-quant GEMM (`do_tile`'s `{G, n_tile}` repack), which requires
+    // src `{M, G}` / wei `{G, N}` scales with G = K/group_size groups and
+    // no src zero-point.  Enforce the shape so the driver fails fast
+    // instead of dispatching a config the library would reject.
+    if (cfg.group_size > 0) {
+        if (!cfg.dynamic_quant) {
+            std::cerr << "parse_config: group_size>0 (per-group) requires "
+                         "dynamic_quant=1.\n";
+            return false;
+        }
+        if (cfg.compute_dt != data_type_t::s8) {
+            std::cerr << "parse_config: group_size>0 (per-group) is "
+                         "symmetric-only; compute_dt must be s8 (got "
+                      << datatypeToStr(cfg.compute_dt) << ").\n";
+            return false;
+        }
+        if (cfg.group_size >= cfg.K || (cfg.K % cfg.group_size) != 0) {
+            std::cerr << "parse_config: group_size=" << cfg.group_size
+                      << " must satisfy 0 < group_size < K and "
+                         "K % group_size == 0 (K=" << cfg.K << ").\n";
             return false;
         }
     }

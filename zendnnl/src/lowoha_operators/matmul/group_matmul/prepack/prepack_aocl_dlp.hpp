@@ -197,6 +197,19 @@ status_t warm_pack_all_aocl_dlp_experts_n_tile(
 /// gates as the bf16 full-weight warmer (weight-cache type,
 /// min-ldb, is_weights_const).  No-op (counts skips) when
 /// `wei_dtype != s8` or AOCL DLP is not compiled in.
+///
+/// `group_size` selects the sym-quant quant-group granularity, matching
+/// the runtime `run_dlp(...)` key derivation
+/// (`src_grp = K / (src_scale_nelems / M)`):
+///   * `0` (default) — PER-TOKEN: `src_grp = K[i]`, so
+///     `extra_input_hash = hash(K[i])` and `DLP_SYMM_STAT_QUANT.group_size
+///     = K[i]`.  Byte-identical to the original per-token warmer; every
+///     existing caller keeps the default.
+///   * `> 0`         — PER-GROUP: `src_grp = group_size` (= K/G), so
+///     `extra_input_hash = hash(group_size)` and `group_size` drives the
+///     reorder — the exact key a per-group `{M,G}` src / `{G,N}` wei
+///     call builds at runtime.  Warms the AOCL fallback a per-group layer
+///     routed to ALGO 1/2/4/5 (or an ALGO-3 CK-refused expert) will read.
 status_t warm_pack_all_aocl_dlp_experts_sym_quant(
     const std::vector<const void *> &weight,
     const std::vector<int>          &K,
@@ -206,7 +219,8 @@ status_t warm_pack_all_aocl_dlp_experts_sym_quant(
     const std::vector<bool>         &is_weights_const,
     int                              total_count,
     data_type_t                      wei_dtype,
-    AoclDlpPackProbeStats           &stats);
+    AoclDlpPackProbeStats           &stats,
+    int                              group_size = 0);
 
 /// DQ-INT8 symmetric-quant PER-TILE warmer — per-tile sibling of
 /// `warm_pack_all_aocl_dlp_experts_sym_quant`, and the sym-quant
@@ -220,6 +234,11 @@ status_t warm_pack_all_aocl_dlp_experts_sym_quant(
 /// per-tile pointer slice, the `s8s8s32os32_sym_quant` reorder, and the
 /// `extra_input_hash = hash(K[i])` per-token key.  No-op (counts skips)
 /// when `wei_dtype != s8` or AOCL DLP is not compiled in.
+/// `group_size` selects the sym-quant quant-group granularity exactly as
+/// the full-weight `warm_pack_all_aocl_dlp_experts_sym_quant` sibling
+/// (0 = per-token `src_grp = K[i]`; > 0 = per-group `src_grp = group_size`
+/// = K/G).  Used for the ALGO-3 CK-off per-group decode fallback (each
+/// N-tile reorders its sliced weight through the per-group sym-quant key).
 status_t warm_pack_all_aocl_dlp_experts_n_tile_sym_quant(
     const std::vector<const void *> &weight,
     const std::vector<int>          &K,
@@ -232,7 +251,8 @@ status_t warm_pack_all_aocl_dlp_experts_n_tile_sym_quant(
     int                              num_threads,
     int                              stable,
     int                              nr_align,
-    AoclDlpPackProbeStats           &stats);
+    AoclDlpPackProbeStats           &stats,
+    int                              group_size = 0);
 
 } // namespace aocl_dlp
 } // namespace group_matmul_prepack

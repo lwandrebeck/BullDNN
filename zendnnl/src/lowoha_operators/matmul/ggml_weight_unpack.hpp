@@ -105,21 +105,44 @@ status_t validate_ggml_packed_inputs(const matmul_params &params,
  * params.quant_params.wei_scale is populated with the cached bf16 scale array.
  * The caller-owned packed GGML buffer is not modified.
  *
- * Precondition: ggml_is_sym_quant(params) must hold and trans must be 't'
- * (GGML stores weights as N x K row-major, i.e. the transpose of B).
+ * Precondition: trans must be 't' (GGML stores weights as N x K row-major,
+ * i.e. the transpose of B).  ggml_is_sym_quant(params) is required and
+ * validated by the caller only for ACTIVE experts; cold-expert cache warming
+ * (M==0) may call this before src_scale is populated — the unpack needs only
+ * the packed weight + shape, not the src_scale, so the sym-quant check does
+ * not gate warming.
  *
- * @param weight  [in/out] Pointer to packed weight data; redirected to cached
- *                reordered weights on success.
+ * @p skip_reorder selects the downstream weight layout:
+ *   - false (default) — REORDER path: unpack + AOCL sym-quant reorder +
+ *     cache; @p weight -> reordered buffer, mem_format_b = 'r'.  Consumed
+ *     directly by the AOCL full-weight GEMM (ALGO 1 etc.).
+ *   - true — RAW-S8 path: unpack to a cached raw s8 buffer (N x K) +
+ *     {K/32, N} bf16 scales and hand it back UN-reordered
+ *     (mem_format_b = 'n', packing.pack_format_b cleared to 0).  The weight
+ *     is then a plain per-group s8 weight, so the flat_n_tile (ALGO 3)
+ *     per-group path reorders it INTERNALLY per N-tile
+ *     (`do_tile`'s `{G, n_tile}` sym-quant repack) — the GEMM handles the
+ *     reorder after N-tiling, instead of this function pre-reordering the
+ *     full weight.  Identical to how a caller-provided per-group s8 weight
+ *     already flows.  The two layouts are cached under DISTINCT keys so
+ *     they never alias.  Callers set this when the call may run on N-tile
+ *     (ALGO 3 pinned, or AUTO where the selector can pick ALGO 3).
+ *
+ * @param weight  [in/out] Pointer to packed weight data; redirected to the
+ *                cached reordered (or raw s8) weights on success.
  * @param N       Number of output channels (rows in the GGML weight matrix)
  * @param K       Number of input features (columns, must be divisible by 32)
  * @param ldb     Leading dimension for the unpacked weight matrix
  * @param trans   AOCL transpose flag for matrix B (must be 't' for GGML)
  * @param params  [in/out] matmul_params whose wei_scale is populated on success
+ * @param skip_reorder  hand back raw s8 (mem_format 'n') for the N-tile
+ *                      per-group DLP path instead of pre-reordering
  * @return status_t::success on success, status_t::failure on error
  */
 status_t unpack_ggml_weights_and_cache(const void *&weight, int N, int K,
                                       int ldb, char trans,
-                                      matmul_params &params);
+                                      matmul_params &params,
+                                      bool skip_reorder = false);
 
 /** Clear cached GGML unpacked/reordered weight buffers. */
 void clear_ggml_weight_unpack_cache();

@@ -22,6 +22,7 @@
 #include <cstdlib>
 #include <cstring>
 #include <functional>
+#include <limits>
 #include <memory>
 #include <mutex>
 
@@ -92,8 +93,23 @@ size_t align_up(size_t size, size_t alignment = 64) {
     return (size + alignment - 1) & ~(alignment - 1);
 }
 
+// ── Why eviction is DISABLED (UINT32_MAX capacity) ────────────────
+// group_matmul_direct warms EVERY expert's weight per call — the active
+// ones AND the currently-cold (M==0) ones — then hands the cached buffer
+// pointers to the GEMM, which dereferences them AFTER the warm loop
+// finishes.  A bounded capacity below the warmed pool size (up to
+// 2 * total_experts entries for a fused gate/up + down layer) would let a
+// later expert's add() evict() an EARLIER, still-in-use expert's buffer
+// mid-call and std::free() it → use-after-free when the GEMM reads it.
+// Pinning to an infinite capacity sidesteps that without per-pointer
+// refcounts, mirroring pack_cache_singleton() in custom_kernel/pack.cpp;
+// it explicitly overrides any global ZENDNNL_LRU_CACHE_CAPACITY setting.
+// The footprint is model-bounded (one entry per distinct weight
+// pointer/shape); weight-rotating workloads should call
+// clear_ggml_weight_unpack_cache() during a quiescent window.
 lru_cache_t<Key_matmul, void *> &get_ggml_reordered_weight_cache() {
-    static lru_cache_t<Key_matmul, void *> cache;
+    static lru_cache_t<Key_matmul, void *> cache(
+        std::numeric_limits<uint32_t>::max());
     return cache;
 }
 
@@ -364,12 +380,124 @@ int ggml_unpack_weight_buffer(const void *weight_data, int ggml_type,
     return -1; // unsupported type
 }
 
+// Raw-s8 GGML unpack: cache the UNPACKED s8 weight (N x K) + {K/32, N} bf16
+// scales and hand it back UN-reordered (mem_format 'n', pack_format_b cleared).
+// The weight is then a plain per-group s8 weight, so the flat_n_tile (ALGO 3)
+// per-group path reorders it INTERNALLY per N-tile (`do_tile`'s `{G, n_tile}`
+// sym-quant repack) — exactly how a caller-provided per-group s8 weight
+// already flows.  Used when the call may run on N-tile (ALGO 3 / AUTO) so the
+// GEMM handles the reorder after N-tiling instead of pre-reordering here.
+//
+// Cached under a DISTINCT key marker (`native_gemm`) so a raw-s8 entry never
+// aliases the AOCL-reordered entry (`aocl_dlp_blocked`) for the same
+// (weight, K, N, ldb, trans) tuple, in case a process runs both modes.
+static status_t unpack_ggml_raw_s8_and_cache(const void *&weight, int N, int K,
+                                             int ldb, char trans,
+                                             matmul_params &params) {
+  const int64_t unpack_size = ggml_unpack_weight_buffer_size(8, true, N, K);
+  if (unpack_size < 0) {
+    log_error("GGML raw-s8 unpack failed: invalid dimensions");
+    return status_t::failure;
+  }
+  const size_t weight_bytes = static_cast<size_t>(N) * static_cast<size_t>(K);
+
+  Key_matmul cache_key(trans == 't', static_cast<unsigned int>(K),
+                       static_cast<unsigned int>(N),
+                       static_cast<unsigned int>(ldb), weight,
+                       static_cast<uint32_t>(matmul_algo_t::native_gemm));
+
+  lru_cache_t<Key_matmul, void *> &weight_cache =
+      get_ggml_reordered_weight_cache();
+  std::mutex &cache_mutex = get_ggml_reordered_weight_cache_mutex();
+
+  void *cached_buffer = nullptr;
+  {
+    std::lock_guard<std::mutex> lock(cache_mutex);
+    if (weight_cache.try_get(cache_key, cached_buffer)) {
+      apilog_info("GGML raw-s8 unpack cache hit: N=", N, ", K=", K);
+    }
+  }
+
+  if (!cached_buffer) {
+    apilog_info("GGML raw-s8 unpack cache miss: N=", N, ", K=", K);
+    void *buf =
+        aligned_alloc(64, align_up(static_cast<size_t>(unpack_size)));
+    if (!buf) {
+      log_error("GGML raw-s8 unpack failed: allocation failed");
+      return status_t::failure;
+    }
+    // out-params required by the ggml_unpack_weight_buffer API but unused on
+    // this path: the unpacked weights are `buf` itself and the wei-scale
+    // pointer is re-derived from `cached_buffer + weight_bytes` below.
+    int8_t *unpacked_weights = nullptr;
+    void   *unpacked_scales  = nullptr;
+    if (ggml_unpack_weight_buffer(weight, 8, false, true, false, N, K,
+                                  &unpacked_weights, &unpacked_scales,
+                                  buf) != 0) {
+      std::free(buf);
+      log_error("GGML raw-s8 unpack failed");
+      return status_t::failure;
+    }
+    (void)unpacked_weights;
+    (void)unpacked_scales;
+    {
+      std::lock_guard<std::mutex> lock(cache_mutex);
+      if (weight_cache.try_get(cache_key, cached_buffer)) {
+        std::free(buf);  // another thread filled it first
+      } else {
+        weight_cache.add(cache_key, buf);
+        cached_buffer = buf;
+      }
+    }
+  }
+
+  // Hand back the raw s8 weight (N x K, transB) + {K/32, N} bf16 scales,
+  // UN-reordered, so the per-group N-tile DLP path reorders it per-tile.
+  weight = cached_buffer;
+  params.mem_format_b = 'n';
+  // The weight is now plain raw s8 (unpacked): clear the GGML packed flag so
+  // the dispatch treats it exactly like a caller-provided per-group s8 weight
+  // (check_m_tile_safe / check_n_tile_extra reject `pack_format_b != 0` on the
+  // mem_format 'n' path, so leaving it set would veto ALGO 3).
+  params.packing.pack_format_b = 0;
+  params.quant_params.wei_scale.buff = static_cast<const void *>(
+      static_cast<const uint8_t *>(cached_buffer) + weight_bytes);
+  params.quant_params.wei_scale.dt = data_type_t::bf16;
+  const int64_t ng = static_cast<int64_t>(K) / 32;
+  params.quant_params.wei_scale.dims = {ng, static_cast<int64_t>(N)};
+  // Symmetric-int8 compute discriminator.  The unpacked weight is now a
+  // plain per-group s8 matrix (identical to a caller-provided per-group s8
+  // weight), so flag the call as symmetric int8.  This is the field the
+  // AOCL DLP sym-quant PREPACK gate keys on (`int8_aocl_warm_candidate`:
+  // wei==s8 && compute in {s8,u8}) — without it the ahead-of-time warmer
+  // skips the s8 family and the per-group N-tile reorder is packed lazily
+  // on first routing instead of ahead of time.  Per-group is symmetric-
+  // only, so s8 (never u8).  The runtime per-group call still runs on the
+  // AOCL do_tile path regardless (`ck_per_group` forces it — the custom
+  // kernel has no per-group support in this path), so this only flips the
+  // prepack recognition, not the executor.
+  params.dtypes.compute = data_type_t::s8;
+
+  apilog_info("GGML raw-s8 unpack output: weight_bytes=", weight_bytes,
+              ", scale_groups=", ng, ", scale_dt=bf16, mem_format=n");
+  return status_t::success;
+}
+
 status_t unpack_ggml_weights_and_cache(const void *&weight, int N, int K,
                                       int ldb, char trans,
-                                      matmul_params &params) {
-  apilog_info("GGML Q8_0 unpack/reorder: N=", N, ", K=", K,
-              ", weight_address=", static_cast<const void *>(weight));
+                                      matmul_params &params,
+                                      bool skip_reorder) {
+  apilog_info("GGML Q8_0 unpack: N=", N, ", K=", K,
+              ", weight_address=", static_cast<const void *>(weight),
+              ", skip_reorder=", (skip_reorder ? 1 : 0));
 
+  // N-tile per-group DLP path: keep the weight raw so `do_tile` reorders it
+  // per N-tile, instead of pre-reordering the full weight for AOCL here.
+  if (skip_reorder) {
+    return unpack_ggml_raw_s8_and_cache(weight, N, K, ldb, trans, params);
+  }
+
+  // Default: unpack + AOCL sym-quant reorder + cache (mem_format 'r').
   size_t reorder_size = 0;
   if (ggml_reorder_size(N, K, trans, reorder_size) != status_t::success) {
     return status_t::failure;

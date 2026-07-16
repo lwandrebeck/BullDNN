@@ -1,0 +1,104 @@
+# Per-group symmetric INT8 MoE — non-fused expert GEMMs (no GGML).
+#
+# Exercises the N-tile (ALGO 3) per-group DQ-INT8 path on the AOCL DLP
+# backend: bf16 activations, s8 weights carrying a per-group {G, N} f32
+# scale (G = K / group_size groups), and a {M, G} src scale that the
+# library's pre-OMP hoist fills by quantizing the bf16 src per-group at
+# call time.  Most experts run one plain GEMM (gated_act=0) plus the fused
+# MoE weighted-reduce (moe_topk); the final section additionally exercises
+# the GATED gate+up projection (gated_act>0, N = 2*intermediate).
+#
+# Column layout (16 fields; per-group needs every optional column filled
+# up to group_size):
+#   num_ops, M, K, N, iters, src_dt:wei_dt:dst_dt, is_weights_const, warmup,
+#     moe_topk, gated_act, N_down, use_internal_alloc, total_experts,
+#     dynamic_quant, compute_dt, group_size
+#
+# Fixed for every line below: bf16:s8:bf16, dynamic_quant=1, compute_dt=s8
+# (per-group is symmetric-only), N_down=0 (non-fused), use_internal_alloc=0.
+# gated_act=0 except the final "gated gate+up" section (silu_and_mul=1,
+# swiglu_oai_mul=3).  group_size divides K, 0 < group_size < K, K%gs==0.
+#
+# ═══════════════════════════════════════════════════════════════════════
+# Mixtral-8x7B  (hidden=4096, intermediate=14336, 8 experts, topk=2)
+#   up/gate:  K=4096,  N=14336   down: K=14336, N=4096   group_size=128
+# ═══════════════════════════════════════════════════════════════════════
+#
+# ── decode (BS=8, sum=16, topk=2) ──
+8, 2:2:2:2:2:2:2:2, 4096,  14336, 500, bf16:s8:bf16, true, 100, 2, 0, 0, 0, 0, 1, s8, 128
+8, 2:2:2:2:2:2:2:2, 14336, 4096,  500, bf16:s8:bf16, true, 100, 2, 0, 0, 0, 0, 1, s8, 128
+8, 4:1:1:3:1:1:2:3, 4096,  14336, 500, bf16:s8:bf16, true, 100, 2, 0, 0, 0, 0, 1, s8, 128
+8, 4:1:1:3:1:1:2:3, 14336, 4096,  500, bf16:s8:bf16, true, 100, 2, 0, 0, 0, 0, 1, s8, 128
+# ── decode (BS=32, sum=64, topk=2), skewed real routing ──
+8, 14:5:6:7:4:22:2:4, 4096,  14336, 200, bf16:s8:bf16, true, 50, 2, 0, 0, 0, 0, 1, s8, 128
+8, 14:5:6:7:4:22:2:4, 14336, 4096,  200, bf16:s8:bf16, true, 50, 2, 0, 0, 0, 0, 1, s8, 128
+# ── prompt (~128 tokens, sum=256, highly skewed) ──
+8, 55:14:36:22:15:76:23:15, 4096,  14336, 100, bf16:s8:bf16, true, 30, 2, 0, 0, 0, 0, 1, s8, 128
+8, 55:14:36:22:15:76:23:15, 14336, 4096,  100, bf16:s8:bf16, true, 30, 2, 0, 0, 0, 0, 1, s8, 128
+#
+# ═══════════════════════════════════════════════════════════════════════
+# Qwen3-30B-A3B  (hidden=2048, moe_intermediate=768, 128 experts, topk=8)
+#   up/gate:  K=2048, N=768   down: K=768, N=2048   group_size=128
+#   (128 experts in the pool; a decode step fires up to topk=8 of them)
+# ═══════════════════════════════════════════════════════════════════════
+#
+# ── decode (8 firing experts, 1 token each) ──
+8, 1:1:1:1:1:1:1:1, 2048, 768,  500, bf16:s8:bf16, true, 100, 8, 0, 0, 0, 0, 1, s8, 128
+8, 1:1:1:1:1:1:1:1, 768,  2048, 500, bf16:s8:bf16, true, 100, 8, 0, 0, 0, 0, 1, s8, 128
+# ── prompt (8 firing experts, ~32 tokens each) ──
+8, 40:36:28:44:31:22:38:33, 2048, 768,  100, bf16:s8:bf16, true, 30, 8, 0, 0, 0, 0, 1, s8, 128
+8, 40:36:28:44:31:22:38:33, 768,  2048, 100, bf16:s8:bf16, true, 30, 8, 0, 0, 0, 0, 1, s8, 128
+#
+# ═══════════════════════════════════════════════════════════════════════
+# GPT-OSS-20B  (hidden=2880, intermediate=2880, 32 experts, topk=4)
+#   up/gate:  K=2880, N=5760 (gate|up)   down: K=2880, N=2880
+#   group_size=32  (K=2880 is not a multiple of 128; 2880 % 32 == 0)
+# ═══════════════════════════════════════════════════════════════════════
+#
+# ── decode (4 firing experts, few tokens) ──
+4, 2:2:2:2, 2880, 5760, 500, bf16:s8:bf16, true, 100, 4, 0, 0, 0, 0, 1, s8, 32
+4, 2:2:2:2, 2880, 2880, 500, bf16:s8:bf16, true, 100, 4, 0, 0, 0, 0, 1, s8, 32
+# ── prompt (4 firing experts, ~64 tokens each) ──
+4, 70:58:66:62, 2880, 5760, 100, bf16:s8:bf16, true, 30, 4, 0, 0, 0, 0, 1, s8, 32
+4, 70:58:66:62, 2880, 2880, 100, bf16:s8:bf16, true, 30, 4, 0, 0, 0, 0, 1, s8, 32
+#
+# ═══════════════════════════════════════════════════════════════════════
+# Prepack-extras: 8 firing experts in a 32-expert pool (rotating experts).
+# Driver allocates 32 s8 weight buffers + per-group scales, computes only
+# the first 8 GEMMs, and the prepack module pre-warms all 32 slots.
+# ═══════════════════════════════════════════════════════════════════════
+#
+8, 4:4:4:4:4:4:4:4, 4096,  14336, 200, bf16:s8:bf16, true, 50, 2, 0, 0, 0, 32, 1, s8, 128
+8, 4:4:4:4:4:4:4:4, 14336, 4096,  200, bf16:s8:bf16, true, 50, 2, 0, 0, 0, 32, 1, s8, 128
+#
+# ═══════════════════════════════════════════════════════════════════════
+# Gated gate+up projection — mirrors a real fused MoE gate/up.
+# The gate+up GEMM emits N = 2*intermediate columns (gate|up concatenated);
+# a gated activation collapses them to [M, intermediate], then the down
+# projection maps back to hidden.  Still one per-group symmetric int8 DLP
+# call per expert — the {G, N} wei scale spans the full gate|up width, and
+# the activation runs as the epilogue post-op (not the fused Op1→Op2 path,
+# so N_down stays 0).
+#   gate+up: gated_act > 0, N = 2*intermediate     down: gated_act = 0
+#   silu_and_mul=1 (Mixtral / Qwen3),  swiglu_oai_mul=3 (GPT-OSS)
+# ═══════════════════════════════════════════════════════════════════════
+#
+# ── Mixtral-8x7B: gate+up (silu, N=28672) → down (N=4096), group_size=128 ──
+# decode (BS=8)
+8, 2:2:2:2:2:2:2:2, 4096,  28672, 300, bf16:s8:bf16, true, 50, 2, 1, 0, 0, 0, 1, s8, 128
+8, 2:2:2:2:2:2:2:2, 14336, 4096,  300, bf16:s8:bf16, true, 50, 2, 0, 0, 0, 0, 1, s8, 128
+# prompt (~128 tokens, skewed)
+8, 55:14:36:22:15:76:23:15, 4096,  28672, 100, bf16:s8:bf16, true, 30, 2, 1, 0, 0, 0, 1, s8, 128
+8, 55:14:36:22:15:76:23:15, 14336, 4096,  100, bf16:s8:bf16, true, 30, 2, 0, 0, 0, 0, 1, s8, 128
+#
+# ── Qwen3-30B-A3B: gate+up (silu, N=1536) → down (N=2048), group_size=128 ──
+8, 1:1:1:1:1:1:1:1, 2048, 1536, 500, bf16:s8:bf16, true, 100, 8, 1, 0, 0, 0, 1, s8, 128
+8, 1:1:1:1:1:1:1:1, 768,  2048, 500, bf16:s8:bf16, true, 100, 8, 0, 0, 0, 0, 1, s8, 128
+8, 40:36:28:44:31:22:38:33, 2048, 1536, 100, bf16:s8:bf16, true, 30, 8, 1, 0, 0, 0, 1, s8, 128
+8, 40:36:28:44:31:22:38:33, 768,  2048, 100, bf16:s8:bf16, true, 30, 8, 0, 0, 0, 0, 1, s8, 128
+#
+# ── GPT-OSS-20B: gate+up (swiglu_oai_mul, N=5760) → down (N=2880), gs=32 ──
+4, 2:2:2:2, 2880, 5760, 500, bf16:s8:bf16, true, 100, 4, 3, 0, 0, 0, 1, s8, 32
+4, 2:2:2:2, 2880, 2880, 500, bf16:s8:bf16, true, 100, 4, 0, 0, 0, 0, 1, s8, 32
+4, 70:58:66:62, 2880, 5760, 100, bf16:s8:bf16, true, 30, 4, 3, 0, 0, 0, 1, s8, 32
+4, 70:58:66:62, 2880, 2880, 100, bf16:s8:bf16, true, 30, 4, 0, 0, 0, 0, 1, s8, 32

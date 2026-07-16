@@ -42,10 +42,11 @@ CSV, one configuration per line.  Lines starting with `#` are comments.
 
 ```
 num_ops, M, K, N, iters, src_dt:wei_dt:dst_dt, is_weights_const, warmup
-       [, moe_topk[, gated_act[, N_down[, use_internal_alloc[, total_experts]]]]]
+       [, moe_topk[, gated_act[, N_down[, use_internal_alloc[, total_experts
+       [, dynamic_quant[, compute_dt[, group_size]]]]]]]]
 ```
 
-The first nine fields are required.  The five trailing fields are optional and forward-compatible — if absent each defaults to "off / disabled" so legacy input files keep working unchanged.
+The first eight fields are required.  The eight trailing fields are optional and forward-compatible — if absent each defaults to "off / disabled" so legacy input files keep working unchanged.
 
 ### Fields
 
@@ -64,6 +65,9 @@ The first nine fields are required.  The five trailing fields are optional and f
 | 11 | `N_down` | int (optional) | Fused down_proj output columns.  `0` or omitted = disabled.  `>0` = fused Op1(gate+up) → activation → Op2(down_proj) with this output width.  K_down = N/2 when a gated activation is present, K_down = N otherwise. |
 | 12 | `use_internal_alloc` | int (optional) | Library-managed Op2 scratch + src reuse.  `1` = library allocates Op1 output in a thread-local arena and writes Op2 output back into the caller's `src` buffer (zero caller-side scratch).  `0` (default) or absent = caller allocates `dst_down`.  Requires `N_down > 0` and matched src/dst precision. |
 | 13 | `total_experts` | int (optional) | Drives the **framework prepack-extras contract**: the total number of expert weight slots present in the call (`>= num_ops`).  When omitted or `0`, defaults to `num_ops` (legacy: every supplied weight is firing).  When `> num_ops`, the driver allocates `total_experts` weight buffers — the first `num_ops` are the firing experts, the remaining `(total_experts - num_ops)` are pre-pack extras whose weights are warmed by the prepack module but never computed in this call (mirrors the production MoE rotating-experts use case).  Rejected if `< num_ops`. |
+| 14 | `dynamic_quant` | int / string (optional) | Selects the **DQ-INT8** (dynamic-quant int8) path.  `0` / `false` / `off` / omitted = bf16 (default).  `1` / `true` / `on` / `dq_int8` = drive `params[i].dynamic_quant=true`: the weight is s8 with an f32 `wei_scale`, and the library's pre-OMP hoist quantizes the bf16 `src` at runtime (per-token by default, per-group when `group_size>0`).  Requires `src:wei:dst == bf16:s8:bf16` and `K % 4 == 0`. |
+| 15 | `compute_dt` | string (optional) | int8 compute discriminator on `params[i].dtypes.compute` (ignored when `dynamic_quant=0`).  `s8` / `sym` (default) = symmetric (`kS8_S8_BF16_SYM`, no src zero-point).  `u8` / `asym` = asymmetric (`kU8_S8_BF16_ASYM`, hoist allocates a per-token src_zp).  Per-group (`group_size>0`) is symmetric-only, so must be `s8`. |
+| 16 | `group_size` | int (optional) | **Per-group** symmetric int8 quant group width in K-elements (only when `dynamic_quant=1`).  `0` / omitted = per-token / per-channel (`src_scale {M,1}`, `wei_scale {1,N}`).  `>0` = per-group: `G = K/group_size` groups; the driver fills a `G×N` f32 `wei_scale` (`{G,N}`) and requests a `{M,G}` `src_scale` (hoist-filled per-group at call time).  Runs the AOCL DLP sym-quant GEMM via the N-tile `do_tile` `{G,n_tile}` per-column repack.  Requires `compute_dt=s8`, `0 < group_size < K`, `K % group_size == 0`. |
 
 ### Examples
 
@@ -87,7 +91,24 @@ The first nine fields are required.  The five trailing fields are optional and f
 # prepack-extras contract end-to-end.  Driver allocates 32 weight buffers,
 # computes only the first 4 GEMMs, prepack module pre-warms all 32.
 4, 32, 2880, 5760, 200, bf16:bf16:bf16, true, 50, 4, 3, 2880, 1, 32
+
+# DQ-INT8 MoE (per-token symmetric): bf16 activations, s8 weights, topk=2.
+8, 4, 4096, 14336, 200, bf16:s8:bf16, true, 50, 2, 0, 0, 0, 0, 1, s8
+
+# Per-group MoE (symmetric int8, group_size=128 → G=32 groups over K=4096),
+# topk=2.  Weight carries a {G,N} f32 scale; the N-tile hoist quantizes the
+# bf16 src per-group and the AOCL DLP sym-quant GEMM runs under ALGO 3.
+8, 4, 4096, 14336, 200, bf16:s8:bf16, true, 50, 2, 0, 0, 0, 0, 1, s8, 128
+
+# Per-group MoE with a gated gate+up projection (silu_and_mul, gated_act=1,
+# N = 2*intermediate = 28672).  The activation collapses gate|up to
+# [M, 14336] as the epilogue post-op, then the topk reduce runs.
+8, 4, 4096, 28672, 200, bf16:s8:bf16, true, 50, 2, 1, 0, 0, 0, 1, s8, 128
 ```
+
+A ready-made per-group int8 MoE sweep (plain expert GEMMs + a gated gate+up
+section for Mixtral / Qwen3 / GPT-OSS) lives in
+`benchdnn/input/grp_matmul/moe_fused_gate_up_down/moe_per_group_int8.txt`.
 
 ## MoE post-op
 
@@ -130,6 +151,7 @@ Results are printed to the console and written to a timestamped CSV file.
 | iters | Timed iterations |
 | warmup | Warmup iterations |
 | dtypes | src:wei:dst data types |
+| quant | `bf16`, `dq8s` / `dq8u` (per-token sym / asym DQ-INT8), or `pg<group_size>` (per-group symmetric, e.g. `pg128`) |
 | moe | `off` or `topk=N` |
 | fused | `off` or `N_down=N` |
 | avg_ms | Average iteration time (ms) |
@@ -139,7 +161,9 @@ Results are printed to the console and written to a timestamped CSV file.
 
 ### CSV columns
 
-`num_ops, M, K, N, iters, warmup, dtypes, is_weights_const, moe_topk, gated_act, N_down, use_internal_alloc, wall_ms, sum_iter_ms, avg_ms, min_ms, GFLOPS_avg, GFLOPS_peak`
+`num_ops, M, K, N, iters, warmup, dtypes, quant, is_weights_const, moe_topk, gated_act, N_down, use_internal_alloc, wall_ms, sum_iter_ms, avg_ms, min_ms, GFLOPS_avg, GFLOPS_peak`
+
+The `quant` column is `bf16` (default), `dq8s` / `dq8u` (per-token symmetric / asymmetric DQ-INT8), or `pg<group_size>` (per-group symmetric int8).
 
 | Column | Description |
 |--------|-------------|

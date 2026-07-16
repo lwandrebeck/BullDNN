@@ -44,7 +44,11 @@
 
 #include "gtest_utils.hpp"
 #include "group_matmul_test_helpers.hpp"
+#include "moe_test_utils.hpp"
+#include "lowoha_operators/common/omp_thread_control.hpp"
 #include "lowoha_operators/matmul/ggml_weight_unpack.hpp"
+#include "lowoha_operators/matmul/group_matmul/group_matmul_parallel_common.hpp"
+#include "lowoha_operators/matmul/group_matmul/prepack/prepack.hpp"
 
 namespace {
 
@@ -66,12 +70,15 @@ void run_ggml_per_group_scenario(const std::string &label,
   const int E = static_cast<int>(rows.size());
   ASSERT_GT(E, 0) << label;
 
-  // The GGML reorder cache is keyed by the weight *pointer*; this test frees
-  // each scenario's packed buffers on return, so a later scenario can reuse a
-  // freed address and hit a stale entry.  Real frameworks keep weights
-  // resident (no reuse), so clear the cache to model an independent weight set
-  // per scenario.
-  zendnnl::lowoha::matmul::clear_ggml_weight_unpack_cache();
+  // Every group-matmul weight cache is keyed by the weight *pointer*; this
+  // test frees each scenario's packed buffers on return, so a later scenario
+  // can reuse a freed address and hit a stale entry.  Real frameworks keep
+  // weights resident (no reuse), so reset ALL caches per scenario.  This must
+  // clear more than the GGML unpack cache: the raw-s8 (N-tile) path hands an
+  // un-reordered s8 weight that `do_tile` reorders per N-tile into the AOCL
+  // sym-quant LRU keyed by THAT raw-s8 pointer — a GGML-only clear would leave
+  // stale AOCL reorder entries a reused raw-s8 address could alias.
+  reset_grp_matmul_caches();
 
   const matmul_algo_t algo = matmul_algo_t::aocl_dlp_blocked;
   const data_type_t ref_dt = use_bf16_out ? data_type_t::bf16 : data_type_t::f32;
@@ -266,4 +273,121 @@ TEST(GroupMatmulGgmlPerGroup, FifteenExpertsAllActiveF32) {
 TEST(GroupMatmulGgmlPerGroup, FifteenExpertsNoneActiveBF16) {
   std::vector<int> rows(15, 0);
   run_ggml_per_group_scenario("15/0 none active bf16", rows, 128, 64, true);
+}
+
+// ── N-tile (ALGO 3) engagement: GGML per-group must route to flat_n_tile ───
+// With the raw-s8 unpack, a GGML per-group call handed un-reordered weights
+// is accepted by `check_n_tile_extra` (per-group + mem_format 'n') and runs
+// on ALGO 3 (flat_n_tile), where `do_tile` reorders each weight per N-tile
+// into the AOCL DLP sym-quant GEMM.  Before this change GGML pre-reordered
+// ('r'), which `check_n_tile_extra` rejects → the call fell back to ALGO 1.
+// Pin ALGO 3 and capture the prepack invocation to assert the call actually
+// reached flat_n_tile (scheduling_algo == 3), not the ALGO-1 fallback.
+TEST(GroupMatmulGgmlPerGroup, NtileDlpEngagesBF16) {
+  namespace prepack = zendnnl::lowoha::matmul::group_matmul_prepack;
+  moe_test_utils::AlgoEnvGuard              algo3(3);
+  moe_test_utils::LastInvocationCaptureGuard prepack_capture;
+  prepack::clear_fingerprint_cache_for_test();
+  prepack::test_api::clear_last_invocation_stats();
+
+  std::vector<int> rows(15, 0);
+  for (int e : {1, 3, 5, 8, 11, 14}) rows[e] = 32;
+  run_ggml_per_group_scenario("15/6 N-tile DLP bf16", rows, /*K=*/128,
+                              /*N=*/64, /*bf16=*/true);
+
+  auto stats = prepack::test_api::get_last_invocation_stats();
+  ASSERT_TRUE(stats.valid)
+      << "prepack_for_algo_3 must run for the GGML per-group call";
+  EXPECT_EQ(stats.scheduling_algo, 3)
+      << "GGML per-group + ALGO 3 must route to flat_n_tile (N-tile DLP) on "
+         "the raw-s8 weight — a fallback to ALGO 1 means the raw-s8 unpack "
+         "regressed (check_n_tile_extra rejected a reordered weight)";
+}
+
+// ── N-tile (ALGO 3) that ACTUALLY splits each expert's N ───────────────────
+// `NtileDlpEngagesBF16` above pins ALGO 3 but its narrow N=64 trips the
+// planner's F3_narrow_N_escape (`stable > max_N / nr_align`) and runs the
+// Sequential fallback (one full-weight reorder per expert), so it proves
+// ALGO-3 *engagement* but never a real per-tile split.  To exercise the
+// strict-stable ManyExperts split we must instead satisfy
+// `stable <= max_N / nr_align`, where `stable = aocl_stable_n_thr(num_threads)`
+// (= num_threads / ZENDNNL_GRP_MATMUL_AOCL_TARGET_SLOTS) and `nr_align = 32`
+// (the s8 sym-quant AOCL N-block).  `stable` is thread-count-derived and the
+// dispatcher reads it from the same cached `thread_guard::max_threads()` this
+// test queries, so size N to the live OMP team: N = stable * 32 * 2 yields
+// `stable` column tiles per expert (2x slot margin).  A genuine split needs
+// stable >= 2 (>= 2*TARGET_SLOTS hardware threads); smaller boxes can only run
+// one thread per expert (no intra-expert N split), so skip there.
+//
+// Signal: on the tiled path the ALGO-3 prepack warms the sym-quant reorder
+// cache PER N-TILE (`aocl_per_tile_sym_quant`), so `aocl.total_attempted ==
+// num_experts * stable`; the Sequential fallback warms it once per expert
+// (`aocl_full_weight_sym_quant`, == num_experts).  Hence total_attempted >
+// num_experts proves N was actually tiled, not sequentially fallen back.
+TEST(GroupMatmulGgmlPerGroup, NtileDlpActuallyTilesNBF16) {
+  namespace prepack = zendnnl::lowoha::matmul::group_matmul_prepack;
+
+  // s8 sym-quant AOCL N-block == the runtime `nr_align` on this path
+  // (see the `[GRP_MATMUL.PLAN.FALLBACK] ... nr_align=32` apilog line).
+  constexpr int kNrAlign = 32;
+  const int num_threads = zendnnl::lowoha::thread_guard::max_threads();
+  const int stable =
+      zendnnl::lowoha::matmul::aocl_stable_n_thr(num_threads, /*N=*/0);
+  if (stable < 2) {
+    GTEST_SKIP() << "flat_n_tile strict-stable split needs stable >= 2 "
+                    "(num_threads="
+                 << num_threads << " -> stable=" << stable
+                 << "); too few threads to N-tile a single expert, the "
+                    "narrow-N escape would route to Sequential.";
+  }
+
+  const int E = 15;
+  const uint64_t K = 128;  // multiple of 32 for GGML Q8_0
+  // 2x the 32-wide sym-quant slot -> `stable` tiles/expert with margin.
+  const uint64_t N = static_cast<uint64_t>(stable) * kNrAlign * 2;
+
+  // AUTO (env_algo=0): this decode-class per-group call (pre-quantized s8, so
+  // dynamic_quant=no) routes to ALGO 3 (N-tile) AND enables the AUTO-only
+  // cross-warm, which AOT-warms the full-weight layout (shared by ALGO
+  // 1/2/4/5) alongside the per-tile ALGO-3 layout.
+  moe_test_utils::AlgoEnvGuard              algo_auto(0);
+  moe_test_utils::LastInvocationCaptureGuard prepack_capture;
+  prepack::clear_fingerprint_cache_for_test();
+  prepack::test_api::clear_last_invocation_stats();
+
+  std::vector<int> rows(E, 16);  // all experts active -> clean per-tile count
+  run_ggml_per_group_scenario("15 all-active N-tile split", rows, K, N,
+                              /*bf16=*/true);
+
+  auto stats = prepack::test_api::get_last_invocation_stats();
+  ASSERT_TRUE(stats.valid)
+      << "prepack_for_algo_3 must run for the GGML per-group call";
+  EXPECT_EQ(stats.scheduling_algo, 3);
+  // total_attempted > num_experts means the sym-quant cache was warmed per
+  // N-tile (num_experts * stable), i.e. flat_n_tile actually split N — not the
+  // Sequential fallback's one-full-weight-reorder-per-expert (== num_experts).
+  EXPECT_GT(stats.aocl.total_attempted, E)
+      << "planner took the Sequential fallback (no real N-tile split): "
+         "stable=" << stable << " N=" << N << " num_threads=" << num_threads;
+  // AUTO-only cross-warm must AOT-warm the OTHER layout class (full-weight,
+  // used by ALGO 1/2/4/5) alongside the per-tile ALGO-3 primary above.
+  EXPECT_NE(stats.cross_warm_regime, prepack::CrossWarmRegime::none)
+      << "cross-warm did not fire under AUTO (env_algo=0)";
+}
+
+// ── Full-pool warm: cold (unrouted) experts are unpacked + cached too ──────
+// Only 6 of 15 experts route this call, but ALL 15 must be unpacked + cached
+// afterwards, so a later decode iteration that routes to a currently-cold
+// expert pays no first-fire unpack spike (the rotating-experts MoE case).
+// `ggml_weight_unpack_cache_size()` counts one entry per (weight, shape)
+// unpacked, so it equals the expert count iff every expert — active AND
+// cold — was warmed.
+TEST(GroupMatmulGgmlPerGroup, ColdExpertsWarmedFullPoolBF16) {
+  std::vector<int> rows(15, 0);
+  for (int e : {1, 3, 5, 8, 11, 14}) rows[e] = 32;  // 6 of 15 routed
+  run_ggml_per_group_scenario("15/6 full-pool warm", rows, /*K=*/128,
+                              /*N=*/64, /*bf16=*/true);
+  EXPECT_EQ(zendnnl::lowoha::matmul::ggml_weight_unpack_cache_size(), 15u)
+      << "all 15 experts' GGML weights must be unpacked + cached after one "
+         "call (full-pool warm), not just the 6 routed experts";
 }
