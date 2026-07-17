@@ -11,6 +11,9 @@ on:
         description: "Result of the JIRA ID check"
         value: ${{ jobs.check-jira-id.outputs.result }}
 
+permissions:
+  contents: read
+
 jobs:
   check-jira-id:
     name: Verify JIRA ID in Commit Messages

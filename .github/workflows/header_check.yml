@@ -11,6 +11,9 @@ on:
         description: "Result of the license header check"
         value: ${{ jobs.check-license-headers.outputs.result }}
 
+permissions:
+  contents: read
+
 jobs:
   check-license-headers:
     name: Verify License Headers in Changed Files

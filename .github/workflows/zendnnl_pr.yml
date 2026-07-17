@@ -44,8 +44,16 @@ on:
         required: false
         default: '10'
         type: string
+      clang_path:
+        description: 'Directory containing the clang/clang++ binaries'
+        required: false
+        default: '/usr/bin'
+        type: string
   repository_dispatch:
     types: [ zendnnTools-pr ]
+
+permissions:
+  contents: read
 
 jobs:
   jira-id-check:
@@ -68,6 +76,9 @@ jobs:
       GTEST_FILTER: ${{ github.event.inputs.gtest_filter || 'Matmul/*' }}
       AI_GTEST_FILTER: ${{ github.event.inputs.ai_gtest_filter || 'AIMinimalTests/*' }}
       TEST_ITERATIONS: ${{ github.event.inputs.test_iterations || '50' }}
+      # Isolate conda's package/repodata cache per job to avoid a shared-cache
+      # race on the runner's NFS-mounted base install when jobs run concurrently.
+      CONDA_PKGS_DIRS: ${{ github.workspace }}/.conda_pkgs
       ZENDNN_REF: ${{ github.event.inputs.zendnn_ref || github.event.client_payload.zendnn_ref || '' }}
       ZENDNNL_REF: ${{ github.event.inputs.zendnnl_ref || github.event.client_payload.zendnnl_ref || '' }}
       TRIGGERING_PR_NUMBER: ${{ github.event.client_payload.zendnntools_pr_number || '' }}
@@ -362,6 +373,199 @@ jobs:
          -H "Authorization: token ${{ secrets.ZIAIE_PAT }}" \
           "https://api.github.com/repos/AMD-Zenai/ZenDNN_tools/statuses/${{ github.event.client_payload.zendnntools_ref_sha }}" \
           -d "{\"state\":\"${state}\",\"context\":\"${{ github.repository }} CI\",\"description\":\"${{ github.repository }} ${state}\"}"
+  Zendnnl_build_Clang_PR:
+    runs-on: zendnnl_presub_server
+    needs: [jira-id-check, license-header-check]
+    if: ${{ github.event_name == 'pull_request' || github.event_name == 'workflow_dispatch' || github.event_name == 'repository_dispatch' }}
+    env:
+      PYTHON_VERSION: ${{ github.event.inputs.python_version || '3.10' }}
+      CMAKE_VERSION: ${{ github.event.inputs.cmake_version || '4.0.0' }}
+      GTEST_FILTER: ${{ github.event.inputs.gtest_filter || 'Matmul/*' }}
+      AI_GTEST_FILTER: ${{ github.event.inputs.ai_gtest_filter || 'AIMinimalTests/*' }}
+      TEST_ITERATIONS: ${{ github.event.inputs.test_iterations || '50' }}
+      CLANG_PATH: ${{ github.event.inputs.clang_path || '/usr/bin' }}
+      # Isolate conda's package/repodata cache per job to avoid a shared-cache
+      # race on the runner's NFS-mounted base install when jobs run concurrently.
+      CONDA_PKGS_DIRS: ${{ github.workspace }}/.conda_pkgs
+    steps:
+    - name: Clean workspace before checkout
+      run: |
+         echo "Cleaning old workspace data..."
+         ls -al $GITHUB_WORKSPACE || true
+         rm -rf $GITHUB_WORKSPACE/* || true
+         rm -rf $GITHUB_WORKSPACE/.[!.]* || true
+         echo "Workspace cleaned."
+         ls -al $GITHUB_WORKSPACE
+      shell: bash
+    - name: Verify user account
+      run: |
+        echo "Running as user: $(whoami)"
+        if [ "$(whoami)" != "z1aiebuild" ]; then
+          echo "::warning::Running as $(whoami) instead of expected z1aiebuild user"
+        fi
+
+    - name: Checkout repository
+      uses: actions/checkout@v6
+      with:
+       fetch-depth: 0
+    - name: Checkout PR tip commit
+      if: github.event_name == 'pull_request'
+      run: |
+       echo " Checking out PR tip commit..."
+       echo "Current commit: $(git rev-parse HEAD)"
+       echo "PR HEAD SHA: ${{ github.event.pull_request.head.sha }}"
+       git checkout ${{ github.event.pull_request.head.sha }}
+       echo " Now on commit: $(git rev-parse HEAD)"
+       echo "PR #${{ github.event.pull_request.number }} - ${{ github.event.pull_request.title }}"
+      shell: bash
+
+    - name: Set up build environment
+      run: |
+        echo "Setting up clang build environment"
+        echo "WORKSPACE=$GITHUB_WORKSPACE" >> $GITHUB_ENV
+        # Create a unique env name using workflow run ID and job ID to avoid conflicts
+        echo "CONDA_ENV_NAME=zendnnl_clang_${GITHUB_RUN_ID}_${GITHUB_JOB}" >> $GITHUB_ENV
+
+        # Debug path information
+        echo "Current directory: $(pwd)"
+        echo "Directory contents: $(ls -la)"
+
+        # Display build configuration
+        echo "Using Python version: ${{ env.PYTHON_VERSION }}"
+        echo "Using CMake version: ${{ env.CMAKE_VERSION }}"
+        echo "Using GTest filter: ${{ env.GTEST_FILTER }}"
+        echo "Using test iterations: ${{ env.TEST_ITERATIONS }}"
+        echo "Using clang path: ${{ env.CLANG_PATH }}"
+
+    - name: Setup Conda environment with CMake
+      run: |
+        # Source miniforge profile
+        source ~/.miniforge_profile
+
+        # Print Python version being used
+        echo "Creating Conda environment with Python $PYTHON_VERSION"
+
+        # Create a fresh conda environment
+        conda create -n $CONDA_ENV_NAME python=$PYTHON_VERSION -y
+
+        # Activate the environment
+        conda activate $CONDA_ENV_NAME
+
+        # Install specified CMake version in the conda environment
+        conda install -y cmake=$CMAKE_VERSION
+
+        # Verify Python and CMake versions
+        python --version
+        cmake --version
+      shell: bash
+
+    - name: Build ZenDNNL with Clang
+      run: |
+        # Source miniforge profile and activate conda environment
+        source ~/.miniforge_profile
+        conda activate $CONDA_ENV_NAME
+
+        # Debug directory structure
+        echo "Current directory: $(pwd)"
+        echo "Directory contents: $(ls -la)"
+
+        # Ensure we're using the conda-installed cmake
+        which cmake
+        cmake --version
+
+        # Verify the clang toolchain
+        "$CLANG_PATH/clang" --version
+        "$CLANG_PATH/clang++" --version
+
+        # Build ZenDNNL using the clang toolchain
+        mkdir -p build && cd build
+        cmake .. -DCMAKE_C_COMPILER=$CLANG_PATH/clang -DCMAKE_CXX_COMPILER=$CLANG_PATH/clang++ -DZENDNNL_BUILD_EXAMPLES=ON -DZENDNNL_BUILD_GTEST=ON
+        cmake --build . --target=all |& tee $WORKSPACE/clang_build_output.log
+      shell: bash
+
+    - name: Verify clang build output
+      run: |
+        echo "Verifying clang build output..."
+        if grep -F "Completed 'zendnnl'" "$WORKSPACE/clang_build_output.log" && \
+           grep -F "[100%] Built target zendnnl-examples" "$WORKSPACE/clang_build_output.log" && \
+           grep -F "[100%] Built target gtests" "$WORKSPACE/clang_build_output.log"; then
+          echo " ZenDNNL clang build passed!"
+        else
+          echo " ZenDNNL clang build failed!"
+          cat "$WORKSPACE/clang_build_output.log"
+          exit 1
+        fi
+      shell: bash
+
+    - name: Run gtests
+      run: |
+        # Source miniforge profile and activate conda environment
+        source ~/.miniforge_profile
+        conda activate $CONDA_ENV_NAME
+
+        # Move to the build directory
+        cd $WORKSPACE/build
+
+        echo "Running gtests with filter: $GTEST_FILTER and iterations: $TEST_ITERATIONS"
+
+        # Run the gtests with configurable parameters
+        ./install/gtests/gtests --gtest_filter=$GTEST_FILTER --test $TEST_ITERATIONS |& tee $WORKSPACE/clang_gtest_output.log
+
+        # Check for test failures
+        if grep -F -q "[  FAILED  ]" "$WORKSPACE/clang_gtest_output.log"; then
+          echo "ZenDNNL clang gtests failed!"
+          cat "$WORKSPACE/clang_gtest_output.log"
+          exit 1
+        else
+          echo "ZenDNNL clang gtests passed!"
+        fi
+
+        echo "Running ai_gtests with filter: presub"
+
+        # Run the ai_gtests with configurable parameters
+        ./install/gtests/gtests --ai_test_mode pre-sub --gtest_filter="AITests/*" |& tee $WORKSPACE/clang_ai_gtest_output.log
+
+        # Check for test failures
+        if grep -F -q "[  FAILED  ]" "$WORKSPACE/clang_ai_gtest_output.log"; then
+          echo "ZenDNNL clang ai_gtests failed!"
+          cat "$WORKSPACE/clang_ai_gtest_output.log"
+          exit 1
+        else
+          echo "ZenDNNL clang ai_gtests passed!"
+        fi
+
+      shell: bash
+
+    - name: Upload clang build logs
+      uses: actions/upload-artifact@v6
+      if: always()
+      with:
+        name: clang-build-logs
+        path: |
+          ${{ env.WORKSPACE }}/clang_build_output.log
+          ${{ env.WORKSPACE }}/clang_gtest_output.log
+          ${{ env.WORKSPACE }}/clang_ai_gtest_output.log
+        retention-days: 7
+
+    - name: Cleanup Conda environment
+      if: always()  # Run even if previous steps fail
+      run: |
+        source ~/.miniforge_profile
+        conda deactivate
+        conda env remove -n $CONDA_ENV_NAME -y
+        echo "Removed conda environment: $CONDA_ENV_NAME"
+      shell: bash
+
+    - name: Cleanup workspace
+      if: always()
+      run: |
+        echo "Cleaning up workspace..."
+        rm -rf $WORKSPACE/build
+        rm -f $WORKSPACE/clang_build_output.log
+        rm -f $WORKSPACE/clang_gtest_output.log
+        echo "Workspace cleanup completed"
+      shell: bash
+
   trigger-zenTorch:
     #needs: [Zendnnl_build_PR]
     runs-on: amd-zenai-arc-xsmall-dind
@@ -469,6 +673,9 @@ jobs:
       CMAKE_VERSION: ${{ github.event.inputs.cmake_version || '4.0.0' }}
       GTEST_FILTER: ${{ github.event.inputs.gtest_filter || '-AITests/*' }}
       TEST_ITERATIONS: ${{ github.event.inputs.test_iterations || '2' }}
+      # Isolate conda's package/repodata cache per job to avoid a shared-cache
+      # race on the runner's NFS-mounted base install when jobs run concurrently.
+      CONDA_PKGS_DIRS: ${{ github.workspace }}/.conda_pkgs
       ZENDNN_REF: ${{ github.event.inputs.zendnn_ref || github.event.client_payload.zendnn_ref || '' }}
       ZENDNNL_REF: ${{ github.event.inputs.zendnnl_ref || github.event.client_payload.zendnnl_ref || '' }}
    steps:
@@ -738,6 +945,9 @@ jobs:
       CMAKE_VERSION: ${{ github.event.inputs.cmake_version || '4.0.0' }}
       GTEST_FILTER: ${{ github.event.inputs.gtest_filter || '-AITests/*' }}
       TEST_ITERATIONS: ${{ github.event.inputs.test_iterations || '2' }}
+      # Isolate conda's package/repodata cache per job to avoid a shared-cache
+      # race on the runner's NFS-mounted base install when jobs run concurrently.
+      CONDA_PKGS_DIRS: ${{ github.workspace }}/.conda_pkgs
     
    steps:
     - name: Clean workspace before checkout
