@@ -42,7 +42,9 @@ macro(zendnnl_add_dependency )
 
   if(${_zad_INCLUDE_ONLY})
     add_library(zendnnl_${_zad_NAME}_deps INTERFACE IMPORTED GLOBAL)
-    #add_dependencies(zendnnl_${_zad_NAME}_deps ${_zad_DEPENDS})
+    if(DEFINED _zad_DEPENDS AND _zad_DEPENDS)
+      add_dependencies(zendnnl_${_zad_NAME}_deps ${_zad_DEPENDS})
+    endif()
 
     set_target_properties(zendnnl_${_zad_NAME}_deps
       PROPERTIES
@@ -50,7 +52,9 @@ macro(zendnnl_add_dependency )
   else()
 
     add_library(zendnnl_${_zad_NAME}_deps STATIC IMPORTED GLOBAL)
-    #add_dependencies(zendnnl_${_zad_NAME}_deps ${_zad_DEPENDS})
+    if(DEFINED _zad_DEPENDS AND _zad_DEPENDS)
+      add_dependencies(zendnnl_${_zad_NAME}_deps ${_zad_DEPENDS})
+    endif()
 
     set_target_properties(zendnnl_${_zad_NAME}_deps
       PROPERTIES
@@ -61,7 +65,9 @@ macro(zendnnl_add_dependency )
 
   add_library(${_zad_ALIAS} ALIAS zendnnl_${_zad_NAME}_deps)
 
-  list(APPEND ZNL_BYPRODUCTS "${ZENDNNL_${_ZAD_UNAME}_LIB_DIR}/${_zad_ARCHIVE_FILE}")
+  if(NOT ${_zad_INCLUDE_ONLY} AND DEFINED _zad_ARCHIVE_FILE AND NOT "${_zad_ARCHIVE_FILE}" STREQUAL "")
+    list(APPEND ZNL_BYPRODUCTS "${ZENDNNL_${_ZAD_UNAME}_LIB_DIR}/${_zad_ARCHIVE_FILE}")
+  endif()
 endmacro()
 
 macro(zendnnl_add_option )
@@ -77,6 +83,9 @@ macro(zendnnl_add_option )
   endif()
 
   if (NOT ${_zao_EXECLUDE_FROM_COMMAND_LIST})
-    list(APPEND ${_zao_COMMAND_LIST} "-D${_zao_NAME}:${_zao_TYPE}=${_zao_VALUE}")
+    # Child ExternalProject must receive the cache entry (integrators may set
+    # variables CACHE FORCE before include), not only the macro default VALUE.
+    set(_znl_ep_cmake_arg "$CACHE{${_zao_NAME}}")
+    list(APPEND ${_zao_COMMAND_LIST} "-D${_zao_NAME}:${_zao_TYPE}=${_znl_ep_cmake_arg}")
   endif()
 endmacro()
