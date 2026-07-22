@@ -105,12 +105,12 @@ void sequential_experts(
   // independent); cross_warm uses its own internal nr_align for the
   // regime-2 path.
   group_matmul_prepack::prepack_for_algo_1(
-      group_matmul_prepack::build_prepack_params(
-          weight, K, N, ldb, transB, is_weights_const, params, M,
-          get_grp_matmul_custom_kernel(),
-          num_threads, /*nr_align=*/0,
-          fused_act, act_dtype,
-          /*transA=*/&transA, /*alpha=*/&alpha, /*beta=*/&beta));
+    group_matmul_prepack::build_prepack_params(
+      weight, K, N, ldb, transB, is_weights_const, params, M,
+      get_grp_matmul_custom_kernel(),
+      num_threads, /*nr_align=*/0,
+      fused_act, act_dtype,
+      /*transA=*/&transA, /*alpha=*/&alpha, /*beta=*/&beta));
 
   matmul_algo_t algo = resolve_kernel();
 
@@ -120,7 +120,9 @@ void sequential_experts(
     // allows null for M==0 because dispatch is expected to short-circuit
     // empty rows); skip them so the slice/activation calls never
     // dereference null.
-    if (M[i] <= 0) continue;
+    if (M[i] <= 0) {
+      continue;
+    }
     execute_expert_slice(layout[i], transA[i], transB[i],
                          M[i], N[i], K[i], alpha[i],
                          src[i], lda[i], weight[i], ldb[i],
@@ -128,8 +130,8 @@ void sequential_experts(
                          is_weights_const[i], num_threads, params[i], algo);
     // Fused activation: dst[i] is hot in L3 from the GEMM that just finished.
     if (fused_act != grp_matmul_gated_act_t::none) {
-        apply_gated_act_inplace(fused_act, dst[i], 0, M[i],
-                                N[i], ldc[i], act_dtype);
+      apply_gated_act_inplace(fused_act, dst[i], 0, M[i],
+                              N[i], ldc[i], act_dtype);
     }
   }
 }
@@ -159,7 +161,9 @@ void parallel_multilevel(
   // ("multilevel_concurrent" vs "multilevel_rounds") so the post-exec
   // [GRP_MATMUL.CALL] line reflects the real path.  No-op when nullptr.
   auto set_ml_mode = [&](const char *s) {
-    if (gemm_mode_out != nullptr) *gemm_mode_out = s;
+    if (gemm_mode_out != nullptr) {
+      *gemm_mode_out = s;
+    }
   };
   // Default to SKIP so a no-op early return (empty call / num_threads<=0)
   // reports exec_algo=0 rather than a real ALGO-4 run; the two regime
@@ -183,12 +187,12 @@ void parallel_multilevel(
   // ALGO 3 decode path when CUSTOM_KERNEL=0 (see the comment on the
   // ALGO 1 call site for the full rationale).
   group_matmul_prepack::prepack_for_algo_4(
-      group_matmul_prepack::build_prepack_params(
-          weight, K, N, ldb, transB, is_weights_const, params, M,
-          get_grp_matmul_custom_kernel(),
-          num_threads, /*nr_align=*/0,
-          fused_act, act_dtype,
-          /*transA=*/&transA, /*alpha=*/&alpha, /*beta=*/&beta));
+    group_matmul_prepack::build_prepack_params(
+      weight, K, N, ldb, transB, is_weights_const, params, M,
+      get_grp_matmul_custom_kernel(),
+      num_threads, /*nr_align=*/0,
+      fused_act, act_dtype,
+      /*transA=*/&transA, /*alpha=*/&alpha, /*beta=*/&beta));
 
   matmul_algo_t algo = resolve_kernel();
 
@@ -245,8 +249,8 @@ void parallel_multilevel(
                              is_weights_const[i], thr_per_op[i],
                              params[i], algo);
         if (fused_act != grp_matmul_gated_act_t::none) {
-            apply_gated_act_inplace(fused_act, dst[i], 0, M[i],
-                                    N[i], ldc[i], act_dtype);
+          apply_gated_act_inplace(fused_act, dst[i], 0, M[i],
+                                  N[i], ldc[i], act_dtype);
         }
       }
     }
@@ -277,8 +281,8 @@ void parallel_multilevel(
                                bias[e], beta[e], dst[e], ldc[e],
                                is_weights_const[e], ccd_size, params[e], algo);
           if (fused_act != grp_matmul_gated_act_t::none) {
-              apply_gated_act_inplace(fused_act, dst[e], 0, M[e],
-                                      N[e], ldc[e], act_dtype);
+            apply_gated_act_inplace(fused_act, dst[e], 0, M[e],
+                                    N[e], ldc[e], act_dtype);
           }
         }
       }
@@ -325,12 +329,12 @@ void parallel_per_expert(
   // ALGO 3 decode path when CUSTOM_KERNEL=0 (see the comment on the
   // ALGO 1 call site for the full rationale).
   group_matmul_prepack::prepack_for_algo_5(
-      group_matmul_prepack::build_prepack_params(
-          weight, K, N, ldb, transB, is_weights_const, params, M,
-          get_grp_matmul_custom_kernel(),
-          num_threads, /*nr_align=*/0,
-          fused_act, act_dtype,
-          /*transA=*/&transA, /*alpha=*/&alpha, /*beta=*/&beta));
+    group_matmul_prepack::build_prepack_params(
+      weight, K, N, ldb, transB, is_weights_const, params, M,
+      get_grp_matmul_custom_kernel(),
+      num_threads, /*nr_align=*/0,
+      fused_act, act_dtype,
+      /*transA=*/&transA, /*alpha=*/&alpha, /*beta=*/&beta));
 
   matmul_algo_t algo = resolve_kernel();
   scoped_active_levels guard(1);
@@ -341,15 +345,17 @@ void parallel_per_expert(
     // null src/dst/weight pointers; skip them so the slice/activation calls
     // never dereference null (matches the M==0 guards in the sequential /
     // m-tile / n-tile executors).
-    if (M[i] <= 0) continue;
+    if (M[i] <= 0) {
+      continue;
+    }
     execute_expert_slice(layout[i], transA[i], transB[i],
                          M[i], N[i], K[i], alpha[i],
                          src[i], lda[i], weight[i], ldb[i],
                          bias[i], beta[i], dst[i], ldc[i],
                          is_weights_const[i], 1, params[i], algo);
     if (fused_act != grp_matmul_gated_act_t::none) {
-        apply_gated_act_inplace(fused_act, dst[i], 0, M[i],
-                                N[i], ldc[i], act_dtype);
+      apply_gated_act_inplace(fused_act, dst[i], 0, M[i],
+                              N[i], ldc[i], act_dtype);
     }
   }
 }
@@ -530,10 +536,16 @@ static bool check_n_tile_extra(
   // The column slice is a contiguous `n_tile`-long sub-array —
   // handled by `offset_quant_by_col` in `do_tile`.
   auto is_per_channel_wei =
-      [](const matmul_quantization_params_t::matmul_quant_t &q) -> bool {
-    if (q.buff == nullptr) return false;
-    if (q.dims.size() == 1 && q.dims[0] > 1) return true;
-    if (q.dims.size() == 2 && q.dims[0] == 1 && q.dims[1] > 1) return true;
+  [](const matmul_quantization_params_t::matmul_quant_t &q) -> bool {
+    if (q.buff == nullptr) {
+      return false;
+    }
+    if (q.dims.size() == 1 && q.dims[0] > 1) {
+      return true;
+    }
+    if (q.dims.size() == 2 && q.dims[0] == 1 && q.dims[1] > 1) {
+      return true;
+    }
     return false;
   };
 
@@ -549,11 +561,11 @@ static bool check_n_tile_extra(
   // after pre-quantizing to S8, so `buff != nullptr` and the same
   // per-token dims describe the ready-to-use scale buffer.
   auto is_per_token_dyn_src =
-      [](const matmul_quantization_params_t::matmul_quant_t &q,
-         int M_expert) -> bool {
+    [](const matmul_quantization_params_t::matmul_quant_t &q,
+  int M_expert) -> bool {
     return q.dims.size() == 2
-        && q.dims[0] == static_cast<int64_t>(M_expert)
-        && q.dims[1] == 1;
+    && q.dims[0] == static_cast<int64_t>(M_expert)
+    && q.dims[1] == 1;
   };
 
   // Per-group source side: dims `{M[i], G}` with G > 1 (one scale per
@@ -563,11 +575,11 @@ static bool check_n_tile_extra(
   // this gate either as dynamic (`buff == nullptr`, hoisted by flat_n_tile)
   // or grouped-pre-quantized S8 (`buff != nullptr`).
   auto is_per_group_src =
-      [](const matmul_quantization_params_t::matmul_quant_t &q,
-         int M_expert) -> bool {
+    [](const matmul_quantization_params_t::matmul_quant_t &q,
+  int M_expert) -> bool {
     return q.dims.size() == 2
-        && q.dims[0] == static_cast<int64_t>(M_expert)
-        && q.dims[1] > 1;
+    && q.dims[0] == static_cast<int64_t>(M_expert)
+    && q.dims[1] > 1;
   };
 
   // Per-group weight side: dims `{G, N}` with G > 1 and N > 1, non-null
@@ -575,9 +587,9 @@ static bool check_n_tile_extra(
   // {G, N} scale into a contiguous {G, n_tile} per-thread scratch for the
   // AOCL sym-quant GEMM.
   auto is_per_group_wei =
-      [](const matmul_quantization_params_t::matmul_quant_t &q) -> bool {
+  [](const matmul_quantization_params_t::matmul_quant_t &q) -> bool {
     return q.buff != nullptr && q.dims.size() == 2
-        && q.dims[0] > 1 && q.dims[1] > 1;
+    && q.dims[0] > 1 && q.dims[1] > 1;
   };
 
   // Same active-range constraint as `check_m_tile_safe` above —
@@ -591,7 +603,9 @@ static bool check_n_tile_extra(
     // veto ALGO 3 for the WHOLE call — even though every ACTIVE expert is
     // a valid grouped-s8 / dynamic-INT8 shape.  Skip them (matches the
     // first-active reference in `check_m_tile_safe`).
-    if (M[i] == 0) continue;
+    if (M[i] == 0) {
+      continue;
+    }
     const auto &qp = params[i].quant_params;
 
     // Detect any quant intent on this expert.  If every quant field
@@ -599,20 +613,31 @@ static bool check_n_tile_extra(
     // non-quantised call and there's nothing to gate — ALGO 3 is
     // free to run.
     const bool any_quant =
-        qp.wei_scale.buff != nullptr ||
-        qp.wei_zp.buff   != nullptr ||
-        qp.src_scale.buff != nullptr ||
-        qp.src_zp.buff   != nullptr ||
-        params[i].dynamic_quant;
+      qp.wei_scale.buff != nullptr ||
+      qp.wei_zp.buff   != nullptr ||
+      qp.src_scale.buff != nullptr ||
+      qp.src_zp.buff   != nullptr ||
+      params[i].dynamic_quant;
 
     if (any_quant) {
+      // W4A8 (s4 weight) is not supported on the N-tile path.
+      // The pre-OMP s4→s8 hoist in flat_n_tile mutates the caller's
+      // params (dtypes.wei, src_scale) which frameworks reuse across
+      // decode iterations — causing garbled output on the second call.
+      // Fall back to ALGO 1 where run_dlp handles W4A8 end-to-end
+      // via w4a8ReorderAndCacheWeightsAocl without caller mutation.
+      if (params[i].dtypes.wei == data_type_t::s4 ||
+          params[i].dtypes.wei == data_type_t::u4) {
+        return false;
+      }
+
       // Source side: accept either (a) dynamic BF16/F32 input that
       // flat_n_tile will hoist, or (b) already grouped-quantized S8
       // input with a ready per-token source scale buffer.
       const bool grouped_s8_src =
-          !params[i].dynamic_quant &&
-          params[i].dtypes.src == data_type_t::s8 &&
-          qp.src_scale.buff != nullptr;
+        !params[i].dynamic_quant &&
+        params[i].dtypes.src == data_type_t::s8 &&
+        qp.src_scale.buff != nullptr;
       if (!params[i].dynamic_quant && !grouped_s8_src) {
         return false;
       }
@@ -648,10 +673,13 @@ static bool check_n_tile_extra(
       if (!wei_per_channel && !wei_per_group) {
         return false;
       }
-      // Granularity must match across src and wei: per-group K-grouping on
-      // one side with per-channel/per-token on the other is not a coherent
-      // sym-quant pairing.  Reject the mismatch → ALGO 1.
-      if (src_per_group != wei_per_group) {
+      // Granularity pairing rules for the remaining non-W4A8 quant paths:
+      //   per-group src + per-group wei   -> accepted
+      //   per-token src + per-channel wei -> accepted
+      //   per-token src + per-group wei   -> accepted; do_tile repacks
+      //      wei_scale to {G, n_tile}, while source scale is N-independent
+      //   per-group src + per-channel wei -> rejected (incoherent)
+      if (src_per_group && !wei_per_group) {
         return false;
       }
       // Per-group weight is column-sliced by a `{G, n_tile}` repack in
@@ -786,7 +814,7 @@ static int auto_select_algo(
   bool n_tile_safe) {
   (void)N;        // Kept in the signature for symmetry with the M-tile
   (void)K;        // / N-tile safety helpers and to ease future heuristic
-                  // refinements that re-introduce shape/dtype tests.
+  // refinements that re-introduce shape/dtype tests.
 
   const int num_ops = static_cast<int>(M.size());
   if (num_threads <= 1 || num_ops == 0) {
@@ -823,8 +851,8 @@ static int auto_select_algo(
     total_experts = static_cast<int>(params[0].total_matmul);
   }
   const bool phase_env_pinned = is_decode
-      ? grp_matmul_auto_decode_algo_is_set()
-      : grp_matmul_auto_prompt_algo_is_set();
+                                ? grp_matmul_auto_decode_algo_is_set()
+                                : grp_matmul_auto_prompt_algo_is_set();
   // DECODE-ONLY now: ALGO 2 (flat_m_tile) is the measured Mixtral-class
   // DECODE winner.  For PROMPT, the few-experts case is handled by the
   // prompt M-tile regime routing (Rule 0.7) below — which may peel a
@@ -846,9 +874,12 @@ static int auto_select_algo(
   //  ≤ num_threads on any real host, so active_ops ≤ num_threads.)
   if (is_decode && total_experts <= kFewExpertsAlgo2Pref && !phase_env_pinned) {
     switch (classify_m_tile_regime(M, num_threads)) {
-      case m_tile_regime::kManyExperts: return 5;
-      case m_tile_regime::kWideN:       return 1;
-      case m_tile_regime::kMTile:       return m_tile_safe ? 2 : 1;
+    case m_tile_regime::kManyExperts:
+      return 5;
+    case m_tile_regime::kWideN:
+      return 1;
+    case m_tile_regime::kMTile:
+      return m_tile_safe ? 2 : 1;
     }
   }
 
@@ -887,8 +918,10 @@ static int auto_select_algo(
   // `auto_select_algo`, to override a specific call).
   if (is_decode) {
     const int active_ops =
-        static_cast<int>(std::count_if(M.begin(), M.end(),
-                                        [](int m) { return m > 0; }));
+      static_cast<int>(std::count_if(M.begin(), M.end(),
+    [](int m) {
+      return m > 0;
+    }));
     if (active_ops > num_threads) {
       // DecodeDynamic override for the experts-exceed-threads decode
       // regime.  When the N-tile strategy is DecodeDynamic-capable —
@@ -940,9 +973,12 @@ static int auto_select_algo(
   // so the routing is parity-preserving.
   if (!is_decode && get_grp_matmul_auto_prompt_algo() == 2) {
     switch (classify_m_tile_regime(M, num_threads)) {
-      case m_tile_regime::kManyExperts: return 5;
-      case m_tile_regime::kWideN:       return 1;
-      case m_tile_regime::kMTile:       return m_tile_safe ? 2 : 1;
+    case m_tile_regime::kManyExperts:
+      return 5;
+    case m_tile_regime::kWideN:
+      return 1;
+    case m_tile_regime::kMTile:
+      return m_tile_safe ? 2 : 1;
     }
   }
 
@@ -959,11 +995,15 @@ static int auto_select_algo(
   // would be confusing.  Operators see the clamp via the
   // `[GRP_MATMUL.ALGO]` line's `chosen=ALGO_X reason=auto_phase_env_clamp`.
   const int phase_algo = is_decode
-      ? get_grp_matmul_auto_decode_algo()
-      : get_grp_matmul_auto_prompt_algo();
+                         ? get_grp_matmul_auto_decode_algo()
+                         : get_grp_matmul_auto_prompt_algo();
   if (phase_algo >= 1 && phase_algo <= 5) {
-    if (phase_algo == 2 && !m_tile_safe) return 1;
-    if (phase_algo == 3 && !n_tile_safe) return 1;
+    if (phase_algo == 2 && !m_tile_safe) {
+      return 1;
+    }
+    if (phase_algo == 3 && !n_tile_safe) {
+      return 1;
+    }
     return phase_algo;
   }
 
@@ -1030,7 +1070,7 @@ int select_grp_matmul_algo(
   const int num_ops_eff = static_cast<int>(M.size());
   const bool m_tile_safe = check_m_tile_safe(layout, M, params, num_ops_eff);
   const bool n_tile_safe = m_tile_safe
-      && check_n_tile_extra(M, params, num_ops_eff);
+                           && check_n_tile_extra(M, params, num_ops_eff);
 
   // Manual override: ZENDNNL_GRP_MATMUL_ALGO=1..5.
   //   ALGO 2 (M-tile): needs m_tile_safe (row-major, uniform dtypes).
@@ -1053,13 +1093,13 @@ int select_grp_matmul_algo(
       static const bool s_log = apilog_warning_enabled();
       if (s_log) {
         apilog_warning(
-            "[GRP_MATMUL.ALGO WARN] env_algo=2 (flat_m_tile) "
-            "REJECTED: m_tile unsafe (non-row-major, per-expert dtype "
-            "mismatch, packed B, softmax/pooling post-op, or "
-            "dynamic-quant with non-row-local src granularity — "
-            "src_scale.dims[0] must equal the per-expert M[i], "
-            "including the M[i]=1 decode case `{1, 1}`). "
-            "FALLBACK algo=1 (sequential_experts).");
+          "[GRP_MATMUL.ALGO WARN] env_algo=2 (flat_m_tile) "
+          "REJECTED: m_tile unsafe (non-row-major, per-expert dtype "
+          "mismatch, packed B, softmax/pooling post-op, or "
+          "dynamic-quant with non-row-local src granularity — "
+          "src_scale.dims[0] must equal the per-expert M[i], "
+          "including the M[i]=1 decode case `{1, 1}`). "
+          "FALLBACK algo=1 (sequential_experts).");
       }
       algo = 1;
     }
@@ -1067,20 +1107,20 @@ int select_grp_matmul_algo(
       static const bool s_log = apilog_warning_enabled();
       if (s_log) {
         apilog_warning(
-            "[GRP_MATMUL Level2 dispatch WARN] env_algo=3 (flat_n_tile) "
-            "REJECTED: n_tile unsafe.  Common rejection reasons: "
-            "non-row-major layout, per-expert dtype mismatch, "
-            "buffer post-op, or a quant configuration outside the "
-            "per-token dynamic-INT8 scope.  ALGO 3 currently "
-            "accepts ONE quant shape: `dynamic_quant=true` with "
-            "`{M[i], 1}` src (the single-row decode case "
-            "`{1, 1}` when M[i]=1 is included) + per-channel "
-            "`{1, N}` wei (statically quantised wei buff supplied "
-            "by caller).  Static src, per-tensor src/wei, "
-            "per-group `{M[i], G}` src, per-group `{G, N}` wei, "
-            "and pure WOQ workloads stay on ALGO 1.  See "
-            "`check_n_tile_extra` SCOPE NOTE for the full table.  "
-            "FALLBACK algo=1 (sequential_experts).");
+          "[GRP_MATMUL Level2 dispatch WARN] env_algo=3 (flat_n_tile) "
+          "REJECTED: n_tile unsafe.  Common rejection reasons: "
+          "non-row-major layout, per-expert dtype mismatch, "
+          "buffer post-op, or a quant configuration outside the "
+          "per-token dynamic-INT8 scope.  ALGO 3 currently "
+          "accepts ONE quant shape: `dynamic_quant=true` with "
+          "`{M[i], 1}` src (the single-row decode case "
+          "`{1, 1}` when M[i]=1 is included) + per-channel "
+          "`{1, N}` wei (statically quantised wei buff supplied "
+          "by caller).  Static src, per-tensor src/wei, "
+          "per-group `{M[i], G}` src, per-group `{G, N}` wei, "
+          "and pure WOQ workloads stay on ALGO 1.  See "
+          "`check_n_tile_extra` SCOPE NOTE for the full table.  "
+          "FALLBACK algo=1 (sequential_experts).");
       }
       algo = 1;
     }
@@ -1195,25 +1235,26 @@ bool group_matmul_run_parallel_dispatch(
       // deterministic verdict from process-constant env, so concurrent
       // cold-start calls converge); only the log lines are one-shot.
       const bool mixed_eligible =
-          get_grp_matmul_prepack()
-          && get_grp_matmul_cross_warm()
-          && get_grp_matmul_custom_kernel()
-          && get_grp_matmul_fused_moe_tight() != 0
-          && matmul_config_t::instance().get_lru_cache_capacity()
-                 == std::numeric_limits<uint32_t>::max();
+        get_grp_matmul_prepack()
+        && get_grp_matmul_cross_warm()
+        && get_grp_matmul_custom_kernel()
+        && get_grp_matmul_fused_moe_tight() != 0
+        && matmul_config_t::instance().get_lru_cache_capacity()
+        == std::numeric_limits<uint32_t>::max();
       if (mixed_eligible) {
         matmul_config_t::instance().set_grp_auto_mixed_inplace(true);
         static std::atomic<bool> s_wc2_mixed_announced{false};
         if (!s_wc2_mixed_announced.exchange(true, std::memory_order_relaxed)) {
           apilog_info(
-              "[GRP_MATMUL.WEIGHT_CACHE] weight_cache_type=2 AUTO "
-              "mixed-in-place ENABLED (prepack+cross_warm+custom_kernel on, "
-              "unlimited LRU capacity): AOCL full-weight prompt reorder "
-              "mutates the weight "
-              "buffer in place; CK / AOCL per-tile decode stay out-of-place, "
-              "pre-warmed from raw weights before the mutation.");
+            "[GRP_MATMUL.WEIGHT_CACHE] weight_cache_type=2 AUTO "
+            "mixed-in-place ENABLED (prepack+cross_warm+custom_kernel on, "
+            "unlimited LRU capacity): AOCL full-weight prompt reorder "
+            "mutates the weight "
+            "buffer in place; CK / AOCL per-tile decode stay out-of-place, "
+            "pre-warmed from raw weights before the mutation.");
         }
-      } else {
+      }
+      else {
         // Store weight_cache=1 before clearing the mixed-mode flag so THIS
         // thread's own later reads never see (weight_cache==2, mixed false).
         // NOTE: both are RELAXED atomics on independent locations, so this
@@ -1231,15 +1272,16 @@ bool group_matmul_run_parallel_dispatch(
         static std::atomic<bool> s_wc2_downgrade_warned{false};
         if (!s_wc2_downgrade_warned.exchange(true, std::memory_order_relaxed)) {
           apilog_warning(
-              "[GRP_MATMUL.WEIGHT_CACHE] weight_cache_type=2 (in-place) is "
-              "unsafe under AUTO scheduling (env_algo=0) without "
-              "prepack+cross_warm+custom_kernel and unlimited LRU capacity.  "
-              "Downgrading "
-              "process-wide to out-of-place (weight_cache_type=1) for the "
-              "rest of the run; kernel selection unchanged.");
+            "[GRP_MATMUL.WEIGHT_CACHE] weight_cache_type=2 (in-place) is "
+            "unsafe under AUTO scheduling (env_algo=0) without "
+            "prepack+cross_warm+custom_kernel and unlimited LRU capacity.  "
+            "Downgrading "
+            "process-wide to out-of-place (weight_cache_type=1) for the "
+            "rest of the run; kernel selection unchanged.");
         }
       }
-    } else {
+    }
+    else {
       // Pinned ALGO (1..5) under WC=2: a single reorder layout owns each
       // weight buffer, so the backends' normal in-place path is already
       // safe.  Mixed mode is AUTO-only — clear the flag deterministically
@@ -1279,11 +1321,11 @@ bool group_matmul_run_parallel_dispatch(
   // (CK-on AND tight caller).  Wide non-CK silu/gelu falls through
   // to the dispatcher's separate-pass post-pass.
   const bool wide_fuse_supported =
-      (fused_act == grp_matmul_gated_act_t::swiglu_oai_mul)
-      && get_grp_n_tile_fused_act();
+    (fused_act == grp_matmul_gated_act_t::swiglu_oai_mul)
+    && get_grp_n_tile_fused_act();
   const bool a3_fuses = (use_algo == 3)
                         && a3_can_fuse_act(fused_act,
-                                           get_grp_matmul_custom_kernel())
+                            get_grp_matmul_custom_kernel())
                         && (caller_layout_tight || wide_fuse_supported);
   const bool act_fused = a3_fuses
                          || ((use_algo != 3) && (fused_act != grp_matmul_gated_act_t::none));
@@ -1315,11 +1357,14 @@ bool group_matmul_run_parallel_dispatch(
     // wei/expert(MB) telemetry below is unaffected by the choice.
     size_t rep = 0;
     for (size_t i = 0; i < M.size() && i < params.size(); ++i) {
-      if (M[i] > 0) { rep = i; break; }
+      if (M[i] > 0) {
+        rep = i;
+        break;
+      }
     }
     const size_t wei_elem_b = size_of(params[rep].dtypes.wei);
     const size_t wei_per_expert_mb =
-        (static_cast<size_t>(max_K_v) * max_N_v * wei_elem_b) >> 20;
+      (static_cast<size_t>(max_K_v) * max_N_v * wei_elem_b) >> 20;
     // Phase + per-phase env values for telemetry.  The phase
     // classification mirrors `auto_select_algo`'s phase gate so the
     // log reflects the routing decision the planner actually made.
@@ -1327,7 +1372,7 @@ bool group_matmul_run_parallel_dispatch(
     const int phase_env_prompt = get_grp_matmul_auto_prompt_algo();
     const int phase_env_decode = get_grp_matmul_auto_decode_algo();
     const int phase_env_active = is_decode ? phase_env_decode
-                                           : phase_env_prompt;
+                                 : phase_env_prompt;
     // Reason hierarchy — surfaces which gate drove the chosen ALGO.
     // ORDER MUST MIRROR `auto_select_algo`'s precedence so the log
     // line reflects the actual decision path:
@@ -1358,19 +1403,26 @@ bool group_matmul_run_parallel_dispatch(
     const char *reason = nullptr;
     if (env_algo >= 1 && env_algo <= 5) {
       reason = (env_algo == use_algo) ? "env_ok" : "env_fallback";
-    } else if (num_threads <= 1 || M.empty()) {
+    }
+    else if (num_threads <= 1 || M.empty()) {
       reason = "auto_single_thread";
-    } else if (static_cast<int>(M.size()) > kNTilePlanMaxExperts) {
+    }
+    else if (static_cast<int>(M.size()) > kNTilePlanMaxExperts) {
       reason = "auto_rule0_capacity";
-    } else if (is_decode &&
-               static_cast<int>(std::count_if(
-                   M.begin(), M.end(), [](int m) { return m > 0; }))
-                   > num_threads) {
+    }
+    else if (is_decode &&
+             static_cast<int>(std::count_if(
+    M.begin(), M.end(), [](int m) {
+    return m > 0;
+  }))
+  > num_threads) {
       reason = "auto_decode_ops_gt_threads";
-    } else if (phase_env_active >= 1 && phase_env_active <= 5) {
+    }
+    else if (phase_env_active >= 1 && phase_env_active <= 5) {
       reason = (phase_env_active == use_algo) ? "auto_phase_env"
-                                              : "auto_phase_env_clamp";
-    } else {
+               : "auto_phase_env_clamp";
+    }
+    else {
       reason = "auto_rule_legacy";
     }
     // CK eligibility hint: a single boolean that combines the
@@ -1391,11 +1443,11 @@ bool group_matmul_run_parallel_dispatch(
     const int log_custom_kernel_int8 = get_grp_matmul_custom_kernel_int8();
     // BF16 family hint — same gate as before.
     const bool ck_hint_bf16 =
-        (use_algo == 3)
-        && log_custom_kernel
-        && (params[rep].dtypes.src == data_type_t::bf16)
-        && (params[rep].dtypes.wei == data_type_t::bf16)
-        && !params[rep].dynamic_quant;
+      (use_algo == 3)
+      && log_custom_kernel
+      && (params[rep].dtypes.src == data_type_t::bf16)
+      && (params[rep].dtypes.wei == data_type_t::bf16)
+      && !params[rep].dynamic_quant;
     // B.6 hardening — DQ-INT8 family hint.  Mirrors the upstream
     // `ck_eligible_int8` predicate (in prepack/prepack.cpp) so the
     // PLAN apilog surfaces both regimes.  Evaluating either family
@@ -1414,24 +1466,24 @@ bool group_matmul_run_parallel_dispatch(
     //      grouped decode path as ck_family=none / dynamic_quant=no even
     //      though CK runs on 100% of tiles.
     const bool ck_int8_shapes =
-        (use_algo == 3)
-        && log_custom_kernel
-        && log_custom_kernel_int8
-        && (params[rep].dtypes.wei == data_type_t::s8)
-        && (params[rep].dtypes.dst == data_type_t::bf16)
-        && (params[rep].dtypes.compute == data_type_t::s8
-            || params[rep].dtypes.compute == data_type_t::u8);
+      (use_algo == 3)
+      && log_custom_kernel
+      && log_custom_kernel_int8
+      && (params[rep].dtypes.wei == data_type_t::s8)
+      && (params[rep].dtypes.dst == data_type_t::bf16)
+      && (params[rep].dtypes.compute == data_type_t::s8
+          || params[rep].dtypes.compute == data_type_t::u8);
     const bool ck_hint_int8 =
-        ck_int8_shapes
-        && ((params[rep].dynamic_quant
-             && params[rep].dtypes.src == data_type_t::bf16)
-            || (params[rep].dtypes.src == data_type_t::s8
-                && params[rep].quant_params.src_scale.buff != nullptr));
+      ck_int8_shapes
+      && ((params[rep].dynamic_quant
+           && params[rep].dtypes.src == data_type_t::bf16)
+          || (params[rep].dtypes.src == data_type_t::s8
+              && params[rep].quant_params.src_scale.buff != nullptr));
     const bool ck_hint = ck_hint_bf16 || ck_hint_int8;
     const char *ck_family =
-        ck_hint_bf16  ? "bf16"
+      ck_hint_bf16  ? "bf16"
       : ck_hint_int8  ? (params[rep].dtypes.compute == data_type_t::u8
-                            ? "int8_asym" : "int8_sym")
+                         ? "int8_asym" : "int8_sym")
       :                 "none";
     // SELECTION record (emitted BEFORE the executor runs): `chosen=ALGO_X`
     // is the algo the selector picked, with `reason` explaining the gate.
@@ -1442,27 +1494,27 @@ bool group_matmul_run_parallel_dispatch(
     // `exec_algo=` (the real 1..5).  Compare those two lines to see any
     // selection-vs-execution divergence.
     apilog_info(
-        "[GRP_MATMUL.ALGO] chosen=ALGO_", use_algo,
-        " env_algo=", env_algo,
-        " reason=", reason,
-        " phase=", (is_decode ? "decode" : "prompt"),
-        " auto_prompt_env=", phase_env_prompt,
-        " auto_decode_env=", phase_env_decode,
-        " act=", act_name(fused_act),
-        " act_fused=", (act_fused ? "yes" : "no"),
-        " ck_eligible_hint=", (ck_hint ? "yes" : "no"),
-        " ck_family=", ck_family,
-        " dynamic_quant=", (params[rep].dynamic_quant ? "yes" : "no"),
-        " num_ops=", static_cast<int>(M.size()),
-        " num_threads=", num_threads,
-        " max_M=", max_M_v,
-        " max_N=", max_N_v,
-        " max_K=", max_K_v,
-        " wei/expert(MB)=", wei_per_expert_mb,
-        " wide_N=", (max_N_v > max_K_v ? "yes" : "no"),
-        " many_experts=",
-        (static_cast<int>(M.size()) >= 16 ? "yes" : "no"),
-        " caller_tight=", (caller_layout_tight ? "yes" : "no"));
+      "[GRP_MATMUL.ALGO] chosen=ALGO_", use_algo,
+      " env_algo=", env_algo,
+      " reason=", reason,
+      " phase=", (is_decode ? "decode" : "prompt"),
+      " auto_prompt_env=", phase_env_prompt,
+      " auto_decode_env=", phase_env_decode,
+      " act=", act_name(fused_act),
+      " act_fused=", (act_fused ? "yes" : "no"),
+      " ck_eligible_hint=", (ck_hint ? "yes" : "no"),
+      " ck_family=", ck_family,
+      " dynamic_quant=", (params[rep].dynamic_quant ? "yes" : "no"),
+      " num_ops=", static_cast<int>(M.size()),
+      " num_threads=", num_threads,
+      " max_M=", max_M_v,
+      " max_N=", max_N_v,
+      " max_K=", max_K_v,
+      " wei/expert(MB)=", wei_per_expert_mb,
+      " wide_N=", (max_N_v > max_K_v ? "yes" : "no"),
+      " many_experts=",
+      (static_cast<int>(M.size()) >= 16 ? "yes" : "no"),
+      " caller_tight=", (caller_layout_tight ? "yes" : "no"));
   }
 
   auto set_mode = [&](const char *s) {
@@ -1485,7 +1537,9 @@ bool group_matmul_run_parallel_dispatch(
   // `!return_value`; with no active rows the dst slots may be null by
   // contract, so a separate pass would dereference null.  Reporting the
   // no-op as "fused" makes every caller skip that post-pass.
-  if (std::none_of(M.begin(), M.end(), [](int m) { return m > 0; })) {
+  if (std::none_of(M.begin(), M.end(), [](int m) {
+  return m > 0;
+})) {
     set_mode("skip");
     return true;
   }

@@ -90,6 +90,7 @@ int main() {
      */
     group_matmul_fp32_example();
     group_matmul_bf16_example();
+    group_matmul_moe_w4a8_example();
     group_matmul_moe_postop_example();
     group_matmul_gated_act_example();
     group_matmul_fused_moe_example();

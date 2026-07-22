@@ -1,0 +1,51 @@
+# W4A8 (s4 weights, bf16 activations) per-group MoE benchmark configs.
+#
+# Format: num_ops, M, K, N, iters, src_dt:wei_dt:dst_dt, is_weights_const,
+#         warmup, moe_topk, gated_act, N_down, use_internal_alloc,
+#         total_experts, dynamic_quant, compute_dt, group_size
+#
+# W4A8 requires: dynamic_quant=1, compute_dt=s8 (symmetric-only),
+# group_size > 0 (per-group quantization), wei_dt=s4.
+
+# ─── Qwen3-style MoE (K=4096, group_size=128) ───────────────────────────
+
+# Plain expert GEMM, 8 experts, decode (M=1)
+8, 1, 4096, 4096, 200, bf16:s4:bf16, true, 50, 0, 0, 0, 0, 0, 1, s8, 128
+
+# Plain expert GEMM, 8 experts, decode (M=4)
+8, 4, 4096, 4096, 200, bf16:s4:bf16, true, 50, 0, 0, 0, 0, 0, 1, s8, 128
+
+# Plain expert GEMM, 8 experts, decode (M=7, typical Qwen3 top-k routing)
+8, 7, 4096, 4096, 200, bf16:s4:bf16, true, 50, 0, 0, 0, 0, 0, 1, s8, 128
+
+# MoE with topk=2, 8 experts, decode
+8, 4, 4096, 14336, 200, bf16:s4:bf16, true, 50, 2, 0, 0, 0, 0, 1, s8, 128
+
+# MoE with topk=2, silu_and_mul activation (fused gate+up)
+8, 4, 4096, 28672, 200, bf16:s4:bf16, true, 50, 2, 1, 0, 0, 0, 1, s8, 128
+
+# ─── Prepack-extras: 8 firing in a 64-expert pool ────────────────────────
+
+# Exercises prepack W4A8 cache warming for all 64 expert slots.
+8, 7, 4096, 4096, 200, bf16:s4:bf16, true, 50, 0, 0, 0, 0, 64, 1, s8, 128
+
+# ─── group_size=32 (GGML Q8_0-like grouping) ────────────────────────────
+
+8, 4, 4096, 14336, 200, bf16:s4:bf16, true, 50, 2, 0, 0, 0, 0, 1, s8, 32
+
+# ─── Fused MoE W4A8: gate+up → silu_and_mul → down_proj ──────────────────
+# Qwen3-style: K=2048, N_gate_up=1536 (N/2=768=DIM), N_down=2048
+
+# Fused W4A8, 8 experts, decode (M=4), legacy alloc
+8, 4, 2048, 1536, 100, bf16:s4:bf16, true, 20, 2, 1, 2048, 0, 0, 1, s8, 128
+
+# Fused W4A8, 8 experts, decode (M=7), internal alloc
+8, 7, 2048, 1536, 100, bf16:s4:bf16, true, 20, 2, 1, 2048, 1, 0, 1, s8, 128
+
+# Fused W4A8, 8 experts, decode (M=4), group_size=32
+8, 4, 2048, 1536, 100, bf16:s4:bf16, true, 20, 2, 1, 2048, 0, 0, 1, s8, 32
+
+# ─── Prompt-like (larger M) ──────────────────────────────────────────────
+
+8, 32, 4096, 4096, 100, bf16:s4:bf16, true, 50, 0, 0, 0, 0, 0, 1, s8, 128
+8, 128, 4096, 14336, 50, bf16:s4:bf16, true, 20, 0, 0, 0, 0, 0, 1, s8, 128

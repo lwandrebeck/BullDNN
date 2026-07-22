@@ -31,6 +31,7 @@ target_sources(gtests
     ${CMAKE_CURRENT_SOURCE_DIR}/test_ggml_per_group.cpp
     ${CMAKE_CURRENT_SOURCE_DIR}/test_fused_moe_ggml.cpp
     ${CMAKE_CURRENT_SOURCE_DIR}/test_prepack.cpp
+    ${CMAKE_CURRENT_SOURCE_DIR}/test_w4a8_per_group.cpp
     # Custom-kernel direct-surface tests — see gtests/group_matmul/
     # custom_kernel/ck_test_helpers.hpp for scope (unit-level on
     # `dispatch_supported`, `resolve_variant`, `prepare_for_call`,

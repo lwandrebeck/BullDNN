@@ -23,10 +23,10 @@
 #include <vector>
 
 #ifndef OK
-#define OK     (0)
+  #define OK     (0)
 #endif
 #ifndef NOT_OK
-#define NOT_OK (1)
+  #define NOT_OK (1)
 #endif
 
 namespace zendnnl {
@@ -119,6 +119,20 @@ int group_matmul_fused_moe_example();
  * the MoE layer uses `hidden_dim = K_input = N_down`.
  */
 int group_matmul_fused_moe_internal_alloc_example();
+
+/**
+ * @brief Fused MoE W4A8 Qwen3-30B-A3B production-style example.
+ *
+ * Mirrors the vLLM/Zentorch path for Qwen3-30B-A3B-quantized.w4a16:
+ *   - 8 experts, M=128 tokens each, K=2048, N_gate_up=1536, N_down=2048.
+ *   - Dynamic INT8 (bf16 activations → s8, per-token src scale {M,1}).
+ *   - s4 packed weights with per-group scales {G, N}, transB=T.
+ *   - Fused pipeline: Op1 (gate+up) → silu_and_mul → Op2 (down_proj).
+ *   - Internal alloc (library owns Op1 and Op2 dst buffers).
+ *   - MoE weighted-reduce postop (topk=8).
+ *   - ALGO 1 (sequential_experts) via auto-select or env pin.
+ */
+int group_matmul_moe_w4a8_example();
 
 } // namespace examples
 } // namespace zendnnl

@@ -35,114 +35,122 @@ using zendnnl::common::size_of;
 // ── 64-byte aligned buffer ──────────────────────────────────────────────
 
 struct AlignedBuffer {
-    void *ptr = nullptr;
-    size_t bytes = 0;
-    void alloc(size_t n) {
-        free();
-        bytes = (n + 63) & ~size_t(63);
-        ptr = std::aligned_alloc(64, bytes);
+  void *ptr = nullptr;
+  size_t bytes = 0;
+  void alloc(size_t n) {
+    free();
+    bytes = (n + 63) & ~size_t(63);
+    ptr = std::aligned_alloc(64, bytes);
+  }
+  void free() {
+    if (ptr) {
+      std::free(ptr);
+      ptr = nullptr;
     }
-    void free() { if (ptr) { std::free(ptr); ptr = nullptr; } }
-    ~AlignedBuffer() { free(); }
-    AlignedBuffer() = default;
-    AlignedBuffer(AlignedBuffer &&o) noexcept : ptr(o.ptr), bytes(o.bytes)
-        { o.ptr = nullptr; }
-    AlignedBuffer &operator=(AlignedBuffer &&o) noexcept
-        { free(); ptr = o.ptr; bytes = o.bytes; o.ptr = nullptr; return *this; }
-    AlignedBuffer(const AlignedBuffer &) = delete;
-    AlignedBuffer &operator=(const AlignedBuffer &) = delete;
+  }
+  ~AlignedBuffer() {
+    free();
+  }
+  AlignedBuffer() = default;
+  AlignedBuffer(AlignedBuffer &&o) noexcept : ptr(o.ptr), bytes(o.bytes) {
+    o.ptr = nullptr;
+  }
+  AlignedBuffer &operator=(AlignedBuffer &&o) noexcept {
+    free();
+    ptr = o.ptr;
+    bytes = o.bytes;
+    o.ptr = nullptr;
+    return *this;
+  }
+  AlignedBuffer(const AlignedBuffer &) = delete;
+  AlignedBuffer &operator=(const AlignedBuffer &) = delete;
 };
 
 /// Configuration for one group matmul benchmark shape.
 struct GrpMatmulConfig {
-    int num_ops = 8;
-    std::vector<int> M_per_op;   ///< per-expert M (size == num_ops)
-    int K = 4096;
-    int N = 14336;
-    int iters = 200;
-    data_type_t src_dt = data_type_t::bf16;
-    data_type_t wei_dt = data_type_t::bf16;
-    data_type_t dst_dt = data_type_t::bf16;
-    bool is_weights_const = true;
-    int warmup = 50;
-    int moe_topk = 0;  ///< 0 = no MoE post-op, >0 = enable with this topk
-    int gated_act = 0;  ///< 0 = off, 1 = silu_and_mul, 2 = gelu_and_mul, 3 = swiglu_oai_mul
-    int N_down = 0;     ///< 0 = no fused down_proj, >0 = fused Op1→Act→Op2 with this N_down
-    int use_internal_alloc = 0;  ///< 0 = caller-allocated dst/dst_down (legacy);
-                                 ///< 1 = library-allocated Op1 scratch + src-reuse
-                                 ///<     for Op2 output (requires N_down > 0).
-    int total_experts = 0;       ///< Optional trailing field.  When > num_ops,
-                                 ///< exercises the framework prepack-extras
-                                 ///< contract: the dispatcher receives weight
-                                 ///< buffers for all `total_experts` slots
-                                 ///< (the first `num_ops` correspond to firing
-                                 ///< experts; the rest are extras the prepack
-                                 ///< module pre-warms).  When 0 / absent,
-                                 ///< treated as `total_experts = num_ops` and
-                                 ///< `params[i].active_matmul == total_matmul`
-                                 ///< — legacy-equivalent behaviour.
+  int num_ops = 8;
+  std::vector<int> M_per_op;   ///< per-expert M (size == num_ops)
+  int K = 4096;
+  int N = 14336;
+  int iters = 200;
+  data_type_t src_dt = data_type_t::bf16;
+  data_type_t wei_dt = data_type_t::bf16;
+  data_type_t dst_dt = data_type_t::bf16;
+  bool is_weights_const = true;
+  int warmup = 50;
+  int moe_topk = 0;  ///< 0 = no MoE post-op, >0 = enable with this topk
+  int gated_act =
+    0;  ///< 0 = off, 1 = silu_and_mul, 2 = gelu_and_mul, 3 = swiglu_oai_mul
+  int N_down =
+    0;     ///< 0 = no fused down_proj, >0 = fused Op1→Act→Op2 with this N_down
+  int use_internal_alloc = 0;  ///< 0 = caller-allocated dst/dst_down (legacy);
+  ///< 1 = library-allocated Op1 scratch + src-reuse
+  ///<     for Op2 output (requires N_down > 0).
+  int total_experts = 0;       ///< Optional trailing field.  When > num_ops,
+  ///< exercises the framework prepack-extras
+  ///< contract: the dispatcher receives weight
+  ///< buffers for all `total_experts` slots
+  ///< (the first `num_ops` correspond to firing
+  ///< experts; the rest are extras the prepack
+  ///< module pre-warms).  When 0 / absent,
+  ///< treated as `total_experts = num_ops` and
+  ///< `params[i].active_matmul == total_matmul`
+  ///< — legacy-equivalent behaviour.
 
-    /// DQ-INT8 (dynamic-quant) toggle.  When non-zero the driver
-    /// drives the N-tile / custom-kernel int8 path instead of the
-    /// bf16 path:
-    ///   * `params[i].dynamic_quant = true`
-    ///   * `params[i].dtypes.compute = s8` (sym) or `u8` (asym),
-    ///     selected by `compute_dt` below.
-    ///   * `params[i].quant_params.wei_scale` populated with a per-
-    ///     expert per-channel f32 buffer of length `N`.
-    ///   * `params[i].quant_params.src_scale.buff = nullptr` —
-    ///     the library's pre-OMP hoist (`HoistedSrcQuant` in
-    ///     `n_tile/group_matmul_n_tile.cpp`) allocates and fills
-    ///     the per-token scale at runtime, so the caller leaves it
-    ///     null (matches the production DQ-INT8 contract; see
-    ///     gtests/group_matmul/test_algos.cpp::TestGroupMatmulAuto
-    ///     SelectAlgo_DynamicQuant).
-    ///
-    /// Requires:
-    ///   * src_dt=bf16, wei_dt=s8, dst_dt=bf16
-    ///     (CK's `resolve_variant()` truth table — see
-    ///     custom_kernel/dispatch.cpp:resolve_variant).
-    ///   * K % 4 == 0 (the int8 microkernel reduces along the K-
-    ///     axis in 4-byte VPDPBUSD lanes; mirrored by the
-    ///     `sym_k = (k/4)*4` clamp in test_quant.cpp).
-    /// Refused at parse time when these preconditions are violated.
-    int dynamic_quant = 0;       ///< 0 = bf16 path (default), 1 = DQ-INT8
+  /// DQ-INT8 / W4A8 (dynamic-quant) toggle.  When non-zero the
+  /// driver drives the int8 path instead of the bf16 path:
+  ///   * `params[i].dynamic_quant = true`
+  ///   * `params[i].dtypes.compute = s8` (sym) or `u8` (asym),
+  ///     selected by `compute_dt` below.
+  ///   * `params[i].quant_params.wei_scale` populated with a per-
+  ///     expert per-channel f32 buffer of length `N` (or {G,N}
+  ///     for per-group).
+  ///   * `params[i].quant_params.src_scale.buff = nullptr` —
+  ///     the library's pre-OMP hoist allocates and fills the
+  ///     per-token / per-group scale at runtime.
+  ///
+  /// Requires:
+  ///   * src_dt=bf16, wei_dt ∈ {s8, s4}, dst_dt=bf16.
+  ///     W4A8 (wei_dt=s4) is symmetric-only (compute_dt must be s8)
+  ///     and requires group_size > 0.
+  ///   * K % 4 == 0 (int8 microkernel K-axis alignment).
+  /// Refused at parse time when these preconditions are violated.
+  int dynamic_quant = 0;       ///< 0 = bf16 path (default), 1 = DQ-INT8/W4A8
 
-    /// Compute dtype for the DQ-INT8 family (ignored when
-    /// `dynamic_quant == 0`).  Drives `params[i].dtypes.compute`:
-    ///   * data_type_t::s8 (default) — symmetric kernel
-    ///     (`kS8_S8_BF16_SYM`), no src_zp produced by the hoist.
-    ///   * data_type_t::u8           — asymmetric kernel
-    ///     (`kU8_S8_BF16_ASYM`); the hoist additionally allocates
-    ///     and fills a per-token src_zp.
-    /// Stored as the underlying `data_type_t` enum so the driver
-    /// passes it straight through; the parser accepts the strings
-    /// "s8" / "u8" for human-friendly input files.
-    data_type_t compute_dt = data_type_t::s8;
+  /// Compute dtype for the DQ-INT8 family (ignored when
+  /// `dynamic_quant == 0`).  Drives `params[i].dtypes.compute`:
+  ///   * data_type_t::s8 (default) — symmetric kernel
+  ///     (`kS8_S8_BF16_SYM`), no src_zp produced by the hoist.
+  ///   * data_type_t::u8           — asymmetric kernel
+  ///     (`kU8_S8_BF16_ASYM`); the hoist additionally allocates
+  ///     and fills a per-token src_zp.
+  /// Stored as the underlying `data_type_t` enum so the driver
+  /// passes it straight through; the parser accepts the strings
+  /// "s8" / "u8" for human-friendly input files.
+  data_type_t compute_dt = data_type_t::s8;
 
-    /// Per-group DQ-INT8 quant group size (K-elements per quant group).
-    /// Only consulted when `dynamic_quant == 1`.
-    ///   * `0` (default) — PER-TOKEN / per-channel: `src_scale` dims
-    ///     `{M, 1}`, `wei_scale` dims `{1, N}` (the setup above).
-    ///   * `> 0`         — PER-GROUP symmetric: the weight is quantized
-    ///     with one scale per `group_size` K-elements, so
-    ///     `G = K / group_size` groups.  The driver sets
-    ///     `src_scale` dims `{M, G}` (buff null — the N-tile hoist
-    ///     quantizes the bf16 src per-group at call time) and
-    ///     `wei_scale` dims `{G, N}` (a G×N f32 buffer, filled by the
-    ///     driver).  Symmetric only (`compute_dt = s8`); the per-group
-    ///     N-tile path runs the AOCL DLP sym-quant GEMM with a
-    ///     `{G, n_tile}` per-column repack (`do_tile`).
-    /// Requires (enforced at parse time): `dynamic_quant == 1`,
-    /// `compute_dt == s8`, `0 < group_size < K`, and `K % group_size == 0`.
-    int group_size = 0;
+  int group_size = 0;          ///< Per-group K-grouping for DQ-INT8 / W4A8.
+  ///< 0 = per-token / per-channel (default):
+  ///<     src_scale {M,1}, wei_scale {1,N}.
+  ///< >0 = per-group: G = K / group_size groups;
+  ///<     wei_scale {G,N}, src_scale {M,G}
+  ///<     (buff null — hoist fills at runtime).
+  ///< Requires compute_dt=s8 (symmetric-only)
+  ///< and K % group_size == 0.
+  ///< W4A8 (wei=s4) always requires group_size > 0.
 
-    int max_M() const { return *std::max_element(M_per_op.begin(), M_per_op.end()); }
-    int total_M() const { return std::accumulate(M_per_op.begin(), M_per_op.end(), 0); }
-    bool is_uniform_M() const {
-        return std::all_of(M_per_op.begin(), M_per_op.end(),
-                           [&](int m){ return m == M_per_op[0]; });
-    }
+  int max_M() const {
+    return *std::max_element(M_per_op.begin(), M_per_op.end());
+  }
+  int total_M() const {
+    return std::accumulate(M_per_op.begin(), M_per_op.end(), 0);
+  }
+  bool is_uniform_M() const {
+    return std::all_of(M_per_op.begin(), M_per_op.end(),
+    [&](int m) {
+      return m == M_per_op[0];
+    });
+  }
 };
 
 /// Parse M field: single int or colon-separated per-expert list.

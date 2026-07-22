@@ -274,6 +274,14 @@ struct PrepackParams {
   // them via `n_groups`).
   int group_size = 0;
 
+  // W4A8 per-group sym-quant group_size (= K / G where G is the number
+  // of K-groups in wei_scale.dims[0]).  Used by the W4A8 prepack warmer
+  // to build a cache key matching what the runtime computes from the
+  // broadcast src_scale shape.  Zero means "not a W4A8 call" or
+  // "caller didn't supply the value" — the warmer defaults to K (full-K
+  // per-tensor grouping) in that case.
+  int w4a8_group_size = 0;
+
   // Per-call OMP team size — taken straight from the dispatcher's
   // entry-API `num_threads` argument.  Only consumed by
   // `prepack_for_algo_3` to compute
@@ -336,41 +344,41 @@ struct PrepackParams {
 /// remains the catch-all).
 template <typename ParamsVec>
 inline PrepackParams build_prepack_params(
-    const std::vector<const void *> &weight,
-    const std::vector<int>          &K,
-    const std::vector<int>          &N,
-    const std::vector<int>          &ldb,
-    const std::vector<bool>         &transB,
-    const std::vector<bool>         &is_weights_const,
-    const ParamsVec                 &params,
-    const std::vector<int>          &M,
-    bool                             custom_kernel_on,
-    int                              num_threads = 0,
-    int                              nr_align    = 0,
-    grp_matmul_gated_act_t           act         = grp_matmul_gated_act_t::none,
-    data_type_t                      act_dtype   = data_type_t::none,
-    // Optional per-expert runtime context — when non-null, mirrors
-    // the runtime CK refusal gates in `prepare_for_call` (transA,
-    // alpha != 1, beta != 0, is_weights_const = false).  Legacy
-    // callers leave these unset (nullptr) and `ck_eligible` skips
-    // the corresponding checks — same as pre-PR behaviour.
-    const std::vector<bool>         *transA = nullptr,
-    const std::vector<float>        *alpha  = nullptr,
-    const std::vector<float>        *beta   = nullptr,
-    // DQ-INT8 discriminators — default off / none preserves the bf16
-    // contract for every caller that hasn't been ported.  Caller
-    // typically reads them from `params[0].dynamic_quant` and
-    // `params[0].quant_params.src_scale` granularity (compute=s8 vs
-    // u8 follows the src_zp presence on the runtime side and the
-    // wei dtype on the warm side).
-    bool                             dynamic_quant = false,
-    data_type_t                      compute_dtype = data_type_t::none,
-    // Per-group DQ-INT8 group size — 0 (per-channel/per-token) by default.
-    // A call site that already resolved the per-group verdict may forward
-    // it; otherwise `build_prepack_params` DERIVES it below from the
-    // per-group `{G, N}` weight scale so the per-group AOCL sym-quant pack
-    // cache key the warmer builds is bit-identical to the runtime's.
-    int                              group_size    = 0) {
+  const std::vector<const void *> &weight,
+  const std::vector<int>          &K,
+  const std::vector<int>          &N,
+  const std::vector<int>          &ldb,
+  const std::vector<bool>         &transB,
+  const std::vector<bool>         &is_weights_const,
+  const ParamsVec                 &params,
+  const std::vector<int>          &M,
+  bool                             custom_kernel_on,
+  int                              num_threads = 0,
+  int                              nr_align    = 0,
+  grp_matmul_gated_act_t           act         = grp_matmul_gated_act_t::none,
+  data_type_t                      act_dtype   = data_type_t::none,
+  // Optional per-expert runtime context — when non-null, mirrors
+  // the runtime CK refusal gates in `prepare_for_call` (transA,
+  // alpha != 1, beta != 0, is_weights_const = false).  Legacy
+  // callers leave these unset (nullptr) and `ck_eligible` skips
+  // the corresponding checks — same as pre-PR behaviour.
+  const std::vector<bool>         *transA = nullptr,
+  const std::vector<float>        *alpha  = nullptr,
+  const std::vector<float>        *beta   = nullptr,
+  // DQ-INT8 discriminators — default off / none preserves the bf16
+  // contract for every caller that hasn't been ported.  Caller
+  // typically reads them from `params[0].dynamic_quant` and
+  // `params[0].quant_params.src_scale` granularity (compute=s8 vs
+  // u8 follows the src_zp presence on the runtime side and the
+  // wei dtype on the warm side).
+  bool                             dynamic_quant = false,
+  data_type_t                      compute_dtype = data_type_t::none,
+  // Per-group DQ-INT8 group size — 0 (per-channel/per-token) by default.
+  // A call site that already resolved the per-group verdict may forward
+  // it; otherwise `build_prepack_params` DERIVES it below from the
+  // per-group `{G, N}` weight scale so the per-group AOCL sym-quant pack
+  // cache key the warmer builds is bit-identical to the runtime's.
+  int                              group_size    = 0) {
   PrepackParams p;
   p.weight           = &weight;
   p.K                = &K;
@@ -445,9 +453,9 @@ inline PrepackParams build_prepack_params(
   //     `num_ops_active = active_matmul` (warmer walks exactly the
   //     firing experts).
   const bool has_active_hint =
-      !params.empty() && params[0].active_matmul > 0;
+    !params.empty() && params[0].active_matmul > 0;
   const bool has_total_hint  =
-      has_active_hint && params[0].total_matmul > 0;
+    has_active_hint && params[0].total_matmul > 0;
   p.num_ops_active = has_active_hint
                      ? static_cast<int>(params[0].active_matmul)
                      : static_cast<int>(M.size());
@@ -506,10 +514,10 @@ inline PrepackParams build_prepack_params(
     // pass rewrite that a leading inactive expert 0 would not.
     p.dynamic_quant = params[rep].dynamic_quant;
     const bool is_dq_int8 =
-        params[rep].dynamic_quant
-        || (params[rep].dtypes.wei == data_type_t::s8
-            && (params[rep].dtypes.compute == data_type_t::s8
-                || params[rep].dtypes.compute == data_type_t::u8));
+      params[rep].dynamic_quant
+      || (params[rep].dtypes.wei == data_type_t::s8
+          && (params[rep].dtypes.compute == data_type_t::s8
+              || params[rep].dtypes.compute == data_type_t::u8));
     // DQ-INT8 (either form): carry the runtime compute dtype so the
     // fingerprint marks it int8 (not bf16) and `ck_eligible_int8` /
     // `int8_aocl_warm_candidate` recognise it.  Plain bf16 (or a
@@ -518,10 +526,23 @@ inline PrepackParams build_prepack_params(
     // cache.
     p.compute_dtype = is_dq_int8 ? params[rep].dtypes.compute
                                  : data_type_t::none;
-  } else {
+  }
+  else {
     p.dynamic_quant = dynamic_quant;
     p.compute_dtype = compute_dtype;
   }
+
+  // W4A8 group_size: derive K/G from the first expert's wei_scale dims.
+  if (!params.empty() && !K.empty()
+      && params[0].dtypes.wei == data_type_t::s4
+      && params[0].dynamic_quant) {
+    const auto &ws_dims = params[0].quant_params.wei_scale.dims;
+    const int64_t g = (ws_dims.size() == 2) ? ws_dims[0] : 0;
+    if (g > 1 && K[0] > 0 && (static_cast<int64_t>(K[0]) % g) == 0) {
+      p.w4a8_group_size = static_cast<int>(static_cast<int64_t>(K[0]) / g);
+    }
+  }
+
   return p;
 }
 
@@ -674,7 +695,7 @@ struct LastInvocationStats {
   /// was eligible (= `aocl_dlp_blocked`)" from "inner kernel is
   /// oneDNN / libxsmm / native, no AOCL DLP warm path taken".
   zendnnl::ops::matmul_algo_t inner_kernel =
-      zendnnl::ops::matmul_algo_t::none;
+    zendnnl::ops::matmul_algo_t::none;
 
   /// Accumulated AOCL DLP probe stats across primary warm
   /// (`warm_aocl_n_tile` or `warm_aocl`) AND any cross-warm

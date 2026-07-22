@@ -190,10 +190,15 @@ status_t group_matmul_kernel_test(
         params_v[i].packing.pack_format_b = pack_format_b[i];
       }
 
-      bool is_woq = (src_dt == data_type_t::bf16 &&
-                     (wei_dt == data_type_t::s4 || wei_dt == data_type_t::u4));
+      const bool is_int4_wei =
+        (src_dt == data_type_t::bf16 &&
+         (wei_dt == data_type_t::s4 || wei_dt == data_type_t::u4));
+      const bool is_w4a8 =
+        (src_dt == data_type_t::bf16 &&
+         wei_dt == data_type_t::s4 &&
+         inputs[i].is_quantized());
       bool is_wei_s8 = (wei_dt == data_type_t::s8);
-      is_wt_c[i] = is_woq || is_wei_s8;
+      is_wt_c[i] = is_int4_wei || is_wei_s8;
 
       auto extract_quant = [](const tensor_t &t,
                               matmul_quantization_params_t::matmul_quant_t &scale_p,
@@ -219,7 +224,7 @@ status_t group_matmul_kernel_test(
         }
       };
 
-      if (is_woq || is_wei_s8) {
+      if (is_int4_wei || is_wei_s8) {
         extract_quant(inputs[i], params_v[i].quant_params.src_scale,
                       params_v[i].quant_params.src_zp);
         extract_quant(weights[i], params_v[i].quant_params.wei_scale,
@@ -228,7 +233,7 @@ status_t group_matmul_kernel_test(
                       params_v[i].quant_params.dst_zp);
       }
 
-      if (is_wei_s8 &&
+      if ((is_wei_s8 || is_w4a8) &&
           (src_dt == data_type_t::bf16 || src_dt == data_type_t::f32) &&
           inputs[i].is_quantized()) {
         params_v[i].dynamic_quant = true;

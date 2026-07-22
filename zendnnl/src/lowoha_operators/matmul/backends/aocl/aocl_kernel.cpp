@@ -1093,7 +1093,6 @@ void run_dlp(char layout, char transA, char transB, int M, int N,
       log_error("Unsupported output data type for W4A8; expected bf16");
     }
     else {
-      //W4A8 matmul call with s8 weights and bf16 output
       aocl_gemm_s8s8s32obf16_sym_quant(layout, transA, transB, M, N, K, alpha,
                                        static_cast<const int8_t *>(A), lda,
                                        mem_format_a,

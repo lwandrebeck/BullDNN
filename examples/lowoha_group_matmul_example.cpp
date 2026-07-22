@@ -22,6 +22,9 @@
 ///   3. BF16 group GEMM with MoE post-op (weighted-reduce over expert outputs).
 ///   4. FP32 group GEMM with gated activation (silu_and_mul for fused gate+up).
 ///   5. FP32 fused MoE: gate+up → silu → down_proj in one API call.
+///   6. MoE prompt W4A8 (dynamic bf16 A8 + s4 W4, M=256 per expert).
+///   7. Fused MoE W4A8 Qwen3-style (gate+up → silu → down, internal-alloc,
+///      dynamic INT8, moe_postop, transB=T, per-group scales).
 
 #include "lowoha_group_matmul_example.hpp"
 
@@ -38,7 +41,9 @@ using zendnnl::error_handling::exception_t;
 
 // Helper: fill a float buffer with a simple pattern.
 static void fill_f32(std::vector<float> &buf, float val) {
-  for (auto &x : buf) x = val;
+  for (auto &x : buf) {
+    x = val;
+  }
 }
 
 // Helper: convert float to BF16 with round-to-nearest-even.
@@ -61,7 +66,9 @@ static float bf16_to_f32(uint16_t v) {
 // Helper: fill a BF16 buffer with a constant value.
 static void fill_bf16(std::vector<uint16_t> &buf, float val) {
   uint16_t bval = f32_to_bf16(val);
-  for (auto &x : buf) x = bval;
+  for (auto &x : buf) {
+    x = bval;
+  }
 }
 
 // ---------------------------------------------------------------------------
@@ -109,8 +116,8 @@ int group_matmul_fp32_example() {
     }
 
     status_t st = group_matmul_direct(
-        layouts, transAs, transBs, Ms, Ns, Ks, alphas,
-        sp, ldas, wp, ldbs, bp, betas, dp, ldcs, wconst, params, nullptr);
+                    layouts, transAs, transBs, Ms, Ns, Ks, alphas,
+                    sp, ldas, wp, ldbs, bp, betas, dp, ldcs, wconst, params, nullptr);
 
     if (st != status_t::success) {
       testlog_error("FP32 group_matmul failed");
@@ -128,7 +135,8 @@ int group_matmul_fp32_example() {
       }
     }
     testlog_info("FP32 group_matmul verified OK.");
-  } catch (const exception_t &ex) {
+  }
+  catch (const exception_t &ex) {
     std::cout << ex.what() << std::endl;
     return NOT_OK;
   }
@@ -180,8 +188,8 @@ int group_matmul_bf16_example() {
     }
 
     status_t st = group_matmul_direct(
-        layouts, transAs, transBs, Ms, Ns, Ks, alphas,
-        sp, ldas, wp, ldbs, bp, betas, dp, ldcs, wconst, params, nullptr);
+                    layouts, transAs, transBs, Ms, Ns, Ks, alphas,
+                    sp, ldas, wp, ldbs, bp, betas, dp, ldcs, wconst, params, nullptr);
 
     if (st != status_t::success) {
       testlog_error("BF16 group_matmul failed");
@@ -201,7 +209,8 @@ int group_matmul_bf16_example() {
       }
     }
     testlog_info("BF16 group_matmul verified OK.");
-  } catch (const exception_t &ex) {
+  }
+  catch (const exception_t &ex) {
     std::cout << ex.what() << std::endl;
     return NOT_OK;
   }
@@ -281,9 +290,9 @@ int group_matmul_moe_postop_example() {
       int expert_1 = (t + 1) % NUM_EXPERTS;
       // Each expert has M_PER_EXPERT rows. Token t maps to row t.
       row_ptrs[t * TOPK + 0] = static_cast<const uint16_t *>(dp[expert_0])
-          + static_cast<size_t>(t) * N;
+                               + static_cast<size_t>(t) * N;
       row_ptrs[t * TOPK + 1] = static_cast<const uint16_t *>(dp[expert_1])
-          + static_cast<size_t>(t) * N;
+                               + static_cast<size_t>(t) * N;
     }
 
     // MoE output buffer: [num_tokens, N] in BF16.
@@ -301,8 +310,8 @@ int group_matmul_moe_postop_example() {
 
     // Execute: expert GEMMs + fused MoE weighted-reduce.
     status_t st = group_matmul_direct(
-        layouts, transAs, transBs, Ms, Ns, Ks, alphas,
-        sp, ldas, wp, ldbs, bp, betas, dp, ldcs, wconst, params, &moe);
+                    layouts, transAs, transBs, Ms, Ns, Ks, alphas,
+                    sp, ldas, wp, ldbs, bp, betas, dp, ldcs, wconst, params, &moe);
 
     if (st != status_t::success) {
       testlog_error("MoE group_matmul failed");
@@ -331,10 +340,12 @@ int group_matmul_moe_postop_example() {
     if (ok) {
       testlog_info("MoE post-op verified OK. Tokens reduced from ",
                    NUM_EXPERTS, " experts with topk=", TOPK);
-    } else {
+    }
+    else {
       return NOT_OK;
     }
-  } catch (const exception_t &ex) {
+  }
+  catch (const exception_t &ex) {
     std::cout << ex.what() << std::endl;
     return NOT_OK;
   }
@@ -399,9 +410,9 @@ int group_matmul_gated_act_example() {
     act.act = grp_matmul_gated_act_t::silu_and_mul;
 
     status_t st = group_matmul_direct(
-        layouts, transAs, transBs, Ms, Ns, Ks, alphas,
-        sp, ldas, wp, ldbs, bp, betas, dp, ldcs, wconst, params,
-        nullptr, &act);
+                    layouts, transAs, transBs, Ms, Ns, Ks, alphas,
+                    sp, ldas, wp, ldbs, bp, betas, dp, ldcs, wconst, params,
+                    nullptr, &act);
 
     if (st != status_t::success) {
       testlog_error("Gated activation group_matmul failed");
@@ -426,10 +437,12 @@ int group_matmul_gated_act_example() {
     if (ok) {
       testlog_info("Gated activation (silu_and_mul) verified OK. ",
                    NUM_EXPERTS, " experts, dim=", DIM);
-    } else {
+    }
+    else {
       return NOT_OK;
     }
-  } catch (const exception_t &ex) {
+  }
+  catch (const exception_t &ex) {
     std::cout << ex.what() << std::endl;
     return NOT_OK;
   }
@@ -518,9 +531,9 @@ int group_matmul_fused_moe_example() {
 
     // Single call: Op1 → silu(gate)*up → Op2
     status_t st = group_matmul_direct(
-        layouts, transAs, transBs, Ms, Ns, Ks, alphas,
-        sp, ldas, wp, ldbs, bp, betas, dp, ldcs, wconst, params,
-        nullptr, &act, &fused);
+                    layouts, transAs, transBs, Ms, Ns, Ks, alphas,
+                    sp, ldas, wp, ldbs, bp, betas, dp, ldcs, wconst, params,
+                    nullptr, &act, &fused);
 
     if (st != status_t::success) {
       testlog_error("Fused MoE group_matmul failed");
@@ -545,10 +558,12 @@ int group_matmul_fused_moe_example() {
     if (ok) {
       testlog_info("Fused MoE (gate+up → silu → down_proj) verified OK. ",
                    NUM_EXPERTS, " experts, dim=", DIM, " hidden=", HIDDEN);
-    } else {
+    }
+    else {
       return NOT_OK;
     }
-  } catch (const exception_t &ex) {
+  }
+  catch (const exception_t &ex) {
     std::cout << ex.what() << std::endl;
     return NOT_OK;
   }
@@ -630,15 +645,16 @@ int group_matmul_fused_moe_internal_alloc_example() {
     fused.ldb_down.resize(NUM_EXPERTS, HIDDEN);
     fused.bias_down.resize(NUM_EXPERTS, nullptr);
     fused.down_weight.resize(NUM_EXPERTS);
-    for (int i = 0; i < NUM_EXPERTS; ++i)
+    for (int i = 0; i < NUM_EXPERTS; ++i) {
       fused.down_weight[i] = wei_down[i].data();
+    }
     // dst_down and ldc_down INTENTIONALLY left empty — this is the
     // signal that engages internal-alloc + src-reuse mode.
 
     status_t st = group_matmul_direct(
-        layouts, transAs, transBs, Ms, Ns, Ks, alphas,
-        sp, ldas, wp, ldbs, bp, betas, dp, ldcs, wconst, params,
-        nullptr, &act, &fused);
+                    layouts, transAs, transBs, Ms, Ns, Ks, alphas,
+                    sp, ldas, wp, ldbs, bp, betas, dp, ldcs, wconst, params,
+                    nullptr, &act, &fused);
 
     if (st != status_t::success) {
       testlog_error("Internal-alloc fused MoE group_matmul failed");
@@ -665,10 +681,229 @@ int group_matmul_fused_moe_internal_alloc_example() {
       testlog_info("Fused MoE internal-alloc (Op2 → src in place) "
                    "verified OK. ", NUM_EXPERTS,
                    " experts, dim=", DIM, " hidden=", HIDDEN);
-    } else {
+    }
+    else {
       return NOT_OK;
     }
-  } catch (const exception_t &ex) {
+  }
+  catch (const exception_t &ex) {
+    std::cout << ex.what() << std::endl;
+    return NOT_OK;
+  }
+  return OK;
+}
+
+namespace {
+
+static void fill_packed_s4(std::vector<int8_t> &packed, int8_t nibble) {
+  const int8_t nib = static_cast<int8_t>(nibble & 0x0F);
+  const int8_t byte_val = static_cast<int8_t>(nib | (nib << 4));
+  std::fill(packed.begin(), packed.end(), byte_val);
+}
+
+} // namespace
+
+// ---------------------------------------------------------------------------
+// Example 6: Fused MoE W4A8 — Qwen3-30B-A3B style
+//   gate+up → silu_and_mul → down_proj, dynamic INT8, internal alloc,
+//   moe_postop (weighted reduce), transB=T, per-group weight scales.
+//   Mirrors the vLLM/Zentorch production path for Qwen3-30B-A3B-quantized.w4a16.
+// ---------------------------------------------------------------------------
+
+int group_matmul_moe_w4a8_example() {
+  testlog_info("** group_matmul fused MoE W4A8 Qwen3-style: "
+               "8 experts, silu_and_mul, K=2048, N=1536, N_down=2048, "
+               "dynamic INT8, internal-alloc, moe_postop topk=8");
+
+  try {
+    constexpr int NUM_EXPERTS   = 8;
+    constexpr int M_PER_EXPERT  = 128;
+    constexpr int TOPK          = 8;
+    constexpr int TOKENS        = (NUM_EXPERTS * M_PER_EXPERT) / TOPK;
+
+    constexpr int K             = 2048;
+    constexpr int N_GATE_UP     = 1536;
+    constexpr int DIM           = N_GATE_UP / 2;
+    constexpr int N_DOWN        = 2048;
+    constexpr int GROUP_SIZE    = 32;
+    constexpr int NUM_GROUPS_W1 = K / GROUP_SIZE;
+    constexpr int NUM_GROUPS_W2 = DIM / GROUP_SIZE;
+
+    std::vector<int> Ms(NUM_EXPERTS, M_PER_EXPERT);
+    std::vector<int> Ns(NUM_EXPERTS, N_GATE_UP);
+    std::vector<int> Ks(NUM_EXPERTS, K);
+
+    // Op1 src: bf16 activations [M, K]
+    std::vector<std::vector<uint16_t>> src_buf(NUM_EXPERTS);
+    // Op1 weight: s4 packed gate+up [N_GATE_UP, K] (transB=T → stored as [N,K])
+    std::vector<std::vector<int8_t>> wei_gu_packed(NUM_EXPERTS);
+    // Op1 weight scale: per-group {NUM_GROUPS, N_GATE_UP}
+    std::vector<std::vector<uint16_t>> wei_gu_scale(NUM_EXPERTS);
+    // Per-token src scale {M, 1}
+    std::vector<std::vector<uint16_t>> src_scale_buf(NUM_EXPERTS);
+
+    // Op2 weight: s4 packed down [N_DOWN, DIM] (transB=T)
+    std::vector<std::vector<int8_t>> wei_down_packed(NUM_EXPERTS);
+    // Op2 weight scale: per-group {NUM_GROUPS_W2, N_DOWN}
+    std::vector<std::vector<uint16_t>> wei_down_scale(NUM_EXPERTS);
+
+    for (int i = 0; i < NUM_EXPERTS; ++i) {
+      src_buf[i].resize(static_cast<size_t>(M_PER_EXPERT * K));
+      fill_bf16(src_buf[i], 0.5f);
+
+      wei_gu_packed[i].resize(static_cast<size_t>((N_GATE_UP * K + 1) / 2));
+      fill_packed_s4(wei_gu_packed[i], static_cast<int8_t>(1));
+
+      wei_gu_scale[i].resize(static_cast<size_t>(NUM_GROUPS_W1 * N_GATE_UP));
+      for (size_t s = 0; s < wei_gu_scale[i].size(); ++s) {
+        wei_gu_scale[i][s] = f32_to_bf16(1.0f);
+      }
+
+      src_scale_buf[i].resize(static_cast<size_t>(M_PER_EXPERT));
+      for (int m = 0; m < M_PER_EXPERT; ++m) {
+        src_scale_buf[i][static_cast<size_t>(m)] = f32_to_bf16(0.02f);
+      }
+
+      wei_down_packed[i].resize(static_cast<size_t>((N_DOWN * DIM + 1) / 2));
+      fill_packed_s4(wei_down_packed[i], static_cast<int8_t>(1));
+
+      wei_down_scale[i].resize(static_cast<size_t>(NUM_GROUPS_W2 * N_DOWN));
+      for (size_t s = 0; s < wei_down_scale[i].size(); ++s) {
+        wei_down_scale[i][s] = f32_to_bf16(1.0f);
+      }
+    }
+
+    // Op1 API vectors — transB=T so weight is [N, K]
+    std::vector<char> layouts(NUM_EXPERTS, 'r');
+    std::vector<bool> transAs(NUM_EXPERTS, false);
+    std::vector<bool> transBs(NUM_EXPERTS, true);
+    std::vector<float> alphas(NUM_EXPERTS, 1.f), betas(NUM_EXPERTS, 0.f);
+    std::vector<bool> wconst(NUM_EXPERTS, true);
+    std::vector<int> ldas(NUM_EXPERTS, K);
+    std::vector<int> ldbs(NUM_EXPERTS, K);
+
+    std::vector<const void *> sp(NUM_EXPERTS), wp(NUM_EXPERTS);
+    std::vector<const void *> bp(NUM_EXPERTS, nullptr);
+    for (int i = 0; i < NUM_EXPERTS; ++i) {
+      sp[i] = src_buf[i].data();
+      wp[i] = wei_gu_packed[i].data();
+    }
+
+    // Internal-alloc: dst all nullptr, ldc zeros
+    std::vector<void *> dp(NUM_EXPERTS, nullptr);
+    std::vector<int> ldcs(NUM_EXPERTS, 0);
+
+    // matmul_params: W4A8 dynamic quant
+    std::vector<matmul_params> params(NUM_EXPERTS);
+    for (int i = 0; i < NUM_EXPERTS; ++i) {
+      params[i].dtypes.src = data_type_t::bf16;
+      params[i].dtypes.wei = data_type_t::s4;
+      params[i].dtypes.dst = data_type_t::bf16;
+      params[i].dtypes.compute = data_type_t::s8;
+      params[i].dynamic_quant = true;
+
+      params[i].quant_params.src_scale.buff = src_scale_buf[i].data();
+      params[i].quant_params.src_scale.dt = data_type_t::bf16;
+      params[i].quant_params.src_scale.dims = {M_PER_EXPERT, 1};
+
+      params[i].quant_params.wei_scale.buff = wei_gu_scale[i].data();
+      params[i].quant_params.wei_scale.dt = data_type_t::bf16;
+      params[i].quant_params.wei_scale.dims = {NUM_GROUPS_W1, N_GATE_UP};
+    }
+
+    // Gated activation: silu_and_mul
+    grp_matmul_gated_act_params act;
+    act.act = grp_matmul_gated_act_t::silu_and_mul;
+
+    // Fused MoE params (Op2 = down_proj)
+    grp_matmul_fused_moe_params fused;
+    fused.N_down.resize(NUM_EXPERTS, N_DOWN);
+    fused.ldb_down.resize(NUM_EXPERTS, DIM);
+    fused.bias_down.resize(NUM_EXPERTS, nullptr);
+    fused.down_weight.resize(NUM_EXPERTS);
+    fused.down_scale.resize(NUM_EXPERTS);
+    for (int i = 0; i < NUM_EXPERTS; ++i) {
+      fused.down_weight[i] = wei_down_packed[i].data();
+      grp_matmul_fused_moe_params::down_weight_quant_t ds;
+      ds.buff = wei_down_scale[i].data();
+      ds.dt   = data_type_t::bf16;
+      ds.dims = {NUM_GROUPS_W2, N_DOWN};
+      fused.down_scale[i] = ds;
+    }
+    // dst_down / ldc_down left empty → internal-alloc + src-reuse
+
+    // MoE post-op: weighted reduce over experts.
+    // In internal-alloc + src-reuse mode, Op2 writes its output back into
+    // the caller's src buffers (first N_DOWN cols of each row).  We build
+    // row_ptrs pointing into src_buf to mirror the vLLM/Zentorch scatter.
+    //
+    // Routing: uniform — each token t is routed to TOPK consecutive experts
+    // (t's slot k → expert (k % NUM_EXPERTS), row = (t*TOPK + k) / TOPK
+    // within that expert's buffer).  This is simplified; in production the
+    // router produces variable-length per-expert M vectors.
+    group_matmul_moe_postop_params postop;
+    postop.num_tokens = TOKENS;
+    postop.topk = TOPK;
+    postop.ldc_output = N_DOWN;
+    std::vector<uint16_t> reduce_dst(static_cast<size_t>(TOKENS * N_DOWN), 0);
+    postop.output = reduce_dst.data();
+    std::vector<float> router_weights(static_cast<size_t>(TOKENS * TOPK),
+                                      1.0f / static_cast<float>(TOPK));
+    postop.topk_weights = router_weights.data();
+    postop.skip_weighted = false;
+
+    // Build row_ptrs: for uniform routing where each expert holds M_PER_EXPERT
+    // rows and token t's k-th slot maps to expert k, row t in that expert.
+    // row_ptrs[t * TOPK + k] → src_buf[expert_k] + row_in_expert * lda (= K).
+    // Op2 output is written to the first N_DOWN elements of each src row.
+    std::vector<const void *> row_ptrs_vec(static_cast<size_t>(TOKENS * TOPK));
+    for (int t = 0; t < TOKENS; ++t) {
+      for (int k = 0; k < TOPK; ++k) {
+        const int expert = k % NUM_EXPERTS;
+        const int row_in_expert = t;
+        row_ptrs_vec[static_cast<size_t>(t * TOPK + k)] =
+          src_buf[expert].data()
+          + static_cast<size_t>(row_in_expert) * K;
+      }
+    }
+    postop.row_ptrs = row_ptrs_vec.data();
+
+    testlog_info("Calling fused MoE W4A8 (Qwen3 style)...");
+    status_t st = group_matmul_direct(
+                    layouts, transAs, transBs, Ms, Ns, Ks, alphas,
+                    sp, ldas, wp, ldbs, bp, betas, dp, ldcs, wconst, params,
+                    &postop, &act, &fused);
+
+    if (st != status_t::success) {
+      testlog_error("Fused MoE W4A8 Qwen3-style failed");
+      return NOT_OK;
+    }
+
+    bool ok = true;
+    for (int t = 0; t < TOKENS && ok; ++t) {
+      for (int d = 0; d < N_DOWN && ok; ++d) {
+        const uint16_t raw =
+          reduce_dst[static_cast<size_t>(t * N_DOWN + d)];
+        const float val = bf16_to_f32(raw);
+        if (std::isnan(val) || std::isinf(val)) {
+          testlog_error("Fused MoE W4A8 Qwen3 verify failed: NaN/Inf at "
+                        "token=", t, " d=", d);
+          ok = false;
+        }
+      }
+    }
+
+    if (ok) {
+      testlog_info("Fused MoE W4A8 Qwen3-style verified OK (",
+                   NUM_EXPERTS, " experts, M=", M_PER_EXPERT,
+                   " K=", K, " N=", N_GATE_UP, " N_down=", N_DOWN,
+                   " tokens=", TOKENS, " topk=", TOPK, ")");
+    }
+    else {
+      return NOT_OK;
+    }
+  }
+  catch (const exception_t &ex) {
     std::cout << ex.what() << std::endl;
     return NOT_OK;
   }

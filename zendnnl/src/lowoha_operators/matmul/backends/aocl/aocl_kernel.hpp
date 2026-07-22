@@ -24,7 +24,8 @@
   #include "aocl_dlp.h"
 #else
   #include <cstdint>
-  using md_t = std::int64_t;  // matches aocl-dlp md_t (int64_t); previously dim_t from blis.h
+  using md_t =
+  std::int64_t;  // matches aocl-dlp md_t (int64_t); previously dim_t from blis.h
 #endif
 namespace zendnnl {
 namespace lowoha {
@@ -110,6 +111,29 @@ bool reorderAndCacheWeightsSymQuant(Key_matmul key, const void *weights,
 
 /** Clear AOCL matmul weight caches and zero-point compensation LRU cache. */
 void clear_aocl_matmul_weight_caches();
+
+/// Widen packed s4 nibbles to s8 (sign-extended, no dequant).
+/// Output is plain row-major [k, n] regardless of input layout.
+void cvt_s4_to_s8(const int8_t *weights, int8_t *wei_s8, int k, int n,
+                  int ldb, bool is_transposed);
+
+/// W4A8 weight reorder + cache: converts s4→s8 then packs through the
+/// AOCL sym-quant s8s8s32os32 path into the dedicated W4A8 LRU cache.
+/// Called by run_dlp at GEMM time; also callable from prepack to eagerly
+/// warm the cache for all experts before inference begins.
+void w4a8ReorderAndCacheWeightsAocl(Key_matmul key, const int8_t *weights,
+                                    void *&reorder_weights, const int k,
+                                    const int n, const int ldb,
+                                    const bool is_weights_const,
+                                    const char order, const char trans,
+                                    data_type_t wei_dt, data_type_t src_dt,
+                                    int weight_cache_type,
+                                    int sym_quant_group_size);
+
+/// Broadcast per-token/per-tensor src_scale to per-group {M, G} shape
+/// so AOCL sym-quant derives the correct group_size = K/G.
+status_t broadcast_w4a8_src_scale(matmul_params &params, int M,
+                                  std::vector<uint8_t> &expanded_src_scale);
 
 /**
  * @brief Execute single matrix multiplication using AOCL DLP backend

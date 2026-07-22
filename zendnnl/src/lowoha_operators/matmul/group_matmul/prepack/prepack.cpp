@@ -125,8 +125,8 @@ inline size_t fingerprint(const PrepackParams &p, int scheduling_algo) {
   // call, so any `transB` change at all flips the per-expert XOR.
   if (p.weight && !p.weight->empty()) {
     const size_t bound =
-        std::min<size_t>(static_cast<size_t>(p.num_ops_total),
-                         p.weight->size());
+      std::min<size_t>(static_cast<size_t>(p.num_ops_total),
+                       p.weight->size());
     uintptr_t ptr_xor    = 0;
     uintptr_t ptr_sum    = 0;
     size_t    k_xor      = 0;
@@ -142,18 +142,22 @@ inline size_t fingerprint(const PrepackParams &p, int scheduling_algo) {
       ptr_sum += pi;
       if (p.K  && i < p.K->size()) {
         const size_t v = static_cast<size_t>((*p.K)[i]);
-        k_xor ^= v; k_sum += v;
+        k_xor ^= v;
+        k_sum += v;
       }
       if (p.N  && i < p.N->size()) {
         const size_t v = static_cast<size_t>((*p.N)[i]);
-        n_xor ^= v; n_sum += v;
+        n_xor ^= v;
+        n_sum += v;
       }
       if (p.ldb && i < p.ldb->size()) {
         const size_t v = static_cast<size_t>((*p.ldb)[i]);
-        ldb_xor ^= v; ldb_sum += v;
+        ldb_xor ^= v;
+        ldb_sum += v;
       }
-      if (p.transB && i < p.transB->size())
+      if (p.transB && i < p.transB->size()) {
         transb_xor ^= static_cast<size_t>((*p.transB)[i] ? 1u : 0u);
+      }
     }
     // XOR is permutation-invariant (the rotation-immunity we want for
     // compact-form active-subset rotations) but loses information on
@@ -260,7 +264,7 @@ inline size_t fingerprint(const PrepackParams &p, int scheduling_algo) {
   // Folding the toggle into the hash on every call is one
   // singleton-load (~1 ns) and keeps the hash regime simple.
   s = mix_hash(s, static_cast<size_t>(
-      zendnnl::ops::matmul_config_t::instance().get_weight_cache()));
+                 zendnnl::ops::matmul_config_t::instance().get_weight_cache()));
   return s;
 }
 
@@ -288,26 +292,33 @@ inline size_t weight_pool_fingerprint(const PrepackParams &p) {
   size_t s = mix_hash(0, static_cast<size_t>(p.num_ops_total));
   if (p.weight && !p.weight->empty()) {
     const size_t bound =
-        std::min<size_t>(static_cast<size_t>(p.num_ops_total),
-                         p.weight->size());
+      std::min<size_t>(static_cast<size_t>(p.num_ops_total),
+                       p.weight->size());
     uintptr_t ptr_xor = 0, ptr_sum = 0;
     size_t k_xor = 0, k_sum = 0, n_xor = 0, n_sum = 0,
            ldb_xor = 0, ldb_sum = 0, transb_xor = 0;
     for (size_t i = 0; i < bound; ++i) {
       const uintptr_t pi = reinterpret_cast<uintptr_t>((*p.weight)[i]);
-      ptr_xor ^= pi; ptr_sum += pi;
+      ptr_xor ^= pi;
+      ptr_sum += pi;
       if (p.K && i < p.K->size()) {
-        const size_t v = static_cast<size_t>((*p.K)[i]); k_xor ^= v; k_sum += v;
+        const size_t v = static_cast<size_t>((*p.K)[i]);
+        k_xor ^= v;
+        k_sum += v;
       }
       if (p.N && i < p.N->size()) {
-        const size_t v = static_cast<size_t>((*p.N)[i]); n_xor ^= v; n_sum += v;
+        const size_t v = static_cast<size_t>((*p.N)[i]);
+        n_xor ^= v;
+        n_sum += v;
       }
       if (p.ldb && i < p.ldb->size()) {
         const size_t v = static_cast<size_t>((*p.ldb)[i]);
-        ldb_xor ^= v; ldb_sum += v;
+        ldb_xor ^= v;
+        ldb_sum += v;
       }
-      if (p.transB && i < p.transB->size())
+      if (p.transB && i < p.transB->size()) {
         transb_xor ^= static_cast<size_t>((*p.transB)[i] ? 1u : 0u);
+      }
     }
     s = mix_hash(s, static_cast<size_t>(ptr_xor));
     s = mix_hash(s, static_cast<size_t>(ptr_sum));
@@ -321,7 +332,7 @@ inline size_t weight_pool_fingerprint(const PrepackParams &p) {
     s = mix_hash(s, bound);
   }
   s = mix_hash(s, static_cast<size_t>(
-      zendnnl::ops::matmul_config_t::instance().get_weight_cache()));
+                 zendnnl::ops::matmul_config_t::instance().get_weight_cache()));
   return s;
 }
 
@@ -405,17 +416,25 @@ struct WarmGuard {
   size_t                     fp = 0;  // fingerprint this guard's warm owns
   WarmGuard() = default;
   WarmGuard(std::shared_ptr<WarmLatch> l, size_t fp_)
-      : latch(std::move(l)), fp(fp_) {}
+    : latch(std::move(l)), fp(fp_) {}
   WarmGuard(const WarmGuard &) = delete;
   WarmGuard &operator=(const WarmGuard &) = delete;
   WarmGuard(WarmGuard &&o) noexcept : latch(std::move(o.latch)), fp(o.fp) {}
   WarmGuard &operator=(WarmGuard &&o) noexcept {
-    if (this != &o) { signal(); latch = std::move(o.latch); fp = o.fp; }
+    if (this != &o) {
+      signal();
+      latch = std::move(o.latch);
+      fp = o.fp;
+    }
     return *this;
   }
-  ~WarmGuard() { signal(); }
+  ~WarmGuard() {
+    signal();
+  }
   void signal() {
-    if (!latch) return;
+    if (!latch) {
+      return;
+    }
     // Record completion and DROP the in-flight latch under the map mutex
     // BEFORE waking waiters: a brand-new same-fingerprint caller then either
     // sees `s_warm_done_fps` (skip, no mutex/cv) or — if it raced in just
@@ -521,7 +540,8 @@ inline PreludeResult prelude(const PrepackParams &p, int scheduling_algo) {
       latch  = std::make_shared<WarmLatch>();
       s_warm_latch_map.emplace(fp, latch);
       i_warm = true;
-    } else {
+    }
+    else {
       latch = it->second;
     }
   }
@@ -556,14 +576,26 @@ inline PreludeResult prelude(const PrepackParams &p, int scheduling_algo) {
 inline const std::vector<bool> &warm_iwc(const PrepackParams &p) {
   static const std::vector<bool> kEmptyIsConst;
   return (p.is_weights_const != nullptr) ? *p.is_weights_const
-                                         : kEmptyIsConst;
+         : kEmptyIsConst;
 }
 
 inline aocl_dlp::AoclDlpPackProbeStats warm_aocl(const PrepackParams &p) {
   aocl_dlp::AoclDlpPackProbeStats st;
   aocl_dlp::warm_pack_all_aocl_dlp_experts(
-      *p.weight, *p.K, *p.N, *p.ldb, *p.transB, warm_iwc(p),
-      p.num_ops_total, p.wei_dtype, st);
+    *p.weight, *p.K, *p.N, *p.ldb, *p.transB, warm_iwc(p),
+    p.num_ops_total, p.wei_dtype, st);
+  return st;
+}
+
+// W4A8 backend wrapper: converts s4→s8 then reorders through the
+// AOCL sym-quant path.  Populates the W4A8 weight cache so all ALGOs
+// get a cache HIT on first GEMM call — no lazy reorder spike.
+inline aocl_dlp::AoclDlpPackProbeStats warm_aocl_w4a8(
+  const PrepackParams &p, int group_size) {
+  aocl_dlp::AoclDlpPackProbeStats st;
+  aocl_dlp::warm_pack_all_aocl_dlp_experts_w4a8(
+    *p.weight, *p.K, *p.N, *p.ldb, *p.transB, warm_iwc(p),
+    p.num_ops_total, p.wei_dtype, group_size, st);
   return st;
 }
 
@@ -573,15 +605,15 @@ inline aocl_dlp::AoclDlpPackProbeStats warm_aocl(const PrepackParams &p) {
 // prompt cross-warm no longer leaves the first prompt call paying the
 // lazy sym-quant reorder.
 inline aocl_dlp::AoclDlpPackProbeStats warm_aocl_sym_quant(
-    const PrepackParams &p) {
+  const PrepackParams &p) {
   aocl_dlp::AoclDlpPackProbeStats st;
   // `p.group_size` (0 = per-token; > 0 = per-group K/G) selects the
   // sym-quant reorder granularity so the warmed AOCL slot matches the
   // runtime key for a per-group `{M,G}` src / `{G,N}` wei call (the
   // fallback a per-group layer routed to ALGO 1/2/4/5 will read).
   aocl_dlp::warm_pack_all_aocl_dlp_experts_sym_quant(
-      *p.weight, *p.K, *p.N, *p.ldb, *p.transB, warm_iwc(p),
-      p.num_ops_total, p.wei_dtype, st, p.group_size);
+    *p.weight, *p.K, *p.N, *p.ldb, *p.transB, warm_iwc(p),
+    p.num_ops_total, p.wei_dtype, st, p.group_size);
   return st;
 }
 
@@ -596,12 +628,12 @@ inline aocl_dlp::AoclDlpPackProbeStats warm_aocl_sym_quant(
 //   * `stable * nr_align <= max_N` (no narrow-N escape — the
 //     planner's `ManyExperts` strategy fires, not `Sequential`).
 inline aocl_dlp::AoclDlpPackProbeStats warm_aocl_n_tile(
-    const PrepackParams &p, int stable, int nr_align_eff) {
+  const PrepackParams &p, int stable, int nr_align_eff) {
   aocl_dlp::AoclDlpPackProbeStats st;
   aocl_dlp::warm_pack_all_aocl_dlp_experts_n_tile(
-      *p.weight, *p.K, *p.N, *p.ldb, *p.transB, warm_iwc(p),
-      p.num_ops_total, p.wei_dtype,
-      p.num_threads, stable, nr_align_eff, st);
+    *p.weight, *p.K, *p.N, *p.ldb, *p.transB, warm_iwc(p),
+    p.num_ops_total, p.wei_dtype,
+    p.num_threads, stable, nr_align_eff, st);
   return st;
 }
 
@@ -612,14 +644,14 @@ inline aocl_dlp::AoclDlpPackProbeStats warm_aocl_n_tile(
 // reorder per N-tile.  Same `stable` / `nr_align_eff` pre-validation
 // contract as `warm_aocl_n_tile`.
 inline aocl_dlp::AoclDlpPackProbeStats warm_aocl_n_tile_sym_quant(
-    const PrepackParams &p, int stable, int nr_align_eff) {
+  const PrepackParams &p, int stable, int nr_align_eff) {
   aocl_dlp::AoclDlpPackProbeStats st;
   // `p.group_size` selects per-token (0) vs per-group (K/G) sym-quant
   // reorder granularity — same contract as `warm_aocl_sym_quant`.
   aocl_dlp::warm_pack_all_aocl_dlp_experts_n_tile_sym_quant(
-      *p.weight, *p.K, *p.N, *p.ldb, *p.transB, warm_iwc(p),
-      p.num_ops_total, p.wei_dtype,
-      p.num_threads, stable, nr_align_eff, st, p.group_size);
+    *p.weight, *p.K, *p.N, *p.ldb, *p.transB, warm_iwc(p),
+    p.num_ops_total, p.wei_dtype,
+    p.num_threads, stable, nr_align_eff, st, p.group_size);
   return st;
 }
 
@@ -635,8 +667,14 @@ inline aocl_dlp::AoclDlpPackProbeStats warm_aocl_n_tile_sym_quant(
 // eligibility (the caller already decided AOCL, not CK, is the path).
 inline bool int8_aocl_warm_candidate(const PrepackParams &p) {
   return p.wei_dtype == data_type_t::s8
-      && (p.compute_dtype == data_type_t::s8
-          || p.compute_dtype == data_type_t::u8);
+         && (p.compute_dtype == data_type_t::s8
+             || p.compute_dtype == data_type_t::u8);
+}
+
+inline bool w4a8_aocl_warm_candidate(const PrepackParams &p) {
+  return p.wei_dtype == data_type_t::s4
+         && p.dynamic_quant
+         && p.compute_dtype == data_type_t::s8;
 }
 
 // Compute max(N[i]) over `[0, num_ops_total)`.  Mirrors what the
@@ -647,9 +685,11 @@ inline bool int8_aocl_warm_candidate(const PrepackParams &p) {
 // different N's in pathological framework setups, so we take the
 // conservative max here to keep the narrow-N escape decision safe.
 inline int compute_max_n(const PrepackParams &p) {
-  if (p.N == nullptr || p.N->empty()) return 0;
+  if (p.N == nullptr || p.N->empty()) {
+    return 0;
+  }
   const size_t bound = std::min<size_t>(
-      static_cast<size_t>(p.num_ops_total), p.N->size());
+                         static_cast<size_t>(p.num_ops_total), p.N->size());
   int m = 0;
   for (size_t i = 0; i < bound; ++i) {
     m = std::max(m, (*p.N)[i]);
@@ -675,8 +715,8 @@ inline custom_kernel::PackProbeStats warm_custom(const PrepackParams &p) {
   custom_kernel::PackProbeStats st;
   const std::vector<bool> &iwc = warm_iwc(p);
   const bool interleave_split_halves =
-      (p.act == grp_matmul_gated_act_t::silu_and_mul)
-      || (p.act == grp_matmul_gated_act_t::gelu_and_mul);
+    (p.act == grp_matmul_gated_act_t::silu_and_mul)
+    || (p.act == grp_matmul_gated_act_t::gelu_and_mul);
   // Family selection — DQ-INT8 fingerprint includes `dynamic_quant`
   // and `compute_dtype`, so this branch is fingerprint-aware and a
   // single process can warm both families across distinct calls
@@ -689,12 +729,12 @@ inline custom_kernel::PackProbeStats warm_custom(const PrepackParams &p) {
   // dynamic_quant=false) to the bf16 pack arena, so the int8 CK pack
   // LRU was never warmed for the production decode path.
   const custom_kernel::WarmDtypeFamily family =
-      int8_aocl_warm_candidate(p)
-          ? custom_kernel::WarmDtypeFamily::kINT8
-          : custom_kernel::WarmDtypeFamily::kBF16;
+    int8_aocl_warm_candidate(p)
+    ? custom_kernel::WarmDtypeFamily::kINT8
+    : custom_kernel::WarmDtypeFamily::kBF16;
   custom_kernel::warm_pack_all_custom_kernel_experts(
-      *p.weight, *p.K, *p.N, *p.ldb, *p.transB, iwc,
-      p.num_ops_total, st, interleave_split_halves, family);
+    *p.weight, *p.K, *p.N, *p.ldb, *p.transB, iwc,
+    p.num_ops_total, st, interleave_split_halves, family);
   return st;
 }
 
@@ -711,12 +751,18 @@ static test_api::LastInvocationStats s_last_invocation;
 // emitter and the `next_HIT_for=[...]` helper below.
 inline const char *cross_warm_regime_name(CrossWarmRegime r) {
   switch (r) {
-  case CrossWarmRegime::none:                       return "none";
-  case CrossWarmRegime::aocl_full_weight:           return "aocl_full_weight";
-  case CrossWarmRegime::custom_kernel_pack:         return "custom_kernel_pack";
-  case CrossWarmRegime::aocl_per_tile:              return "aocl_per_tile";
-  case CrossWarmRegime::aocl_full_weight_sym_quant: return "aocl_full_weight_sym_quant";
-  case CrossWarmRegime::aocl_per_tile_sym_quant:    return "aocl_per_tile_sym_quant";
+  case CrossWarmRegime::none:
+    return "none";
+  case CrossWarmRegime::aocl_full_weight:
+    return "aocl_full_weight";
+  case CrossWarmRegime::custom_kernel_pack:
+    return "custom_kernel_pack";
+  case CrossWarmRegime::aocl_per_tile:
+    return "aocl_per_tile";
+  case CrossWarmRegime::aocl_full_weight_sym_quant:
+    return "aocl_full_weight_sym_quant";
+  case CrossWarmRegime::aocl_per_tile_sym_quant:
+    return "aocl_per_tile_sym_quant";
   }
   return "?";
 }
@@ -738,7 +784,9 @@ inline const char *cross_warm_regime_name(CrossWarmRegime r) {
 //   any                     anything else              → fallback: "(see escapes)"
 inline const char *next_hit_for_label(const char *primary,
                                       CrossWarmRegime cross) {
-  if (primary == nullptr) return "[]";
+  if (primary == nullptr) {
+    return "[]";
+  }
   if (std::strcmp(primary, "ck_pack") == 0) {
     // BF16 CK pack + bf16 AOCL full-weight cross-warm
     //   → both decode (ALGO 3 CK) and prompt (ALGO 1 DLP) hit.
@@ -773,8 +821,8 @@ inline const char *next_hit_for_label(const char *primary,
       || std::strcmp(primary, "aocl_per_tile_sym_quant") == 0) {
     return (cross == CrossWarmRegime::aocl_full_weight
             || cross == CrossWarmRegime::aocl_full_weight_sym_quant)
-        ? "[ALGO_3+DLP_decode, ALGO_1+DLP_prompt]"
-        : "[ALGO_3+DLP_decode]";
+           ? "[ALGO_3+DLP_decode, ALGO_1+DLP_prompt]"
+           : "[ALGO_3+DLP_decode]";
   }
   return "[]";
 }
@@ -837,23 +885,25 @@ inline void log_pack_probe(int scheduling_algo,
   }
 
   static const bool s_l3_log = apilog_info_enabled();
-  if (!s_l3_log) return;
+  if (!s_l3_log) {
+    return;
+  }
   const bool cross_enabled = (regime != CrossWarmRegime::none);
   const std::string fp_str = format_fingerprint(fingerprint(p, scheduling_algo));
   apilog_info(
-      "[GRP_MATMUL.PREPACK] for=ALGO_", scheduling_algo,
-      " state=warmed active=", p.num_ops_active,
-      " total=", p.num_ops_total,
-      " primary=", primary_label,
-      " ck=[hits=", st_ck.cache_hits,
-      " misses=", st_ck.cache_misses,
-      " skipped=", st_ck.skipped_invalid, "]",
-      " aocl=[packed=", st_aocl.packed_ok,
-      " skipped=", st_aocl.skipped_invalid, "]",
-      " cross_warm=", (cross_enabled ? "enabled" : "disabled"),
-      " regime=", cross_warm_regime_name(regime),
-      " next_HIT_for=", next_hit_for_label(primary_label, regime),
-      " fingerprint=", fp_str.c_str());
+    "[GRP_MATMUL.PREPACK] for=ALGO_", scheduling_algo,
+    " state=warmed active=", p.num_ops_active,
+    " total=", p.num_ops_total,
+    " primary=", primary_label,
+    " ck=[hits=", st_ck.cache_hits,
+    " misses=", st_ck.cache_misses,
+    " skipped=", st_ck.skipped_invalid, "]",
+    " aocl=[packed=", st_aocl.packed_ok,
+    " skipped=", st_aocl.skipped_invalid, "]",
+    " cross_warm=", (cross_enabled ? "enabled" : "disabled"),
+    " regime=", cross_warm_regime_name(regime),
+    " next_HIT_for=", next_hit_for_label(primary_label, regime),
+    " fingerprint=", fp_str.c_str());
 }
 
 // Companion emitter for the skip path (env-disabled / fingerprint
@@ -865,23 +915,25 @@ inline void log_pack_probe_skip(int scheduling_algo,
                                 const PrepackParams &p,
                                 PreludeSkipReason reason) {
   static const bool s_l3_log = apilog_info_enabled();
-  if (!s_l3_log) return;
+  if (!s_l3_log) {
+    return;
+  }
   const char *state =
-      (reason == PreludeSkipReason::env_disabled)
-          ? "disabled"
-          : "skipped_fingerprint";
+    (reason == PreludeSkipReason::env_disabled)
+    ? "disabled"
+    : "skipped_fingerprint";
   const char *note =
-      (reason == PreludeSkipReason::env_disabled)
-          ? " note=first_runtime_call_pays_lazy_reorder_cost"
-          : " note=already_warmed";
+    (reason == PreludeSkipReason::env_disabled)
+    ? " note=first_runtime_call_pays_lazy_reorder_cost"
+    : " note=already_warmed";
   const std::string fp_str = format_fingerprint(fingerprint(p, scheduling_algo));
   apilog_info(
-      "[GRP_MATMUL.PREPACK] for=ALGO_", scheduling_algo,
-      " state=", state,
-      " active=", p.num_ops_active,
-      " total=", p.num_ops_total,
-      " fingerprint=", fp_str.c_str(),
-      note);
+    "[GRP_MATMUL.PREPACK] for=ALGO_", scheduling_algo,
+    " state=", state,
+    " active=", p.num_ops_active,
+    " total=", p.num_ops_total,
+    " fingerprint=", fp_str.c_str(),
+    note);
 }
 
 // Eligibility for the BF16 custom-kernel pack (ALGO 3 only).  Mirrors
@@ -954,19 +1006,29 @@ inline void log_pack_probe_skip(int scheduling_algo,
 // refusals will still see a runtime APILOG `[GRP_MATMUL.CK REFUSED]
 // reason=...` line (verbose level) at the first refused call.
 inline bool ck_eligible_bf16(const PrepackParams &p) {
-  if (!p.custom_kernel_on) return false;
+  if (!p.custom_kernel_on) {
+    return false;
+  }
   // BF16 family requires `dynamic_quant == false`.  A
   // dynamic_quant=true call routes to `ck_eligible_int8` instead.
-  if (p.dynamic_quant) return false;
-  if (p.src_dtype != data_type_t::bf16) return false;
-  if (p.wei_dtype != data_type_t::bf16) return false;
+  if (p.dynamic_quant) {
+    return false;
+  }
+  if (p.src_dtype != data_type_t::bf16) {
+    return false;
+  }
+  if (p.wei_dtype != data_type_t::bf16) {
+    return false;
+  }
   // dst ∈ {bf16, f32} — mirrors `resolve_variant`'s acceptance of
   // both `kBF16_BF16_BF16` and `kBF16_BF16_F32`.  Pack work itself
   // does not depend on dst dtype (the pack format is set by
   // `pack_nr` + the kernel's K-pair layout), so the same packed
   // arena warms both runtime variants.
   if (p.dst_dtype != data_type_t::bf16
-      && p.dst_dtype != data_type_t::f32) return false;
+      && p.dst_dtype != data_type_t::f32) {
+    return false;
+  }
   // Gated activations accepted by the CK fused epilogue.  Two
   // physical layouts at the API boundary:
   //
@@ -999,9 +1061,9 @@ inline bool ck_eligible_bf16(const PrepackParams &p) {
   // packs the interleaved layout correctly.  No change to
   // cross_warm's contract.
   const bool split_halves_no_bias =
-      (p.act == grp_matmul_gated_act_t::silu_and_mul
-       || p.act == grp_matmul_gated_act_t::gelu_and_mul)
-      && (p.bias_dtype == data_type_t::none);
+    (p.act == grp_matmul_gated_act_t::silu_and_mul
+     || p.act == grp_matmul_gated_act_t::gelu_and_mul)
+    && (p.bias_dtype == data_type_t::none);
   if (p.act != grp_matmul_gated_act_t::swiglu_oai_mul
       && p.act != grp_matmul_gated_act_t::none
       && !split_halves_no_bias) {
@@ -1014,9 +1076,9 @@ inline bool ck_eligible_bf16(const PrepackParams &p) {
   // would refuse with `kfn_table_fill_failed`.  Mirror that refusal
   // here.
   const bool is_gated_act =
-      (p.act == grp_matmul_gated_act_t::swiglu_oai_mul)
-      || (p.act == grp_matmul_gated_act_t::silu_and_mul)
-      || (p.act == grp_matmul_gated_act_t::gelu_and_mul);
+    (p.act == grp_matmul_gated_act_t::swiglu_oai_mul)
+    || (p.act == grp_matmul_gated_act_t::silu_and_mul)
+    || (p.act == grp_matmul_gated_act_t::gelu_and_mul);
   if (is_gated_act && p.dst_dtype != data_type_t::bf16) {
     return false;
   }
@@ -1098,8 +1160,12 @@ inline bool ck_eligible_bf16(const PrepackParams &p) {
   // has its own `custom_kernel` sub-namespace (warm-pack helpers); a
   // file-scope alias would shadow it.
   namespace ck = ::zendnnl::lowoha::matmul::custom_kernel;
-  if (p.K == nullptr || p.K->empty()) return false;
-  if (p.N == nullptr || p.N->empty()) return false;
+  if (p.K == nullptr || p.K->empty()) {
+    return false;
+  }
+  if (p.N == nullptr || p.N->empty()) {
+    return false;
+  }
   int rep_K = (*p.K)[0];
   int rep_N = (*p.N)[0];
   // M may be empty (legacy callers / direct prepack invocations from
@@ -1108,9 +1174,9 @@ inline bool ck_eligible_bf16(const PrepackParams &p) {
   if (p.M != nullptr) {
     const int n_active = p.num_ops_active;
     const int sweep = std::min<int>(
-        n_active,
-        static_cast<int>(std::min({p.K->size(), p.N->size(),
-                                   p.M->size()})));
+                        n_active,
+                        static_cast<int>(std::min({p.K->size(), p.N->size(),
+                                         p.M->size()})));
     for (int i = 0; i < sweep; ++i) {
       if ((*p.M)[i] > 0) {
         rep_K = (*p.K)[i];
@@ -1120,7 +1186,9 @@ inline bool ck_eligible_bf16(const PrepackParams &p) {
     }
   }
   const int pack_nr = ck::plan_pack_nr(rep_K, rep_N);
-  if (pack_nr != ck::kNRMin && pack_nr != ck::kNRMax) return false;
+  if (pack_nr != ck::kNRMin && pack_nr != ck::kNRMax) {
+    return false;
+  }
   return true;
 }
 
@@ -1159,8 +1227,12 @@ inline bool ck_eligible_bf16(const PrepackParams &p) {
 // runtime CK refusal `weight_pack_failed` would surface
 // immediately).
 inline bool ck_eligible_int8(const PrepackParams &p) {
-  if (!p.custom_kernel_on) return false;
-  if (!get_grp_matmul_custom_kernel_int8()) return false;
+  if (!p.custom_kernel_on) {
+    return false;
+  }
+  if (!get_grp_matmul_custom_kernel_int8()) {
+    return false;
+  }
   // Per-group (group_size > 0) is AOCL-only on this path: the runtime
   // forces the AOCL DLP `do_tile` sym-quant GEMM for a per-group `{G, N}`
   // wei scale (`ck_per_group` in group_matmul_n_tile.cpp sets
@@ -1171,7 +1243,9 @@ inline bool ck_eligible_int8(const PrepackParams &p) {
   // tile LRU (keyed on the same K/G the runtime `do_tile` reads).  Mirrors
   // the runtime executor exactly.  (When the custom kernel gains per-group
   // support, this guard and the runtime `ck_per_group` guard lift together.)
-  if (p.group_size > 0) return false;
+  if (p.group_size > 0) {
+    return false;
+  }
   // Two int8 entry forms reach the CK microkernel (mirror
   // resolve_variant in custom_kernel/dispatch.cpp):
   //   * runtime hoist     — `dynamic_quant=true` with bf16 src;
@@ -1180,20 +1254,28 @@ inline bool ck_eligible_int8(const PrepackParams &p) {
   // Keying on `dynamic_quant && src==bf16` alone missed the grouped
   // form, so the prepack never warmed the int8 CK pack for it.
   const bool dq_int8_form =
-      (p.dynamic_quant && p.src_dtype == data_type_t::bf16)
-      || (p.src_dtype == data_type_t::s8);
-  if (!dq_int8_form) return false;
-  if (p.wei_dtype != data_type_t::s8) return false;
-  if (p.dst_dtype != data_type_t::bf16) return false;
+    (p.dynamic_quant && p.src_dtype == data_type_t::bf16)
+    || (p.src_dtype == data_type_t::s8);
+  if (!dq_int8_form) {
+    return false;
+  }
+  if (p.wei_dtype != data_type_t::s8) {
+    return false;
+  }
+  if (p.dst_dtype != data_type_t::bf16) {
+    return false;
+  }
   if (p.compute_dtype != data_type_t::s8
-      && p.compute_dtype != data_type_t::u8) return false;
+      && p.compute_dtype != data_type_t::u8) {
+    return false;
+  }
   // Activation gate — same four (none / swiglu_oai_mul /
   // silu_and_mul / gelu_and_mul) as bf16; silu_and_mul / gelu_and_mul
   // + bias is refused identically.
   const bool split_halves_no_bias =
-      (p.act == grp_matmul_gated_act_t::silu_and_mul
-       || p.act == grp_matmul_gated_act_t::gelu_and_mul)
-      && (p.bias_dtype == data_type_t::none);
+    (p.act == grp_matmul_gated_act_t::silu_and_mul
+     || p.act == grp_matmul_gated_act_t::gelu_and_mul)
+    && (p.bias_dtype == data_type_t::none);
   if (p.act != grp_matmul_gated_act_t::swiglu_oai_mul
       && p.act != grp_matmul_gated_act_t::none
       && !split_halves_no_bias) {
@@ -1236,15 +1318,19 @@ inline bool ck_eligible_int8(const PrepackParams &p) {
   }
   // Pack-NR planner — shared with the bf16 family.
   namespace ck = ::zendnnl::lowoha::matmul::custom_kernel;
-  if (p.K == nullptr || p.K->empty()) return false;
-  if (p.N == nullptr || p.N->empty()) return false;
+  if (p.K == nullptr || p.K->empty()) {
+    return false;
+  }
+  if (p.N == nullptr || p.N->empty()) {
+    return false;
+  }
   int rep_K = (*p.K)[0];
   int rep_N = (*p.N)[0];
   if (p.M != nullptr) {
     const int sweep = std::min<int>(
-        n_active,
-        static_cast<int>(std::min({p.K->size(), p.N->size(),
-                                   p.M->size()})));
+                        n_active,
+                        static_cast<int>(std::min({p.K->size(), p.N->size(),
+                                         p.M->size()})));
     for (int i = 0; i < sweep; ++i) {
       if ((*p.M)[i] > 0) {
         rep_K = (*p.K)[i];
@@ -1262,9 +1348,13 @@ inline bool ck_eligible_int8(const PrepackParams &p) {
   // NOT mark the call CK-eligible and skip the AOCL warm — otherwise the
   // runtime AOCL fallback would run on a cold cache.  (bf16's K-pair pack
   // is unaffected; this gate is int8-only, hence in `ck_eligible_int8`.)
-  if ((rep_K % ck::kVNNIInt8Quad) != 0) return false;
+  if ((rep_K % ck::kVNNIInt8Quad) != 0) {
+    return false;
+  }
   const int pack_nr = ck::plan_pack_nr(rep_K, rep_N);
-  if (pack_nr != ck::kNRMin && pack_nr != ck::kNRMax) return false;
+  if (pack_nr != ck::kNRMin && pack_nr != ck::kNRMax) {
+    return false;
+  }
   return true;
 }
 
@@ -1331,8 +1421,12 @@ inline void cross_warm(const PrepackParams                  &p,
                        custom_kernel::PackProbeStats        &st_ck,
                        CrossWarmRegime                      &out_regime) {
   out_regime = CrossWarmRegime::none;
-  if (!get_grp_matmul_cross_warm())                          return;
-  if (inner_kernel != matmul_algo_t::aocl_dlp_blocked)       return;
+  if (!get_grp_matmul_cross_warm()) {
+    return;
+  }
+  if (inner_kernel != matmul_algo_t::aocl_dlp_blocked) {
+    return;
+  }
 
   // Auto-select-only gate.  Cross-warm always targets a DIFFERENT
   // scheduling ALGO's reorder cache than the one this prepack
@@ -1349,7 +1443,9 @@ inline void cross_warm(const PrepackParams                  &p,
   // one-time lazy reorder on its first cache miss — not performant, but
   // correct and bounded.  No correctness impact either way: the runtime
   // populates whatever it needs on demand.
-  if (get_grp_matmul_algo() != 0)                            return;
+  if (get_grp_matmul_algo() != 0) {
+    return;
+  }
 
   if (current_algo == 3) {
     // ALGO 3 → cross-warm the upcoming ALGO 1 prompt path's full-
@@ -1376,11 +1472,11 @@ inline void cross_warm(const PrepackParams                  &p,
       static const bool s_ck_int8_warm = apilog_info_enabled();
       if (s_ck_int8_warm) {
         apilog_info(
-            "[GRP_MATMUL.PREPACK CROSS_WARM] regime="
-            "aocl_full_weight_sym_quant: int8 CK regime — warmed AOCL "
-            "sym-quant LRU eagerly (packed_ok=", st_extra.packed_ok,
-            " skipped=", st_extra.skipped_invalid,
-            ").  First post-CK ALGO 1 prompt call hits the cache.");
+          "[GRP_MATMUL.PREPACK CROSS_WARM] regime="
+          "aocl_full_weight_sym_quant: int8 CK regime — warmed AOCL "
+          "sym-quant LRU eagerly (packed_ok=", st_extra.packed_ok,
+          " skipped=", st_extra.skipped_invalid,
+          ").  First post-CK ALGO 1 prompt call hits the cache.");
       }
       return;
     }
@@ -1439,13 +1535,13 @@ inline void cross_warm(const PrepackParams                  &p,
       // per-tile LRU; bf16 otherwise.
       const bool int8_dlp = int8_aocl_warm_candidate(p);
       const auto st_extra = int8_dlp
-          ? warm_aocl_n_tile_sym_quant(p, stable, nr_align_cross)
-          : warm_aocl_n_tile(p, stable, nr_align_cross);
+                            ? warm_aocl_n_tile_sym_quant(p, stable, nr_align_cross)
+                            : warm_aocl_n_tile(p, stable, nr_align_cross);
       st_aocl.total_attempted += st_extra.total_attempted;
       st_aocl.packed_ok       += st_extra.packed_ok;
       st_aocl.skipped_invalid += st_extra.skipped_invalid;
       out_regime = int8_dlp ? CrossWarmRegime::aocl_per_tile_sym_quant
-                            : CrossWarmRegime::aocl_per_tile;
+                   : CrossWarmRegime::aocl_per_tile;
     }
   }
 }
@@ -1493,17 +1589,28 @@ static void prepack_aocl_only_algo(const PrepackParams &p,
   // under mixed mode (via the flag inside `warm_pack_all_aocl_dlp_experts`);
   // int8 sym-quant stays out-of-place (no in-place int8 path).
   auto warm_primary_full_weight = [&]() {
-    if (pre.inner_kernel != matmul_algo_t::aocl_dlp_blocked) return;
-    if (int8_aocl_warm_candidate(p)) {
+    if (pre.inner_kernel != matmul_algo_t::aocl_dlp_blocked) {
+      return;
+    }
+    if (w4a8_aocl_warm_candidate(p)) {
+      // W4A8: convert s4→s8 + AOCL sym-quant reorder into W4A8 cache.
+      // group_size = K/G derived from build_prepack_params (matches the
+      // runtime's broadcast_w4a8_src_scale + w4a8ReorderAndCacheWeightsAocl
+      // cache key derivation).
+      st_aocl = warm_aocl_w4a8(p, p.w4a8_group_size);
+      primary_label = "aocl_full_weight_w4a8";
+    }
+    else if (int8_aocl_warm_candidate(p)) {
       // M1 — DQ-INT8 prompt reorders the full weight through the AOCL DLP
       // sym-quant path (out-of-place), NOT the bf16 LRU.  CK is ALGO-3
       // only, so the prompt phase always uses AOCL DLP.
       st_aocl = warm_aocl_sym_quant(p);
       primary_label = "aocl_full_weight_sym_quant";
-    } else {
+    }
+    else {
       st_aocl = warm_aocl(p);
       primary_label = mixed_inplace ? "aocl_full_weight_inplace"
-                                    : "aocl_full_weight";
+                      : "aocl_full_weight";
     }
     primary_did_aocl_fw = true;
   };
@@ -1528,32 +1635,34 @@ static void prepack_aocl_only_algo(const PrepackParams &p,
     // completeness HERE — `warm_primary_full_weight()` overwrites `st_aocl`
     // with the prompt full-weight stats.
     const bool cross_warm_complete =
-        cwr != CrossWarmRegime::none
-        && st_ck.skipped_invalid == 0
-        && st_aocl.skipped_invalid == 0;
+      cwr != CrossWarmRegime::none
+      && st_ck.skipped_invalid == 0
+      && st_aocl.skipped_invalid == 0;
     if (cross_warm_complete) {
       // ... then the in-place full-weight prompt mutation last.
       warm_primary_full_weight();
-    } else {
+    }
+    else {
       // Publish WC=1 before clearing the mixed flag (WC==2 is what gates every
       // in-place path; mirrors the dispatch downgrade order).  Leave W RAW.
       zendnnl::ops::matmul_config_t::instance().set_weight_cache(1);
       zendnnl::ops::matmul_config_t::instance().set_grp_auto_mixed_inplace(
-          false);
+        false);
       static std::atomic<bool> s_wc2_xwarm_downgrade_warned{false};
       if (!s_wc2_xwarm_downgrade_warned.exchange(
-              true, std::memory_order_relaxed)) {
+            true, std::memory_order_relaxed)) {
         zendnnl::error_handling::apilog_warning(
-            "[GRP_MATMUL.WEIGHT_CACHE] AUTO mixed-in-place: cross-warm did not "
-            "fully populate the decode layout (regime=",
-            static_cast<int>(cwr), " ck_skipped=", st_ck.skipped_invalid,
-            " aocl_skipped=", st_aocl.skipped_invalid,
-            "); skipping the in-place prompt mutation and downgrading "
-            "process-wide to out-of-place (weight_cache_type=1) for the rest "
-            "of the run so decode never reorders from a mutated buffer.");
+          "[GRP_MATMUL.WEIGHT_CACHE] AUTO mixed-in-place: cross-warm did not "
+          "fully populate the decode layout (regime=",
+          static_cast<int>(cwr), " ck_skipped=", st_ck.skipped_invalid,
+          " aocl_skipped=", st_aocl.skipped_invalid,
+          "); skipping the in-place prompt mutation and downgrading "
+          "process-wide to out-of-place (weight_cache_type=1) for the rest "
+          "of the run so decode never reorders from a mutated buffer.");
       }
     }
-  } else {
+  }
+  else {
     warm_primary_full_weight();
     cross_warm(p, pre.inner_kernel, scheduling_algo,
                primary_did_aocl_fw, /*primary_did_custom=*/false,
@@ -1666,18 +1775,21 @@ void prepack_for_algo_3(const PrepackParams &p) {
       if (int8_aocl_warm_candidate(p)) {
         st_aocl = warm_aocl_n_tile_sym_quant(p, stable, nr_align_eff);
         primary_label = "aocl_per_tile_sym_quant";
-      } else {
+      }
+      else {
         st_aocl = warm_aocl_n_tile(p, stable, nr_align_eff);
         primary_label = "aocl_per_tile";
       }
-    } else {
+    }
+    else {
       // Narrow-N escape (`stable * nr_align > max_N`): planner
       // routes to Sequential which uses the full-weight key.  M3 —
       // sym-quant full-weight for DQ-INT8, bf16 otherwise.
       if (int8_aocl_warm_candidate(p)) {
         st_aocl = warm_aocl_sym_quant(p);
         primary_label = "aocl_full_weight_sym_quant";
-      } else {
+      }
+      else {
         st_aocl = warm_aocl(p);
         primary_label = "aocl_full_weight";
       }
@@ -1716,7 +1828,7 @@ void prepack_for_algo_3(const PrepackParams &p) {
              st_aocl, st_ck, cwr);
 
   log_pack_probe(/*scheduling_algo=*/3, p, pre.inner_kernel, st_aocl, st_ck,
-                 cwr, primary_label);
+                                     cwr, primary_label);
 }
 
 void prepack_for_algo_4(const PrepackParams &p) {
