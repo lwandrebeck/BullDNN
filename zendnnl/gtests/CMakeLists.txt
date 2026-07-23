@@ -160,6 +160,17 @@ if(ZENDNNL_BUILD_GTEST)
     target_link_options(gtests PRIVATE "-fsanitize=address")
   endif()
 
+  # GCC 15+/16 tightened many diagnostics (-Wnonnull on empty-range std::copy
+  # in libstdc++ headers, -Wdeprecated-openmp on `#pragma omp master`, etc.)
+  # and emit them across the test sources. The library itself builds clean
+  # under -Werror; only the test harness trips these on compilers newer than
+  # the project's supported RHEL toolchains. Demote -Werror to plain warnings
+  # for the gtests target only (added after the global -Werror, so it wins).
+  if(CMAKE_CXX_COMPILER_ID STREQUAL "GNU" AND
+     CMAKE_CXX_COMPILER_VERSION VERSION_GREATER_EQUAL 13)
+    target_compile_options(gtests PRIVATE -Wno-error)
+  endif()
+
   install(TARGETS gtests
     DESTINATION gtests)
 else()
