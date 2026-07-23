@@ -15,6 +15,7 @@
  ******************************************************************************/
 
 #include "lowoha_operators/reorder/lowoha_reorder_utils.hpp"
+#include "common/platform_info.hpp"
 #include "lowoha_operators/reorder/reorder_data_type/dynamic_quant_impl/dynamic_kernels.hpp"
 
 #include <algorithm>
@@ -47,6 +48,9 @@ namespace reorder {
  */
 bool dispatch_fused_per_token(const void *src, void *dst,
         const reorder_params_t &params, int64_t M, int64_t N) {
+    // AVX-512 native path; decline on non-AVX-512 hosts (AMD family 15h).
+    if (!zendnnl::common::zendnnl_platform_info().get_avx512f_status())
+        return false;
     const auto scale_dt = params.quant_params.scale.dt;
     if (scale_dt != data_type_t::f32 && scale_dt != data_type_t::bf16
             && scale_dt != data_type_t::f16)
@@ -163,6 +167,9 @@ bool dispatch_fused_per_token(const void *src, void *dst,
 
 bool dispatch_unfused_per_token(const void *src, void *dst,
         const reorder_params_t &params, int64_t M, int64_t N) {
+    // AVX-512 native path; decline on non-AVX-512 hosts (AMD family 15h).
+    if (!zendnnl::common::zendnnl_platform_info().get_avx512f_status())
+        return false;
     const auto scale_dt = params.quant_params.scale.dt;
     if (scale_dt != data_type_t::f32 && scale_dt != data_type_t::bf16
             && scale_dt != data_type_t::f16)
@@ -266,6 +273,9 @@ bool dispatch_unfused_per_token(const void *src, void *dst,
  */
 bool dispatch_fused_per_group(const void *src, void *dst,
         const reorder_params_t &params, int64_t M, int64_t K) {
+    // AVX-512 native path; decline on non-AVX-512 hosts (AMD family 15h).
+    if (!zendnnl::common::zendnnl_platform_info().get_avx512f_status())
+        return false;
     const auto scale_dt = params.quant_params.scale.dt;
     if (scale_dt != data_type_t::f32 && scale_dt != data_type_t::bf16
             && scale_dt != data_type_t::f16)
@@ -378,6 +388,10 @@ bool dispatch_group_dynamic_per_token(const std::vector<const void *> &src,
         const std::vector<int> &lda, const std::vector<void *> &dst,
         const std::vector<int> &dst_lda, const std::vector<void *> &scale,
         const group_dynamic_quant_params_t &params) {
+    // Native kernels below emit AVX-512 (zmm); decline on non-AVX-512 hosts
+    // (e.g. AMD family 15h) so the caller fails gracefully instead of SIGILL.
+    if (!zendnnl::common::zendnnl_platform_info().get_avx512f_status())
+        return false;
     if (params.dst_dtype != data_type_t::s8) return false;
     if (params.scale_dtype != data_type_t::f32
             && params.scale_dtype != data_type_t::bf16
@@ -449,6 +463,10 @@ bool dispatch_group_dynamic_per_group(const std::vector<const void *> &src,
         const std::vector<int> &lda, const std::vector<void *> &dst,
         const std::vector<int> &dst_lda, const std::vector<void *> &scale,
         const group_dynamic_quant_params_t &params) {
+    // Native kernels below emit AVX-512 (zmm); decline on non-AVX-512 hosts
+    // (e.g. AMD family 15h) so the caller fails gracefully instead of SIGILL.
+    if (!zendnnl::common::zendnnl_platform_info().get_avx512f_status())
+        return false;
     if (params.dst_dtype != data_type_t::s8) return false;
     if (params.scale_dtype != data_type_t::f32
             && params.scale_dtype != data_type_t::bf16) {
