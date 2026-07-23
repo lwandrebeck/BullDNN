@@ -606,6 +606,11 @@ status_t validate_dynamic_quant_params(
 
 status_t compute_dynamic_quant_params(
         const void *src, const reorder_params_t &params) {
+    // All scale-compute kernels below are AVX-512 (_native). Decline on
+    // non-AVX-512 hosts (e.g. AMD family 15h) so callers fail gracefully
+    // instead of executing zmm instructions and raising SIGILL.
+    if (!zendnnl::common::zendnnl_platform_info().get_avx512f_status())
+        return status_t::isa_unsupported;
     const auto &scale_dims = params.quant_params.scale.dims;
     const auto &shape = params.src_shape;
 
