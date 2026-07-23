@@ -28,6 +28,9 @@ using namespace Au;
 
 platform_info_t::platform_info_t()
     : is_avx2 {false}
+    , is_avx {false}
+    , is_f16c {false}
+    , is_fma {false}
     , is_avx512f {false}
     , is_avx512bw {false}
     , is_avx512vl {false}
@@ -51,6 +54,9 @@ status_t platform_info_t::populate() {
     cpu_model = v_info.m_model;
     cpu_uarch = static_cast<uint32_t>(v_info.m_uarch);
     is_avx2 = cpu.hasFlag(ECpuidFlag::avx2);
+    is_avx = cpu.hasFlag(ECpuidFlag::avx);
+    is_f16c = cpu.hasFlag(ECpuidFlag::f16c);
+    is_fma = cpu.hasFlag(ECpuidFlag::fma);
     is_avx512f = cpu.hasFlag(ECpuidFlag::avx512f);
     is_avx512bw = cpu.hasFlag(ECpuidFlag::avx512bw);
     is_avx512vl = cpu.hasFlag(ECpuidFlag::avx512vl);
@@ -72,6 +78,18 @@ void platform_info_t::detect_f16_isa() {
 
 bool platform_info_t::get_avx2_status() const {
     return is_avx2;
+}
+
+bool platform_info_t::get_avx_status() const {
+    return is_avx;
+}
+
+bool platform_info_t::get_f16c_status() const {
+    return is_f16c;
+}
+
+bool platform_info_t::get_fma_status() const {
+    return is_fma;
 }
 
 bool platform_info_t::get_avx512f_status() const {

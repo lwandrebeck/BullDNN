@@ -56,6 +56,27 @@ public:
    */
     bool get_avx2_status() const;
 
+    /** @brief Get AVX (256-bit) status.
+   *  Baseline for the AVX SIMD path (AMD family 15h and any AVX CPU
+   *  without AVX-512). True if the platform supports AVX.
+   *  @return true if platform supports AVX else false.
+   */
+    bool get_avx_status() const;
+
+    /** @brief Get F16C status (hardware FP16 <-> FP32 conversion).
+   *  Present on AMD Piledriver and later within family 15h; absent on
+   *  Bulldozer. Gates the avx_f16c_tag hardware VCVTPH2PS/VCVTPS2PH path.
+   *  @return true if platform supports F16C else false.
+   */
+    bool get_f16c_status() const;
+
+    /** @brief Get FMA3 status.
+   *  Present on AMD Piledriver and later within family 15h; absent on
+   *  Bulldozer. Gates the fused vec_fmadd in the avx_f16c_tag path.
+   *  @return true if platform supports FMA3 else false.
+   */
+    bool get_fma_status() const;
+
     /** @brief Get avx512 status
    *  @return true if platform supports avx512 else false.
    */
@@ -121,6 +142,9 @@ private:
     void detect_f16_isa();
 
     bool is_avx2;
+    bool is_avx;
+    bool is_f16c;
+    bool is_fma;
     bool is_avx512f;
     bool is_avx512bw;
     bool is_avx512vl;

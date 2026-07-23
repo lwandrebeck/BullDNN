@@ -28,6 +28,7 @@ namespace simd {
 // Tag types for compile-time SIMD dispatch.
 // ---------------------------------------------------------------------------
 struct avx512_tag {};
+struct avx_tag {};     // AVX (256-bit, no AVX2/AVX-512) — AMD family 15h baseline
 struct scalar_tag {};
 
 template <typename Tag>
@@ -113,6 +114,270 @@ struct SimdOps<scalar_tag> {
         dst[0] = zendnnl::common::float16_t::f32_to_f16_val(v.v);
     }
 };
+
+// ===========================================================================
+// AVX specialization — 8 float lanes, enabled via target attribute.
+//
+// Baseline vector path for AMD family 15h (Bulldozer / Piledriver /
+// Steamroller / Excavator) and any AVX-capable CPU without AVX-512.
+//
+// Deliberately restricted to the plain "avx" target so this header keeps
+// compiling in every build configuration (including the default AVX-512
+// build, which is not compiled with -mfma4/-mf16c/-mavx2):
+//   - vec_fmadd uses mul+add (no FMA): FMA3 is unavailable on Bulldozer and
+//     FMA4 intrinsics are not exposed by a target attribute alone. The
+//     fused path lives in the avx_f16c_tag specialization (Piledriver+).
+//   - 256-bit integer math (exp exponent build, bf16 pack/unpack) is done as
+//     two 128-bit SSE halves because 256-bit integer ops are AVX2-only.
+//   - FP16 <-> FP32 uses the scalar float16_t helpers because F16C is absent
+//     on Bulldozer. avx_f16c_tag provides the hardware VCVTPH2PS path.
+// ===========================================================================
+
+#define LOWOHA_SIMD_AVX_ATTR __attribute__((target("avx")))
+
+template <>
+struct SimdOps<avx_tag> {
+
+  using VecF32 = __m256;
+  static constexpr int kFloatLanes = 8;
+
+  LOWOHA_SIMD_AVX_ATTR
+  static inline VecF32 vec_loadu(const float *p) {
+    return _mm256_loadu_ps(p);
+  }
+
+  LOWOHA_SIMD_AVX_ATTR
+  static inline void vec_storeu(float *p, VecF32 x) {
+    _mm256_storeu_ps(p, x);
+  }
+
+  LOWOHA_SIMD_AVX_ATTR
+  static inline VecF32 vec_set1(float f) {
+    return _mm256_set1_ps(f);
+  }
+
+  LOWOHA_SIMD_AVX_ATTR
+  static inline VecF32 vec_add(VecF32 a, VecF32 b) {
+    return _mm256_add_ps(a, b);
+  }
+
+  LOWOHA_SIMD_AVX_ATTR
+  static inline VecF32 vec_sub(VecF32 a, VecF32 b) {
+    return _mm256_sub_ps(a, b);
+  }
+
+  LOWOHA_SIMD_AVX_ATTR
+  static inline VecF32 vec_mul(VecF32 a, VecF32 b) {
+    return _mm256_mul_ps(a, b);
+  }
+
+  // No FMA on the baseline AVX path (see class comment): mul+add.
+  LOWOHA_SIMD_AVX_ATTR
+  static inline VecF32 vec_fmadd(VecF32 a, VecF32 b, VecF32 c) {
+    return _mm256_add_ps(_mm256_mul_ps(a, b), c);
+  }
+
+  LOWOHA_SIMD_AVX_ATTR
+  static inline VecF32 vec_max(VecF32 a, VecF32 b) {
+    return _mm256_max_ps(a, b);
+  }
+
+  LOWOHA_SIMD_AVX_ATTR
+  static inline VecF32 vec_min(VecF32 a, VecF32 b) {
+    return _mm256_min_ps(a, b);
+  }
+
+  LOWOHA_SIMD_AVX_ATTR
+  static inline float vec_hsum(VecF32 v) {
+    __m128 lo = _mm256_castps256_ps128(v);
+    __m128 hi = _mm256_extractf128_ps(v, 1);
+    __m128 s  = _mm_add_ps(lo, hi);          // 4 partial sums
+    s = _mm_hadd_ps(s, s);                   // SSE3
+    s = _mm_hadd_ps(s, s);
+    return _mm_cvtss_f32(s);
+  }
+
+  LOWOHA_SIMD_AVX_ATTR
+  static inline float vec_hmax(VecF32 v) {
+    __m128 lo = _mm256_castps256_ps128(v);
+    __m128 hi = _mm256_extractf128_ps(v, 1);
+    __m128 m  = _mm_max_ps(lo, hi);          // 4 partial maxima
+    m = _mm_max_ps(m, _mm_movehl_ps(m, m));  // max{0,2},{1,3}
+    m = _mm_max_ps(m, _mm_shuffle_ps(m, m, _MM_SHUFFLE(1, 1, 1, 1)));
+    return _mm_cvtss_f32(m);
+  }
+
+  // ── Fast exp (~20 ULP, Malossi et al.) ──────────────────────────────
+  // 256-bit port of the AVX-512 kernels. Mask-moves become blendv_ps and
+  // the 2^n exponent build is split across two 128-bit halves (AVX2-free).
+
+  LOWOHA_SIMD_AVX_ATTR
+  static inline __m256 fexp_u20_ps_256(__m256 values) {
+    const __m256 vec_c0 = _mm256_set1_ps(0.00010703434948458272f);
+    const __m256 vec_c1 = _mm256_set1_ps(0.30354260500649682f);
+    const __m256 vec_c2 = _mm256_set1_ps(-0.22433836478672356f);
+    const __m256 vec_c3 = _mm256_set1_ps(-0.079204240219773236f);
+    const __m256 vec_exp_log2ef =
+      _mm256_castsi256_ps(_mm256_set1_epi32(0x3fb8aa3b));
+    const __m256 vec_a =
+      _mm256_set1_ps(static_cast<float>(std::pow(2.0, 23) / std::log2(2.0)));
+    const __m256 vec_b =
+      _mm256_set1_ps(static_cast<float>(std::pow(2.0, 23) * 127.0));
+    const __m256 vec_ln_flt_min =
+      _mm256_castsi256_ps(_mm256_set1_epi32(0xc2aeac50));
+    const __m256 vec_ln_flt_max =
+      _mm256_castsi256_ps(_mm256_set1_epi32(0x42b17218));
+    const __m256 vec_infinity =
+      _mm256_castsi256_ps(_mm256_set1_epi32(0x7F800000));
+    const __m256 vec_zero = _mm256_setzero_ps();
+
+    const __m256 min_mask = _mm256_cmp_ps(values, vec_ln_flt_min, _CMP_LT_OS);
+    const __m256 max_mask = _mm256_cmp_ps(values, vec_ln_flt_max, _CMP_GT_OS);
+
+    __m256 vec_src = _mm256_mul_ps(values, vec_exp_log2ef);
+    __m256 vec_fractional =
+      _mm256_sub_ps(vec_src, _mm256_floor_ps(vec_src));
+
+    __m256 vec_res = _mm256_add_ps(_mm256_mul_ps(vec_fractional, vec_c3), vec_c2);
+    vec_res = _mm256_add_ps(_mm256_mul_ps(vec_fractional, vec_res), vec_c1);
+    vec_res = _mm256_add_ps(_mm256_mul_ps(vec_fractional, vec_res), vec_c0);
+
+    vec_src = _mm256_sub_ps(vec_src, vec_res);
+    __m256 tmp = _mm256_add_ps(_mm256_mul_ps(vec_a, vec_src), vec_b);
+    __m256 casted = _mm256_castsi256_ps(_mm256_cvttps_epi32(tmp));
+    casted = _mm256_blendv_ps(casted, vec_zero, min_mask);
+    casted = _mm256_blendv_ps(casted, vec_infinity, max_mask);
+    return casted;
+  }
+
+  LOWOHA_SIMD_AVX_ATTR
+  static inline __m256 exp_u20_ps_256(__m256 values) {
+    const __m256 vec_factorial_1 = _mm256_set1_ps(0.999999701f);
+    const __m256 vec_factorial_2 = _mm256_set1_ps(0.499991506f);
+    const __m256 vec_factorial_3 = _mm256_set1_ps(0.166676521f);
+    const __m256 vec_factorial_4 = _mm256_set1_ps(0.0418978221f);
+    const __m256 vec_factorial_5 = _mm256_set1_ps(0.00828929059f);
+    const __m256 vec_exp_log2ef =
+      _mm256_castsi256_ps(_mm256_set1_epi32(0x3fb8aa3b));
+    const __m256 vec_half = _mm256_set1_ps(0.5f);
+    const __m256 vec_one = _mm256_set1_ps(1.f);
+    const __m256 vec_ln2f =
+      _mm256_castsi256_ps(_mm256_set1_epi32(0x3f317218));
+    const __m256 vec_ln_flt_min =
+      _mm256_castsi256_ps(_mm256_set1_epi32(0xc2aeac50));
+    const __m256 vec_ln_flt_max =
+      _mm256_castsi256_ps(_mm256_set1_epi32(0x42b17218));
+    const __m128i vec_126 = _mm_set1_epi32(126);
+    constexpr int n_mantissa_bits = 23;
+
+    const __m256 less_ln_flt_min_mask =
+      _mm256_cmp_ps(values, vec_ln_flt_min, _CMP_LT_OS);
+    __m256 vec_src = _mm256_min_ps(values, vec_ln_flt_max);
+    vec_src = _mm256_max_ps(vec_src, vec_ln_flt_min);
+
+    // round-to-negative-infinity via floor (AVX has no rounded cvt with mask)
+    __m256 vec_fx = _mm256_add_ps(_mm256_mul_ps(vec_src, vec_exp_log2ef), vec_half);
+    vec_fx = _mm256_floor_ps(vec_fx);
+    __m256i vec_fx_i = _mm256_cvttps_epi32(vec_fx);
+
+    // vec_exp_poly = vec_src - vec_fx * ln2f
+    __m256 vec_exp_poly = _mm256_sub_ps(vec_src, _mm256_mul_ps(vec_fx, vec_ln2f));
+
+    __m256 vec_res =
+      _mm256_add_ps(_mm256_mul_ps(vec_exp_poly, vec_factorial_5), vec_factorial_4);
+    vec_res = _mm256_add_ps(_mm256_mul_ps(vec_exp_poly, vec_res), vec_factorial_3);
+    vec_res = _mm256_add_ps(_mm256_mul_ps(vec_exp_poly, vec_res), vec_factorial_2);
+    vec_res = _mm256_add_ps(_mm256_mul_ps(vec_exp_poly, vec_res), vec_factorial_1);
+    vec_res = _mm256_add_ps(_mm256_mul_ps(vec_exp_poly, vec_res), vec_one);
+
+    // Build 2^fx as (fx + 126) << 23 then *2 (see AVX-512 note). 256-bit
+    // integer add/shift are AVX2-only, so split into two 128-bit halves.
+    __m128i lo = _mm256_castsi256_si128(vec_fx_i);
+    __m128i hi = _mm256_extractf128_si256(vec_fx_i, 1);
+    lo = _mm_slli_epi32(_mm_add_epi32(lo, vec_126), n_mantissa_bits);
+    hi = _mm_slli_epi32(_mm_add_epi32(hi, vec_126), n_mantissa_bits);
+    __m256i two_pow_n_i =
+      _mm256_insertf128_si256(_mm256_castsi128_si256(lo), hi, 1);
+    __m256 vec_two_pow_n = _mm256_castsi256_ps(two_pow_n_i);
+    vec_two_pow_n =
+      _mm256_blendv_ps(vec_two_pow_n, _mm256_setzero_ps(), less_ln_flt_min_mask);
+
+    vec_res = _mm256_mul_ps(vec_res, vec_two_pow_n);
+    vec_res = _mm256_mul_ps(vec_res, _mm256_set1_ps(2.f));
+    return vec_res;
+  }
+
+  LOWOHA_SIMD_AVX_ATTR
+  static inline VecF32 vec_exp_u20(VecF32 v) {
+    return exp_u20_ps_256(v);
+  }
+
+  LOWOHA_SIMD_AVX_ATTR
+  static inline VecF32 vec_fexp_u20(VecF32 v) {
+    return fexp_u20_ps_256(v);
+  }
+
+  LOWOHA_SIMD_AVX_ATTR
+  static inline float vec_reduce_sum(VecF32 acc) {
+    return vec_hsum(acc);
+  }
+
+  LOWOHA_SIMD_AVX_ATTR
+  static inline float vec_reduce_max(VecF32 acc) {
+    return vec_hmax(acc);
+  }
+
+  // ── BF16 ────────────────────────────────────────────────────────────
+  // bf16 is the top 16 bits of fp32, so conversion is pure bit-twiddling.
+  // 256-bit integer ops are AVX2-only; done here as two 128-bit halves.
+
+  LOWOHA_SIMD_AVX_ATTR
+  static inline VecF32 vec_mask_bf16_loadu(const uint16_t *p) {
+    __m128i u  = _mm_loadu_si128(reinterpret_cast<const __m128i *>(p));
+    __m128i lo = _mm_slli_epi32(_mm_cvtepu16_epi32(u), 16);
+    __m128i hi = _mm_slli_epi32(_mm_cvtepu16_epi32(_mm_srli_si128(u, 8)), 16);
+    __m256i wide = _mm256_insertf128_si256(_mm256_castsi128_si256(lo), hi, 1);
+    return _mm256_castsi256_ps(wide);
+  }
+
+  // FP32 → BF16 store with round-to-nearest-even. Inverse of the loader.
+  LOWOHA_SIMD_AVX_ATTR
+  static inline void vec_bf16_storeu(uint16_t *dst, VecF32 v) {
+    __m256i u = _mm256_castps_si256(v);
+    const __m128i one = _mm_set1_epi32(1);
+    const __m128i k7fff = _mm_set1_epi32(0x7FFF);
+    __m128i half[2] = { _mm256_castsi256_si128(u),
+                        _mm256_extractf128_si256(u, 1) };
+    for (int i = 0; i < 2; ++i) {
+      __m128i rounding_bias = _mm_add_epi32(
+        _mm_and_si128(_mm_srli_epi32(half[i], 16), one), k7fff);
+      half[i] = _mm_srli_epi32(_mm_add_epi32(half[i], rounding_bias), 16);
+    }
+    _mm_storeu_si128(reinterpret_cast<__m128i *>(dst),
+                     _mm_packus_epi32(half[0], half[1]));
+  }
+
+  // ── FP16 (IEEE 754 half) ────────────────────────────────────────────
+  // Bulldozer lacks F16C, so convert in software via float16_t. The
+  // hardware VCVTPH2PS path lives in the avx_f16c_tag specialization.
+  LOWOHA_SIMD_AVX_ATTR
+  static inline VecF32 vec_mask_f16_loadu(const uint16_t *p) {
+    alignas(32) float tmp[8];
+    for (int i = 0; i < 8; ++i)
+      tmp[i] = zendnnl::common::float16_t::f16_to_f32_val(p[i]);
+    return _mm256_loadu_ps(tmp);
+  }
+
+  LOWOHA_SIMD_AVX_ATTR
+  static inline void vec_f16_storeu(uint16_t *dst, VecF32 v) {
+    alignas(32) float tmp[8];
+    _mm256_storeu_ps(tmp, v);
+    for (int i = 0; i < 8; ++i)
+      dst[i] = zendnnl::common::float16_t::f32_to_f16_val(tmp[i]);
+  }
+};
+
+#undef LOWOHA_SIMD_AVX_ATTR
 
 // ===========================================================================
 // AVX-512 specialization — 16 float lanes, enabled via target attribute.
