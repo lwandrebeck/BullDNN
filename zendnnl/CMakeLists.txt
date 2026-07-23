@@ -72,8 +72,35 @@ include(ZenDnnlDependenciesInfo)
 # global cxx flags
 set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -D_GLIBCXX_USE_CXX11_ABI=1")
 set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -Wall -Werror")
-if (CMAKE_CXX_COMPILER_ID STREQUAL "Clang")
-  set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -mavx -mavx2 -mavx512f -mavx512vl -mavx512bf16")
+# Target CPU architecture selection.
+#   zen (default) : upstream ZenDNN behavior (AVX2 + AVX-512), full compatibility.
+#   bdver1        : AMD family 15h Bulldozer   (AVX, FMA4, XOP; no FMA3/AVX2/AVX-512).
+#   bdver2        : AMD family 15h Piledriver  (adds FMA3, F16C, BMI1; no AVX2).
+#   bdver3        : AMD family 15h Steamroller (as Piledriver; no AVX2).
+#   bdver4        : AMD family 15h Excavator   (adds AVX2, BMI2; no AVX-512).
+#   native        : tune for the build host.
+# AVX-512 exists nowhere in family 15h; AVX2 only on Excavator (bdver4).
+set(BULLDNN_TARGET_ARCH "zen" CACHE STRING
+  "Target CPU arch: zen | bdver1 | bdver2 | bdver3 | bdver4 | native")
+set_property(CACHE BULLDNN_TARGET_ARCH PROPERTY STRINGS
+  zen bdver1 bdver2 bdver3 bdver4 native)
+
+if(BULLDNN_TARGET_ARCH STREQUAL "zen")
+  # Upstream default: AVX-512-capable Zen cores.
+  if(CMAKE_CXX_COMPILER_ID STREQUAL "Clang")
+    set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -mavx -mavx2 -mavx512f -mavx512vl -mavx512bf16")
+  endif()
+  message(STATUS "${ZENDNNL_MSG_PREFIX} BullDNN target arch: zen (upstream, AVX-512)")
+elseif(BULLDNN_TARGET_ARCH STREQUAL "native")
+  set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -march=native")
+  message(STATUS "${ZENDNNL_MSG_PREFIX} BullDNN target arch: native (host-tuned)")
+else()
+  # AMD family 15h. -march=bdverN pins the baseline to that core's exact ISA,
+  # so the compiler can never emit an unsupported instruction. AVX-512 kernels
+  # guarded by __attribute__((target("avx512..."))) still compile but are never
+  # dispatched at runtime (gated by platform_info feature detection).
+  set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -march=${BULLDNN_TARGET_ARCH}")
+  message(STATUS "${ZENDNNL_MSG_PREFIX} BullDNN target arch: ${BULLDNN_TARGET_ARCH} (AMD family 15h, no AVX-512)")
 endif()
 
 check_cxx_source_compiles("

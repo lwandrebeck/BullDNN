@@ -27,6 +27,15 @@ set(ZENDNNL_MESSAGE_LOG_LEVEL "DEBUG" CACHE STRING "zendnnl log level")
 set(ZENDNNL_BUILD_TYPE "Release" CACHE STRING "zendnnl build type")
 set(ZENDNNL_MSG_PREFIX "(ZENDNNL) " CACHE STRING "zendnnl message prefix")
 
+# Target CPU architecture, forwarded to the zendnnl library sub-build
+# (consumed in zendnnl/CMakeLists.txt). Default "zen" preserves upstream
+# behavior; bdver1..bdver4 target AMD family 15h; native tunes for the host.
+set(BULLDNN_TARGET_ARCH "zen" CACHE STRING
+  "Target CPU arch: zen | bdver1 | bdver2 | bdver3 | bdver4 | native")
+set_property(CACHE BULLDNN_TARGET_ARCH PROPERTY STRINGS
+  zen bdver1 bdver2 bdver3 bdver4 native)
+message(STATUS "${ZENDNNL_MSG_PREFIX}BULLDNN_TARGET_ARCH=${BULLDNN_TARGET_ARCH}")
+
 # cmake variables
 set(CMAKE_PREFIX_PATH "${CMAKE_PREFIX_PATH} ${CMAKE_MODULE_PATH}")
 set(CMAKE_INSTALL_PREFIX "${ZENDNNL_INSTALL_PREFIX}")
