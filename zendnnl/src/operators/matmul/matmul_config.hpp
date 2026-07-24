@@ -48,6 +48,7 @@ enum class matmul_algo_t : int32_t {
   reference = 9,         /*!< Reference */
   native_gemm = 10,          /*!< Native GEMM microkernel */
   native_brgemm = 11,        /*!< Native BRGEMM microkernel */
+  moe_custom_kernel = 12,    /*!< group_matmul MoE custom-kernel */
   algo_count             /*!< Algo count */
 };
 

@@ -38,13 +38,29 @@ struct reorder_params_t;
 // (operators/matmul/matmul_config.hpp). The prepacked output produced
 // here is exactly the layout consumed by the matching matmul algo.
 //
-// Supported algo:
+// Supported algos:
 //   - matmul_algo_t::aocl_dlp_blocked
+//       AOCL DLP blocked weight layout. Consumed by the single-op /
+//       group ALGO 1 AOCL DLP path. To consume the prepacked buffer at
+//       matmul time, set @c matmul_params::mem_format_b = 'r' (with
+//       @c lowoha_algo == matmul_algo_t::aocl_dlp_blocked).
+//   - matmul_algo_t::moe_custom_kernel
+//       group_matmul custom-kernel VNNI weight layout (bf16 or s8).
+//       Consumed DIRECTLY by the ALGO 3 (N-tile) custom kernel: set
+//       @c matmul_params::mem_format_b = 'r' AND
+//       @c matmul_params::lowoha_algo == matmul_algo_t::moe_custom_kernel
+//       on the group_matmul_direct call. `mem_format_b == 'r'` alone is
+//       ambiguous (it also marks the aocl_dlp_blocked layout above); the
+//       dispatcher keys the CK-VNNI classification on `lowoha_algo`, so
+//       omitting it leaves the weight treated as a raw/AOCL buffer. When
+//       both are set the dispatcher aliases the caller-owned buffer
+//       instead of re-packing and does NOT touch the process pack cache.
+//       Such a prepacked weight is CK-only — a call that cannot route to
+//       the custom kernel (CK disabled / unsupported host / non-ALGO-3)
+//       fails rather than silently mis-reading the VNNI bytes.
 //
 // Any other matmul_algo_t passed to the prepack API returns
-// status_t::unimplemented. To consume the prepacked buffer at matmul
-// time, set @c matmul_params::mem_format_b = 'r' (with
-// @c lowoha_algo == aocl_dlp_blocked).
+// status_t::unimplemented.
 
 /**
  * @brief Parameters describing a single weight prepack request.
@@ -73,8 +89,9 @@ struct reorder_params_t;
  *       else K / (scale_nelems / M)).
  */
 struct prepack_params_t {
-  matmul_algo_t     algo;             ///< Target matmul algo
-  ///< (must be matmul_algo_t::aocl_dlp_blocked)
+  matmul_algo_t     algo;             ///< Target prepack layout:
+  ///< @c matmul_algo_t::aocl_dlp_blocked   — AOCL DLP blocked weight; OR
+  ///< @c matmul_algo_t::moe_custom_kernel  — group_matmul custom-kernel VNNI
   data_type_t       wei_dtype;        ///< Weight data type
   data_type_t       src_dtype;        ///< Source (matmul A) data type
   int64_t           K;                ///< Weight rows
@@ -82,6 +99,13 @@ struct prepack_params_t {
   int64_t           ldb;              ///< Physical leading dimension
   bool              transposed;       ///< true => 't', false => 'n'
   int               sym_group_size;   ///< AOCL: >0 selects s8 sym-quant variant
+  ///< @brief CK pack width (32 or 64). 0 => auto via plan_pack_nr(K,N).
+  ///< Used only when @c algo == matmul_algo_t::moe_custom_kernel.
+  int               pack_nr;
+  ///< @brief CK split-halves interleave (silu_and_mul / gelu_and_mul
+  ///< re-interleave [gate|up] -> [g0,u0,...]; requires even N).
+  ///< Used only when @c algo == matmul_algo_t::moe_custom_kernel.
+  bool              interleave_split_halves;
 
   /**
    * @brief Last prepacked-buffer size (in bytes) computed by
@@ -104,6 +128,8 @@ struct prepack_params_t {
       K(0), N(0), ldb(0),
       transposed(false),
       sym_group_size(0),
+      pack_nr(0),
+      interleave_split_halves(false),
       cached_size(0) {}
 };
 
@@ -145,6 +171,21 @@ struct prepack_params_t {
 //                         -> aocl_reorder_u8s8s32os32
 //       wei_dtype = s8 with sym_group_size > 0
 //                         -> aocl_reorder_s8s8s32os32_sym_quant (DLP only)
+//
+//   - matmul_algo_t::moe_custom_kernel
+//       Custom-kernel VNNI pack for the group_matmul ALGO 3 (N-tile)
+//       path. Pack family chosen by wei_dtype:
+//         wei_dtype = bf16 -> VDPBF16PS VNNI pack
+//                             (layout [O/pack_nr][K/2][pack_nr][2])
+//         wei_dtype = s8   -> DQ-INT8 VPDPBUSD VNNI-quad pack
+//                             + per-column int32 compensation row
+//                             (requires K % 4 == 0)
+//       pack_nr auto-selects (plan_pack_nr) unless params.pack_nr pins
+//       32 or 64 (must divide N). Consumed by setting
+//       @c matmul_params::mem_format_b = 'r' AND
+//       @c matmul_params::lowoha_algo == matmul_algo_t::moe_custom_kernel
+//       on group_matmul_direct; see the "Supported algos" block at the
+//       top of this file for the CK-only consumption contract.
 //
 // All other matmul_algo_t values return status_t::unimplemented.
 // =====================================================================

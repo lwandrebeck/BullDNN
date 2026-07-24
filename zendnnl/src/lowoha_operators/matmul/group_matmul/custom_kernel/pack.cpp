@@ -956,6 +956,100 @@ void clear_custom_kernel_pack_cache_int8() {
   }
 }
 
+// ── Caller-owned prepack (memory-format change, no caching) ──────
+// Reuse the SAME size formulas and `pack_*_vnni` writers as the cache
+// path, but write into the caller's `dst` and never touch the LRU.
+namespace {
+constexpr size_t kPrepackDstAlign = 64;
+inline size_t align_up_dst(size_t bytes) {
+  return (bytes + kPrepackDstAlign - 1) & ~(kPrepackDstAlign - 1);
+}
+inline bool prepack_shape_valid(int K, int N, int pack_nr) {
+  return K > 0 && N > 0
+      && (pack_nr == kNRMin || pack_nr == kNRMax)
+      && (N % pack_nr) == 0;
+}
+}  // namespace
+
+size_t packed_weight_size_bf16(int K, int N, int pack_nr) {
+  if (!prepack_shape_valid(K, N, pack_nr)) return 0;
+  const int    K_pair = (K + 1) / 2;
+  const size_t bytes  = static_cast<size_t>(N / pack_nr)
+      * K_pair * pack_nr * kVNNIPair * sizeof(bfloat16_t);
+  return align_up_dst(bytes);
+}
+
+size_t packed_weight_size_int8(int K, int N, int pack_nr) {
+  if (!prepack_shape_valid(K, N, pack_nr)) return 0;
+  const int    K_quad   = (K + kVNNIInt8Quad - 1) / kVNNIInt8Quad;
+  const int    n_blocks = N / pack_nr;
+  const size_t weight_bytes_per_oblock =
+      static_cast<size_t>(K_quad) * pack_nr * kVNNIInt8Quad;
+  const size_t comp_bytes_per_oblock =
+      static_cast<size_t>(pack_nr) * sizeof(int32_t);
+  const size_t bytes = static_cast<size_t>(n_blocks)
+      * (weight_bytes_per_oblock + comp_bytes_per_oblock);
+  return align_up_dst(bytes);
+}
+
+status_t prepack_weight_into_bf16(
+    const bfloat16_t *weight,
+    int K, int N, int ldb, int pack_nr,
+    bool transB,
+    bool interleave_split_halves,
+    void *dst) {
+  if (weight == nullptr || dst == nullptr
+      || !prepack_shape_valid(K, N, pack_nr) || ldb <= 0) {
+    log_error("prepack_weight_into_bf16: invalid arg "
+              "(weight/dst non-null; pack_nr in {", kNRMin, ",", kNRMax,
+              "}; N %% pack_nr == 0; ldb > 0)");
+    return status_t::failure;
+  }
+  if (interleave_split_halves && (N & 1)) {
+    log_error("prepack_weight_into_bf16: interleave_split_halves "
+              "requires even N (got N=", N, ")");
+    return status_t::failure;
+  }
+  const int min_ldb = transB ? K : N;
+  if (ldb < min_ldb) {
+    log_error("prepack_weight_into_bf16: ldb=", ldb,
+              " smaller than minimum row stride (", min_ldb, ")");
+    return status_t::failure;
+  }
+  pack_bf16_vnni(weight, K, N, ldb, pack_nr, transB,
+                 interleave_split_halves, static_cast<bfloat16_t *>(dst));
+  return status_t::success;
+}
+
+status_t prepack_weight_into_int8(
+    const int8_t *weight,
+    int K, int N, int ldb, int pack_nr,
+    bool transB,
+    bool interleave_split_halves,
+    void *dst) {
+  if (weight == nullptr || dst == nullptr
+      || !prepack_shape_valid(K, N, pack_nr) || ldb <= 0) {
+    log_error("prepack_weight_into_int8: invalid arg "
+              "(weight/dst non-null; pack_nr in {", kNRMin, ",", kNRMax,
+              "}; N %% pack_nr == 0; ldb > 0)");
+    return status_t::failure;
+  }
+  if (interleave_split_halves && (N & 1)) {
+    log_error("prepack_weight_into_int8: interleave_split_halves "
+              "requires even N (got N=", N, ")");
+    return status_t::failure;
+  }
+  const int min_ldb = transB ? K : N;
+  if (ldb < min_ldb) {
+    log_error("prepack_weight_into_int8: ldb=", ldb,
+              " smaller than minimum row stride (", min_ldb, ")");
+    return status_t::failure;
+  }
+  pack_int8_vnni(weight, K, N, ldb, pack_nr, transB,
+                 interleave_split_halves, static_cast<int8_t *>(dst));
+  return status_t::success;
+}
+
 } // namespace custom_kernel
 } // namespace matmul
 } // namespace lowoha

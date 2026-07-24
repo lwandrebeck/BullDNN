@@ -20,6 +20,7 @@
 ///   - group_matmul/group_matmul_dispatch.cpp — parallel expert dispatch (OMP).
 ///   - group_matmul/group_matmul_moe_postop.cpp — optional MoE weighted-reduce post-op.
 
+#include <cstring>
 #include <sstream>
 #include <vector>
 
@@ -1479,6 +1480,20 @@ status_t group_matmul_direct(const std::vector<char> &layout,
                                num_threads, &gemm_mode,
                                run_gated_act ? gated_act->act : grp_matmul_gated_act_t::none,
                                act_dtype);
+
+      // CK-only-or-fail: the N-tile/dispatch path signals an unservable
+      // caller-prepacked (mem_format_b='r') weight via this gemm_mode
+      // sentinel (the weight is VNNI-packed and only the custom kernel
+      // can consume it; no compute ran).  Surface it as a hard failure
+      // rather than letting the caller consume an unwritten dst.
+      if (gemm_mode != nullptr
+          && std::strcmp(gemm_mode, "error_prepacked_no_ck") == 0) {
+        log_error("group_matmul_direct: a pre-reordered weight "
+                  "(mem_format_b='r') could not be consumed by the custom "
+                  "kernel (CK disabled or unsupported shape/host). Such a "
+                  "weight is VNNI-packed and has no safe fallback path.");
+        return status_t::failure;
+      }
 
       if (run_gated_act && !act_fused) {
         status_t act_st = group_matmul_moe_act_execute(

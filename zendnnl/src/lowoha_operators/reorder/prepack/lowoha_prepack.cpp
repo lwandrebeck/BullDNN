@@ -17,6 +17,8 @@
 #include "lowoha_operators/reorder/prepack/lowoha_prepack.hpp"
 #include "lowoha_operators/reorder/lowoha_reorder_common.hpp"
 #include "lowoha_operators/matmul/backends/aocl/aocl_kernel.hpp"
+#include "lowoha_operators/matmul/group_matmul/custom_kernel/dispatch.hpp"
+#include "lowoha_operators/matmul/group_matmul/custom_kernel/pack.hpp"
 #include "lowoha_operators/matmul/lowoha_matmul_utils.hpp"
 #include "lowoha_operators/common/operator_instrumentation.hpp"
 #include "common/zendnnl_global.hpp"
@@ -37,14 +39,30 @@ using zendnnl::lowoha::matmul::kernel_to_string;
 
 namespace {
 
+namespace ck = zendnnl::lowoha::matmul::custom_kernel;
+using zendnnl::common::dtype_info;
+
 constexpr size_t kPrepackAlign = 64;
 
 inline size_t round_up_align(size_t bytes, size_t align) {
   return (bytes + align - 1) & ~(align - 1);
 }
 
-// dtype -> short string: reuse the canonical common helper
-using zendnnl::common::dtype_info;
+// Resolve the custom-kernel pack width: honour an explicit
+// `params.pack_nr` (must be 32 or 64 and divide N) else auto-select
+// via the same `plan_pack_nr(K, N)` the dispatcher uses. Returns 0
+// when no supported NR divides N (caller treats as unsupported).
+int ck_resolve_pack_nr(const prepack_params_t &params) {
+  const int K = static_cast<int>(params.K);
+  const int N = static_cast<int>(params.N);
+  if (params.pack_nr != 0) {
+    const bool ok = (params.pack_nr == ck::kNRMin
+                     || params.pack_nr == ck::kNRMax)
+                    && (N % params.pack_nr) == 0;
+    return ok ? params.pack_nr : 0;
+  }
+  return ck::plan_pack_nr(K, N);
+}
 
 // Params-only validation (no weights pointer needed). Used by both the
 // size-query path and the data-movement paths. `caller` is the name of
@@ -71,6 +89,43 @@ status_t validate_prepack_params(const char *caller,
                  " weights");
     return status_t::failure;
   }
+
+  // ── Custom-kernel (group_matmul) path ──────────────────────────
+  // Selected by `algo == moe_custom_kernel`; the pack family is chosen
+  // from `wei_dtype`. Validate the constraints the CK pack imposes,
+  // mirroring custom_kernel/dispatch.cpp::prepare_for_call.
+  if (params.algo == matmul_algo_t::moe_custom_kernel) {
+    if (params.wei_dtype != data_type_t::bf16 &&
+        params.wei_dtype != data_type_t::s8) {
+      apilog_error(caller,
+                   ": custom_kernel prepack supports wei_dtype bf16 or "
+                   "s8 (got ", dtype_info(params.wei_dtype), ")");
+      return status_t::failure;
+    }
+    if (ck_resolve_pack_nr(params) == 0) {
+      apilog_error(caller,
+                   ": custom_kernel prepack requires pack_nr in {32, 64} "
+                   "dividing N (N=", params.N,
+                   ", requested pack_nr=", params.pack_nr, ")");
+      return status_t::failure;
+    }
+    // DQ-INT8 VNNI broadcasts 4 src bytes per K-quad — K must be a
+    // multiple of 4 (the dispatcher refuses otherwise).
+    if (params.wei_dtype == data_type_t::s8 && (params.K % 4) != 0) {
+      apilog_error(caller,
+                   ": custom_kernel int8 prepack requires K divisible by "
+                   "4 (got K=", params.K, ")");
+      return status_t::failure;
+    }
+    if (params.interleave_split_halves && (params.N & 1)) {
+      apilog_error(caller,
+                   ": custom_kernel interleave_split_halves requires even "
+                   "N (got N=", params.N, ")");
+      return status_t::failure;
+    }
+    return status_t::success;
+  }
+
   // Prepack only supports the AOCL DLP blocked layout. (libxsmm_blocked
   // and onednn_blocked were intentionally dropped -- see lowoha_prepack.hpp
   // for the rationale.)
@@ -252,27 +307,76 @@ status_t aocl_prepack(const void *weights, const prepack_params_t &params,
 }
 
 // =====================================================================
-// Algo dispatchers: AOCL DLP is the only supported backend.
+// Custom-kernel (group_matmul) prepack — MEMORY-FORMAT CHANGE ONLY.
+// Packs the weight into the caller's `dst` buffer in the VNNI layout
+// the custom kernel consumes; it does NOT touch the per-process LRU
+// pack cache (that is the matmul side's job when it consumes the
+// already-reordered weight). Family is chosen by wei_dtype
+// (bf16 -> VDPBF16PS pack; s8 -> DQ-INT8 VPDPBUSD pack + comp row).
+// =====================================================================
+size_t ck_compute_size(const prepack_params_t &params) {
+  const int pack_nr = ck_resolve_pack_nr(params);
+  if (pack_nr == 0) return 0;  // validation already logged the cause
+  const int K = static_cast<int>(params.K);
+  const int N = static_cast<int>(params.N);
+  return (params.wei_dtype == data_type_t::s8)
+      ? ck::packed_weight_size_int8(K, N, pack_nr)
+      : ck::packed_weight_size_bf16(K, N, pack_nr);
+}
+
+status_t ck_prepack(const void *weights,
+                    const prepack_params_t &params,
+                    void *dst) {
+  const int pack_nr = ck_resolve_pack_nr(params);
+  if (pack_nr == 0) {
+    apilog_error("weight_prepack_into(moe_custom_kernel): no pack_nr in "
+                 "{32, 64} divides N=", params.N);
+    return status_t::failure;
+  }
+  const int  K   = static_cast<int>(params.K);
+  const int  N   = static_cast<int>(params.N);
+  const int  ldb = static_cast<int>(params.ldb);
+
+  if (params.wei_dtype == data_type_t::s8) {
+    return ck::prepack_weight_into_int8(
+        static_cast<const int8_t *>(weights), K, N, ldb, pack_nr,
+        params.transposed, params.interleave_split_halves, dst);
+  }
+  return ck::prepack_weight_into_bf16(
+      static_cast<const zendnnl::common::bfloat16_t *>(weights),
+      K, N, ldb, pack_nr,
+      params.transposed, params.interleave_split_halves, dst);
+}
+
+// =====================================================================
+// Backend dispatchers: AOCL DLP blocked layout, or the group_matmul
+// custom-kernel VNNI pack-into-dst (selected by algo == moe_custom_kernel).
 // =====================================================================
 size_t backend_size_by_algo(const prepack_params_t &params) {
+  if (params.algo == matmul_algo_t::moe_custom_kernel) {
+    return ck_compute_size(params);
+  }
   if (params.algo == matmul_algo_t::aocl_dlp_blocked) {
     return aocl_compute_size(params);
   }
   apilog_error("weight_prepack_size: algo not supported by prepack API (",
                kernel_to_string(params.algo),
-               "); only aocl_dlp_blocked is supported");
+               "); only aocl_dlp_blocked / moe_custom_kernel are supported");
   return 0;
 }
 
 status_t backend_prepack_by_algo(const void *weights,
                                  const prepack_params_t &params,
                                  void *dst) {
+  if (params.algo == matmul_algo_t::moe_custom_kernel) {
+    return ck_prepack(weights, params, dst);
+  }
   if (params.algo == matmul_algo_t::aocl_dlp_blocked) {
     return aocl_prepack(weights, params, dst);
   }
   apilog_error("weight_prepack_into: algo not supported by prepack API (",
                kernel_to_string(params.algo),
-               "); only aocl_dlp_blocked is supported");
+               "); only aocl_dlp_blocked / moe_custom_kernel are supported");
   return status_t::unimplemented;
 }
 
@@ -329,6 +433,8 @@ status_t weight_prepack_into(const void *weights,
   if (val_status != status_t::success) {
     return val_status;
   }
+  // Every path (AOCL blocked and moe_custom_kernel) now writes the
+  // reordered weight into the caller's `dst` buffer.
   if (!dst) {
     apilog_error("weight_prepack_into: dst pointer is null");
     return status_t::failure;

@@ -403,6 +403,45 @@ status_t group_dynamic_quant(
   return status_t::success;
 }
 
+status_t group_reorder(
+    const std::vector<const void *> &src,
+    const std::vector<void *>       &dst,
+    std::vector<reorder_params_t>   &params) {
+  // The group is described by `params`; `src` / `dst` are parallel
+  // per-op buffer vectors that must line up 1:1 with it.
+  const size_t num_ops = params.size();
+  if (num_ops == 0) {
+    log_error("group_reorder: params vector is empty");
+    return status_t::failure;
+  }
+  if (src.size() != num_ops || dst.size() != num_ops) {
+    log_error("group_reorder: vector size mismatch (src=", src.size(),
+              ", dst=", dst.size(), ", params=", num_ops, ")");
+    return status_t::failure;
+  }
+
+  if (apilog_info_enabled()) {
+    apilog_info("LOWOHA group_reorder: num_ops=", num_ops);
+  }
+
+  // Sequential outer loop — each `reorder_direct` parallelises internally
+  // (see `reorder_wrapper` / the dynamic-quant dispatchers), so threading
+  // here would nest OpenMP regions.  Per-op mode (prepack / dynamic quant /
+  // standard) is chosen by that op's own `params[i]`, so a single group can
+  // mix modes.  Abort on the first failure and surface its status; ops that
+  // already ran keep their finished state in the caller-owned buffers.
+  for (size_t i = 0; i < num_ops; ++i) {
+    status_t st = reorder_direct(src[i], dst[i], params[i]);
+    if (st != status_t::success) {
+      log_error("group_reorder: reorder_direct failed at op ", i,
+                " of ", num_ops);
+      return st;
+    }
+  }
+
+  return status_t::success;
+}
+
 } // namespace reorder
 } // namespace lowoha
 } // namespace zendnnl

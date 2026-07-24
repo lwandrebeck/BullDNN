@@ -1069,8 +1069,18 @@ int select_grp_matmul_algo(
   // prepack-extras tail).
   const int num_ops_eff = static_cast<int>(M.size());
   const bool m_tile_safe = check_m_tile_safe(layout, M, params, num_ops_eff);
-  const bool n_tile_safe = m_tile_safe
-                           && check_n_tile_extra(M, params, num_ops_eff);
+  // ALGO 3 (N-tile) — unlike ALGO 2 (M-tile) — CAN consume a caller-
+  // prepacked custom-kernel VNNI weight (mem_format_b=='r' with
+  // lowoha_algo==moe_custom_kernel) directly, so its m-tile-safety
+  // precondition is computed with `allow_prepacked_b=true`.  The ALGO 2
+  // `m_tile_safe` above keeps the strict default (the M-tile executor has
+  // no prepacked-B consumption path).  Without this, a CK-VNNI 'r' weight
+  // failed `check_m_tile_safe`, forced `n_tile_safe=false`, fell back to
+  // ALGO 1, and then tripped the CK-only-or-fail guard below.
+  const bool n_tile_safe =
+    check_m_tile_safe(layout, M, params, num_ops_eff,
+                      /*allow_prepacked_b=*/true)
+    && check_n_tile_extra(M, params, num_ops_eff);
 
   // Manual override: ZENDNNL_GRP_MATMUL_ALGO=1..5.
   //   ALGO 2 (M-tile): needs m_tile_safe (row-major, uniform dtypes).
@@ -1542,6 +1552,35 @@ bool group_matmul_run_parallel_dispatch(
 })) {
     set_mode("skip");
     return true;
+  }
+
+  // CK-only-or-fail: a caller-prepacked CUSTOM-KERNEL VNNI weight is
+  // consumable ONLY by the custom kernel, which runs exclusively on
+  // ALGO 3 (flat_n_tile).  If the call routed to any other ALGO, the
+  // executor would read the packed bytes as a raw weight → silent
+  // corruption.  Signal failure via the gemm_mode sentinel (group_matmul
+  // _direct returns status_t::failure on this value).  ALGO 3 itself
+  // re-checks CK engagement and raises the same sentinel from flat_n_tile.
+  //
+  // Detection MUST match the CK-VNNI classifier in flat_n_tile:
+  // `mem_format_b == 'r'` is ambiguous (it also marks AOCL-DLP-blocked
+  // and GGML unpack+reorder outputs), so gate on
+  // `lowoha_algo == moe_custom_kernel`.  An AOCL-blocked / GGML-reordered
+  // 'r' weight is legitimately consumable by the non-CK executors, so it
+  // must NOT trip this guard.
+  {
+    bool has_prepacked_b = false;
+    for (size_t i = 0; i < params.size() && i < M.size(); ++i) {
+      if (M[i] > 0 && params[i].mem_format_b == 'r'
+          && params[i].lowoha_algo == matmul_algo_t::moe_custom_kernel) {
+        has_prepacked_b = true;
+        break;
+      }
+    }
+    if (has_prepacked_b && use_algo != 3) {
+      set_mode("error_prepacked_no_ck");
+      return false;
+    }
   }
 
   switch (use_algo) {

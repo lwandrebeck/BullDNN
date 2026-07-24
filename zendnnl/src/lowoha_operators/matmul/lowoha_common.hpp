@@ -150,14 +150,24 @@ struct matmul_params {
   ///< Memory format for matrix B.
   ///< - 'n' (default): standard row-major weights; matmul backend
   ///<                   runs its own reorder/blocking step.
-  ///< - 'r' : weights are already in the AOCL DLP blocked layout
-  ///<         (produced by a prior @c reorder_direct() prepack call).
-  ///<         Matmul backend skips its internal weight-reorder /
-  ///<         cache-blocking step and uses the buffer as-is. Requires
-  ///<         @c lowoha_algo == matmul_algo_t::aocl_dlp_blocked and
-  ///<         the prepack to have used matching
+  ///< - 'r' : weights are already reordered by a prior
+  ///<         @c reorder_direct() prepack call; the matmul backend skips
+  ///<         its internal weight-reorder / cache-blocking step and uses
+  ///<         the buffer as-is.  The PHYSICAL layout of an 'r' buffer is
+  ///<         NOT implied by 'r' alone — it is selected by @c lowoha_algo,
+  ///<         which MUST match the algo the prepack targeted:
+  ///<           * @c lowoha_algo == matmul_algo_t::aocl_dlp_blocked
+  ///<               AOCL DLP blocked layout (single-op / group ALGO 1
+  ///<               AOCL DLP path).
+  ///<           * @c lowoha_algo == matmul_algo_t::moe_custom_kernel
+  ///<               group_matmul custom-kernel VNNI layout, consumed
+  ///<               directly by the ALGO 3 (N-tile) custom kernel.  This
+  ///<               weight is CK-only: a call that cannot route to the
+  ///<               custom kernel fails rather than mis-reading it.
+  ///<         The prepack must also have used matching
   ///<         K / N / ldb / dtypes / transposed / sym_group_size --
-  ///<         a mismatch produces silently wrong results.
+  ///<         a mismatch (including a wrong @c lowoha_algo) produces
+  ///<         silently wrong results.
   char mem_format_b;
   matmul_algo_t lowoha_algo;                   ///< Selected algorithm
   //num_threads is int32_t to match the type used by OpenMP APIs

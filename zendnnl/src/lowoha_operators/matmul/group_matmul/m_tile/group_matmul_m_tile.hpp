@@ -824,11 +824,18 @@ bool try_flat_m_tile_pipeline_bf16(
 // decode-class case is handled identically by the predicate: the
 // per-thread reorder degenerates to a one-row reorder per expert,
 // which is always race-free regardless of granularity.
+// `allow_prepacked_b` (default false) — when true, a per-expert
+// `mem_format_b == 'r'` (weight already in the custom-kernel VNNI
+// layout) is NOT a disqualifier.  This is used ONLY to compute the
+// N-tile safety (ALGO 3 + custom kernel can consume a prepacked
+// weight); the M-tile path (ALGO 2) always calls with the default
+// false because it has no prepacked-weight consumption path.
 inline bool check_m_tile_safe(
     const std::vector<char> &layout,
     const std::vector<int> &M,
     const std::vector<matmul_params> &params,
-    int num_ops) {
+    int num_ops,
+    bool allow_prepacked_b = false) {
   // Dtype-uniformity reference = the FIRST ACTIVE expert, not params[0].
   // The grouped / per-expert fallback DQ pre-pass rewrites ONLY active
   // experts to s8 (inactive M==0 experts keep their pre-quant bf16/f32
@@ -874,9 +881,16 @@ inline bool check_m_tile_safe(
     //       identical to ALGO 1's per-expert call, just sliced over M, so
     //       there is no reason to demote it to ALGO 1.
     //
-    // Everything else still requires plain row-major ('n') + unpacked
-    // (pack_format_b == 0).  (N-tile still rejects 'r' outright — it
-    // column-slices the weight; see `check_n_tile_extra`.)
+    // Separately, `allow_prepacked_b` (set only by the N-tile safety probe)
+    // accepts a caller-prepacked custom-kernel VNNI 'r' weight that ALGO 3
+    // can consume directly.  'r' alone is ambiguous (it also marks
+    // AOCL-DLP-blocked and GGML unpack+reorder outputs, whose physical
+    // layout the CK kernel cannot read), so the carve-out ALSO requires
+    // lowoha_algo==moe_custom_kernel — matching the CK-VNNI classifier in
+    // flat_n_tile and the CK-only-or-fail guard.  (The N-tile path itself
+    // still re-validates the reordered-weight case in `check_n_tile_extra`,
+    // which column-slices the weight.)  Everything else still requires
+    // plain row-major ('n') + unpacked (pack_format_b == 0).
     const bool reordered_pergroup_dyn_s8 =
         params[i].dtypes.wei == data_type_t::s8
         && params[i].dynamic_quant
@@ -894,7 +908,12 @@ inline bool check_m_tile_safe(
         && params[i].quant_params.src_scale.dims[1] > 1;
     const bool reordered_pergroup_s8 =
         reordered_pergroup_dyn_s8 || reordered_pergroup_static_s8;
-    if (params[i].mem_format_b != 'n' && !reordered_pergroup_s8) {
+    const bool prepacked_b_ok =
+        allow_prepacked_b && params[i].mem_format_b == 'r'
+        && params[i].lowoha_algo
+               == zendnnl::ops::matmul_algo_t::moe_custom_kernel;
+    if (params[i].mem_format_b != 'n'
+        && !reordered_pergroup_s8 && !prepacked_b_ok) {
       return false;
     }
     if (params[i].packing.pack_format_b != 0 && !reordered_pergroup_s8) {

@@ -30,4 +30,7 @@ target_sources(gtests
     ${CMAKE_CURRENT_SOURCE_DIR}/test_dynamic_quant.cpp
     ${CMAKE_CURRENT_SOURCE_DIR}/test_strided_cases.cpp
     ${CMAKE_CURRENT_SOURCE_DIR}/test_conversion.cpp
+    # group_reorder — grouped wrapper that loops reorder_direct; plain
+    # TEST() cases (not the TestReorder round-trip fixture).
+    ${CMAKE_CURRENT_SOURCE_DIR}/test_group_reorder.cpp
 )

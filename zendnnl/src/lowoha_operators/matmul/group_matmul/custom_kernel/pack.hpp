@@ -278,6 +278,49 @@ status_t get_or_pack_weight_int8(
 /// `free_owned_packed_weight` (the bf16 sibling).
 void free_owned_packed_weight_int8(const int8_t *packed);
 
+// ── Caller-owned prepack (memory-format change, no caching) ──────
+// Used by the reorder weight-prepack pipeline
+// (`reorder/prepack/lowoha_prepack.cpp`, algo = moe_custom_kernel) to
+// change a weight's memory format into the VNNI layout the custom
+// kernel consumes — WITHOUT touching the per-process LRU pack cache.
+// The produced bytes are identical to what `get_or_pack_weight_*`
+// would have cached, but they are written into the CALLER's `dst`
+// buffer and the caller owns the lifetime. The matmul side later
+// consumes the buffer directly (see the dispatch consumption path).
+
+/// Byte size (64-byte aligned) of the BF16 VNNI packed weight for one
+/// `(K, N, pack_nr)` shape.  Identical to the allocation
+/// `get_or_pack_weight_bf16` makes internally.  Returns 0 for invalid
+/// args (`K,N <= 0`, `pack_nr ∉ {kNRMin, kNRMax}`, or `N % pack_nr`).
+size_t packed_weight_size_bf16(int K, int N, int pack_nr);
+
+/// DQ-INT8 sibling of `packed_weight_size_bf16` — includes the
+/// per-o-block int32 compensation row appended after each weight
+/// slab.  Returns 0 for invalid args.
+size_t packed_weight_size_int8(int K, int N, int pack_nr);
+
+/// Pack `weight` into the caller-provided `dst` (>= the matching
+/// `packed_weight_size_*` bytes; 64-byte alignment recommended).
+/// Same `(weight, K, N, ldb, pack_nr, transB, interleave_split_halves)`
+/// contract as `get_or_pack_weight_bf16`, but no allocation and no
+/// caching — `dst` is caller-owned.  Returns failure on bad args.
+status_t prepack_weight_into_bf16(
+    const bfloat16_t *weight,
+    int K, int N, int ldb, int pack_nr,
+    bool transB,
+    bool interleave_split_halves,
+    void *dst);
+
+/// DQ-INT8 sibling of `prepack_weight_into_bf16`.  Writes the
+/// VNNI-quad weight slab + per-column int32 compensation row into
+/// `dst`.  Returns failure on bad args.
+status_t prepack_weight_into_int8(
+    const int8_t *weight,
+    int K, int N, int ldb, int pack_nr,
+    bool transB,
+    bool interleave_split_halves,
+    void *dst);
+
 /// Release every cached packed BF16 weight and reset the cache to
 /// empty.  Intended for weight-rotating deployments (dynamic
 /// LoRA hot-swap, retraining loops, recompile / redeploy cycles)

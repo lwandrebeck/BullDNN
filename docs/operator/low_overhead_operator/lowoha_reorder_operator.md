@@ -445,16 +445,18 @@ The mode is selected by setting `reorder_params_t::is_prepack = true` on the sam
 
 ### Supported Algos
 
-Only **AOCL DLP blocked** is supported:
+Two layouts are supported — **AOCL DLP blocked** and the **group_matmul
+custom-kernel (CK) VNNI** layout:
 
 | `prepack.algo` | Supported | Notes |
 |----------------|-----------|-------|
 | `matmul_algo_t::aocl_dlp_blocked` | ✅ Yes | f32 / bf16 / f16 / s8 (+ s8 sym-quant variant) / s4 / u4 |
+| `matmul_algo_t::moe_custom_kernel` | ✅ Yes | bf16 (VDPBF16PS) / s8 (DQ-INT8 VPDPBUSD). Packs into the caller `dst`; consumed by `group_matmul` with `mem_format_b='r'` (see *Custom-Kernel (group_matmul) Prepack*). |
 | `matmul_algo_t::libxsmm_blocked`  | ❌ No  | Layout would mis-match if the matmul-side partitioner falls back to AOCL DLP — silent wrong results. |
 | `matmul_algo_t::onednn_blocked`   | ❌ No  | OneDNN's blocked layout depends on (M, K, N, dtypes, post-ops, ISA) — the prepack can't reproduce the matmul-time layout. |
 | Anything else                     | ❌ No  | Non-blocked variants consume raw weights; no prepack needed. |
 
-Anything other than `aocl_dlp_blocked` is rejected at validation: `weight_prepack_size` returns `0` and the `reorder_direct` prepack path returns `status_t::failure` (with a clear error in the log). `status_t::unimplemented` is reserved for an unsupported `wei_dtype` inside the AOCL DLP backend.
+Anything other than `aocl_dlp_blocked` or `moe_custom_kernel` is rejected at validation: `weight_prepack_size` returns `0` and the `reorder_direct` prepack path returns `status_t::failure` (with a clear error in the log). `status_t::unimplemented` is reserved for an unsupported `wei_dtype` inside the AOCL DLP backend.
 
 ### Two-Step Caller Workflow
 
@@ -471,7 +473,10 @@ The contract is: **call `weight_prepack_size` first, allocate exactly that many 
 
 ```cpp
 struct prepack_params_t {
-  matmul_algo_t algo;           // Must be matmul_algo_t::aocl_dlp_blocked
+  matmul_algo_t algo;           // Prepack layout selector:
+                                //   matmul_algo_t::aocl_dlp_blocked  -> AOCL DLP blocked
+                                //   matmul_algo_t::moe_custom_kernel -> group_matmul CK VNNI
+                                //                                       (packs into caller dst)
   data_type_t   wei_dtype;      // Weight data type (f32 / bf16 / f16 / s8 / s4 / u4)
   data_type_t   src_dtype;      // Source (matmul A) dtype (disambiguates s8 vs u8 src)
   int64_t       K;              // Weight rows
@@ -479,6 +484,13 @@ struct prepack_params_t {
   int64_t       ldb;            // Physical leading dimension of the input weights
   bool          transposed;     // true => weights are column-major ('ba')
   int           sym_group_size; // AOCL: >0 selects s8 sym-quant variant
+
+  // --- group_matmul custom-kernel (CK) prepack: used only when
+  //     algo == matmul_algo_t::moe_custom_kernel (see "Custom-Kernel
+  //     (group_matmul) Prepack" above) ---
+  int           pack_nr;                  // CK pack width; 0 = auto (plan_pack_nr)
+  bool          interleave_split_halves;  // silu/gelu [gate|up] -> interleaved (even N)
+
   size_t        cached_size;    // (out, internal) — populated by weight_prepack_size
 };
 ```
@@ -497,12 +509,20 @@ struct prepack_params_t {
 
 ### Consuming the Prepacked Buffer at Matmul Time
 
-Hand the prepacked buffer to `matmul_direct` with:
+**AOCL DLP blocked** — hand the prepacked buffer to `matmul_direct` with:
 
 - `matmul_params::lowoha_algo = matmul_algo_t::aocl_dlp_blocked`
 - `matmul_params::mem_format_b = 'r'`
 
 `mem_format_b = 'r'` tells the matmul backend "the `weight` pointer is already in AOCL DLP blocked layout, skip the internal reorder". `matmul_direct` validates that `lowoha_algo == aocl_dlp_blocked` whenever `mem_format_b == 'r'`; any other algo is rejected up front (would otherwise silently produce wrong results).
+
+**Custom-kernel (group_matmul) VNNI** — hand the prepacked buffer to `group_matmul_direct` (per expert) with:
+
+- `matmul_params::mem_format_b = 'r'`
+- `is_weights_const = true`
+- the decode custom-kernel path engaged (`ZENDNNL_GRP_MATMUL_CUSTOM_KERNEL=1` + ALGO 3)
+
+`mem_format_b = 'r'` tells the custom kernel "the `weight` pointer is already in the CK VNNI layout — consume it directly, do not pack and do not cache". The kernel **aliases** the caller buffer (no copy, no LRU). A `'r'` weight is **CK-only**: if the call cannot be served by the custom kernel (CK off, unsupported shape/host, ALGO ≠ 3), `group_matmul_direct` **fails the call** (`status_t::failure`) rather than let a non-CK executor mis-read the packed bytes. See the group_matmul docs for the full *CK-only-or-fail* contract.
 
 ### End-to-End Example
 
@@ -565,6 +585,143 @@ If you mutate any of these on `rp.prepack` between the size query and the prepac
 ### Buffer Lifetime
 
 The library never allocates the prepacked buffer; the caller owns it end-to-end. As long as the buffer outlives the last `matmul_direct` call that uses it (with `mem_format_b = 'r'`), there is no freeing or special teardown to remember.
+
+### Custom-Kernel (group_matmul) Prepack
+
+In addition to the AOCL DLP blocked layout, the prepack path can produce the **group_matmul custom-kernel (CK) VNNI** layout. This is selected by `prepack.algo = matmul_algo_t::moe_custom_kernel`. It is a **memory-format change only**: like the AOCL path, it packs each weight into the caller's `dst` buffer (in the VNNI layout the CK microkernel consumes) and does **not** touch any cache. At inference, `group_matmul` consumes that buffer **directly** via `mem_format_b='r'` — no re-pack, no LRU.
+
+| `prepack_params_t` field | Custom-kernel meaning |
+|---|---|
+| `algo` | `matmul_algo_t::moe_custom_kernel` selects the CK VNNI pack-into-`dst` |
+| `wei_dtype` | `bf16` → VDPBF16PS K-pair pack; `s8` → DQ-INT8 VPDPBUSD K-quad pack (+ per-column int32 compensation row) |
+| `pack_nr` | CK pack width; `0` = auto (`plan_pack_nr(K, N)`, prefers 32 else 64), else `32`/`64` |
+| `interleave_split_halves` | `true` re-interleaves canonical `[gate_cols \| up_cols]` weight into `[g0,u0,g1,u1,...]` for fused silu/gelu (requires even N) |
+| `K`, `N`, `ldb`, `transposed` | same meaning as the AOCL path |
+
+Constraints (mirror the CK runtime gate in `prepare_for_call`): `pack_nr ∈ {32,64}` dividing N; the `s8` family requires `K % 4 == 0`; `interleave_split_halves` requires even N.
+
+- The prepacked buffer should be 64-byte aligned (required for `wei_dtype = s8`; recommended for bf16). Use `std::aligned_alloc(64, bytes)`; `weight_prepack_size` already rounds `bytes` up to a multiple of 64.
+
+A single CK prepack op covers one weight; prepacking a **group** of experts is done with `group_reorder` (below).
+
+
+## Group Reorder
+
+`group_reorder` applies `reorder_direct` to a **batch of independent reorder ops** in one call — the grouped counterpart to the single-op `reorder_direct`. It is a thin sequential wrapper: each op carries its own `reorder_params_t`, so a single group may freely mix standard reorder, dynamic-quant, and weight-prepack (including custom-kernel) ops.
+
+Its primary use case is **MoE model load**: build one custom-kernel prepack `reorder_params_t` per expert and reorder every expert's weight into a caller-owned VNNI buffer ahead of the first decode step, so inference (`group_matmul` with `mem_format_b='r'`) consumes the pre-packed weights directly with no first-iteration pack latency.
+
+### API
+
+```cpp
+status_t group_reorder(
+  const std::vector<const void *> &src,      // per-op source buffers
+  const std::vector<void *>       &dst,      // per-op destination buffers (may be null per the op's mode)
+  std::vector<reorder_params_t>   &params    // per-op params (non-const: dynamic-quant writes scale/zp back)
+);
+```
+
+### Behavior & Contract
+
+| Aspect | Behavior |
+|--------|----------|
+| Loop | Sequential `reorder_direct(src[i], dst[i], params[i])` for `i` in `[0, params.size())` |
+| Why sequential | `reorder_direct` parallelises internally (vector kernels / dynamic-quant dispatchers); an OMP outer loop would nest regions |
+| Per-op mode | Selected by each `params[i]` (`is_prepack` / `dynamic_quant` / standard) — modes may be mixed in one group |
+| Vector sizes | `src.size() == dst.size() == params.size()`; an empty group or a mismatch returns `status_t::failure` |
+| `dst[i]` | May be null only where that op's mode permits (e.g. compute-only dynamic quant). Weight prepack (AOCL or custom-kernel) requires a non-null caller `dst`. |
+| Failure | Aborts on the **first** failing op and returns its status; ops already completed keep their finished output (no rollback) |
+| Return | `status_t::success` when every op succeeded |
+
+### Example: Grouped Type Conversion
+
+```cpp
+#include "lowoha_operators/reorder/lowoha_reorder.hpp"
+
+int group_reorder_convert_example() {
+  using namespace zendnnl::lowoha::reorder;
+
+  constexpr int E = 4;  // ops in the group
+  std::vector<std::vector<float>>    src_store(E);
+  std::vector<std::vector<uint16_t>> dst_store(E);  // bf16 as uint16_t
+  std::vector<const void *>          src(E);
+  std::vector<void *>                dst(E);
+  std::vector<reorder_params_t>      params(E);
+
+  for (int i = 0; i < E; ++i) {
+    const int64_t M = 16, N = 64;
+    src_store[i].resize(M * N);
+    dst_store[i].resize(M * N);
+    // Initialize src_store[i] ...
+    src[i] = src_store[i].data();
+    dst[i] = dst_store[i].data();
+
+    params[i].src_dtype = data_type_t::f32;
+    params[i].dst_dtype = data_type_t::bf16;
+    params[i].src_shape = {M, N};
+    params[i].dst_shape = {M, N};
+  }
+
+  status_t status = group_reorder(src, dst, params);
+  return (status == status_t::success) ? 0 : -1;
+}
+```
+
+### Example: 8-Expert MoE Prepack (Custom-Kernel) + Inference
+
+Prepack every expert's weight into a caller-owned VNNI buffer once via `group_reorder`, then run inference through the `group_matmul` API with `mem_format_b='r'`, which consumes the pre-packed buffers directly.
+
+```cpp
+#include <cstdlib>   // std::aligned_alloc / std::free
+#include "lowoha_operators/reorder/lowoha_reorder.hpp"
+#include "lowoha_operators/reorder/prepack/lowoha_prepack.hpp"
+#include "lowoha_operators/matmul/group_matmul/group_matmul_direct.hpp"
+
+void moe_prepack_then_infer(
+    const std::vector<const void *> &expert_weights,  // E weight ptrs (bf16 [K,N])
+    int K, int N) {
+  using namespace zendnnl::lowoha::reorder;
+  const int E = static_cast<int>(expert_weights.size());
+
+  // ---- Model load: one CK-prepack op per expert ----------------------
+  std::vector<reorder_params_t> rp(E);
+  std::vector<const void *>     src(E);
+  std::vector<void *>           prepacked(E, nullptr);  // caller-owned VNNI buffers
+  for (int e = 0; e < E; ++e) {
+    rp[e].is_prepack            = true;
+    rp[e].prepack.algo          = matmul_algo_t::moe_custom_kernel;
+    rp[e].prepack.wei_dtype     = data_type_t::bf16;
+    rp[e].prepack.src_dtype     = data_type_t::bf16;
+    rp[e].prepack.K             = K;
+    rp[e].prepack.N             = N;          // multiple of pack_nr (32/64)
+    rp[e].prepack.ldb           = N;          // row-major [K, N]
+    rp[e].prepack.transposed    = false;
+    rp[e].prepack.pack_nr       = 0;          // auto
+
+    // Step 1: query the VNNI buffer size; Step 2: allocate 64B-aligned.
+    const size_t bytes = weight_prepack_size(rp[e]);
+    prepacked[e]       = std::aligned_alloc(64, bytes);
+    src[e]             = expert_weights[e];
+  }
+  group_reorder(src, prepacked, rp);          // writes VNNI bytes into prepacked[]
+
+  // ---- Inference: group_matmul consumes the prepacked buffers --------
+  // With the decode path engaged (ZENDNNL_GRP_MATMUL_ALGO=3 +
+  // ZENDNNL_GRP_MATMUL_CUSTOM_KERNEL=1, BF16) and per-expert
+  // params[e].mem_format_b = 'r' + is_weights_const[e] = true, the CK
+  // dispatcher aliases prepacked[e] directly — no re-pack, no cache.
+  // group_matmul_direct(layouts, transAs, transBs, Ms, Ns, Ks, alphas,
+  //                     srcs, ldas, prepacked, ldbs, biases, betas,
+  //                     dsts, ldcs, is_wc, params, /*moe=*/nullptr);
+
+  // prepacked[] must outlive the last inference call, then:
+  // for (int e = 0; e < E; ++e) std::free(prepacked[e]);
+}
+```
+
+> For the full prepack → direct-consume architecture, validation gates, the
+> CK-only-or-fail contract, and the BF16/INT8 pack layouts, see the group_matmul
+> `docs/group_reorder_article.md`.
 
 
 ## Usage Examples
@@ -1721,11 +1878,25 @@ The operator performs the following validations:
 
 ### Weight Prepack Validation (when `is_prepack = true`)
 
-18. **Null pointer checks:** `weights` and `dst` buffers must not be null
+18. **Null pointer checks:** `weights` must not be null; `dst` must not be null (both the AOCL and custom-kernel paths write the prepacked layout into the caller's `dst`)
 19. **Dimensions:** `prepack.K > 0` and `prepack.N > 0`
 20. **Leading dimension:** `prepack.ldb` must be ≥ `prepack.K` (transposed) or ≥ `prepack.N` (non-transposed)
-21. **Algo:** `prepack.algo` must be `matmul_algo_t::aocl_dlp_blocked` (any other value is rejected at validation: `reorder_direct` returns `status_t::failure` and `weight_prepack_size` returns `0`)
-22. **Buffer size:** the caller is responsible — `dst` must hold at least `weight_prepack_size(params)` bytes. The library does **not** verify this; an undersized buffer causes silent out-of-bounds writes.
+21. **Algo:** `prepack.algo` must be `matmul_algo_t::aocl_dlp_blocked` or `matmul_algo_t::moe_custom_kernel` (any other value is rejected at validation: `reorder_direct` returns `status_t::failure` and `weight_prepack_size` returns `0`)
+22. **Buffer size:** the caller is responsible — `dst` must hold at least `weight_prepack_size(params)` bytes (both paths). The library does **not** verify this; an undersized buffer causes silent out-of-bounds writes.
+
+### Custom-Kernel Prepack Validation (when `is_prepack = true` and `prepack.algo == matmul_algo_t::moe_custom_kernel`)
+
+23. **Weight dtype:** `prepack.wei_dtype` must be `bf16` or `s8`
+24. **Pack width:** `prepack.pack_nr` resolves to `32` or `64` (explicit value must divide N; `0` auto-selects via `plan_pack_nr(K, N)`)
+25. **INT8 K alignment:** for `wei_dtype = s8`, `prepack.K % 4 == 0` (VNNI K-quad)
+26. **Interleave:** `interleave_split_halves = true` requires even N
+27. **Alignment (caller):** `dst` should be 64-byte aligned so the CK microkernel's aligned AVX-512 loads succeed at inference (`weight_prepack_size` already rounds the byte size up to 64)
+
+### Group Reorder Validation (`group_reorder`)
+
+28. **Non-empty group:** `params` must not be empty
+29. **Vector sizes:** `src.size() == dst.size() == params.size()`
+30. **Per-op:** each op is validated by `reorder_direct` under its own mode; the first per-op failure aborts the group and returns that status
 
 
 ## Implementation Support Matrix

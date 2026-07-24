@@ -3482,6 +3482,31 @@ void flat_n_tile(
     // sym/asym CK int8 variant instead of falling back to AOCL.
     ck_compute_dtype = params[rep].dtypes.compute;
   }
+  // Per-expert "weight already CK-VNNI-packed" flags.  `mem_format_b ==
+  // 'r'` alone is ambiguous — it marks ANY pre-reordered weight, and the
+  // physical layout depends on `lowoha_algo`:
+  //   * lowoha_algo == aocl_dlp_blocked  -> AOCL DLP blocked layout
+  //     (e.g. a caller AOCL prepack, or a GGML unpack+reorder result);
+  //   * lowoha_algo == moe_custom_kernel -> the custom-kernel VNNI
+  //     layout this executor consumes directly.
+  // ONLY the moe_custom_kernel case is CK-VNNI, so gate on it.  A
+  // CK-VNNI weight is CK-ONLY: any standard/AOCL fallback would read the
+  // packed bytes as a raw weight and silently corrupt results.  We
+  // detect it here, forward it to prepare_for_call (which aliases the
+  // buffer instead of packing), and guard the no-CK case below.  An
+  // AOCL-blocked / GGML-reordered 'r' is left untouched here so it flows
+  // to its own (non-CK) path instead of being mis-aliased.
+  std::vector<bool> weights_prepacked(static_cast<size_t>(num_ops), false);
+  bool any_prepacked_b = false;
+  for (int i = 0; i < num_ops; ++i) {
+    if (static_cast<size_t>(i) < params.size()
+        && params[i].mem_format_b == 'r'
+        && params[i].lowoha_algo == matmul_algo_t::moe_custom_kernel) {
+      weights_prepacked[i] = true;
+      if (M[i] > 0) any_prepacked_b = true;
+    }
+  }
+
   custom_kernel::CallContext kctx;
   engage_ntile_custom_kernel(
       custom_act,
@@ -3491,7 +3516,8 @@ void flat_n_tile(
       act_dtype,
       /*bias_dtype=*/params[0].dtypes.bias,
       transA, transB, M, N, K, ldb, alpha, beta, weight,
-      is_weights_const, kctx, ck_dynamic_quant, ck_compute_dtype);
+      is_weights_const, kctx, ck_dynamic_quant, ck_compute_dtype,
+      weights_prepacked);
 
   // ── DQ-INT8 scale-path decision (uniform across experts) ──────────
   // The microkernel reads src/wei scales as bf16 or f32 (converting on
@@ -3592,6 +3618,26 @@ void flat_n_tile(
     }
   }
 
+  // ── CK-only-or-fail guard for caller-prepacked weights ────────────
+  // A `mem_format_b == 'r'` weight is already in the custom-kernel VNNI
+  // layout and is consumable ONLY by the custom kernel.  If any active
+  // expert is prepacked but the custom kernel did NOT engage (CK env
+  // off, unsupported shape/host, or the wide-swiglu guard above), the
+  // standard executors below would read the packed bytes as a raw
+  // weight and silently corrupt results.  Abort instead: skip compute
+  // and signal failure to `group_matmul_direct` via the gemm_mode
+  // sentinel (it returns status_t::failure on this value).
+  if (any_prepacked_b && !use_custom) {
+    apilog_error("flat_n_tile: mem_format_b='r' (pre-reordered VNNI weight) "
+                 "but the custom kernel did not engage (kctx.enabled=",
+                 kctx.enabled, "); a prepacked weight has no safe non-CK "
+                 "consumer. Failing the call. Enable the custom kernel "
+                 "(ZENDNNL_GRP_MATMUL_CUSTOM_KERNEL=1, ALGO 3, supported "
+                 "shape) or pass the raw weight with mem_format_b='n'.");
+    if (gemm_mode_out != nullptr) *gemm_mode_out = "error_prepacked_no_ck";
+    return;
+  }
+
   // Widen the per-thread N-slice floor to the custom kernel's pack_nr
   // when engaged (no-op otherwise).  Two `pair_aligned` regimes:
   //   * Wide fused epilogue (ldc ≥ N, non-custom): activation runs as
@@ -3626,16 +3672,26 @@ void flat_n_tile(
   // on `nr_align`, so an early call (pre-kctx) would warm a key set
   // the runtime never queries when the dispatcher widens nr_align to
   // the custom kernel's pack_nr or the tight-pair-align floor.
-  group_matmul_prepack::prepack_for_algo_3(
-      group_matmul_prepack::build_prepack_params(
-          weight, K, N, ldb, transB, is_weights_const, params, M,
-          get_grp_matmul_custom_kernel(),
-          /*num_threads=*/num_threads,
-          /*nr_align=*/nr_align,
-          fused_act, act_dtype,
-          /*transA=*/&transA, /*alpha=*/&alpha, /*beta=*/&beta,
-          /*dynamic_quant=*/ck_dynamic_quant,
-          /*compute_dtype=*/ck_compute_dtype));
+  // Skip the ahead-of-time warm when any active expert is already
+  // prepacked (mem_format_b='r').  Those weights are in the VNNI layout
+  // and are consumed DIRECTLY by the custom kernel (aliased in
+  // prepare_for_call), so warming would just re-reorder an already-packed
+  // buffer into a throwaway cache entry — the wasted work seen in the
+  // [GRP_MATMUL.PREPACK] ck=[misses=...] line.  If the custom kernel
+  // can't engage for a prepacked call, the CK-only-or-fail guard fails
+  // the call, so the AOCL warm is never needed here either.
+  if (!any_prepacked_b) {
+    group_matmul_prepack::prepack_for_algo_3(
+        group_matmul_prepack::build_prepack_params(
+            weight, K, N, ldb, transB, is_weights_const, params, M,
+            get_grp_matmul_custom_kernel(),
+            /*num_threads=*/num_threads,
+            /*nr_align=*/nr_align,
+            fused_act, act_dtype,
+            /*transA=*/&transA, /*alpha=*/&alpha, /*beta=*/&beta,
+            /*dynamic_quant=*/ck_dynamic_quant,
+            /*compute_dtype=*/ck_compute_dtype));
+  }
 
   // APILOG moved below after the plan is built so the log line can
   // surface both the env-selected and the auto-resolved N_ORDER

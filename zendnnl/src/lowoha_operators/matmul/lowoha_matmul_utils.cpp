@@ -484,6 +484,8 @@ const char *kernel_to_string(matmul_algo_t kernel) {
     return "native_gemm";
   case matmul_algo_t::native_brgemm:
     return "native_brgemm";
+  case matmul_algo_t::moe_custom_kernel:
+    return "moe_custom_kernel";
   default:
     return "none";
   }

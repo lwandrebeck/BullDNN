@@ -789,7 +789,11 @@ inline void engage_ntile_custom_kernel(
     const std::vector<bool>          &is_weights_const,
     custom_kernel::CallContext       &kctx,
     bool                              dynamic_quant = false,
-    data_type_t                       compute_dtype = data_type_t::none) {
+    data_type_t                       compute_dtype = data_type_t::none,
+    // Per-expert "weight already CK-VNNI-packed" signal, forwarded to
+    // `prepare_for_call` (built from the caller's per-expert
+    // `mem_format_b == 'r'`).  Empty ⇒ no prepacked experts.
+    const std::vector<bool>          &weights_prepacked = {}) {
   if (!get_grp_matmul_custom_kernel()) return;
   // Master CK env is ON; gate the DQ-INT8 sub-toggle separately so
   // operators can toggle int8 without disabling bf16.  The int8 CK path
@@ -809,7 +813,8 @@ inline void engage_ntile_custom_kernel(
   custom_kernel::prepare_for_call(
       act, src_dtype, wei_dtype, dst_dtype, act_dtype, bias_dtype,
       transA, transB, M, N, K, ldb, alpha, beta, weight,
-      is_weights_const, kctx, dynamic_quant, compute_dtype);
+      is_weights_const, kctx, dynamic_quant, compute_dtype,
+      weights_prepacked);
 }
 
 /// Effective N-column alignment for the per-thread split:

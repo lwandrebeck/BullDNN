@@ -511,7 +511,18 @@ status_t prepare_for_call(
     const std::vector<bool>          &is_weights_const,
     CallContext &out,
     bool         dynamic_quant   = false,
-    data_type_t  compute_dtype   = data_type_t::none);
+    data_type_t  compute_dtype   = data_type_t::none,
+    // Per-expert "weight is already CK-VNNI-packed" signal (from the
+    // matmul caller's `mem_format_b == 'r'`).  When non-empty and
+    // `weights_prepacked[i] == true`, `weight[i]` is NOT a raw weight
+    // but the exact VNNI-packed buffer the microkernel consumes (as
+    // produced by the moe_custom_kernel weight-prepack, e.g. via
+    // `group_reorder` -> `prepack_weight_into_*`).  Those experts skip
+    // the pack entirely: `packed_ptrs[i]` (or `packed_ptrs_int8[i]`) is
+    // aliased to the caller's buffer and the LRU cache is NOT touched
+    // (caller owns the buffer lifetime).  Empty vector ⇒ no expert is
+    // prepacked (the default — every weight is packed as before).
+    const std::vector<bool>          &weights_prepacked = {});
 
 // (`PackProbeStats` and `warm_pack_all_custom_kernel_experts` moved
 // to `group_matmul/prepack/prepack_custom_kernel.{hpp,cpp}` so the

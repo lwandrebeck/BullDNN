@@ -127,6 +127,52 @@ status_t group_dynamic_quant(
     const std::vector<void *> &scale,
     const group_dynamic_quant_params_t &params);
 
+/**
+ * @brief Grouped reorder — apply @ref reorder_direct to a group of
+ *        independent reorder operations.
+ *
+ * Thin wrapper that calls @c reorder_direct(src[i], dst[i], params[i])
+ * for each op @c i in @c [0, params.size()) in a sequential loop. Every
+ * mode @ref reorder_direct supports is available per-op, selected by that
+ * op's own @ref reorder_params_t, so a single group may freely mix:
+ *   - Weight prepack            (@c params[i].is_prepack == true)
+ *   - Dynamic quantization      (@c params[i].dynamic_quant == true)
+ *   - Standard reorder / (de)quant / type conversion (default)
+ *
+ * This is the grouped building block the higher-level weight-prepack
+ * grouping is composed from: a caller that wants to pre-pack a group of
+ * expert weights builds one prepack-mode @ref reorder_params_t per expert
+ * and hands the batch here.
+ *
+ * Threading: @ref reorder_direct parallelises internally, so the outer
+ * loop here stays sequential to avoid nested OpenMP regions.
+ *
+ * Contract:
+ *   - @p src, @p dst and @p params must all have the same length
+ *     (@c params.size()); a mismatch or an empty group returns failure.
+ *   - @c params is taken by non-const reference because the dynamic-quant
+ *     mode writes computed scale/zero-point back into each op's params
+ *     (mirrors @ref reorder_direct's signature).
+ *   - @c dst[i] may be @c nullptr only where the selected per-op mode
+ *     permits it (e.g. compute-only dynamic quant); otherwise the per-op
+ *     validation inside @ref reorder_direct rejects it.
+ *   - On the first per-op failure the loop stops and returns that op's
+ *     status. Ops already completed keep their finished state in the
+ *     caller-owned buffers (no rollback).
+ *
+ * @param src    Per-op source buffers.
+ * @param dst    Per-op destination buffers (caller-allocated/sized per the
+ *               selected per-op mode).
+ * @param params Per-op reorder parameters (one @ref reorder_params_t each).
+ *
+ * @return status_t::success when every op succeeded; otherwise the status
+ *         of the first op that failed.
+ */
+status_t group_reorder(
+    const std::vector<const void *> &src,
+    const std::vector<void *>       &dst,
+    std::vector<reorder_params_t>   &params);
+
 } // namespace reorder
 } // namespace lowoha
 } // namespace zendnnl

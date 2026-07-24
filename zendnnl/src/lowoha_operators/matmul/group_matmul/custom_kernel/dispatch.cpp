@@ -353,7 +353,8 @@ status_t prepare_for_call(
     const std::vector<bool>          &is_weights_const,
     CallContext &out,
     bool         dynamic_quant,
-    data_type_t  compute_dtype) {
+    data_type_t  compute_dtype,
+    const std::vector<bool> &weights_prepacked) {
 
   // Reset the full CallContext to defaults on entry.  Callers may
   // reuse a single context across calls (e.g. an OMP region that
@@ -829,6 +830,31 @@ status_t prepare_for_call(
   for (int i = 0; i < num_ops; ++i) {
     if (M[i] <= 0) continue;
     bool was_hit_unused = false;
+    // ── Caller-prepacked weight (mem_format_b == 'r') ──────────────
+    // The weight is ALREADY in the CK VNNI layout (produced by the
+    // moe_custom_kernel weight-prepack).  Alias it directly and skip
+    // the pack + LRU entirely — the caller owns the buffer lifetime,
+    // so it must NOT enter the cache (clear() would free caller
+    // memory) and must NOT be recorded in owned_packed_ptrs.
+    const bool prepacked_i =
+        !weights_prepacked.empty()
+        && static_cast<size_t>(i) < weights_prepacked.size()
+        && weights_prepacked[i];
+    if (prepacked_i) {
+      if (variant_is_int8) {
+        out.packed_ptrs_int8[i] = static_cast<const int8_t *>(weight[i]);
+      } else {
+        out.packed_ptrs[i] = static_cast<const bfloat16_t *>(weight[i]);
+      }
+      if (per_expert_subtile) {
+        out.subtile_cols_per_expert[i] =
+            pick_l2_subtile_cols(M[i], K[i], pack_nr,
+                                 sb.src_bytes_per_elem,
+                                 sb.wei_bytes_per_elem,
+                                 sb.comp_bytes_per_col);
+      }
+      continue;
+    }
     if (variant_is_int8) {
       // DQ-INT8 path — caller's weight is signed s8 (`is_weights_const`
       // / pack_nr / ldb / transB contracts are the same as bf16).
