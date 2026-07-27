@@ -45,26 +45,11 @@ namespace {
 namespace ck = ck_test::ck;
 namespace mt = moe_test_utils;
 
-// RAII guard for the library-wide weight-cache toggle.  Save the
-// current `matmul_config_t::get_weight_cache()` value at construction,
-// set the requested value, restore at destruction.  Allows individual
-// tests to flip the toggle without leaking state into sibling tests
-// running in the same process.  Mirrors `mt::CustomKernelNROverride`.
-class WeightCacheOverride {
- public:
-  explicit WeightCacheOverride(int32_t value)
-      : prev_(zendnnl::ops::matmul_config_t::instance().get_weight_cache()) {
-    zendnnl::ops::matmul_config_t::instance().set_weight_cache(value);
-  }
-  ~WeightCacheOverride() {
-    zendnnl::ops::matmul_config_t::instance().set_weight_cache(prev_);
-  }
-  WeightCacheOverride(const WeightCacheOverride &)            = delete;
-  WeightCacheOverride &operator=(const WeightCacheOverride &) = delete;
-
- private:
-  int32_t prev_;
-};
+// The library-wide weight-cache toggle is guarded with the shared
+// `WeightCacheGuard` RAII helper from gtest_utils.hpp (saves the current
+// `matmul_config_t::get_weight_cache()` at construction, sets the requested
+// value, restores at destruction) so tests can flip the toggle without leaking
+// state into sibling tests running in the same process.
 
 // ──────────────────────────────────────────────────────────────────
 // plan_pack_nr — pure function over (K, N).  Test the truth table.
@@ -470,7 +455,7 @@ TEST(CkPackBf16, SiluGeluInterleavedPackMatchesSwigluBytes) {
 TEST(CkPackBf16NoCache, CkEngagesAndAllocatesCallerOwnedPacks) {
   CK_SKIP_IF_NO_BF16_ISA();
   ::reset_grp_matmul_caches();
-  WeightCacheOverride wc_off(0);
+  WeightCacheGuard wc_off(0);
 
   ck_test::PrepCallCase c{};
   c.label = "ck_engages_under_weight_cache_zero";
@@ -503,7 +488,7 @@ TEST(CkPackBf16NoCache, CkEngagesAndAllocatesCallerOwnedPacks) {
 TEST(CkPackBf16NoCache, NoLruInsertSecondPrepareDoesNotHitCache) {
   CK_SKIP_IF_NO_BF16_ISA();
   ::reset_grp_matmul_caches();
-  WeightCacheOverride wc_off(0);
+  WeightCacheGuard wc_off(0);
 
   ck_test::PrepCallCase c{};
   c.label = "no_lru_insert_distinct_packs";
@@ -535,7 +520,7 @@ TEST(CkPackBf16NoCache, NoLruInsertSecondPrepareDoesNotHitCache) {
 TEST(CkPackBf16NoCache, ResetReassignsPackedAliasAfterRepack) {
   CK_SKIP_IF_NO_BF16_ISA();
   ::reset_grp_matmul_caches();
-  WeightCacheOverride wc_off(0);
+  WeightCacheGuard wc_off(0);
 
   // Reuse a single `CallContext` across two prepares.  The second
   // prepare's implicit `reset()` frees the first prepare's owned

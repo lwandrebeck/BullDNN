@@ -40,10 +40,13 @@ if(ZENDNNL_BUILD_GTEST)
     test_softmax.cpp)
 
   # test_postop_cache.cpp exercises the AOCL-DLP post-op metadata cache
-  # (create_dlp_post_op / clear_aocl_postop_metadata_cache), which only
-  # exists when AOCL-DLP is built in.
+  # (create_dlp_post_op / clear_aocl_postop_metadata_cache), and
+  # test_weight_cache_inplace.cpp drives the AOCL-DLP blocked INT8 matmul
+  # (aocl_dlp_blocked); both only work when AOCL-DLP is built in. Without it
+  # matmul_direct rejects aocl_dlp_blocked (status_t::unimplemented).
   if(ZENDNNL_DEPENDS_AOCLDLP)
     list(APPEND gtests_sources test_postop_cache.cpp)
+    list(APPEND gtests_sources test_weight_cache_inplace.cpp)
   endif()
   # Group-matmul-specific gtest artifacts (5 test files + 2 helper TUs +
   # moe_test_utils.hpp + README) live in the `group_matmul/` subdirectory.

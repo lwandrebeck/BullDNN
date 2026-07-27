@@ -73,6 +73,44 @@ using namespace zendnnl::lowoha::normalization;
 using namespace zendnnl::lowoha::sdpa;
 using namespace zendnnl::lowoha::softmax;
 
+// RAII guard for the process-wide AOCL weight-cache mode
+// (ZENDNNL_MATMUL_WEIGHT_CACHE): saves the current value at construction, sets
+// the requested mode, and restores the previous value on scope exit so a test
+// pinning a mode does not leak into sibling tests running in the same process.
+class WeightCacheGuard {
+ public:
+  explicit WeightCacheGuard(int32_t mode)
+      : prev_(matmul_config_t::instance().get_weight_cache()) {
+    matmul_config_t::instance().set_weight_cache(mode);
+  }
+  ~WeightCacheGuard() {
+    matmul_config_t::instance().set_weight_cache(prev_);
+  }
+  WeightCacheGuard(const WeightCacheGuard &) = delete;
+  WeightCacheGuard &operator=(const WeightCacheGuard &) = delete;
+
+ private:
+  int32_t prev_;
+};
+
+// RAII guard for the process-wide INT8 zero-point compensation cache toggle
+// (ZENDNNL_ZP_COMP_CACHE): saves/sets on construction, restores on scope exit.
+class ZpCompCacheGuard {
+ public:
+  explicit ZpCompCacheGuard(bool enable)
+      : prev_(matmul_config_t::instance().get_zp_comp_cache()) {
+    matmul_config_t::instance().set_zp_comp_cache(enable);
+  }
+  ~ZpCompCacheGuard() {
+    matmul_config_t::instance().set_zp_comp_cache(prev_);
+  }
+  ZpCompCacheGuard(const ZpCompCacheGuard &) = delete;
+  ZpCompCacheGuard &operator=(const ZpCompCacheGuard &) = delete;
+
+ private:
+  bool prev_;
+};
+
 using StorageParam = std::variant<std::pair<size_t, void *>, tensor_t>;
 
 struct MatmulInput {

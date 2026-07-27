@@ -875,6 +875,64 @@ void run_dlp(char layout, char transA, char transB, int M, int N,
   Key_matmul cache_key(transB == 't', K, N, ldb, B,
                        static_cast<uint32_t>(matmul_algo_t::aocl_dlp_blocked),
                        cache_extra_hash);
+  
+  // Compute zero-point compensation for INT8 (with caching for 1D case)
+  //
+  // This MUST run BEFORE the weight reorder below. The compensation term is
+  // derived from the ORIGINAL plain-layout weights B (zp_comp[n] =
+  // -src_zp * sum(weights[:, n])). Under WEIGHT_CACHE=2 the reorder can mutate
+  // B in place (see reorderAndCacheWeights in-place branch), replacing the
+  // plain weights with the blocked layout. Computing the compensation after
+  // that would sum over reordered bytes and produce wildly wrong output
+  //
+  // TODO: two below paths will fail and not yet covered by the
+  // gtest (test_weight_cache_inplace.cpp):
+  //   (a) Asymmetric weights (wei_zp != 0): the 2D "both" compensation
+  //       recomputes the weight column-sums from B on every call and is never
+  //       cached, so under WEIGHT_CACHE=2 call 2+ reads the in-place-mutated
+  //       weights. Hoisting it here fixes the first call, but reuse still needs
+  //       compensation cached (or the plain weights preserved).
+  //   (b) ZP-comp caching disabled (ZENDNNL_ZP_COMP_CACHE=0) + the 1D case: the
+  //       compensation is recomputed every call, again reading the mutated
+  //       buffer on call 2+.
+
+  int32_t *zp_comp_acc = nullptr;
+  int zp_comp_ndim = 0;
+  int32_t src_zp = 0;
+  int32_t wei_zp = 0;
+  bool is_int8 = dtypes.wei == data_type_t::s8;
+  if (is_int8) {
+    // Extract zero-point values
+    if (lowoha_param.quant_params.src_zp.buff &&
+        dtypes.src != data_type_t::bf16 &&
+        dtypes.src != data_type_t::f32) {
+      src_zp = read_and_cast<int32_t>(lowoha_param.quant_params.src_zp.buff,
+                                      lowoha_param.quant_params.src_zp.dt);
+    }
+    if (lowoha_param.quant_params.wei_zp.buff) {
+      wei_zp = read_and_cast<int32_t>(lowoha_param.quant_params.wei_zp.buff,
+                                      lowoha_param.quant_params.wei_zp.dt);
+    }
+
+    // Compute or retrieve cached zero-point compensation
+    if (src_zp != 0 || wei_zp != 0) {
+      zp_comp_acc = cache_or_compute_zp_compensation(
+                      cache_key, M, N, K, A, B,
+                      src_zp, wei_zp,
+                      transA == 't', transB == 't',
+                      lda, ldb,
+                      dtypes.src,
+                      is_weights_const,
+                      zp_comp_ndim);
+
+      if (zp_comp_acc) {
+        bool is_cacheable = (wei_zp == 0 && is_weights_const &&
+                              matmul_config.get_zp_comp_cache());
+        apilog_info("INT8 ZP compensation: src_zp=", src_zp, ", wei_zp=", wei_zp,
+                    ", ndim=", zp_comp_ndim, ", cacheable=", (is_cacheable ? "yes" : "no"));
+      }
+    }
+  }  
 
   // AOCL blocked kernel reordering for 2D MatMul
   if (kernel==zendnnl::ops::matmul_algo_t::aocl_dlp_blocked &&
@@ -963,45 +1021,6 @@ void run_dlp(char layout, char transA, char transB, int M, int N,
     is_weight_blocked = true;
     mem_format_b = 'r';
     simulated_woq_free_buff = !is_weights_const || woq_weight_cache_type != 1;
-  }
-
-  // Compute zero-point compensation for INT8 (with caching for 1D case)
-  int32_t *zp_comp_acc = nullptr;
-  int zp_comp_ndim = 0;
-  int32_t src_zp = 0;
-  int32_t wei_zp = 0;
-  bool is_int8 = dtypes.wei == data_type_t::s8;
-  if (is_int8) {
-    // Extract zero-point values
-    if (lowoha_param.quant_params.src_zp.buff &&
-        dtypes.src != data_type_t::bf16 &&
-        dtypes.src != data_type_t::f32) {
-      src_zp = read_and_cast<int32_t>(lowoha_param.quant_params.src_zp.buff,
-                                      lowoha_param.quant_params.src_zp.dt);
-    }
-    if (lowoha_param.quant_params.wei_zp.buff) {
-      wei_zp = read_and_cast<int32_t>(lowoha_param.quant_params.wei_zp.buff,
-                                      lowoha_param.quant_params.wei_zp.dt);
-    }
-
-    // Compute or retrieve cached zero-point compensation
-    if (src_zp != 0 || wei_zp != 0) {
-      zp_comp_acc = cache_or_compute_zp_compensation(
-                      cache_key, M, N, K, A, B,
-                      src_zp, wei_zp,
-                      transA == 't', transB == 't',
-                      lda, ldb,
-                      dtypes.src,
-                      is_weights_const,
-                      zp_comp_ndim);
-
-      if (zp_comp_acc) {
-        bool is_cacheable = (wei_zp == 0 && is_weights_const &&
-                             matmul_config.get_zp_comp_cache());
-        apilog_info("INT8 ZP compensation: src_zp=", src_zp, ", wei_zp=", wei_zp,
-                    ", ndim=", zp_comp_ndim, ", cached=", (is_cacheable ? "yes" : "no"));
-      }
-    }
   }
 
   //TODO: remove the check for is_w4a8

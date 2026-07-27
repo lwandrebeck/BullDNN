@@ -2997,20 +2997,9 @@ TEST(TestGroupMatmulDecodeDynamic, NonCustomWideSwigluMatchesRounds) {
 // never mutates the weight).  Downgrade is process-wide + sticky, so
 // each test re-arms WC=2 via the RAII guard.
 namespace {
-// RAII: set weight-cache mode, restore the prior value on scope exit so
-// the sticky downgrade does not leak into sibling tests.
-struct WeightCacheGuard {
-  int32_t prev;
-  explicit WeightCacheGuard(int32_t v)
-      : prev(zendnnl::ops::matmul_config_t::instance().get_weight_cache()) {
-    zendnnl::ops::matmul_config_t::instance().set_weight_cache(v);
-  }
-  ~WeightCacheGuard() {
-    zendnnl::ops::matmul_config_t::instance().set_weight_cache(prev);
-  }
-  WeightCacheGuard(const WeightCacheGuard &) = delete;
-  WeightCacheGuard &operator=(const WeightCacheGuard &) = delete;
-};
+// WeightCacheGuard (RAII: set weight-cache mode, restore the prior value on
+// scope exit so the sticky downgrade does not leak into sibling tests) is a
+// shared helper defined in gtest_utils.hpp.
 
 struct MinRunResult {
   std::vector<std::vector<bfloat16_t>> dst;  // per-expert [M,N] output
