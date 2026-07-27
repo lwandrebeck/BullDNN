@@ -473,13 +473,29 @@ jobs:
         which cmake
         cmake --version
 
+        # Resolve the clang toolchain: prefer the versioned binaries
+        # (clang-14/clang++-14) when present, else fall back to the
+        # unversioned names so a caller-provided clang_path still works.
+        if [ -x "$CLANG_PATH/clang-14" ]; then
+          CC_BIN="$CLANG_PATH/clang-14"
+        else
+          CC_BIN="$CLANG_PATH/clang"
+        fi
+        if [ -x "$CLANG_PATH/clang++-14" ]; then
+          CXX_BIN="$CLANG_PATH/clang++-14"
+        else
+          CXX_BIN="$CLANG_PATH/clang++"
+        fi
+        echo "Using C compiler:   $CC_BIN"
+        echo "Using C++ compiler: $CXX_BIN"
+
         # Verify the clang toolchain
-        "$CLANG_PATH/clang" --version
-        "$CLANG_PATH/clang++" --version
+        "$CC_BIN" --version
+        "$CXX_BIN" --version
 
         # Build ZenDNNL using the clang toolchain
         mkdir -p build && cd build
-        cmake .. -DCMAKE_C_COMPILER=$CLANG_PATH/clang -DCMAKE_CXX_COMPILER=$CLANG_PATH/clang++ -DZENDNNL_BUILD_EXAMPLES=ON -DZENDNNL_BUILD_GTEST=ON
+        cmake .. -DCMAKE_C_COMPILER="$CC_BIN" -DCMAKE_CXX_COMPILER="$CXX_BIN" -DZENDNNL_BUILD_EXAMPLES=ON -DZENDNNL_BUILD_GTEST=ON
         cmake --build . --target=all |& tee $WORKSPACE/clang_build_output.log
       shell: bash
 
