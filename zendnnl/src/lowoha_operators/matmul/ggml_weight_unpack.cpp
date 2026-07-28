@@ -41,9 +41,8 @@ namespace {
 // the same group size as the weights, so it is a constant for this path.
 constexpr int kGgmlGroupSize = 32;
 
-struct block_q8_0  { uint16_t d; int8_t  qs[32];  };
-struct block_q4_0  { uint16_t d; uint8_t qs[16];  };
-struct block_q4_0x8 { uint16_t d[8]; uint8_t qs[128]; };
+struct block_q8_0 { uint16_t d; int8_t  qs[32]; };
+struct block_q4_0 { uint16_t d; uint8_t qs[16]; };
 
 inline uint32_t fp32_to_bits(float f) {
     uint32_t bits;
@@ -153,6 +152,91 @@ status_t ggml_reorder_unpacked_weights(int N, int K, int ldb, char trans,
 #endif
 }
 
+// Unpack a GGML block-quantized weight into a freshly-allocated buffer laid out
+// as [ s8 weights (N*K) | bf16 scales ({K/32, N}) ] — byte-for-byte what a
+// Q8_0 unpack of the same logical weight produces.  Q8_0 (ggml_type 8) unpacks
+// straight to s8; Q4_0 (ggml_type 2) unpacks to packed s4 and then widens each
+// nibble to a full s8 code via the shared W4A8 `cvt_s4_to_s8` upcast, so the
+// downstream sym-quant reorder is identical for both formats.
+//
+// On success `*owned_buffer` holds the allocation (caller frees), `*out_s8`
+// points at its s8 weight region and `*out_scales` at its bf16 scale region.
+static status_t ggml_unpack_to_s8_buffer(const void *weight, int64_t N,
+                                         int64_t K, int ggml_type,
+                                         void **owned_buffer, int8_t **out_s8,
+                                         void **out_scales) {
+  const size_t weight_bytes = static_cast<size_t>(N) * static_cast<size_t>(K);
+  const size_t scale_bytes  = ggml_scale_bytes(N, K, /*use_bf16_scales=*/true);
+  const size_t canon_size   = align_up(weight_bytes + scale_bytes);
+
+  void *canon = aligned_alloc(64, canon_size);
+  if (!canon) {
+    log_error("GGML unpack failed: s8 buffer allocation failed");
+    return status_t::failure;
+  }
+
+  if (ggml_type == 8) {
+    // Q8_0: native s8 unpack directly into the canonical buffer.
+    int8_t *w = nullptr;
+    void   *s = nullptr;
+    if (ggml_unpack_weight_buffer(weight, 8, /*use_bf16_scales=*/true, N, K,
+                                  &w, &s, canon) != 0) {
+      std::free(canon);
+      log_error("GGML Q8_0 unpack failed");
+      return status_t::failure;
+    }
+    *out_s8       = static_cast<int8_t *>(canon);
+    *out_scales   = static_cast<uint8_t *>(canon) + weight_bytes;
+    *owned_buffer = canon;
+    return status_t::success;
+  }
+
+  // Q4_0: unpack to a temp [ packed s4 (N*K/2) | scales ] then upcast to s8.
+  const int64_t packed_size =
+      ggml_unpack_weight_buffer_size(2, /*use_bf16_scales=*/true, N, K);
+  if (packed_size < 0) {
+    std::free(canon);
+    log_error("GGML Q4_0 unpack failed: invalid dimensions");
+    return status_t::failure;
+  }
+  void *tmp = aligned_alloc(64, align_up(static_cast<size_t>(packed_size)));
+  if (!tmp) {
+    std::free(canon);
+    log_error("GGML Q4_0 unpack failed: packed buffer allocation failed");
+    return status_t::failure;
+  }
+  int8_t *packed_s4  = nullptr;
+  void   *tmp_scales = nullptr;
+  if (ggml_unpack_weight_buffer(weight, 2, /*use_bf16_scales=*/true, N, K,
+                                &packed_s4, &tmp_scales, tmp) != 0) {
+    std::free(tmp);
+    std::free(canon);
+    log_error("GGML Q4_0 unpack failed");
+    return status_t::failure;
+  }
+  // Widen packed s4 [N, K/2] -> s8 [N, K] row-major.  The GGML unpack lays out
+  // byte j of a row as columns {2j (low), 2j+1 (high)} — sequential nibble
+  // order — so cvt_s4_to_s8 with (k=N, n=K, ldb=K, is_transposed=false) reads
+  // physical_idx = row*K + col at byte idx/2 and writes s8 at row*K + col,
+  // reproducing the same [N, K] s8 a Q8_0 unpack would yield.
+  cvt_s4_to_s8(packed_s4, static_cast<int8_t *>(canon),
+               /*k=*/static_cast<int>(N), /*n=*/static_cast<int>(K),
+               /*ldb=*/static_cast<int>(K), /*is_transposed=*/false);
+  std::memcpy(static_cast<uint8_t *>(canon) + weight_bytes, tmp_scales,
+              scale_bytes);
+  std::free(tmp);
+
+  apilog_info("GGML Q4_0 upcast: s4->s8 widened N=", N, ", K=", K,
+              " (", static_cast<size_t>(N) * static_cast<size_t>(K) / 2,
+              " packed s4 bytes -> ", weight_bytes,
+              " s8 bytes) via cvt_s4_to_s8");
+
+  *out_s8       = static_cast<int8_t *>(canon);
+  *out_scales   = static_cast<uint8_t *>(canon) + weight_bytes;
+  *owned_buffer = canon;
+  return status_t::success;
+}
+
 } // anonymous namespace
 
 bool ggml_is_sym_quant(const matmul_params &params) {
@@ -160,7 +244,13 @@ bool ggml_is_sym_quant(const matmul_params &params) {
     for (auto d : params.quant_params.src_scale.dims) {
         nelems *= static_cast<size_t>(d);
     }
-    return params.dtypes.wei == data_type_t::s8 &&
+    // Q8_0 weights arrive as s8; Q4_0 weights arrive as s4 and are widened to
+    // s8 by the unpack path before the sym-quant reorder.  Accept both here so
+    // the pre-unpack gate does not reject a Q4_0 packed weight.
+    const bool wei_is_ggml_int =
+        params.dtypes.wei == data_type_t::s8 ||
+        params.dtypes.wei == data_type_t::s4;
+    return wei_is_ggml_int &&
            params.dtypes.src == data_type_t::s8 &&
            !params.quant_params.src_zp.buff &&
            nelems > 1 &&
@@ -208,8 +298,7 @@ int64_t ggml_unpack_weight_buffer_size(int ggml_type, bool use_bf16_scales,
 }
 
 int ggml_unpack_weight_buffer(const void *weight_data, int ggml_type,
-                              bool is_superblock, bool use_bf16_scales,
-                              bool use_unsigned_q4, int64_t N, int64_t K,
+                              bool use_bf16_scales, int64_t N, int64_t K,
                               int8_t **wei_ptr, void **scl_ptr,
                               void *unpack_buffer) {
     if (!weight_data || !wei_ptr || !scl_ptr) return -1;
@@ -276,62 +365,9 @@ int ggml_unpack_weight_buffer(const void *weight_data, int ggml_type,
         return 0;
     }
 
-    // Q4_0 superblock: 8 rows interleaved, nibbles pre-signed via XOR 0x88.
-    if (ggml_type == 2 && is_superblock) {
-        if (N % 8 != 0) return -1;
-
-        const int64_t weight_q4_bytes = N * (K / 2);
-        const size_t  scale_bytes     =
-            num_blocks * (use_bf16_scales ? sizeof(uint16_t) : sizeof(float));
-
-        std::unique_ptr<int8_t[]>  weight_tmp(new int8_t[weight_q4_bytes]);
-        std::unique_ptr<uint8_t[]> scale_tmp(new uint8_t[scale_bytes]);
-
-        auto *blocks = static_cast<const block_q4_0x8 *>(weight_data);
-
-        #pragma omp parallel for schedule(static)
-        for (int64_t r8 = 0; r8 < N / 8; r8++) {
-            for (int64_t g = 0; g < ng; g++) {
-                block_q4_0x8 local;
-                std::memcpy(&local, &blocks[r8 * ng + g], sizeof(local));
-
-                for (int ri = 0; ri < 8; ri++) {
-                    const int64_t row = r8 * 8 + ri;
-
-                    write_scale(scale_tmp.get(), use_bf16_scales,
-                                g * N + row, fp16_to_fp32(local.d[ri]));
-
-                    uint8_t src[16];
-                    for (int i = 0; i < 8; i++) {
-                        src[i]     = local.qs[ri * 8 + i];
-                        src[i + 8] = local.qs[64 + ri * 8 + i];
-                    }
-
-                    int8_t *dst = &weight_tmp[(row * K + g * 32) / 2];
-                    for (int i = 0; i < 8; i++) {
-                        uint8_t lo0 = src[2*i]     & 0x0F;
-                        uint8_t lo1 = src[2*i + 1] & 0x0F;
-                        uint8_t hi0 = src[2*i]     >> 4;
-                        uint8_t hi1 = src[2*i + 1] >> 4;
-
-                        if (use_unsigned_q4) {
-                            lo0 ^= 8; lo1 ^= 8; hi0 ^= 8; hi1 ^= 8;
-                        }
-
-                        dst[i]     = static_cast<int8_t>(lo0 | (lo1 << 4));
-                        dst[8 + i] = static_cast<int8_t>(hi0 | (hi1 << 4));
-                    }
-                }
-            }
-        }
-
-        uint8_t *raw_buf = static_cast<uint8_t *>(buf);
-        std::memcpy(raw_buf,                   weight_tmp.get(), weight_q4_bytes);
-        std::memcpy(raw_buf + weight_q4_bytes, scale_tmp.get(),  scale_bytes);
-        return 0;
-    }
-
-    // Q4_0 regular: unsigned nibbles 0-15, subtract 8 to convert to signed S4.
+    // Q4_0: unsigned nibbles 0-15, subtract 8 to convert to signed S4.  The
+    // downstream cvt_s4_to_s8 upcast sign-extends, so the bias MUST come off
+    // here or every code lands 8 away from its true value.
     if (ggml_type == 2) {
         const int64_t weight_q4_bytes = N * (K / 2);
         const size_t  scale_bytes     =
@@ -358,12 +394,10 @@ int ggml_unpack_weight_buffer(const void *weight_data, int ggml_type,
                     uint8_t hi0 = local.qs[2*i]     >> 4;
                     uint8_t hi1 = local.qs[2*i + 1] >> 4;
 
-                    if (!use_unsigned_q4) {
-                        lo0 = (lo0 - 8) & 0x0F;
-                        lo1 = (lo1 - 8) & 0x0F;
-                        hi0 = (hi0 - 8) & 0x0F;
-                        hi1 = (hi1 - 8) & 0x0F;
-                    }
+                    lo0 = (lo0 - 8) & 0x0F;
+                    lo1 = (lo1 - 8) & 0x0F;
+                    hi0 = (hi0 - 8) & 0x0F;
+                    hi1 = (hi1 - 8) & 0x0F;
 
                     dst[i]     = static_cast<int8_t>(lo0 | (lo1 << 4));
                     dst[8 + i] = static_cast<int8_t>(hi0 | (hi1 << 4));
@@ -393,12 +427,8 @@ int ggml_unpack_weight_buffer(const void *weight_data, int ggml_type,
 // (weight, K, N, ldb, trans) tuple, in case a process runs both modes.
 static status_t unpack_ggml_raw_s8_and_cache(const void *&weight, int N, int K,
                                              int ldb, char trans,
-                                             matmul_params &params) {
-  const int64_t unpack_size = ggml_unpack_weight_buffer_size(8, true, N, K);
-  if (unpack_size < 0) {
-    log_error("GGML raw-s8 unpack failed: invalid dimensions");
-    return status_t::failure;
-  }
+                                             matmul_params &params,
+                                             int ggml_type) {
   const size_t weight_bytes = static_cast<size_t>(N) * static_cast<size_t>(K);
 
   Key_matmul cache_key(trans == 't', static_cast<unsigned int>(K),
@@ -420,22 +450,16 @@ static status_t unpack_ggml_raw_s8_and_cache(const void *&weight, int N, int K,
 
   if (!cached_buffer) {
     apilog_info("GGML raw-s8 unpack cache miss: N=", N, ", K=", K);
-    void *buf =
-        aligned_alloc(64, align_up(static_cast<size_t>(unpack_size)));
-    if (!buf) {
-      log_error("GGML raw-s8 unpack failed: allocation failed");
-      return status_t::failure;
-    }
-    // out-params required by the ggml_unpack_weight_buffer API but unused on
-    // this path: the unpacked weights are `buf` itself and the wei-scale
-    // pointer is re-derived from `cached_buffer + weight_bytes` below.
+    // Canonical [ s8 (N*K) | bf16 scales ] buffer.  For Q4_0 this unpacks to
+    // packed s4 and widens to s8; for Q8_0 it is the native unpack.  The
+    // resulting layout is exactly the raw per-group s8 weight the N-tile DLP
+    // path expects, so it can be cached and handed back directly.
+    void   *owned            = nullptr;
     int8_t *unpacked_weights = nullptr;
     void   *unpacked_scales  = nullptr;
-    if (ggml_unpack_weight_buffer(weight, 8, false, true, false, N, K,
-                                  &unpacked_weights, &unpacked_scales,
-                                  buf) != 0) {
-      std::free(buf);
-      log_error("GGML raw-s8 unpack failed");
+    if (ggml_unpack_to_s8_buffer(weight, N, K, ggml_type, &owned,
+                                 &unpacked_weights,
+                                 &unpacked_scales) != status_t::success) {
       return status_t::failure;
     }
     (void)unpacked_weights;
@@ -443,10 +467,10 @@ static status_t unpack_ggml_raw_s8_and_cache(const void *&weight, int N, int K,
     {
       std::lock_guard<std::mutex> lock(cache_mutex);
       if (weight_cache.try_get(cache_key, cached_buffer)) {
-        std::free(buf);  // another thread filled it first
+        std::free(owned);  // another thread filled it first
       } else {
-        weight_cache.add(cache_key, buf);
-        cached_buffer = buf;
+        weight_cache.add(cache_key, owned);
+        cached_buffer = owned;
       }
     }
   }
@@ -455,11 +479,14 @@ static status_t unpack_ggml_raw_s8_and_cache(const void *&weight, int N, int K,
   // UN-reordered, so the per-group N-tile DLP path reorders it per-tile.
   weight = cached_buffer;
   params.mem_format_b = 'n';
-  // The weight is now plain raw s8 (unpacked): clear the GGML packed flag so
-  // the dispatch treats it exactly like a caller-provided per-group s8 weight
-  // (check_m_tile_safe / check_n_tile_extra reject `pack_format_b != 0` on the
-  // mem_format 'n' path, so leaving it set would veto ALGO 3).
+  // The weight is now plain raw s8 (unpacked / Q4_0-widened): clear the GGML
+  // packed flag AND advertise the s8 weight dtype so the dispatch treats it
+  // exactly like a caller-provided per-group s8 weight (check_m_tile_safe /
+  // check_n_tile_extra reject `pack_format_b != 0` on the mem_format 'n' path,
+  // so leaving it set would veto ALGO 3; a leftover s4 dtype would misroute to
+  // the native W4A8 kernel).
   params.packing.pack_format_b = 0;
+  params.dtypes.wei = data_type_t::s8;
   params.quant_params.wei_scale.buff = static_cast<const void *>(
       static_cast<const uint8_t *>(cached_buffer) + weight_bytes);
   params.quant_params.wei_scale.dt = data_type_t::bf16;
@@ -487,14 +514,36 @@ status_t unpack_ggml_weights_and_cache(const void *&weight, int N, int K,
                                       int ldb, char trans,
                                       matmul_params &params,
                                       bool skip_reorder) {
-  apilog_info("GGML Q8_0 unpack: N=", N, ", K=", K,
+  // Infer the GGML block format from the weight dtype (contract:
+  // pack_format_b == 1 means GGML; s4 -> Q4_0, s8/none -> Q8_0).  Q4_0 is
+  // unpacked to packed s4 then widened to s8 before the (shared) sym-quant
+  // reorder.  `none` is the Q8_0 default the fused-MoE Op2 down-weight scratch
+  // params carry (they are built without a weight dtype); it is kept as an
+  // explicit alias so that path is not disturbed.
+  //
+  // Reject any POSITIVELY-wrong dtype (bf16/f32/u4/...) instead of silently
+  // widening the block stride to Q8_0 and reading past the packed blob.
+  // ggml_is_sym_quant already screens the single-matmul and ACTIVE-expert
+  // calls, but cold-expert (M==0) cache warming and the fused-MoE Op2 path
+  // skip that gate, so this is the only dtype check those callers get.
+  if (params.dtypes.wei != data_type_t::s4 &&
+      params.dtypes.wei != data_type_t::s8 &&
+      params.dtypes.wei != data_type_t::none) {
+    log_error("GGML packed weights support only s4 (Q4_0) or s8 (Q8_0) weight "
+              "dtypes, got ", dtype_info(params.dtypes.wei));
+    return status_t::failure;
+  }
+  const int ggml_type = (params.dtypes.wei == data_type_t::s4) ? 2 : 8;
+
+  apilog_info("GGML unpack: N=", N, ", K=", K, ", ggml_type=", ggml_type,
               ", weight_address=", static_cast<const void *>(weight),
               ", skip_reorder=", (skip_reorder ? 1 : 0));
 
   // N-tile per-group DLP path: keep the weight raw so `do_tile` reorders it
   // per N-tile, instead of pre-reordering the full weight for AOCL here.
   if (skip_reorder) {
-    return unpack_ggml_raw_s8_and_cache(weight, N, K, ldb, trans, params);
+    return unpack_ggml_raw_s8_and_cache(weight, N, K, ldb, trans, params,
+                                        ggml_type);
   }
 
   // Default: unpack + AOCL sym-quant reorder + cache (mem_format 'r').
@@ -528,34 +577,21 @@ status_t unpack_ggml_weights_and_cache(const void *&weight, int N, int K,
   if (!cached_buffer) {
     apilog_info("GGML unpack/reorder cache miss: N=", N, ", K=", K);
 
-    const int64_t unpack_size = ggml_unpack_weight_buffer_size(
-        8, true, N, K);
-    if (unpack_size < 0) {
-      log_error("GGML weight unpacking failed: invalid dimensions");
-      return status_t::failure;
-    }
-
-    void *unpack_buffer = aligned_alloc(64, align_up(static_cast<size_t>(unpack_size)));
-    if (!unpack_buffer) {
-      log_error("GGML weight unpacking failed: unpack allocation failed");
-      return status_t::failure;
-    }
-
+    // Produce the canonical [ s8 (N*K) | bf16 scales ] buffer.  Q8_0 unpacks
+    // straight to s8; Q4_0 unpacks to packed s4 and widens each nibble to s8
+    // via the shared W4A8 upcast — so the reorder below is format-agnostic.
+    void   *unpack_owned     = nullptr;
     int8_t *unpacked_weights = nullptr;
-    void   *unpacked_scales = nullptr;
-    int ret = ggml_unpack_weight_buffer(
-        weight, 8, false, true, false,
-        N, K, &unpacked_weights, &unpacked_scales,
-        unpack_buffer);
-    if (ret != 0) {
-      std::free(unpack_buffer);
-      log_error("GGML weight unpacking failed");
+    void   *unpacked_scales  = nullptr;
+    if (ggml_unpack_to_s8_buffer(weight, N, K, ggml_type, &unpack_owned,
+                                 &unpacked_weights, &unpacked_scales)
+        != status_t::success) {
       return status_t::failure;
     }
 
     void *new_cached_buffer = aligned_alloc(64, total_cache_bytes);
     if (!new_cached_buffer) {
-      std::free(unpack_buffer);
+      std::free(unpack_owned);
       log_error("GGML weight reorder failed: cache allocation failed");
       return status_t::failure;
     }
@@ -564,14 +600,14 @@ status_t unpack_ggml_weights_and_cache(const void *&weight, int N, int K,
                                       unpacked_weights,
                                       static_cast<int8_t *>(new_cached_buffer))
         != status_t::success) {
-      std::free(unpack_buffer);
+      std::free(unpack_owned);
       std::free(new_cached_buffer);
       return status_t::failure;
     }
 
     std::memcpy(static_cast<uint8_t *>(new_cached_buffer) + reorder_size,
                 unpacked_scales, scale_bytes);
-    std::free(unpack_buffer);
+    std::free(unpack_owned);
 
     {
       std::lock_guard<std::mutex> lock(cache_mutex);
@@ -594,6 +630,12 @@ status_t unpack_ggml_weights_and_cache(const void *&weight, int N, int K,
 
   weight = cached_buffer;
   params.mem_format_b = 'r';
+  // The reordered weight is now materialized s8 (Q4_0 was widened during
+  // unpack); advertise s8 so downstream kernel selection and the AOCL
+  // sym-quant GEMM treat it exactly like the Q8_0 path and never re-route a
+  // leftover s4 dtype to the native W4A8 s4 kernel.
+  params.dtypes.wei = data_type_t::s8;
+  params.dtypes.compute = data_type_t::s8;
   params.quant_params.wei_scale.buff = static_cast<const void *>(
       static_cast<const uint8_t *>(cached_buffer) + reorder_size);
   params.quant_params.wei_scale.dt = data_type_t::bf16;

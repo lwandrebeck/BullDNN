@@ -130,11 +130,17 @@ struct matmul_batch_params_t {
  * @brief Structure describing the packing format of weight matrix B.
  *
  * pack_format_b = 0 (default): weights are in standard unpacked layout.
- * pack_format_b = 1: weights are in GGML Q8_0 packed format (int8 weights
- *                     with interleaved fp16 scales) and must be unpacked.
+ * pack_format_b = 1: weights are in GGML block-quantized packed format and
+ *                     must be unpacked.  The concrete block format is inferred
+ *                     from the weight dtype: s8 -> Q8_0 (int8 weights + per-
+ *                     group fp16 scales), s4 -> Q4_0 (4-bit weights that the
+ *                     unpack path widens to s8 before the sym-quant reorder).
+ *
+ * Q4_0 is accepted in its plain block_q4_0 form only; the 8-row interleaved
+ * (block_q4_0x8) repack is not supported.
  */
 struct pack_format {
-  int pack_format_b;  ///< 0 = unpacked (default), 1 = GGML Q8_0 packed weights
+  int pack_format_b;  ///< 0 = unpacked (default), 1 = GGML packed weights
 
   pack_format() : pack_format_b(0) {}
 };

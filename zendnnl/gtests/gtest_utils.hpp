@@ -812,6 +812,25 @@ void repack_weights_q8_0(const int8_t *weight_buffer,
                          int64_t M, int64_t K,
                          void *out_blocks);
 
+/**
+ * @brief Repack signed-int8 weights and fp32 scales into GGML Q4_0 blocked
+ *        format (block_q4_0: one fp16 scale + 16 packed-nibble bytes).
+ *
+ * Each block holds 32 quants as GGML low/high nibbles with the unsigned +8
+ * offset the regular Q4_0 unpack reverses.  Weight values MUST lie in [-8, 7]
+ * so the 4-bit round-trip is lossless.
+ *
+ * @param weight_buffer  Flat int8 weights in [-8, 7], row-major [M x K]
+ * @param scale_buffer   Flat fp32 scales, column-major [ng x M] where ng = K/32
+ * @param M              Number of rows (output channels)
+ * @param K              Number of columns (must be divisible by 32)
+ * @param out_blocks     Output buffer, must be at least M * (K/32) * 18 bytes
+ */
+void repack_weights_q4_0(const int8_t *weight_buffer,
+                         const float *scale_buffer,
+                         int64_t M, int64_t K,
+                         void *out_blocks);
+
 /** @fn compare_tensor_2D
  *  @brief Function to compare two 2D tensor
  *

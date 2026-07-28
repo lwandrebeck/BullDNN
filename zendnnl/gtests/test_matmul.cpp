@@ -17,8 +17,12 @@
 #include <gtest/gtest.h>
 #include <cmath>
 #include <cstring>
+#include <vector>
 #include "gtest_utils.hpp"
 #include "common/bfloat16.hpp"
+#include "lowoha_operators/matmul/ggml_weight_unpack.hpp"
+#include "lowoha_operators/matmul/lowoha_matmul_utils.hpp"
+#include "lowoha_operators/matmul/backends/aocl/aocl_kernel.hpp"
 
 
 /** @brief TestMatmul is a test class to handle parameters */
@@ -1312,6 +1316,311 @@ TEST_P(TestMatmul, INT8_PER_GROUP_GGML_PACKED) {
                         packed_size), 0)
       << "GGML packed weights should not be modified by matmul_direct";
   EXPECT_TRUE(ok);
+}
+
+/** @brief Test INT8 sym_quant with GGML Q4_0 (4-bit) packed weights.
+ *  Mirrors INT8_PER_GROUP_GGML_PACKED but packs weights into GGML Q4_0
+ *  (block_q4_0) format and passes them as s4 with pack_format_b = 1, so the API
+ *  unpacks the 4-bit weights, widens them to s8 (the DA8W4 cvt_s4_to_s8
+ *  upcast), and runs the same per-group sym-quant reorder as the Q8_0 path.
+ *  Weights are clamped to the 4-bit range [-8, 7] so the packed source and the
+ *  unpacked result are bit-identical to the reference.
+ */
+TEST_P(TestMatmul, INT8_PER_GROUP_GGML_PACKED_Q4_0) {
+  uint64_t sym_k = (k / 32) * 32;
+  if (sym_k < 64) {
+    sym_k = 64;
+  }
+
+  std::mt19937 local_rng(m ^ k ^ n ^ 0xC401);
+  bool use_bf16 = (local_rng() % 2 == 0);
+  data_type_t ref_dt = use_bf16 ? data_type_t::bf16 : data_type_t::f32;
+  data_type_t out_dt = ref_dt;
+
+  source_dtype = data_type_t::s8;
+  use_LOWOHA = true;
+  neutralize_mish_quant_int8(po_types);
+
+  uint64_t num_groups = sym_k / 32;
+  data_type_t scale_dt = data_type_t::bf16;
+
+  std::vector<int64_t> wei_sd = {static_cast<int64_t>(num_groups), static_cast<int64_t>(n)};
+  std::vector<int64_t> src_sd = {static_cast<int64_t>(m), static_cast<int64_t>(num_groups)};
+
+  auto wei_ref = tensor_factory.uniform_dist_tensor({sym_k, n}, ref_dt, 2.0,
+                 false);
+  tensor_t weight_tensor, wei_scale, wei_zp;
+  if (quant_params_compute(tensor_factory, wei_ref, ref_dt,
+                           data_type_t::s8, wei_sd, scale_dt,
+                           wei_scale, wei_zp, &weight_tensor) != status_t::success) {
+    FAIL() << "weight dynamic quantization failed";
+  }
+
+  // Overwrite the quantized weight with values spanning the FULL signed 4-bit
+  // range [-8, 7] so every nibble code — including the sign-bit boundary
+  // (-8 = 0b1000) and the max (+7) — is exercised on every shape/dtype combo.
+  // The reference consumes these same s8 values, so the Q4_0 pack/unpack is a
+  // lossless round-trip and any nibble-decode or sign-extension error surfaces
+  // as an output mismatch.  The stride 7 is coprime with 16, so the pattern
+  // cycles through all 16 codes and de-correlates from the 32-wide group edge.
+  auto *wt_mut = static_cast<int8_t *>(weight_tensor.get_raw_handle_unsafe());
+  for (uint64_t i = 0; i < sym_k * n; i++) {
+    wt_mut[i] = static_cast<int8_t>(static_cast<int>((i * 7 + 3) % 16) - 8);
+  }
+
+  auto src_ref = tensor_factory.uniform_dist_tensor({m, sym_k}, ref_dt, 25.0,
+                 transA);
+  tensor_t input_tensor, src_scale, src_zp;
+  if (quant_params_compute(tensor_factory, src_ref, ref_dt,
+                           data_type_t::s8, src_sd, scale_dt,
+                           src_scale, src_zp, &input_tensor) != status_t::success) {
+    FAIL() << "source dynamic quantization failed";
+  }
+
+  const int8_t *raw_wt = static_cast<const int8_t *>(
+                           weight_tensor.get_raw_handle_unsafe());
+
+  int64_t M_pack = static_cast<int64_t>(n);
+  int64_t K_pack = static_cast<int64_t>(sym_k);
+  int64_t ng = K_pack / 32;
+  size_t num_scales = static_cast<size_t>(num_groups * n);
+
+  const auto *raw_scl_bf16 = static_cast<const uint16_t *>(
+                               wei_scale.get_raw_handle_unsafe());
+  std::vector<float> scl_f32(num_scales);
+  for (size_t i = 0; i < num_scales; i++) {
+    uint32_t bits = static_cast<uint32_t>(raw_scl_bf16[i]) << 16;
+    std::memcpy(&scl_f32[i], &bits, sizeof(float));
+  }
+
+  std::vector<int8_t> wt_nk(sym_k * n);
+  for (uint64_t ki = 0; ki < sym_k; ki++) {
+    for (uint64_t ni = 0; ni < n; ni++) {
+      wt_nk[ni * sym_k + ki] = raw_wt[ki * n + ni];
+    }
+  }
+
+  // block_q4_0 = 2-byte fp16 scale + 16 packed-nibble bytes = 18 bytes.
+  size_t packed_size = static_cast<size_t>(M_pack * ng * 18);
+  std::vector<uint8_t> packed_buf(packed_size);
+  repack_weights_q4_0(wt_nk.data(), scl_f32.data(), M_pack, K_pack,
+                      packed_buf.data());
+
+  auto packed_weight_tensor = tensor_factory.copy_tensor({sym_k, n},
+                              data_type_t::s4,
+                              std::make_pair(packed_size, static_cast<void *>(packed_buf.data())),
+                              true, false);
+  std::vector<uint8_t> packed_before(packed_size);
+  std::memcpy(packed_before.data(), packed_weight_tensor.get_raw_handle_unsafe(),
+              packed_size);
+
+  auto bias_tensor = tensor_factory.uniform_dist_tensor({1, n},
+                     rand() % 2 == 0 ? data_type_t::bf16 : data_type_t::f32, 2.0);
+  auto binary_tensor_shape_2d = {m, n};
+  auto binary_tensor_shape_broadcast = {uint64_t{1}, n};
+  auto binary_tensor_shape = (rand() % 2 == 0) ? binary_tensor_shape_broadcast :
+                             binary_tensor_shape_2d;
+  auto binary_tensors = make_binary_postop_tensors(tensor_factory, po_types,
+                        binary_tensor_shape);
+
+  auto output_tensor     = tensor_factory.uniform_dist_tensor({m, n}, out_dt,
+                           2.0);
+  auto output_tensor_ref = tensor_factory.uniform_dist_tensor({m, n}, out_dt,
+                           2.0);
+
+  log_info("INT8_SYM_QUANT_GGML_PACKED_Q4_0: dtype=",
+           use_bf16 ? "bf16" : "f32",
+           " K=", sym_k, " groups=", num_groups);
+
+  status_t status     = matmul_kernel_test(input_tensor, packed_weight_tensor,
+                        bias_tensor, output_tensor, po_types, binary_tensors,
+                        use_LOWOHA, algo, 1.0, 0.0, 1);
+  status_t ref_status = matmul_forced_ref_kernel_test(input_tensor,
+                        weight_tensor, bias_tensor, output_tensor_ref, po_types,
+                        binary_tensors, use_LOWOHA, algo, 1.0, 0.0);
+
+  bool ok = (status == status_t::success && ref_status == status_t::success);
+  if (ok) {
+    compare_tensor_2D_matrix(output_tensor, output_tensor_ref, m, n, sym_k,
+                             rtol_bf16, epsilon_bf16, ok, false, 1.0f,
+                             true);
+  }
+  EXPECT_EQ(std::memcmp(packed_before.data(),
+                        packed_weight_tensor.get_raw_handle_unsafe(),
+                        packed_size), 0)
+      << "GGML Q4_0 packed weights should not be modified by matmul_direct";
+  EXPECT_TRUE(ok);
+}
+
+/** @brief Focused, deterministic bit-exactness check of the GGML Q4_0 unpack +
+ *  DA8W4 s4->s8 upcast that backs matmul_direct's packed-weight path.
+ *
+ *  Independent of the GEMM: it packs a known [N, K] weight covering the full
+ *  signed 4-bit range into GGML Q4_0, unpacks it to packed s4, widens it via
+ *  the shared `cvt_s4_to_s8` upcast, and asserts every value round-trips to its
+ *  exact s8 code in the correct [N, K] position.  This localises any
+ *  nibble-order or sign-extension error to the unpack layer (vs the broader
+ *  INT8_PER_GROUP_GGML_PACKED_Q4_0 end-to-end comparison).
+ */
+TEST(GgmlWeightUnpackQ4_0, UpcastBitExactAllNibbleCodes) {
+  using zendnnl::lowoha::matmul::cvt_s4_to_s8;
+  using zendnnl::lowoha::matmul::ggml_unpack_weight_buffer;
+  using zendnnl::lowoha::matmul::ggml_unpack_weight_buffer_size;
+
+  for (int K : {32, 64, 128}) {          // one, two, and four GGML groups
+    const int N = 6;                     // output channels
+    const int ng = K / 32;
+
+    // Reference [N, K] s8 weights spanning every signed 4-bit code [-8, 7];
+    // stride 7 (coprime with 16) hits all codes incl. the -8 sign boundary.
+    std::vector<int8_t> wnk(static_cast<size_t>(N) * K);
+    for (int i = 0; i < N * K; ++i) {
+      wnk[i] = static_cast<int8_t>(static_cast<int>((i * 7 + 3) % 16) - 8);
+    }
+    // Per-group scales laid out column-major [g*N + row] (repack contract).
+    std::vector<float> scl(static_cast<size_t>(ng) * N);
+    for (int i = 0; i < ng * N; ++i) scl[i] = 0.125f * static_cast<float>(i + 1);
+
+    // Pack -> GGML Q4_0 (block_q4_0 = 18 bytes).
+    std::vector<uint8_t> packed(static_cast<size_t>(N) * ng * 18);
+    repack_weights_q4_0(wnk.data(), scl.data(), N, K, packed.data());
+
+    // Unpack Q4_0 -> packed s4, then widen s4 -> s8 [N, K].
+    const int64_t bufsz =
+        ggml_unpack_weight_buffer_size(2, /*use_bf16_scales=*/true, N, K);
+    ASSERT_GT(bufsz, 0) << "K=" << K;
+    std::vector<uint8_t> ubuf(static_cast<size_t>(bufsz));
+    int8_t *packed_s4 = nullptr;
+    void   *scales_out = nullptr;
+    ASSERT_EQ(ggml_unpack_weight_buffer(packed.data(), /*ggml_type=*/2,
+                                        /*use_bf16_scales=*/true, N, K,
+                                        &packed_s4, &scales_out, ubuf.data()),
+              0) << "K=" << K;
+    std::vector<int8_t> s8(static_cast<size_t>(N) * K);
+    cvt_s4_to_s8(packed_s4, s8.data(), /*k=*/N, /*n=*/K, /*ldb=*/K,
+                 /*is_transposed=*/false);
+
+    for (int i = 0; i < N * K; ++i) {
+      ASSERT_EQ(static_cast<int>(s8[i]), static_cast<int>(wnk[i]))
+          << "Q4_0 nibble round-trip mismatch at index " << i << " (K=" << K
+          << ")";
+    }
+  }
+}
+
+/** @brief End-to-end GGML Q4_0 unpack: packed blob -> widened [N, K] s8.
+ *
+ *  Covers the whole `unpack_ggml_weights_and_cache` path rather than the
+ *  decode alone, so the +8 bias removal and the sign-extending `cvt_s4_to_s8`
+ *  upcast are checked as a pair — get either wrong and every code lands 8
+ *  away from its true value.  `skip_reorder` hands back the raw [N, K] s8 +
+ *  {K/32, N} bf16 scales, which is directly inspectable (no AOCL blocking).
+ */
+TEST(GgmlWeightUnpackQ4_0, CachedUnpackWidensToReferenceS8) {
+  const int N = 6;
+  const int K = 64;
+  const int ng = K / 32;
+
+  std::vector<int8_t> wnk(static_cast<size_t>(N) * K);
+  for (int i = 0; i < N * K; ++i) {
+    wnk[i] = static_cast<int8_t>(static_cast<int>((i * 7 + 3) % 16) - 8);
+  }
+  std::vector<float> scl(static_cast<size_t>(ng) * N);
+  for (int i = 0; i < ng * N; ++i) scl[i] = 0.125f * static_cast<float>(i + 1);
+
+  std::vector<uint8_t> packed(static_cast<size_t>(N) * ng * 18);
+  repack_weights_q4_0(wnk.data(), scl.data(), N, K, packed.data());
+
+  clear_ggml_weight_unpack_cache();
+  matmul_params params;
+  params.dtypes.wei = data_type_t::s4;
+  params.packing.pack_format_b = 1;
+
+  const void *weight = static_cast<const void *>(packed.data());
+  ASSERT_EQ(unpack_ggml_weights_and_cache(weight, N, K, /*ldb=*/K, 't', params,
+                                          /*skip_reorder=*/true),
+            status_t::success);
+
+  const int8_t *s8 = static_cast<const int8_t *>(weight);
+  for (int i = 0; i < N * K; ++i) {
+    ASSERT_EQ(static_cast<int>(s8[i]), static_cast<int>(wnk[i]))
+        << "Q4_0 widen mismatch at index " << i;
+  }
+  clear_ggml_weight_unpack_cache();
+}
+
+/** @brief GGML packed weights must reject mish at validation.
+ *
+ *  A Q4_0 weight is still s4 when validate_matmul_direct_inputs runs, so
+ *  is_sym_quant_config does not recognise it — but the unpack widens it to s8
+ *  and the call lands on the AOCL sym_quant kernel, which silently drops mish.
+ *  The gate therefore has to key off pack_format_b, otherwise the caller gets
+ *  a wrong result instead of an error (the Q8_0 path already errors out).
+ */
+TEST(GgmlPackedValidation, MishRejectedOnPackedWeightPath) {
+  const int M = 4, N = 8, K = 64;
+  std::vector<int8_t>  src(static_cast<size_t>(M) * K, 0);
+  // Real block_q4_0 layout: N*(K/32) blocks of 18 bytes (fp16 scale + 16
+  // packed-nibble bytes), not the raw N*K/2 nibble count.
+  std::vector<uint8_t> weight(static_cast<size_t>(N) * (K / 32) * 18, 0);
+  std::vector<uint16_t> dst(static_cast<size_t>(M) * N, 0);
+
+  matmul_post_op mish;
+  mish.po_type = post_op_type_t::mish;
+
+  matmul_params ggml_params;
+  ggml_params.dtypes.src = data_type_t::s8;
+  ggml_params.dtypes.wei = data_type_t::s4;
+  ggml_params.dtypes.dst = data_type_t::bf16;
+  ggml_params.packing.pack_format_b = 1;
+  ggml_params.postop_.push_back(mish);
+  EXPECT_EQ(validate_matmul_direct_inputs(src.data(), weight.data(), dst.data(),
+                                          M, N, K, 1, 1, ggml_params,
+                                          /*is_weights_const=*/true),
+            status_t::failure);
+
+  // The same post-op on a plain bf16 call still validates: the gate targets
+  // the INT8 kernels, not mish itself.
+  matmul_params bf16_params;
+  bf16_params.dtypes.src = data_type_t::bf16;
+  bf16_params.dtypes.wei = data_type_t::bf16;
+  bf16_params.dtypes.dst = data_type_t::bf16;
+  bf16_params.postop_.push_back(mish);
+  EXPECT_EQ(validate_matmul_direct_inputs(src.data(), weight.data(), dst.data(),
+                                          M, N, K, 1, 1, bf16_params,
+                                          /*is_weights_const=*/true),
+            status_t::success);
+}
+
+/** @brief The GGML unpack must reject weight dtypes it cannot decode.
+ *
+ *  The block stride comes from params.dtypes.wei, so silently treating
+ *  anything non-s4 as Q8_0 would read past the end of the packed blob.
+ *  Cold-expert (M==0) cache warming reaches the unpack without the
+ *  ggml_is_sym_quant gate, so this check is all that stands between a mis-set
+ *  dtype and an out-of-bounds read.
+ */
+TEST(GgmlPackedValidation, UnsupportedWeightDtypeRejected) {
+  const int N = 6;
+  const int K = 64;
+  std::vector<uint8_t> packed(static_cast<size_t>(N) * (K / 32) * 18, 0);
+
+  clear_ggml_weight_unpack_cache();
+  for (data_type_t wei_dt : {data_type_t::bf16, data_type_t::f32,
+                             data_type_t::u4}) {
+    matmul_params params;
+    params.dtypes.wei = wei_dt;
+    params.packing.pack_format_b = 1;
+
+    const void *weight = static_cast<const void *>(packed.data());
+    EXPECT_EQ(unpack_ggml_weights_and_cache(weight, N, K, /*ldb=*/K, 't',
+                                            params, /*skip_reorder=*/true),
+              status_t::failure)
+        << "wei dtype " << dtype_info(wei_dt) << " should be rejected";
+    EXPECT_EQ(weight, static_cast<const void *>(packed.data()))
+        << "a rejected unpack must not redirect the weight pointer";
+  }
+  clear_ggml_weight_unpack_cache();
 }
 
 /** @brief Test INT8 sym_quant: per-token source scale, bf16 output */

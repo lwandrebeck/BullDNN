@@ -207,7 +207,8 @@ inline bool is_sym_quant_config(const matmul_params &params) {
  *
  * Returns true when @p params describes the dynamic-quantization path
  * that `reorder_quantization_wrapper` will pick up: `dynamic_quant`
- * flag set, s8 weight, bf16/f32 source, and an s8/u8 compute dtype.
+ * flag set, an s8 (or GGML-packed) weight, bf16/f32 source, and an s8/u8
+ * compute dtype.
  *
  * @param params Matmul parameters.
  * @return true if the config will be dynamic-quantized; false otherwise.
@@ -218,7 +219,15 @@ inline bool is_dynamic_quant_config(const matmul_params &params) {
   if (!params.dynamic_quant) {
     return false;
   }
-  if (params.dtypes.wei != data_type_t::s8) {
+  // GGML packed weights are exempt from the s8 requirement: a Q4_0 weight is
+  // still s4 here and only widens to s8 AFTER this source quantization, which
+  // group_matmul_direct runs before the unpack.  Demanding s8 would skip the
+  // quant and leave a bf16 source that ggml_is_sym_quant then rejects.  Plain
+  // (unpacked) s4 stays out — that is W4A8, which reaches
+  // `reorder_quantization_wrapper` through is_w4a8_config instead and carries
+  // different source-scale shapes.
+  if (params.dtypes.wei != data_type_t::s8 &&
+      params.packing.pack_format_b != 1) {
     return false;
   }
   if (params.dtypes.src != data_type_t::bf16 &&

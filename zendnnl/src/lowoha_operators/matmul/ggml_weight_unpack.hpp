@@ -55,11 +55,13 @@ int64_t ggml_unpack_weight_buffer_size(int ggml_type, bool use_bf16_scales,
  *   *wei_ptr  -> start of the buffer (int8 weight bytes)
  *   *scl_ptr  -> weight region + weight_bytes (fp32 or bf16 scale bytes)
  *
+ * Q4_0 weights are emitted as packed SIGNED nibbles: the GGML +8 bias is
+ * removed here so the downstream sign-extending s4 -> s8 upcast is correct.
+ *
  * @return 0 on success, -1 on error.
  */
 int ggml_unpack_weight_buffer(const void *weight_data, int ggml_type,
-                              bool is_superblock, bool use_bf16_scales,
-                              bool use_unsigned_q4, int64_t N, int64_t K,
+                              bool use_bf16_scales, int64_t N, int64_t K,
                               int8_t **wei_ptr, void **scl_ptr,
                               void *unpack_buffer = nullptr);
 
@@ -90,8 +92,14 @@ status_t validate_ggml_packed_inputs(const matmul_params &params,
                                      int Batch_B, bool transB);
 
 /**
- * @brief Unpack GGML Q8_0 packed weights out of place, reorder them for AOCL
+ * @brief Unpack GGML packed weights out of place, reorder them for AOCL
  *        blocked sym-quant execution, and cache the final reordered buffer.
+ *
+ * The block format is taken from params.dtypes.wei: s8 (or none, the default
+ * carried by the fused-MoE Op2 scratch params) selects Q8_0, which unpacks
+ * straight to s8, and s4 selects Q4_0, whose nibbles are unpacked to packed s4
+ * and then widened to s8 so both formats share one reorder.  Any other weight
+ * dtype is rejected.
  *
  * Uses an LRU cache keyed on the tuple
  *   (trans, K, N, ldb, weight pointer, algo = aocl_dlp_blocked)

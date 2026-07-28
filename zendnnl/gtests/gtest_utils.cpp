@@ -38,6 +38,11 @@ struct block_q8_0 {
   int8_t qs[32];
 };
 
+struct block_q4_0 {
+  uint16_t d;
+  uint8_t qs[16];
+};
+
 inline uint32_t gtest_fp32_to_bits(float f) {
   uint32_t bits;
   std::memcpy(&bits, &f, sizeof(f));
@@ -129,6 +134,31 @@ void repack_weights_q8_0(const int8_t *weight_buffer,
       block_q8_0 *b = &out[row * ng + g];
       b->d = gtest_fp32_to_fp16(scale_buffer[g * M + row]);
       std::memcpy(b->qs, weight_buffer + row * K + g * 32, 32);
+    }
+  }
+}
+
+void repack_weights_q4_0(const int8_t *weight_buffer,
+                         const float *scale_buffer,
+                         int64_t M, int64_t K,
+                         void *out_blocks) {
+  const int64_t ng = K / 32;
+  auto *out = static_cast<block_q4_0 *>(out_blocks);
+
+  for (int64_t row = 0; row < M; row++) {
+    for (int64_t g = 0; g < ng; g++) {
+      block_q4_0 *b = &out[row * ng + g];
+      b->d = gtest_fp32_to_fp16(scale_buffer[g * M + row]);
+      const int8_t *w = weight_buffer + row * K + g * 32;
+      // GGML block_q4_0 nibble order: quant[j] in the low nibble of qs[j],
+      // quant[j+16] in the high nibble, each stored with the unsigned +8
+      // offset the regular (signed) Q4_0 unpack reverses.  Input values must
+      // already lie in [-8, 7] so the 4-bit round-trip is lossless.
+      for (int j = 0; j < 16; j++) {
+        uint8_t lo = static_cast<uint8_t>((w[j] + 8) & 0x0F);
+        uint8_t hi = static_cast<uint8_t>((w[j + 16] + 8) & 0x0F);
+        b->qs[j] = static_cast<uint8_t>(lo | (hi << 4));
+      }
     }
   }
 }
@@ -3183,8 +3213,14 @@ status_t matmul_kernel_test(tensor_t &input_tensor, tensor_t &weight_tensor,
           }
         }
 
-        // INT8 quant params (includes W4A8 s4 wei path).
-        if (is_wei_s8 || is_w4a8) {
+        // GGML packed s4 (Q4_0) uses a pre-quantized s8 source with a per-group
+        // source scale, exactly like the Q8_0 (is_wei_s8) path — the packed
+        // weight arrives as s4 but its source scale must still reach the API so
+        // the unpacked/widened s8 weight runs the sym-quant GEMM.
+        const bool is_ggml_packed_s4 =
+          pack_format_b == 1 && wei_data_type == data_type_t::s4;
+        // INT8 quant params (includes W4A8 s4 wei path and GGML Q4_0).
+        if (is_wei_s8 || is_w4a8 || is_ggml_packed_s4) {
           // Extract source scale
           if (input_tensor.is_quantized()) {
             const void *src_scale_buff = input_tensor.get_quant_scale_raw_handle_const();
@@ -3335,7 +3371,13 @@ status_t matmul_kernel_test(tensor_t &input_tensor, tensor_t &weight_tensor,
           }
           params.postop_.push_back(postop_item);
         }
-        bool is_weights_const = is_woq || is_wei_s8 || is_w4a8 || (rand() % 2 == 0);
+        // GGML packed weights (pack_format_b == 1) MUST be constant — the
+        // library caches the out-of-place unpack/reorder keyed on the weight
+        // pointer and rejects non-const GGML weights.  Q8_0 (s8) already lands
+        // in is_wei_s8; force it for the Q4_0 (s4) case too so the test isn't
+        // flaky on the random branch.
+        bool is_weights_const = is_woq || is_wei_s8 || is_w4a8 ||
+                                pack_format_b == 1 || (rand() % 2 == 0);
         if (matmul_config_t::instance().get_weight_cache() != 0 && is_weights_const &&
             (algo == matmul_algo_t::aocl_dlp_blocked ||
              algo == matmul_algo_t::onednn_blocked ||

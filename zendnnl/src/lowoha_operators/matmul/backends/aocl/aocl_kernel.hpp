@@ -109,13 +109,25 @@ bool reorderAndCacheWeightsSymQuant(Key_matmul key, const void *weights,
                                     DLP_SYMM_STAT_QUANT *symq_meta, int weight_cache_type);
 #endif
 
-/** Clear AOCL matmul weight caches and zero-point compensation LRU cache. */
-void clear_aocl_matmul_weight_caches();
-
-/// Widen packed s4 nibbles to s8 (sign-extended, no dequant).
-/// Output is plain row-major [k, n] regardless of input layout.
+/**
+ * @brief Widen packed signed-s4 weights to a K×N s8 buffer.
+ *
+ * Sign-extends each 4-bit nibble to a full int8 code (range [-8, 7]); performs
+ * NO dequantization.  Shared by the W4A8 AOCL sym-quant reorder and the GGML
+ * Q4_0 unpack path (which upcasts to s8 before the per-group sym-quant reorder).
+ *
+ * @param weights       Packed s4 source (two nibbles per byte).
+ * @param wei_s8        Destination, written in K×N row-major (non-transposed).
+ * @param k             Logical row count of the output.
+ * @param n             Logical column count of the output.
+ * @param ldb           Leading dimension of the packed source (in elements).
+ * @param is_transposed true when the packed source is column-major (ba).
+ */
 void cvt_s4_to_s8(const int8_t *weights, int8_t *wei_s8, int k, int n,
                   int ldb, bool is_transposed);
+
+/** Clear AOCL matmul weight caches and zero-point compensation LRU cache. */
+void clear_aocl_matmul_weight_caches();
 
 /// W4A8 weight reorder + cache: converts s4→s8 then packs through the
 /// AOCL sym-quant s8s8s32os32 path into the dedicated W4A8 LRU cache.

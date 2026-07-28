@@ -71,6 +71,15 @@ void apply_bmm_postop_offsets(matmul_params &params, int batch_idx,
 
 status_t validate_w4a8_inputs(const matmul_params &params, int M, int N,
                                int K) {
+  // GGML packed weights (pack_format_b == 1) are exempt from the native W4A8
+  // contract: a GGML Q4_0 weight arrives as s4 with a pre-quantized s8 source
+  // and carries its scales inside the packed blob, so the checks below (which
+  // require bf16 src + an explicit {G,N} wei_scale) do not apply.  Such a
+  // weight is validated by validate_ggml_packed_inputs and unpacked/widened to
+  // s8 before the sym-quant reorder.
+  if (params.packing.pack_format_b == 1) {
+    return status_t::success;
+  }
   if (params.dtypes.wei == data_type_t::s4 &&
       params.dtypes.src == data_type_t::s8) {
     log_error("W4A8 requires bf16 source with dynamic_quant=true "
@@ -205,8 +214,12 @@ status_t validate_matmul_direct_inputs(const void *src, const void *weight,
 
   const bool is_w4a8 = is_w4a8_config(params);
 
-  // INT8 quantization: s8 weights
-  const bool is_int8 = params.dtypes.wei == data_type_t::s8;
+  // INT8 quantization: s8 weights.  GGML packed weights (pack_format_b == 1)
+  // are also an int8 sym-quant path — Q8_0 arrives as s8, Q4_0 as s4 that the
+  // unpack widens to s8 — and carry a per-group source scale, so treat them as
+  // INT8 here to admit their src/wei quant params through the gates below.
+  const bool is_int8 = params.dtypes.wei == data_type_t::s8 ||
+                       params.packing.pack_format_b == 1;
 
   if (validate_w4a8_inputs(params, M, N, K) != status_t::success) {
     return status_t::failure;
@@ -392,17 +405,20 @@ status_t validate_matmul_direct_inputs(const void *src, const void *weight,
     // drops it, producing wrong results.  Reject upfront so callers see
     // a clear failure instead of a corrupted output.  Dynamic
     // quantization (`params.dynamic_quant`) converts the source to s8/u8
-    // and lands on the same kernel, so it falls in the same bucket.
+    // and lands on the same kernel, so it falls in the same bucket.  So do
+    // GGML packed weights: a Q4_0 weight is still s4 here, so
+    // is_sym_quant_config does not recognise it yet, but the unpack widens
+    // it to s8 and the call runs on that same sym_quant kernel.
     else if (po.po_type == post_op_type_t::mish) {
       if (!dlp_int8_path_checked) {
         dlp_int8_path =
           is_sym_quant_config(params) || is_dynamic_quant_config(params) ||
-          is_w4a8;
+          is_w4a8 || params.packing.pack_format_b == 1;
         dlp_int8_path_checked = true;
       }
       if (dlp_int8_path) {
         log_error("Post-op[", i, "]: mish is not supported on AOCL INT8 "
-                  "sym_quant / dynamic_quant / W4A8 paths");
+                  "sym_quant / dynamic_quant / W4A8 / GGML packed paths");
         return status_t::failure;
       }
     }
