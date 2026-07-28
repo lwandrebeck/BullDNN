@@ -259,6 +259,17 @@ status_t validate_group_matmul_direct_inputs(
     framework_opt_in ? static_cast<size_t>(params[0].active_matmul)
     : M.size();
 
+  // A lone expert (a single op supplied with one shared src) is a genuine
+  // single matmul, NOT a sequential chain — a chain needs >= 2 ops, each
+  // feeding the next.  `group_matmul_direct` routes such a call through the
+  // PARALLEL grouped dispatch (see `single_expert_parallel` there), so it
+  // is validated under the parallel-mode rules (Phases C-G) below rather
+  // than the sequential rules (Phase B).  This is what lets a lone expert
+  // legally carry the fused_moe / gated_act "matmul + activation + matmul"
+  // pipeline: with one op the plain-GEMM semantics of the two modes are
+  // identical, and only the parallel path implements Op2 / activation.
+  const bool single_expert_parallel = (src.size() == 1 && num_ops == 1);
+
   // Fused-MoE internal-alloc detection — INDEPENDENT per side.
   //
   // Op1 (dst[])         and Op2 (fused_moe->dst_down[]) are detected
@@ -402,17 +413,21 @@ status_t validate_group_matmul_direct_inputs(
     log_error("group_matmul_direct: src.size() must be 1 or num_ops");
     return status_t::failure;
   }
-  if (moe_postop != nullptr && src.size() == 1) {
+  // moe_postop / gated_act / fused_moe are parallel-only for a REAL
+  // sequential chain (src.size() == 1 with >= 2 ops).  A lone expert
+  // (single_expert_parallel) is dispatched through the parallel path, so
+  // it may carry all three.
+  if (moe_postop != nullptr && src.size() == 1 && !single_expert_parallel) {
     log_error("group_matmul_direct: moe_postop is only supported in parallel mode");
     return status_t::failure;
   }
   if (gated_act != nullptr
       && gated_act->act != grp_matmul_gated_act_t::none
-      && src.size() == 1) {
+      && src.size() == 1 && !single_expert_parallel) {
     log_error("group_matmul_direct: gated_act is only supported in parallel mode");
     return status_t::failure;
   }
-  if (fused_moe != nullptr && src.size() == 1) {
+  if (fused_moe != nullptr && src.size() == 1 && !single_expert_parallel) {
     log_error("group_matmul_direct: fused_moe is only supported in parallel mode");
     return status_t::failure;
   }
@@ -423,7 +438,10 @@ status_t validate_group_matmul_direct_inputs(
   }
 
   // ── Phase B ─ sequential mode per-element rules ────────────────────
-  if (src.size() == 1) {
+  // A lone expert (single_expert_parallel) is NOT a chain — fall through
+  // to the parallel per-element rules (Phase C+) so it validates the same
+  // way it dispatches.
+  if (src.size() == 1 && !single_expert_parallel) {
     if (src[0] == nullptr) {
       log_error("group_matmul sequential: null src pointer");
       return status_t::failure;
@@ -814,6 +832,33 @@ status_t group_matmul_direct(const std::vector<char> &layout,
     return status_t::failure;
   }
 
+  // ── Active-set count + single-expert routing predicate ───────────
+  // `num_ops` (matmul-processing count; every dispatcher below iterates
+  // `[0, num_ops)`) honours the framework's `params[0].active_matmul`
+  // hint when set, else falls back to `M.size()` (legacy callers).
+  // Computed here, once, so the always-on feature guards AND the dispatch
+  // routing below share ONE `single_expert_parallel` verdict (no
+  // duplicated formula, no stale copy).
+  //
+  // `single_expert_parallel`: a lone expert (one shared src, one op) is
+  // NOT a sequential chain, so it is dispatched through the PARALLEL path
+  // and MAY carry the fused_moe / gated_act "matmul + activation +
+  // matmul" pipeline.  A real multi-op chain (`src.size() == 1,
+  // num_ops > 1`) keeps this false, stays sequential, and has those
+  // parallel-only features rejected.
+  const size_t num_ops_input = M.size();
+  if (params[0].active_matmul > 0
+      && static_cast<size_t>(params[0].active_matmul) > num_ops_input) {
+    log_error("group_matmul_direct: params[0].active_matmul=",
+              params[0].active_matmul, " exceeds M.size()=", num_ops_input);
+    return status_t::failure;
+  }
+  const size_t num_ops =
+    (params[0].active_matmul > 0)
+    ? static_cast<size_t>(params[0].active_matmul)
+    : num_ops_input;
+  const bool single_expert_parallel = (src.size() == 1 && num_ops == 1);
+
   // ── F16 ISA gate + reference-accum-type setup ────────────────────
   // The single-op path runs `kernel_select` per call, which both
   // ISA-gates F16 and publishes the AOCL-DLP F16 accumulator type to
@@ -895,29 +940,36 @@ status_t group_matmul_direct(const std::vector<char> &layout,
   // production log (no DIAGNOSTICS) still pinpoints which gate the
   // caller violated without needing to enable diagnostics and
   // reproduce.
-  if (src.size() == 1) {
+  // Parallel-only features (moe_postop / gated_act / fused_moe) are
+  // rejected ONLY for a REAL multi-op sequential chain
+  // (src.size() == 1 && !single_expert_parallel, i.e. num_ops > 1): that
+  // path has no Op2 / activation / weighted-reduce stage and would crash.
+  // A lone expert (single_expert_parallel) and multi-expert parallel calls
+  // both route to the parallel dispatch, which supports all three, so they
+  // pass through here.
+  if (src.size() == 1 && !single_expert_parallel) {
     if (moe_postop != nullptr) {
       log_error("group_matmul_direct: moe_postop is only supported in "
-                "parallel mode (src.size() == num_ops); got src.size() "
-                "== 1 (sequential chain dispatch).  Either enable "
-                "parallel mode by supplying a per-expert src[] vector, "
-                "or drop the moe_postop argument.");
+                "parallel mode; got a multi-op sequential chain "
+                "(src.size() == 1, num_ops > 1).  Either enable parallel "
+                "mode by supplying a per-expert src[] vector, or drop the "
+                "moe_postop argument.");
       return status_t::failure;
     }
     if (gated_act != nullptr
         && gated_act->act != grp_matmul_gated_act_t::none) {
       log_error("group_matmul_direct: gated_act is only supported in "
-                "parallel mode (src.size() == num_ops); got src.size() "
-                "== 1 (sequential chain dispatch).  Either enable "
-                "parallel mode or set gated_act->act = none.");
+                "parallel mode; got a multi-op sequential chain "
+                "(src.size() == 1, num_ops > 1).  Either enable parallel "
+                "mode or set gated_act->act = none.");
       return status_t::failure;
     }
     if (fused_moe != nullptr) {
       log_error("group_matmul_direct: fused_moe is only supported in "
-                "parallel mode (src.size() == num_ops); got src.size() "
-                "== 1 (sequential chain dispatch).  Pass fused_moe = "
-                "nullptr for sequential chains, or switch to parallel "
-                "mode for MoE workloads.");
+                "parallel mode; got a multi-op sequential chain "
+                "(src.size() == 1, num_ops > 1).  Pass fused_moe = nullptr "
+                "for sequential chains, or switch to parallel mode for MoE "
+                "workloads.");
       return status_t::failure;
     }
   }
@@ -1083,35 +1135,16 @@ status_t group_matmul_direct(const std::vector<char> &layout,
   }
 
   // ── Active-set + prepack accounting ───────────────────────────────
-  // Two counts drive the rest of this function:
+  // `num_ops` (matmul-processing count; every dispatcher iterates
+  // `[0, num_ops)`) and `single_expert_parallel` are computed once near
+  // the top of this function so the always-on guards and the dispatch
+  // routing share one verdict — see their definition there.
   //
-  //   * `num_ops`        — matmul-processing count; every dispatcher
-  //                        downstream of this point iterates `[0,
-  //                        num_ops)`.  Honours the framework's new
-  //                        `params[0].active_matmul` hint when set;
-  //                        otherwise falls back to `M.size()` so
-  //                        legacy callers see no change.
-  //
-  //   * `num_ops_total`  — prepack iteration count; consumed by the
-  //                        per-ALGO prepack functions in
-  //                        group_matmul/prepack/, NOT by this
-  //                        dispatcher.  Each scheduling ALGO body
-  //                        reads `params[0].total_matmul` itself when
-  //                        building its `PrepackParams`, so the value
-  //                        is no longer materialised here.  When the
-  //                        field is unset (legacy callers),
-  //                        `build_prepack_params` resolves
-  //                        `num_ops_total = M.size()` so the prepack
-  //                        module still warms the firing experts up
-  //                        front under the uniform-eager semantic
-  //                        (`ZENDNNL_GRP_MATMUL_PREPACK=1`, default).
-  //                        Set the env to `0` to restore the strict
-  //                        pre-PR / lazy-only behaviour.
-  const size_t num_ops_input = M.size();
-  const size_t num_ops =
-    (params[0].active_matmul > 0)
-    ? std::min<size_t>(params[0].active_matmul, num_ops_input)
-    : num_ops_input;
+  // `num_ops_total` (the prepack iteration count) is NOT materialised
+  // here: each scheduling ALGO body reads `params[0].total_matmul` when
+  // building its `PrepackParams` (falling back to `M.size()` for legacy
+  // callers under the uniform-eager `ZENDNNL_GRP_MATMUL_PREPACK=1`
+  // default; set the env to `0` to restore the strict lazy-only path).
 
   profiler_t profiler;
   bool is_profile = is_profile_enabled();
@@ -1135,7 +1168,17 @@ status_t group_matmul_direct(const std::vector<char> &layout,
       params.begin() +
           static_cast<std::vector<matmul_params>::difference_type>(num_ops));
 
-  if (src.size() == 1) {
+  // Single-expert parallel routing (see `single_expert_parallel` defined
+  // near the top of this function).  `src.size() == 1` normally selects
+  // the sequential chain dispatch, but a genuinely single-expert call
+  // (`num_ops == 1`) has no expert-to-expert chaining, so it routes to
+  // the parallel grouped dispatch — where it benefits from ALGO selection
+  // / prepack / custom-kernel routing AND can carry the fused_moe /
+  // gated_act "matmul + activation + matmul" pipeline (implemented ONLY on
+  // the parallel path).  A real sequential CHAIN (`src.size() == 1` with
+  // `num_ops > 1`) stays sequential; fused_moe / gated_act on such a chain
+  // were already rejected by the guards above.
+  if (src.size() == 1 && !single_expert_parallel) {
     // ── Sequential chain dispatch ─────────────────────────────────────
     static unsigned int auto_version = get_auto_tuner_ver();
     for (size_t i = 0; i < num_ops; ++i) {
@@ -1590,7 +1633,8 @@ status_t group_matmul_direct(const std::vector<char> &layout,
       ss << "none";
     }
     ss << ']';
-    ss << " sequential_chain=" << (src.size() == 1 ? 1 : 0);
+    ss << " sequential_chain="
+       << ((src.size() == 1 && !single_expert_parallel) ? 1 : 0);
 
     if (s_l1_log) {
       apilog_info(ss.str());

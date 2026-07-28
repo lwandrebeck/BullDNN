@@ -28,6 +28,10 @@
 ///                                       (extracted from 3 open-coded copies)
 ///                                       across the 4 v-states x 2 modes
 ///                                       cells, plus negative cases.
+///   [32] TestFusedMoEPipeline         - Op1(gate+up) + activation +
+///                                       Op2(down_proj) executed as ONE
+///                                       vertically-fused M-tile pipeline
+///                                       (matmul + activation + matmul).
 ///
 /// Split from `test_group_matmul.cpp` during the gtests folder refactor;
 /// see `group_matmul/README.md` for the file layout overview.
@@ -821,6 +825,342 @@ static std::vector<MoEPostopTestParam> make_moe_postop_params() {
 
 INSTANTIATE_TEST_SUITE_P(GroupMatmulMoEPostop, TestMoEPostop,
                          ::testing::ValuesIn(make_moe_postop_params()), MoEPostopParamName);
+
+// ===============================================================================
+// [34] TestSingleExpertParallelRouting: single-expert dispatch routing.
+//
+// `group_matmul_direct` picks its mode from `src.size()`: `src.size() == 1`
+// normally selects the SEQUENTIAL chain dispatch, otherwise PARALLEL.  The
+// dispatch carve-out under test routes a GENUINELY single-expert call
+// (`num_ops == 1`, no fused-MoE `down_weight`) through the PARALLEL grouped
+// dispatch even though `src.size() == 1`, because with exactly one op the
+// two modes are mathematically identical and the parallel path additionally
+// gets ALGO selection / prepack / custom-kernel routing.  A real multi-op
+// sequential CHAIN (`src.size() == 1` with `num_ops > 1`) must stay
+// sequential — routing it to parallel would drop the chaining semantics and
+// index `src[i]` out of bounds.
+//
+// The routing decision is observed via the `gemm_mode` string the
+// dispatcher publishes (captured with `GemmModeCaptureGuard`): the
+// sequential path writes "sequential", every parallel executor writes a
+// different tag ("sequential_experts", "per_expert", "flat_m_tile_*", …).
+// ???????????????????????????????????????????????????????????????????????????????
+
+namespace {
+// gemm_mode string published by the most recent group_matmul_direct call.
+inline const char *last_group_matmul_gemm_mode() {
+  return zendnnl::lowoha::matmul::test_api
+         ::s_last_group_matmul_direct_gemm_mode.load(std::memory_order_relaxed);
+}
+} // namespace
+
+// Single expert (num_ops == 1, src.size() == 1, no fused_moe) must route to
+// the PARALLEL grouped dispatch, and must still compute the correct GEMM.
+TEST(TestSingleExpertParallelRouting, SingleExpertRoutesToParallel) {
+  using namespace moe_test_utils;
+
+  const int M = 8, N = 16, K = 32;
+  auto gv = GemmVecs::uniform(/*num_ops=*/1, M, N, K);
+
+  TypedBuffers src, wei, dst;
+  src.alloc(1, (size_t)M * K, data_type_t::f32);
+  wei.alloc(1, (size_t)K * N, data_type_t::f32);
+  dst.alloc(1, (size_t)M * N, data_type_t::f32);
+  fill_src(src.f32[0], 0);
+  fill_wei1(wei.f32[0], 0);
+
+  auto srcs = src.cptrs(data_type_t::f32);
+  auto weis = wei.cptrs(data_type_t::f32);
+  auto dsts = dst.ptrs(data_type_t::f32);
+  std::vector<const void *> biases(1, nullptr);
+  auto params = make_uniform_params(1, data_type_t::f32);
+
+  const char *mode = nullptr;
+  {
+    GemmModeCaptureGuard guard;
+    ASSERT_EQ(group_matmul_direct(gv.layout, gv.transA, gv.transB, gv.Ms,
+                                  gv.Ns, gv.Ks, gv.alpha, srcs, gv.lda, weis,
+                                  gv.ldb, biases, gv.beta, dsts, gv.ldc,
+                                  gv.is_wc, params, nullptr, nullptr),
+              status_t::success);
+    mode = last_group_matmul_gemm_mode();
+  }
+
+  ASSERT_NE(mode, nullptr);
+  EXPECT_STRNE(mode, "sequential")
+      << "single-expert (num_ops==1) non-fused call with src.size()==1 must "
+         "take the PARALLEL grouped dispatch, not the sequential chain; "
+         "got mode=" << mode;
+
+  // Correctness: the single-expert parallel output must equal the plain
+  // row-major matmul dst[m,n] = sum_k src[m,k] * wei[k,n] (alpha=1, beta=0).
+  for (int m = 0; m < M; ++m) {
+    for (int n = 0; n < N; ++n) {
+      float acc = 0.0f;
+      for (int k = 0; k < K; ++k) {
+        acc += src.f32[0][(size_t)m * K + k] * wei.f32[0][(size_t)k * N + n];
+      }
+      EXPECT_NEAR(dst.f32[0][(size_t)m * N + n], acc,
+                  std::abs(acc) * rtol_f32 + epsilon_f32)
+          << "single-expert parallel mismatch at m=" << m << " n=" << n;
+    }
+  }
+}
+
+// A genuine multi-op chain (src.size() == 1, num_ops > 1) must STAY on the
+// sequential path.  Uses a uniform D×D shape so the chain dims line up
+// (K[i] == N[i-1], constant M), which the sequential validator requires.
+TEST(TestSingleExpertParallelRouting, MultiOpChainStaysSequential) {
+  using namespace moe_test_utils;
+
+  const int M = 4, D = 16, num_ops = 3;
+  auto gv = GemmVecs::uniform(num_ops, M, D, D);
+
+  TypedBuffers wei, dst;
+  wei.alloc(num_ops, (size_t)D * D, data_type_t::f32);
+  dst.alloc(num_ops, (size_t)M * D, data_type_t::f32);
+  for (int e = 0; e < num_ops; ++e) {
+    fill_wei1(wei.f32[e], e);
+  }
+
+  // Sequential chain: exactly ONE src (size 1); op i>0 reads dst[i-1].
+  std::vector<float> src0((size_t)M * D);
+  fill_src(src0, 0);
+  std::vector<const void *> srcs(1, src0.data());
+
+  auto weis = wei.cptrs(data_type_t::f32);
+  auto dsts = dst.ptrs(data_type_t::f32);
+  std::vector<const void *> biases(num_ops, nullptr);
+  auto params = make_uniform_params(num_ops, data_type_t::f32);
+
+  const char *mode = nullptr;
+  {
+    GemmModeCaptureGuard guard;
+    ASSERT_EQ(group_matmul_direct(gv.layout, gv.transA, gv.transB, gv.Ms,
+                                  gv.Ns, gv.Ks, gv.alpha, srcs, gv.lda, weis,
+                                  gv.ldb, biases, gv.beta, dsts, gv.ldc,
+                                  gv.is_wc, params, nullptr, nullptr),
+              status_t::success);
+    mode = last_group_matmul_gemm_mode();
+  }
+
+  ASSERT_NE(mode, nullptr);
+  EXPECT_STREQ(mode, "sequential")
+      << "a genuine multi-op sequential chain (src.size()==1, num_ops>1) "
+         "must NOT be rerouted to the parallel dispatch; got mode=" << mode;
+}
+
+// ===============================================================================
+// [35] TestFusedMoEPipeline: Op1(gate+up) + activation + Op2(down_proj)
+//      executed as ONE vertically-fused M-tile pipeline.
+//
+// Validates the "matmul + activation + matmul as one pipeline" flow end
+// to end: a single group_matmul_direct call carrying a gated activation
+// AND fused_moe params runs Op1, the activation, and Op2 FUSED inside the
+// M-tile pipeline executor — the full Op1 intermediate is never spilled
+// to DRAM between the two GEMMs (that is the defining property of the
+// single pipeline vs the two-pass fallback).
+//
+// The pipeline is pinned to ALGO 2 (M-tile) with vertical fusion FORCED
+// and a generous per-thread scratch budget so engagement is deterministic
+// across CI hosts; `num_threads` is pinned so the planner's wide-N gate
+// resolves identically everywhere (mirrors [17] TestFusedMoEVerticalBF16).
+//
+// Assertions:
+//   1. status_t::success.
+//   2. The M-tile executor branch tag is kVerticalFusionBF16 — the proof
+//      that Op1 + activation + Op2 ran as ONE fused pipeline and NOT the
+//      two-pass (fused_moe_2pass) fallback.
+//   3. Correctness vs the 2-call legacy reference (Op1 + activation,
+//      then Op2) within BF16 tolerance.
+// ===============================================================================
+
+TEST(TestFusedMoEPipeline, Op1ActOp2VerticalFusion) {
+  using namespace zendnnl::lowoha::matmul;
+  using namespace moe_test_utils;
+
+  // Force ALGO 2 (M-tile) so the fused dispatch attempts vertical fusion;
+  // FORCE vertical fusion + a generous scratch budget so it engages
+  // regardless of host core count.  All restored on scope exit.
+  AlgoEnvGuard                 algo2(2);
+  MoEVerticalFusionOverride    vf_forced(1);
+  MoEPipelineScratchKbOverride scratch(1024);
+
+  constexpr data_type_t dt       = data_type_t::bf16;
+  constexpr auto        act_type = grp_matmul_gated_act_t::silu_and_mul;
+  constexpr int E         = 8;
+  constexpr int M         = 64;
+  constexpr int dim       = 64;
+  constexpr int N_gate_up = 2 * dim;   // 128
+  constexpr int H         = 64;
+  constexpr int K_in      = H;
+  constexpr int K_down    = dim;       // gated act halves N_gate_up -> dim
+
+  TypedBuffers src, w1, w2, d1, d2, d1_ref, d2_ref;
+  src   .alloc(E, (size_t)M * K_in,         dt);
+  w1    .alloc(E, (size_t)K_in * N_gate_up, dt);
+  w2    .alloc(E, (size_t)K_down * H,       dt);
+  d1    .alloc(E, (size_t)M * N_gate_up,    dt);
+  d2    .alloc(E, (size_t)M * H,            dt);
+  d1_ref.alloc(E, (size_t)M * N_gate_up,    dt);
+  d2_ref.alloc(E, (size_t)M * H,            dt);
+  fill_moe_tensors(E, dt, &src, &w1, &w2);
+
+  auto srcs   = src.cptrs(dt);
+  auto wei1   = w1.cptrs(dt);
+  auto wei2   = w2.cptrs(dt);
+  auto dst1   = d1.ptrs(dt);
+  auto dst2   = d2.ptrs(dt);
+  auto dst1_r = d1_ref.ptrs(dt);
+  auto dst2_r = d2_ref.ptrs(dt);
+
+  // Reference: 2-call raw-weight path (Op1 + activation, then Op2).
+  ASSERT_EQ(run_legacy_2call_ref(E, M, K_in, N_gate_up, K_down, H,
+                                 dt, act_type,
+                                 srcs, wei1, wei2, dst1_r, dst2_r),
+            status_t::success)
+      << "2-call reference failed";
+
+  // Fused MoE: Op1 + activation + Op2 in ONE group_matmul_direct call.
+  auto gv1    = GemmVecs::uniform(E, M, N_gate_up, K_in);
+  auto params = make_uniform_params(E, dt);
+  for (auto &p : params) p.num_threads = 32;  // deterministic planner rig
+  std::vector<const void *> no_bias(E, nullptr);
+
+  auto fused = make_fused_moe_op2(E, H, wei2, no_bias);
+  fused.dst_down = dst2;
+  fused.ldc_down = std::vector<int>(E, H);
+
+  grp_matmul_gated_act_params act{};
+  act.act = act_type;
+
+  int      tag = test_api::m_tile_path_tag::kNone;
+  status_t st  = status_t::success;
+  {
+    MTilePathCaptureGuard cap;
+    st = group_matmul_direct(
+             gv1.layout, gv1.transA, gv1.transB, gv1.Ms, gv1.Ns, gv1.Ks,
+             gv1.alpha, srcs, gv1.lda, wei1, gv1.ldb, no_bias, gv1.beta,
+             dst1, gv1.ldc, gv1.is_wc, params,
+             /*moe_postop=*/nullptr, /*gated_act=*/&act, /*fused_moe=*/&fused);
+    tag = test_api::s_last_m_tile_path.load(std::memory_order_relaxed);
+  }
+  ASSERT_EQ(st, status_t::success)
+      << "fused group_matmul_direct (Op1 + activation + Op2) failed";
+
+  // The pipeline MUST have run as ONE vertically-fused M-tile executor
+  // (Op1 -> activation -> Op2 fused), not the two-pass fallback.
+  ASSERT_EQ(tag, test_api::m_tile_path_tag::kVerticalFusionBF16)
+      << "expected the single-pipeline vertical-fusion executor "
+         "(kVerticalFusionBF16 = "
+      << test_api::m_tile_path_tag::kVerticalFusionBF16
+      << "); got tag=" << tag
+      << " — the matmul + activation + matmul flow did NOT run as one "
+         "pipeline";
+
+  // Correctness: fused pipeline output matches the 2-call reference.
+  verify_per_expert_2d(d2, H, d2_ref, H, E, M, H, dt,
+                       tol_fused(dt), "vertical_fusion Op1+act+Op2");
+}
+
+// ── Single-expert (E=1) fused pipeline: matmul + activation + matmul ──────
+//
+// A lone expert with src.size()==1 carrying gated_act + fused_moe used to
+// be rejected ("fused_moe is only supported in parallel mode").  The
+// single_expert_parallel routing now accepts it: with one op the plain-GEMM
+// semantics match the parallel path, so the lone expert runs Op1 -> silu ->
+// Op2 through the parallel fused dispatch.
+//
+// Correctness is checked against an INDEPENDENT hand-rolled f32 reference
+// (not the 2-call helper), so the test does not rely on any other
+// group_matmul_direct path to define ground truth.
+TEST(TestFusedMoEPipeline, SingleExpertOp1ActOp2) {
+  using namespace zendnnl::lowoha::matmul;
+  using namespace moe_test_utils;
+
+  constexpr data_type_t dt       = data_type_t::bf16;
+  constexpr auto        act_type = grp_matmul_gated_act_t::silu_and_mul;
+  constexpr int E         = 1;         // the whole point: ONE expert
+  constexpr int M         = 8;
+  constexpr int dim       = 16;
+  constexpr int N_gate_up = 2 * dim;   // 32
+  constexpr int H         = 16;
+  constexpr int K_in      = H;
+  constexpr int K_down    = dim;       // gated act halves N_gate_up -> dim
+
+  TypedBuffers src, w1, w2, d1, d2;
+  src.alloc(E, (size_t)M * K_in,         dt);
+  w1 .alloc(E, (size_t)K_in * N_gate_up, dt);
+  w2 .alloc(E, (size_t)K_down * H,       dt);
+  d1 .alloc(E, (size_t)M * N_gate_up,    dt);
+  d2 .alloc(E, (size_t)M * H,            dt);
+  fill_moe_tensors(E, dt, &src, &w1, &w2);
+
+  auto srcs = src.cptrs(dt);   // exactly ONE src pointer -> src.size()==1
+  auto wei1 = w1.cptrs(dt);
+  auto wei2 = w2.cptrs(dt);
+  auto dst1 = d1.ptrs(dt);
+  auto dst2 = d2.ptrs(dt);
+
+  auto gv1    = GemmVecs::uniform(E, M, N_gate_up, K_in);
+  auto params = make_uniform_params(E, dt);
+  std::vector<const void *> no_bias(E, nullptr);
+
+  auto fused = make_fused_moe_op2(E, H, wei2, no_bias);
+  fused.dst_down = dst2;
+  fused.ldc_down = std::vector<int>(E, H);
+
+  grp_matmul_gated_act_params act{};
+  act.act = act_type;
+
+  const char *mode = nullptr;
+  {
+    GemmModeCaptureGuard guard;
+    ASSERT_EQ(group_matmul_direct(
+                  gv1.layout, gv1.transA, gv1.transB, gv1.Ms, gv1.Ns, gv1.Ks,
+                  gv1.alpha, srcs, gv1.lda, wei1, gv1.ldb, no_bias, gv1.beta,
+                  dst1, gv1.ldc, gv1.is_wc, params,
+                  /*moe_postop=*/nullptr, /*gated_act=*/&act,
+                  /*fused_moe=*/&fused),
+              status_t::success)
+        << "single-expert fused pipeline (Op1 + activation + Op2) was "
+           "rejected or failed";
+    mode = last_group_matmul_gemm_mode();
+  }
+
+  // Must route through the PARALLEL fused dispatch, not the sequential chain.
+  ASSERT_NE(mode, nullptr);
+  EXPECT_STRNE(mode, "sequential")
+      << "single-expert fused call must route to the parallel fused "
+         "dispatch; got mode=" << mode;
+
+  // Independent f32 reference: Op1 -> silu_and_mul -> Op2 for the one expert.
+  const Tol tol = tol_fused(dt);
+  for (int m = 0; m < M; ++m) {
+    std::vector<float> op1(N_gate_up, 0.0f);
+    for (int n = 0; n < N_gate_up; ++n) {
+      float acc = 0.0f;
+      for (int kk = 0; kk < K_in; ++kk) {
+        acc += src.at(0, (size_t)m * K_in + kk, dt)
+             * w1.at(0, (size_t)kk * N_gate_up + n, dt);
+      }
+      op1[n] = acc;
+    }
+    std::vector<float> activated(dim, 0.0f);
+    for (int j = 0; j < dim; ++j) {
+      activated[j] = ref_gated_act(act_type, op1[j], op1[dim + j]);
+    }
+    for (int h = 0; h < H; ++h) {
+      float acc = 0.0f;
+      for (int j = 0; j < K_down; ++j) {
+        acc += activated[j] * w2.at(0, (size_t)j * H + h, dt);
+      }
+      const float got = d2.at(0, (size_t)m * H + h, dt);
+      ASSERT_NEAR(got, acc, std::abs(acc) * tol.rel + tol.abs)
+          << "single-expert fused pipeline mismatch m=" << m << " h=" << h;
+    }
+  }
+}
 
 // ===============================================================================
 // [31] TestGroupMatmulHelperParity - parity tests for shared dispatcher
