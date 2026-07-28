@@ -26,8 +26,18 @@ set -euo pipefail
 #                                   4  = Multilevel CCD-aware (nested OMP)
 #                                   5  = Per-expert (1 thread per expert, parallel-for)
 #   -i, --input <file|shortcut>   Input file or shortcut (default: bf16)
-#   -t, --threads <N>             Number of OMP threads (default: all cores)
+#   -t, --threads <N[,N,...]>     OMP thread/core count(s). Comma-separated
+#                                 values sweep cores, e.g. -t 32,64,128
+#                                 (default: all cores)
 #   -o, --outdir <dir>            Output directory (default: build/)
+#   -C, --cache-mode <m[,m,...]>  Cache mode(s): hot, cold, warm. Comma-separated
+#                                 values sweep modes, e.g. -C hot,cold
+#                                 (default: benchdnn default = hot)
+#   -m, --m-sweep <M[:M:...]>     In-binary M sweep (colon-separated), e.g. -m 1:128:512.
+#                                 Forwarded as --sweep=true --m_sweep=... (matmul/bmm only)
+#   -d, --dtype-sweep <list|all>  In-binary dtype sweep (comma-separated names or 'all'),
+#                                 e.g. -d all. Forwarded as --sweep=true --dtype_sweep=...
+#                                 (matmul/bmm only)
 #   -p, --perf [profile]          External perf stat (matmul/bmm only)
 #   -P, --perf-internal [profile] Internal perf counters (matmul/bmm only)
 #   -h, --help                    Show this help
@@ -56,6 +66,10 @@ set -euo pipefail
 #
 # Examples:
 #   ./run_matmul_benchmark_sweep.sh -a 1,11 -i bf16 -t 128
+#   ./run_matmul_benchmark_sweep.sh -a 1,11 -i bf16 -t 32,64,128   # core sweep
+#   ./run_matmul_benchmark_sweep.sh -a 1,11 -i bf16 -C hot,cold     # cache sweep
+#   ./run_matmul_benchmark_sweep.sh -a 1,11 -i bf16 -m 1:128:512    # M sweep (in-binary)
+#   ./run_matmul_benchmark_sweep.sh -a 1,11 -i bf16 -d all          # dtype sweep (in-binary)
 #   ./run_matmul_benchmark_sweep.sh --op grp_matmul -v 1,2,3 -i mixtral_full -t 128
 #   ./run_matmul_benchmark_sweep.sh --op grp_matmul -v 1,2,3 -i prompt -t 128
 #   ./run_matmul_benchmark_sweep.sh --op bmm -a 4,5,6 -i sdpa -t 128
@@ -69,7 +83,10 @@ GRP_DIR="$REPO_ROOT/benchdnn/input/grp_matmul"
 
 OP="matmul"
 INPUT_ARG="bf16"
-NUM_THREADS=""
+THREADS_ARG=""
+CACHE_MODES_ARG=""
+M_SWEEP_ARG=""
+DTYPE_SWEEP_ARG=""
 OUTDIR="$REPO_ROOT/build"
 PERF_MODE=0
 PERF_PROFILE="cache"
@@ -94,7 +111,10 @@ while [[ $# -gt 0 ]]; do
             VERS+=("${_vals[@]}")
             shift 2 ;;
         -i|--input)   INPUT_ARG="$2"; shift 2 ;;
-        -t|--threads) NUM_THREADS="$2"; shift 2 ;;
+        -t|--threads) THREADS_ARG="$2"; shift 2 ;;
+        -C|--cache-mode) CACHE_MODES_ARG="$2"; shift 2 ;;
+        -m|--m-sweep)     M_SWEEP_ARG="$2"; shift 2 ;;
+        -d|--dtype-sweep) DTYPE_SWEEP_ARG="$2"; shift 2 ;;
         -o|--outdir)  OUTDIR="$2"; shift 2 ;;
         -p|--perf)
             PERF_MODE=1
@@ -153,8 +173,52 @@ if [ ! -f "$INPUT_FILE" ]; then
     echo "ERROR: input file not found: $INPUT_FILE"; exit 1
 fi
 
-# --- Resolve threads ---
-export OMP_NUM_THREADS="${NUM_THREADS:-$(nproc)}"
+# --- Resolve core-count sweep (comma-separated -t sweeps cores) ---
+if [[ -n "$THREADS_ARG" ]]; then
+    IFS=',' read -ra CORE_COUNTS <<< "$THREADS_ARG"
+    for i in "${!CORE_COUNTS[@]}"; do
+        CORE_COUNTS[$i]="${CORE_COUNTS[$i]//[[:space:]]/}"
+        if [[ ! "${CORE_COUNTS[$i]}" =~ ^[1-9][0-9]*$ ]]; then
+            echo "ERROR: invalid core count '${CORE_COUNTS[$i]}' (use positive integers)"; exit 1
+        fi
+    done
+else
+    CORE_COUNTS=("$(nproc)")
+fi
+
+# --- Resolve cache-mode sweep (comma-separated -C sweeps modes) ---
+# An empty entry means "do not pass --cache_mode" (benchdnn default = hot).
+if [[ -n "$CACHE_MODES_ARG" ]]; then
+    IFS=',' read -ra CACHE_MODES <<< "$CACHE_MODES_ARG"
+    for i in "${!CACHE_MODES[@]}"; do
+        CACHE_MODES[$i]="${CACHE_MODES[$i]//[[:space:]]/}"
+        CACHE_MODES[$i]="${CACHE_MODES[$i],,}"
+        [[ -z "${CACHE_MODES[$i]}" ]] && continue
+        if [[ ! "${CACHE_MODES[$i]}" =~ ^(hot|cold|warm)$ ]]; then
+            echo "ERROR: invalid cache mode '${CACHE_MODES[$i]}' (use hot, cold, or warm)"; exit 1
+        fi
+    done
+else
+    CACHE_MODES=("")
+fi
+
+# --- Resolve in-binary M / dtype sweep (-m / -d) ---
+# Unlike cores and cache mode (process-level bash loops), M and dtype are swept
+# inside a single benchdnn process via --sweep. We just forward the flags; the
+# binary cross-products M x dtype per input row.
+SWEEP_ARGS=""
+if [[ -n "$M_SWEEP_ARG" || -n "$DTYPE_SWEEP_ARG" ]]; then
+    if [[ "$OP" == "grp_matmul" ]]; then
+        echo "ERROR: -m/--m-sweep and -d/--dtype-sweep are not supported for --op grp_matmul"; exit 1
+    fi
+    SWEEP_ARGS="--sweep=true"
+    [[ -n "$M_SWEEP_ARG" ]]     && SWEEP_ARGS="$SWEEP_ARGS --m_sweep=$M_SWEEP_ARG"
+    [[ -n "$DTYPE_SWEEP_ARG" ]] && SWEEP_ARGS="$SWEEP_ARGS --dtype_sweep=$DTYPE_SWEEP_ARG"
+    if [[ $PERF_MODE -eq 1 ]]; then
+        echo "WARNING: -p/--perf runs one perf stat per input line; with -m/-d each line"
+        echo "         expands to many configs, so counters aggregate across them."
+    fi
+fi
 
 # --- Validate args ---
 if [[ "$OP" == "grp_matmul" ]]; then
@@ -191,8 +255,6 @@ export MALLOC_CONF="oversize_threshold:1,background_thread:true,metadata_thp:aut
 export KMP_AFFINITY=granularity=fine,compact,1,0
 export KMP_BLOCKTIME=1
 
-CPU_BIND="0-$((OMP_NUM_THREADS - 1))"
-
 # --- Perf events ---
 case "$PERF_PROFILE" in
     cache)  PERF_EVENTS="L1-dcache-loads,L1-dcache-load-misses,rFF70,rFF71,rFF72,rF064,r0864" ;;
@@ -214,8 +276,16 @@ fi
 if [[ "$OP" == "bmm" ]]; then
 echo "  ndims   : 3 (batched)"
 fi
-echo "  Threads : $OMP_NUM_THREADS"
-echo "  CPU bind: $CPU_BIND"
+echo "  Cores   : ${CORE_COUNTS[*]}"
+if [[ -n "$CACHE_MODES_ARG" ]]; then
+echo "  Cache   : ${CACHE_MODES[*]}"
+else
+echo "  Cache   : hot (default)"
+fi
+if [[ -n "$SWEEP_ARGS" ]]; then
+echo "  M sweep : ${M_SWEEP_ARG:-(binary default)}"
+echo "  Dtype   : ${DTYPE_SWEEP_ARG:-all}"
+fi
 if [[ $PERF_MODE -eq 1 ]]; then echo "  HW Perf : External perf stat ($PERF_PROFILE)"
 elif [[ $PERF_MODE -eq 2 ]]; then echo "  HW Perf : Internal perf_event_open ($PERF_PROFILE)"
 else echo "  HW Perf : OFF"; fi
@@ -223,17 +293,40 @@ echo "  Output  : $OUTDIR/"
 echo "================================================================"
 echo ""
 
+# ── Core-count sweep: run the full operator dispatch once per core count ─
+for NUM_THREADS in "${CORE_COUNTS[@]}"; do
+export OMP_NUM_THREADS="$NUM_THREADS"
+CPU_BIND="0-$((OMP_NUM_THREADS - 1))"
+if (( OMP_NUM_THREADS > $(nproc) )); then
+    echo "WARNING: requested $OMP_NUM_THREADS cores > $(nproc) available; numactl bind may fail."
+fi
+echo "################################################################"
+echo "  CORES = $OMP_NUM_THREADS   (CPU bind $CPU_BIND)"
+echo "################################################################"
+
+# ── Cache-mode sweep: run the operator dispatch once per cache mode ──────
+for CACHE_MODE in "${CACHE_MODES[@]}"; do
+if [[ -n "$CACHE_MODE" ]]; then
+    CACHE_ARG="--cache_mode=$CACHE_MODE"
+    CTAG="_${CACHE_MODE}"
+    echo ">>>>>>>>>>>>>>  CACHE MODE = $CACHE_MODE  <<<<<<<<<<<<<<"
+else
+    CACHE_ARG=""
+    CTAG=""
+fi
+
 # ── grp_matmul mode: loop over versions × algos ─────────────────────────
 if [[ "$OP" == "grp_matmul" ]]; then
     for algo in "${ALGOS[@]}"; do
         for ver in "${VERS[@]}"; do
-            OUTFILE="$OUTDIR/grp_matmul_${TAG}_v${ver}_algo${algo}_${OMP_NUM_THREADS}t.csv"
+            OUTFILE="$OUTDIR/grp_matmul_${TAG}_v${ver}_algo${algo}_${OMP_NUM_THREADS}t${CTAG}.csv"
             echo "--- grp_matmul V${ver} ALGO=${algo} ---"
 
             ZENDNNL_GRP_MATMUL_ALGO=$ver \
             ZENDNNL_MATMUL_ALGO=$algo \
             numactl --physcpubind="$CPU_BIND" \
                 "$BENCHDNN_BIN" --op=grp_matmul --input_file="$INPUT_FILE" \
+                $CACHE_ARG \
                 2>&1 | tee "$OUTFILE"
 
             echo "--- V${ver} ALGO=${algo} done → $OUTFILE ---"
@@ -244,10 +337,10 @@ if [[ "$OP" == "grp_matmul" ]]; then
 # ── bmm mode: loop over algos with --ndims=3 ─────────────────────────────
 elif [[ "$OP" == "bmm" ]]; then
     for algo in "${ALGOS[@]}"; do
-        OUTFILE="$OUTDIR/bmm_${TAG}_algo${algo}_${OMP_NUM_THREADS}c.txt"
+        OUTFILE="$OUTDIR/bmm_${TAG}_algo${algo}_${OMP_NUM_THREADS}c${CTAG}.txt"
 
         if [[ $PERF_MODE -eq 1 ]]; then
-            PERF_RAW="$OUTDIR/bmm_${TAG}_algo${algo}_${OMP_NUM_THREADS}c_perf_raw.txt"
+            PERF_RAW="$OUTDIR/bmm_${TAG}_algo${algo}_${OMP_NUM_THREADS}c${CTAG}_perf_raw.txt"
             echo "--- BMM ALGO=$algo (per-shape perf stat) ---"
             > "$PERF_RAW"
             total=$(grep -c '[^[:space:]]' "$INPUT_FILE" || echo 0)
@@ -262,6 +355,7 @@ elif [[ "$OP" == "bmm" ]]; then
                     env OMP_NUM_THREADS="$OMP_NUM_THREADS" ZENDNNL_BMM_ALGO="$algo" \
                     numactl --physcpubind="$CPU_BIND" \
                     "$BENCHDNN_BIN" --op=matmul --ndims=3 \
+                    $CACHE_ARG $SWEEP_ARGS \
                     --input_file=/tmp/_benchdnn_single.txt \
                     >> "$PERF_RAW" 2>&1
                 echo "" >> "$PERF_RAW"
@@ -276,6 +370,7 @@ elif [[ "$OP" == "bmm" ]]; then
             numactl --physcpubind="$CPU_BIND" \
                 "$BENCHDNN_BIN" --op=matmul --ndims=3 \
                 "--perf-counters=$PERF_PROFILE" \
+                $CACHE_ARG $SWEEP_ARGS \
                 --input_file="$INPUT_FILE" \
                 2>&1 | tee "$OUTFILE"
             echo "--- BMM ALGO=$algo done → $OUTFILE ---"
@@ -283,7 +378,7 @@ elif [[ "$OP" == "bmm" ]]; then
             echo "--- BMM ALGO=$algo ---"
             ZENDNNL_BMM_ALGO=$algo \
             numactl --physcpubind="$CPU_BIND" \
-                "$BENCHDNN_BIN" --op=matmul --ndims=3 --input_file="$INPUT_FILE" \
+                "$BENCHDNN_BIN" --op=matmul --ndims=3 $CACHE_ARG $SWEEP_ARGS --input_file="$INPUT_FILE" \
                 2>&1 | tee "$OUTFILE"
             echo "--- BMM ALGO=$algo done → $OUTFILE ---"
         fi
@@ -293,10 +388,10 @@ elif [[ "$OP" == "bmm" ]]; then
 # ── matmul mode: loop over algos (existing behavior) ────────────────────
 else
     for algo in "${ALGOS[@]}"; do
-        OUTFILE="$OUTDIR/benchmark_${TAG}_algo${algo}_${OMP_NUM_THREADS}c.txt"
+        OUTFILE="$OUTDIR/benchmark_${TAG}_algo${algo}_${OMP_NUM_THREADS}c${CTAG}.txt"
 
         if [[ $PERF_MODE -eq 1 ]]; then
-            PERF_RAW="$OUTDIR/benchmark_${TAG}_algo${algo}_${OMP_NUM_THREADS}c_perf_raw.txt"
+            PERF_RAW="$OUTDIR/benchmark_${TAG}_algo${algo}_${OMP_NUM_THREADS}c${CTAG}_perf_raw.txt"
             echo "--- ALGO=$algo (per-shape perf stat) ---"
             > "$PERF_RAW"
             total=$(grep -c '[^[:space:]]' "$INPUT_FILE" || echo 0)
@@ -311,6 +406,7 @@ else
                     env OMP_NUM_THREADS="$OMP_NUM_THREADS" ZENDNNL_MATMUL_ALGO="$algo" \
                     numactl --physcpubind="$CPU_BIND" \
                     "$BENCHDNN_BIN" --op=matmul --lowoha=true \
+                    $CACHE_ARG $SWEEP_ARGS \
                     --input_file=/tmp/_benchdnn_single.txt \
                     >> "$PERF_RAW" 2>&1
                 echo "" >> "$PERF_RAW"
@@ -325,6 +421,7 @@ else
             numactl --physcpubind="$CPU_BIND" \
                 "$BENCHDNN_BIN" --op=matmul --lowoha=true \
                 "--perf-counters=$PERF_PROFILE" \
+                $CACHE_ARG $SWEEP_ARGS \
                 --input_file="$INPUT_FILE" \
                 2>&1 | tee "$OUTFILE"
             echo "--- ALGO=$algo done → $OUTFILE ---"
@@ -332,13 +429,17 @@ else
             echo "--- ALGO=$algo ---"
             ZENDNNL_MATMUL_ALGO=$algo \
             numactl --physcpubind="$CPU_BIND" \
-                "$BENCHDNN_BIN" --op=matmul --lowoha=true --input_file="$INPUT_FILE" \
+                "$BENCHDNN_BIN" --op=matmul --lowoha=true $CACHE_ARG $SWEEP_ARGS --input_file="$INPUT_FILE" \
                 2>&1 | tee "$OUTFILE"
             echo "--- ALGO=$algo done → $OUTFILE ---"
         fi
         echo ""
     done
 fi
+
+done  # end cache-mode sweep
+
+done  # end core-count sweep
 
 echo "================================================================"
 echo "Results in $OUTDIR/"

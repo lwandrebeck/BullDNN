@@ -109,6 +109,32 @@ struct MatmulConfig {
   std::string src_scale_granularity; /**< per-tensor | per-token | per-group. */
   uint64_t src_group_size; /**< K-direction group size for per-group; 0 -> per-token. */
   zendnnl::common::data_type_t src_scale_dt; /**< Source scale dtype (f32 | bf16). */
+
+  /**
+   * Cache mode for this config's measurement (cold/warm/hot). Defaults to the
+   * global --cache_mode; the --cache_sweep axis overrides it per expanded row so
+   * each cache mode becomes its own benchmark config.
+   */
+  CacheMode cache_mode = CacheMode::HOT;
+
+  /**
+   * Records which sweep-managed dtype/quant fields the input row explicitly
+   * provided. During --sweep expansion the input file wins for any field it
+   * set; the dtype catalog only fills fields left absent here. Numeric/bool
+   * quant fields follow their granularity string: the weight group_size
+   * follows the weight scale granularity, while src_dynamic_quant and
+   * src_group_size follow the src scale granularity. Default-constructed
+   * configs (e.g. model-file rows, which carry only a shape) report nothing
+   * provided, so the catalog supplies every dtype/quant field for them.
+   */
+  struct SweepFieldSource {
+    bool dt = false;           /**< dtype triple present in the row. */
+    bool kernel = false;       /**< kernel_name present (or forced via algo). */
+    bool wei_scale = false;    /**< weight scale granularity present (governs group_size). */
+    bool wei_scale_dt = false; /**< weight scale dtype present. */
+    bool src_scale = false;    /**< src scale granularity present (governs src_dynamic_quant + src_group_size). */
+    bool src_scale_dt = false; /**< src scale dtype present. */
+  } provided;
 };
 
 /**
@@ -158,6 +184,28 @@ void inputModelFileParser(std::ifstream &infile,
  */
 void inputCommandLineParser(std::vector<MatmulConfig> &configs,
                             bool &isPipeline, const global_options &options);
+
+/**
+ * @brief Normalizes weight and source quantization fields for W4A8 configs.
+ *
+ * Ensures per-group weight scales for s4 weights with dynamic source
+ * quantization and applies sensible defaults when group sizes are unset.
+ *
+ * @param cfg Matmul configuration to normalize in place.
+ */
+void normalize_w4a8_quant_config(MatmulConfig &cfg);
+
+/**
+ * @brief Expand model-file configs across M sweep and sweep dtypes.
+ *
+ * Reads `options.m_sweep_str` (default M list when empty) and
+ * `options.dtype_sweep_str` (empty = preserve file dtype; `all` or
+ * comma-separated dtype names when --dtype_sweep is set).
+ * Clones each parsed config and patches M + dtype/quant fields.
+ */
+std::vector<MatmulConfig> expand_matmul_sweep(
+    const std::vector<MatmulConfig> &base, const global_options &options,
+    bool is_lowoha);
 
 /**
 * @brief Logs a detailed error message for a failed benchmark configuration.

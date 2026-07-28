@@ -1,0 +1,322 @@
+# LLM matmul shapes — DECODE (M=1) — grouped by MODEL.
+#
+# Each row is a single-token (M=1) matmul from the decode phase of autoregressive
+# inference, listed under every model that issues it. Shapes shared by multiple
+# models are intentionally repeated under each model's section so that any single
+# model's GEMM set can be benchmarked in isolation.
+#
+# Source: matmul_unique_kn_with_models.csv (unique (K,N) -> models mapping).
+#
+# Format: M, K, N, iters, src:wei:dst, bias, bias_dt, postOp, postOp_dt, kernel, weights_const, transA, transB, alpha, beta, wei_scale_gran, wei_group_size, wei_scale_dt, warmup_iters
+#   M=1 (decode); iters=1000; dtype=bf16:bf16:bf16; kernel=aocl_dlp_blocked.
+#   Lines beginning with '#' and inline text after '#' are ignored by the parser.
+
+# ═══════════════════════════════════════════════════════════════════════
+# LLAMA
+# ═══════════════════════════════════════════════════════════════════════
+#
+# ── Llama-3.1-8B-Instruct ──
+1, 4096, 4096, 1000, bf16:bf16:bf16, false, , , , aocl_dlp_blocked, true, false, false, 1.0, 0.0, none, 0, f32, 1000
+1, 4096, 6144, 1000, bf16:bf16:bf16, false, , , , aocl_dlp_blocked, true, false, false, 1.0, 0.0, none, 0, f32, 1000
+1, 4096, 28672, 1000, bf16:bf16:bf16, false, , , , aocl_dlp_blocked, true, false, false, 1.0, 0.0, none, 0, f32, 1000
+1, 4096, 128256, 1000, bf16:bf16:bf16, false, , , , aocl_dlp_blocked, true, false, false, 1.0, 0.0, none, 0, f32, 1000
+1, 14336, 4096, 1000, bf16:bf16:bf16, false, , , , aocl_dlp_blocked, true, false, false, 1.0, 0.0, none, 0, f32, 1000
+
+# ── Llama-3.2-1B-Instruct ──
+1, 2048, 2048, 1000, bf16:bf16:bf16, false, , , , aocl_dlp_blocked, true, false, false, 1.0, 0.0, none, 0, f32, 1000
+1, 2048, 3072, 1000, bf16:bf16:bf16, false, , , , aocl_dlp_blocked, true, false, false, 1.0, 0.0, none, 0, f32, 1000
+1, 2048, 16384, 1000, bf16:bf16:bf16, false, , , , aocl_dlp_blocked, true, false, false, 1.0, 0.0, none, 0, f32, 1000
+1, 2048, 128256, 1000, bf16:bf16:bf16, false, , , , aocl_dlp_blocked, true, false, false, 1.0, 0.0, none, 0, f32, 1000
+1, 8192, 2048, 1000, bf16:bf16:bf16, false, , , , aocl_dlp_blocked, true, false, false, 1.0, 0.0, none, 0, f32, 1000
+
+# ── Llama-3.2-3B-Instruct ──
+1, 3072, 3072, 1000, bf16:bf16:bf16, false, , , , aocl_dlp_blocked, true, false, false, 1.0, 0.0, none, 0, f32, 1000
+1, 3072, 5120, 1000, bf16:bf16:bf16, false, , , , aocl_dlp_blocked, true, false, false, 1.0, 0.0, none, 0, f32, 1000
+1, 3072, 16384, 1000, bf16:bf16:bf16, false, , , , aocl_dlp_blocked, true, false, false, 1.0, 0.0, none, 0, f32, 1000
+1, 3072, 128256, 1000, bf16:bf16:bf16, false, , , , aocl_dlp_blocked, true, false, false, 1.0, 0.0, none, 0, f32, 1000
+1, 8192, 3072, 1000, bf16:bf16:bf16, false, , , , aocl_dlp_blocked, true, false, false, 1.0, 0.0, none, 0, f32, 1000
+
+# ── Llama-3.3-70B-Instruct ──
+1, 8192, 8192, 1000, bf16:bf16:bf16, false, , , , aocl_dlp_blocked, true, false, false, 1.0, 0.0, none, 0, f32, 1000
+1, 8192, 10240, 1000, bf16:bf16:bf16, false, , , , aocl_dlp_blocked, true, false, false, 1.0, 0.0, none, 0, f32, 1000
+1, 8192, 57344, 1000, bf16:bf16:bf16, false, , , , aocl_dlp_blocked, true, false, false, 1.0, 0.0, none, 0, f32, 1000
+1, 8192, 128256, 1000, bf16:bf16:bf16, false, , , , aocl_dlp_blocked, true, false, false, 1.0, 0.0, none, 0, f32, 1000
+1, 28672, 8192, 1000, bf16:bf16:bf16, false, , , , aocl_dlp_blocked, true, false, false, 1.0, 0.0, none, 0, f32, 1000
+
+# ═══════════════════════════════════════════════════════════════════════
+# MISTRAL / MIXTRAL
+# ═══════════════════════════════════════════════════════════════════════
+#
+# ── Mistral-7B-v0.1 ──
+1, 4096, 4096, 1000, bf16:bf16:bf16, false, , , , aocl_dlp_blocked, true, false, false, 1.0, 0.0, none, 0, f32, 1000
+1, 4096, 6144, 1000, bf16:bf16:bf16, false, , , , aocl_dlp_blocked, true, false, false, 1.0, 0.0, none, 0, f32, 1000
+1, 4096, 28672, 1000, bf16:bf16:bf16, false, , , , aocl_dlp_blocked, true, false, false, 1.0, 0.0, none, 0, f32, 1000
+1, 4096, 32000, 1000, bf16:bf16:bf16, false, , , , aocl_dlp_blocked, true, false, false, 1.0, 0.0, none, 0, f32, 1000
+1, 14336, 4096, 1000, bf16:bf16:bf16, false, , , , aocl_dlp_blocked, true, false, false, 1.0, 0.0, none, 0, f32, 1000
+
+# ── Mixtral-8x7B-Instruct-v0.1 ──
+1, 4096, 8, 1000, bf16:bf16:bf16, false, , , , aocl_dlp_blocked, true, false, false, 1.0, 0.0, none, 0, f32, 1000
+1, 4096, 4096, 1000, bf16:bf16:bf16, false, , , , aocl_dlp_blocked, true, false, false, 1.0, 0.0, none, 0, f32, 1000
+1, 4096, 6144, 1000, bf16:bf16:bf16, false, , , , aocl_dlp_blocked, true, false, false, 1.0, 0.0, none, 0, f32, 1000
+1, 4096, 32000, 1000, bf16:bf16:bf16, false, , , , aocl_dlp_blocked, true, false, false, 1.0, 0.0, none, 0, f32, 1000
+
+# ═══════════════════════════════════════════════════════════════════════
+# QWEN2.5-VL
+# ═══════════════════════════════════════════════════════════════════════
+#
+# ── Qwen2.5-VL-3B-Instruct ──
+1, 1280, 1280, 1000, bf16:bf16:bf16, false, , , , aocl_dlp_blocked, true, false, false, 1.0, 0.0, none, 0, f32, 1000
+1, 1280, 3840, 1000, bf16:bf16:bf16, false, , , , aocl_dlp_blocked, true, false, false, 1.0, 0.0, none, 0, f32, 1000
+1, 1280, 6840, 1000, bf16:bf16:bf16, false, , , , aocl_dlp_blocked, true, false, false, 1.0, 0.0, none, 0, f32, 1000
+1, 2048, 2048, 1000, bf16:bf16:bf16, false, , , , aocl_dlp_blocked, true, false, false, 1.0, 0.0, none, 0, f32, 1000
+1, 2048, 2560, 1000, bf16:bf16:bf16, false, , , , aocl_dlp_blocked, true, false, false, 1.0, 0.0, none, 0, f32, 1000
+1, 2048, 22016, 1000, bf16:bf16:bf16, false, , , , aocl_dlp_blocked, true, false, false, 1.0, 0.0, none, 0, f32, 1000
+1, 2048, 151936, 1000, bf16:bf16:bf16, false, , , , aocl_dlp_blocked, true, false, false, 1.0, 0.0, none, 0, f32, 1000
+1, 3420, 1280, 1000, bf16:bf16:bf16, false, , , , aocl_dlp_blocked, true, false, false, 1.0, 0.0, none, 0, f32, 1000
+1, 5120, 2048, 1000, bf16:bf16:bf16, false, , , , aocl_dlp_blocked, true, false, false, 1.0, 0.0, none, 0, f32, 1000
+1, 5120, 5120, 1000, bf16:bf16:bf16, false, , , , aocl_dlp_blocked, true, false, false, 1.0, 0.0, none, 0, f32, 1000
+1, 11008, 2048, 1000, bf16:bf16:bf16, false, , , , aocl_dlp_blocked, true, false, false, 1.0, 0.0, none, 0, f32, 1000
+
+# ── Qwen2.5-VL-7B-Instruct ──
+1, 1280, 1280, 1000, bf16:bf16:bf16, false, , , , aocl_dlp_blocked, true, false, false, 1.0, 0.0, none, 0, f32, 1000
+1, 1280, 3840, 1000, bf16:bf16:bf16, false, , , , aocl_dlp_blocked, true, false, false, 1.0, 0.0, none, 0, f32, 1000
+1, 1280, 6840, 1000, bf16:bf16:bf16, false, , , , aocl_dlp_blocked, true, false, false, 1.0, 0.0, none, 0, f32, 1000
+1, 3420, 1280, 1000, bf16:bf16:bf16, false, , , , aocl_dlp_blocked, true, false, false, 1.0, 0.0, none, 0, f32, 1000
+1, 3584, 3584, 1000, bf16:bf16:bf16, false, , , , aocl_dlp_blocked, true, false, false, 1.0, 0.0, none, 0, f32, 1000
+1, 3584, 4608, 1000, bf16:bf16:bf16, false, , , , aocl_dlp_blocked, true, false, false, 1.0, 0.0, none, 0, f32, 1000
+1, 3584, 37888, 1000, bf16:bf16:bf16, false, , , , aocl_dlp_blocked, true, false, false, 1.0, 0.0, none, 0, f32, 1000
+1, 3584, 152064, 1000, bf16:bf16:bf16, false, , , , aocl_dlp_blocked, true, false, false, 1.0, 0.0, none, 0, f32, 1000
+1, 5120, 3584, 1000, bf16:bf16:bf16, false, , , , aocl_dlp_blocked, true, false, false, 1.0, 0.0, none, 0, f32, 1000
+1, 5120, 5120, 1000, bf16:bf16:bf16, false, , , , aocl_dlp_blocked, true, false, false, 1.0, 0.0, none, 0, f32, 1000
+1, 18944, 3584, 1000, bf16:bf16:bf16, false, , , , aocl_dlp_blocked, true, false, false, 1.0, 0.0, none, 0, f32, 1000
+
+# ═══════════════════════════════════════════════════════════════════════
+# QWEN3
+# ═══════════════════════════════════════════════════════════════════════
+#
+# ── Qwen3-14B-Instruct ──
+1, 5120, 5120, 1000, bf16:bf16:bf16, false, , , , aocl_dlp_blocked, true, false, false, 1.0, 0.0, none, 0, f32, 1000
+1, 5120, 7168, 1000, bf16:bf16:bf16, false, , , , aocl_dlp_blocked, true, false, false, 1.0, 0.0, none, 0, f32, 1000
+1, 5120, 34816, 1000, bf16:bf16:bf16, false, , , , aocl_dlp_blocked, true, false, false, 1.0, 0.0, none, 0, f32, 1000
+1, 5120, 151936, 1000, bf16:bf16:bf16, false, , , , aocl_dlp_blocked, true, false, false, 1.0, 0.0, none, 0, f32, 1000
+1, 17408, 5120, 1000, bf16:bf16:bf16, false, , , , aocl_dlp_blocked, true, false, false, 1.0, 0.0, none, 0, f32, 1000
+
+# ── Qwen3-30B-A3B ──
+1, 2048, 128, 1000, bf16:bf16:bf16, false, , , , aocl_dlp_blocked, true, false, false, 1.0, 0.0, none, 0, f32, 1000
+1, 2048, 5120, 1000, bf16:bf16:bf16, false, , , , aocl_dlp_blocked, true, false, false, 1.0, 0.0, none, 0, f32, 1000
+1, 2048, 151936, 1000, bf16:bf16:bf16, false, , , , aocl_dlp_blocked, true, false, false, 1.0, 0.0, none, 0, f32, 1000
+1, 4096, 2048, 1000, bf16:bf16:bf16, false, , , , aocl_dlp_blocked, true, false, false, 1.0, 0.0, none, 0, f32, 1000
+
+# ── Qwen3-30B-A3B-Instruct-2507 ──
+1, 2048, 128, 1000, bf16:bf16:bf16, false, , , , aocl_dlp_blocked, true, false, false, 1.0, 0.0, none, 0, f32, 1000
+1, 2048, 5120, 1000, bf16:bf16:bf16, false, , , , aocl_dlp_blocked, true, false, false, 1.0, 0.0, none, 0, f32, 1000
+1, 2048, 151936, 1000, bf16:bf16:bf16, false, , , , aocl_dlp_blocked, true, false, false, 1.0, 0.0, none, 0, f32, 1000
+1, 4096, 2048, 1000, bf16:bf16:bf16, false, , , , aocl_dlp_blocked, true, false, false, 1.0, 0.0, none, 0, f32, 1000
+
+# ── Qwen3.5-4B ──
+1, 1024, 1024, 1000, bf16:bf16:bf16, false, , , , aocl_dlp_blocked, true, false, false, 1.0, 0.0, none, 0, f32, 1000
+1, 1024, 3072, 1000, bf16:bf16:bf16, false, , , , aocl_dlp_blocked, true, false, false, 1.0, 0.0, none, 0, f32, 1000
+1, 1024, 4096, 1000, bf16:bf16:bf16, false, , , , aocl_dlp_blocked, true, false, false, 1.0, 0.0, none, 0, f32, 1000
+1, 2560, 64, 1000, bf16:bf16:bf16, false, , , , aocl_dlp_blocked, true, false, false, 1.0, 0.0, none, 0, f32, 1000
+1, 2560, 10240, 1000, bf16:bf16:bf16, false, , , , aocl_dlp_blocked, true, false, false, 1.0, 0.0, none, 0, f32, 1000
+1, 2560, 12288, 1000, bf16:bf16:bf16, false, , , , aocl_dlp_blocked, true, false, false, 1.0, 0.0, none, 0, f32, 1000
+1, 2560, 18432, 1000, bf16:bf16:bf16, false, , , , aocl_dlp_blocked, true, false, false, 1.0, 0.0, none, 0, f32, 1000
+1, 2560, 248320, 1000, bf16:bf16:bf16, false, , , , aocl_dlp_blocked, true, false, false, 1.0, 0.0, none, 0, f32, 1000
+1, 4096, 1024, 1000, bf16:bf16:bf16, false, , , , aocl_dlp_blocked, true, false, false, 1.0, 0.0, none, 0, f32, 1000
+1, 4096, 2560, 1000, bf16:bf16:bf16, false, , , , aocl_dlp_blocked, true, false, false, 1.0, 0.0, none, 0, f32, 1000
+1, 4096, 4096, 1000, bf16:bf16:bf16, false, , , , aocl_dlp_blocked, true, false, false, 1.0, 0.0, none, 0, f32, 1000
+1, 9216, 2560, 1000, bf16:bf16:bf16, false, , , , aocl_dlp_blocked, true, false, false, 1.0, 0.0, none, 0, f32, 1000
+
+# ── Qwen3.5-9B ──
+1, 1152, 1152, 1000, bf16:bf16:bf16, false, , , , aocl_dlp_blocked, true, false, false, 1.0, 0.0, none, 0, f32, 1000
+1, 1152, 3456, 1000, bf16:bf16:bf16, false, , , , aocl_dlp_blocked, true, false, false, 1.0, 0.0, none, 0, f32, 1000
+1, 1152, 4304, 1000, bf16:bf16:bf16, false, , , , aocl_dlp_blocked, true, false, false, 1.0, 0.0, none, 0, f32, 1000
+1, 4096, 64, 1000, bf16:bf16:bf16, false, , , , aocl_dlp_blocked, true, false, false, 1.0, 0.0, none, 0, f32, 1000
+1, 4096, 4096, 1000, bf16:bf16:bf16, false, , , , aocl_dlp_blocked, true, false, false, 1.0, 0.0, none, 0, f32, 1000
+1, 4096, 10240, 1000, bf16:bf16:bf16, false, , , , aocl_dlp_blocked, true, false, false, 1.0, 0.0, none, 0, f32, 1000
+1, 4096, 12288, 1000, bf16:bf16:bf16, false, , , , aocl_dlp_blocked, true, false, false, 1.0, 0.0, none, 0, f32, 1000
+1, 4096, 24576, 1000, bf16:bf16:bf16, false, , , , aocl_dlp_blocked, true, false, false, 1.0, 0.0, none, 0, f32, 1000
+1, 4096, 248320, 1000, bf16:bf16:bf16, false, , , , aocl_dlp_blocked, true, false, false, 1.0, 0.0, none, 0, f32, 1000
+1, 4304, 1152, 1000, bf16:bf16:bf16, false, , , , aocl_dlp_blocked, true, false, false, 1.0, 0.0, none, 0, f32, 1000
+1, 4608, 4096, 1000, bf16:bf16:bf16, false, , , , aocl_dlp_blocked, true, false, false, 1.0, 0.0, none, 0, f32, 1000
+1, 4608, 4608, 1000, bf16:bf16:bf16, false, , , , aocl_dlp_blocked, true, false, false, 1.0, 0.0, none, 0, f32, 1000
+1, 12288, 4096, 1000, bf16:bf16:bf16, false, , , , aocl_dlp_blocked, true, false, false, 1.0, 0.0, none, 0, f32, 1000
+
+# ── Qwen3.6-35B-A3B ──
+1, 512, 2048, 1000, bf16:bf16:bf16, false, , , , aocl_dlp_blocked, true, false, false, 1.0, 0.0, none, 0, f32, 1000
+1, 1152, 1152, 1000, bf16:bf16:bf16, false, , , , aocl_dlp_blocked, true, false, false, 1.0, 0.0, none, 0, f32, 1000
+1, 1152, 3456, 1000, bf16:bf16:bf16, false, , , , aocl_dlp_blocked, true, false, false, 1.0, 0.0, none, 0, f32, 1000
+1, 1152, 4304, 1000, bf16:bf16:bf16, false, , , , aocl_dlp_blocked, true, false, false, 1.0, 0.0, none, 0, f32, 1000
+1, 2048, 1, 1000, bf16:bf16:bf16, false, , , , aocl_dlp_blocked, true, false, false, 1.0, 0.0, none, 0, f32, 1000
+1, 2048, 64, 1000, bf16:bf16:bf16, false, , , , aocl_dlp_blocked, true, false, false, 1.0, 0.0, none, 0, f32, 1000
+1, 2048, 256, 1000, bf16:bf16:bf16, false, , , , aocl_dlp_blocked, true, false, false, 1.0, 0.0, none, 0, f32, 1000
+1, 2048, 1024, 1000, bf16:bf16:bf16, false, , , , aocl_dlp_blocked, true, false, false, 1.0, 0.0, none, 0, f32, 1000
+1, 2048, 9216, 1000, bf16:bf16:bf16, false, , , , aocl_dlp_blocked, true, false, false, 1.0, 0.0, none, 0, f32, 1000
+1, 2048, 12288, 1000, bf16:bf16:bf16, false, , , , aocl_dlp_blocked, true, false, false, 1.0, 0.0, none, 0, f32, 1000
+1, 2048, 248320, 1000, bf16:bf16:bf16, false, , , , aocl_dlp_blocked, true, false, false, 1.0, 0.0, none, 0, f32, 1000
+1, 4096, 2048, 1000, bf16:bf16:bf16, false, , , , aocl_dlp_blocked, true, false, false, 1.0, 0.0, none, 0, f32, 1000
+1, 4304, 1152, 1000, bf16:bf16:bf16, false, , , , aocl_dlp_blocked, true, false, false, 1.0, 0.0, none, 0, f32, 1000
+1, 4608, 2048, 1000, bf16:bf16:bf16, false, , , , aocl_dlp_blocked, true, false, false, 1.0, 0.0, none, 0, f32, 1000
+1, 4608, 4608, 1000, bf16:bf16:bf16, false, , , , aocl_dlp_blocked, true, false, false, 1.0, 0.0, none, 0, f32, 1000
+
+# ═══════════════════════════════════════════════════════════════════════
+# QWEN3-VL
+# ═══════════════════════════════════════════════════════════════════════
+#
+# ── Qwen3-VL-2B-Instruct ──
+1, 1024, 1024, 1000, bf16:bf16:bf16, false, , , , aocl_dlp_blocked, true, false, false, 1.0, 0.0, none, 0, f32, 1000
+1, 1024, 3072, 1000, bf16:bf16:bf16, false, , , , aocl_dlp_blocked, true, false, false, 1.0, 0.0, none, 0, f32, 1000
+1, 1024, 4096, 1000, bf16:bf16:bf16, false, , , , aocl_dlp_blocked, true, false, false, 1.0, 0.0, none, 0, f32, 1000
+1, 2048, 2048, 1000, bf16:bf16:bf16, false, , , , aocl_dlp_blocked, true, false, false, 1.0, 0.0, none, 0, f32, 1000
+1, 2048, 4096, 1000, bf16:bf16:bf16, false, , , , aocl_dlp_blocked, true, false, false, 1.0, 0.0, none, 0, f32, 1000
+1, 2048, 12288, 1000, bf16:bf16:bf16, false, , , , aocl_dlp_blocked, true, false, false, 1.0, 0.0, none, 0, f32, 1000
+1, 2048, 151936, 1000, bf16:bf16:bf16, false, , , , aocl_dlp_blocked, true, false, false, 1.0, 0.0, none, 0, f32, 1000
+1, 4096, 1024, 1000, bf16:bf16:bf16, false, , , , aocl_dlp_blocked, true, false, false, 1.0, 0.0, none, 0, f32, 1000
+1, 4096, 2048, 1000, bf16:bf16:bf16, false, , , , aocl_dlp_blocked, true, false, false, 1.0, 0.0, none, 0, f32, 1000
+1, 4096, 4096, 1000, bf16:bf16:bf16, false, , , , aocl_dlp_blocked, true, false, false, 1.0, 0.0, none, 0, f32, 1000
+1, 6144, 2048, 1000, bf16:bf16:bf16, false, , , , aocl_dlp_blocked, true, false, false, 1.0, 0.0, none, 0, f32, 1000
+
+# ── Qwen3-VL-8B-Instruct ──
+1, 1152, 1152, 1000, bf16:bf16:bf16, false, , , , aocl_dlp_blocked, true, false, false, 1.0, 0.0, none, 0, f32, 1000
+1, 1152, 3456, 1000, bf16:bf16:bf16, false, , , , aocl_dlp_blocked, true, false, false, 1.0, 0.0, none, 0, f32, 1000
+1, 1152, 4304, 1000, bf16:bf16:bf16, false, , , , aocl_dlp_blocked, true, false, false, 1.0, 0.0, none, 0, f32, 1000
+1, 4096, 4096, 1000, bf16:bf16:bf16, false, , , , aocl_dlp_blocked, true, false, false, 1.0, 0.0, none, 0, f32, 1000
+1, 4096, 6144, 1000, bf16:bf16:bf16, false, , , , aocl_dlp_blocked, true, false, false, 1.0, 0.0, none, 0, f32, 1000
+1, 4096, 24576, 1000, bf16:bf16:bf16, false, , , , aocl_dlp_blocked, true, false, false, 1.0, 0.0, none, 0, f32, 1000
+1, 4096, 151936, 1000, bf16:bf16:bf16, false, , , , aocl_dlp_blocked, true, false, false, 1.0, 0.0, none, 0, f32, 1000
+1, 4304, 1152, 1000, bf16:bf16:bf16, false, , , , aocl_dlp_blocked, true, false, false, 1.0, 0.0, none, 0, f32, 1000
+1, 4608, 4096, 1000, bf16:bf16:bf16, false, , , , aocl_dlp_blocked, true, false, false, 1.0, 0.0, none, 0, f32, 1000
+1, 4608, 4608, 1000, bf16:bf16:bf16, false, , , , aocl_dlp_blocked, true, false, false, 1.0, 0.0, none, 0, f32, 1000
+1, 12288, 4096, 1000, bf16:bf16:bf16, false, , , , aocl_dlp_blocked, true, false, false, 1.0, 0.0, none, 0, f32, 1000
+
+# ═══════════════════════════════════════════════════════════════════════
+# INTERNVL3
+# ═══════════════════════════════════════════════════════════════════════
+#
+# ── InternVL3-2B ──
+1, 1024, 1024, 1000, bf16:bf16:bf16, false, , , , aocl_dlp_blocked, true, false, false, 1.0, 0.0, none, 0, f32, 1000
+1, 1024, 3072, 1000, bf16:bf16:bf16, false, , , , aocl_dlp_blocked, true, false, false, 1.0, 0.0, none, 0, f32, 1000
+1, 1024, 4096, 1000, bf16:bf16:bf16, false, , , , aocl_dlp_blocked, true, false, false, 1.0, 0.0, none, 0, f32, 1000
+1, 1536, 1536, 1000, bf16:bf16:bf16, false, , , , aocl_dlp_blocked, true, false, false, 1.0, 0.0, none, 0, f32, 1000
+1, 1536, 2048, 1000, bf16:bf16:bf16, false, , , , aocl_dlp_blocked, true, false, false, 1.0, 0.0, none, 0, f32, 1000
+1, 1536, 17920, 1000, bf16:bf16:bf16, false, , , , aocl_dlp_blocked, true, false, false, 1.0, 0.0, none, 0, f32, 1000
+1, 1536, 151680, 1000, bf16:bf16:bf16, false, , , , aocl_dlp_blocked, true, false, false, 1.0, 0.0, none, 0, f32, 1000
+1, 4096, 1024, 1000, bf16:bf16:bf16, false, , , , aocl_dlp_blocked, true, false, false, 1.0, 0.0, none, 0, f32, 1000
+1, 8960, 1536, 1000, bf16:bf16:bf16, false, , , , aocl_dlp_blocked, true, false, false, 1.0, 0.0, none, 0, f32, 1000
+
+# ── InternVL3-8B ──
+1, 1024, 1024, 1000, bf16:bf16:bf16, false, , , , aocl_dlp_blocked, true, false, false, 1.0, 0.0, none, 0, f32, 1000
+1, 1024, 3072, 1000, bf16:bf16:bf16, false, , , , aocl_dlp_blocked, true, false, false, 1.0, 0.0, none, 0, f32, 1000
+1, 1024, 4096, 1000, bf16:bf16:bf16, false, , , , aocl_dlp_blocked, true, false, false, 1.0, 0.0, none, 0, f32, 1000
+1, 3584, 3584, 1000, bf16:bf16:bf16, false, , , , aocl_dlp_blocked, true, false, false, 1.0, 0.0, none, 0, f32, 1000
+1, 3584, 4608, 1000, bf16:bf16:bf16, false, , , , aocl_dlp_blocked, true, false, false, 1.0, 0.0, none, 0, f32, 1000
+1, 3584, 37888, 1000, bf16:bf16:bf16, false, , , , aocl_dlp_blocked, true, false, false, 1.0, 0.0, none, 0, f32, 1000
+1, 3584, 151680, 1000, bf16:bf16:bf16, false, , , , aocl_dlp_blocked, true, false, false, 1.0, 0.0, none, 0, f32, 1000
+1, 4096, 1024, 1000, bf16:bf16:bf16, false, , , , aocl_dlp_blocked, true, false, false, 1.0, 0.0, none, 0, f32, 1000
+1, 18944, 3584, 1000, bf16:bf16:bf16, false, , , , aocl_dlp_blocked, true, false, false, 1.0, 0.0, none, 0, f32, 1000
+
+# ═══════════════════════════════════════════════════════════════════════
+# PHI-4
+# ═══════════════════════════════════════════════════════════════════════
+#
+# ── Phi-4-mini-instruct ──
+1, 3072, 3072, 1000, bf16:bf16:bf16, false, , , , aocl_dlp_blocked, true, false, false, 1.0, 0.0, none, 0, f32, 1000
+1, 3072, 5120, 1000, bf16:bf16:bf16, false, , , , aocl_dlp_blocked, true, false, false, 1.0, 0.0, none, 0, f32, 1000
+1, 3072, 16384, 1000, bf16:bf16:bf16, false, , , , aocl_dlp_blocked, true, false, false, 1.0, 0.0, none, 0, f32, 1000
+1, 3072, 200064, 1000, bf16:bf16:bf16, false, , , , aocl_dlp_blocked, true, false, false, 1.0, 0.0, none, 0, f32, 1000
+1, 8192, 3072, 1000, bf16:bf16:bf16, false, , , , aocl_dlp_blocked, true, false, false, 1.0, 0.0, none, 0, f32, 1000
+
+# ── Phi-4-reasoning-plus ──
+1, 5120, 5120, 1000, bf16:bf16:bf16, false, , , , aocl_dlp_blocked, true, false, false, 1.0, 0.0, none, 0, f32, 1000
+1, 5120, 7680, 1000, bf16:bf16:bf16, false, , , , aocl_dlp_blocked, true, false, false, 1.0, 0.0, none, 0, f32, 1000
+1, 5120, 35840, 1000, bf16:bf16:bf16, false, , , , aocl_dlp_blocked, true, false, false, 1.0, 0.0, none, 0, f32, 1000
+1, 5120, 100352, 1000, bf16:bf16:bf16, false, , , , aocl_dlp_blocked, true, false, false, 1.0, 0.0, none, 0, f32, 1000
+1, 17920, 5120, 1000, bf16:bf16:bf16, false, , , , aocl_dlp_blocked, true, false, false, 1.0, 0.0, none, 0, f32, 1000
+
+# ═══════════════════════════════════════════════════════════════════════
+# GEMMA-4
+# ═══════════════════════════════════════════════════════════════════════
+#
+# ── gemma-4-E2B ──
+1, 256, 1536, 1000, bf16:bf16:bf16, false, , , , aocl_dlp_blocked, true, false, false, 1.0, 0.0, none, 0, f32, 1000
+1, 768, 768, 1000, bf16:bf16:bf16, false, , , , aocl_dlp_blocked, true, false, false, 1.0, 0.0, none, 0, f32, 1000
+1, 768, 1536, 1000, bf16:bf16:bf16, false, , , , aocl_dlp_blocked, true, false, false, 1.0, 0.0, none, 0, f32, 1000
+1, 768, 3072, 1000, bf16:bf16:bf16, false, , , , aocl_dlp_blocked, true, false, false, 1.0, 0.0, none, 0, f32, 1000
+1, 1536, 256, 1000, bf16:bf16:bf16, false, , , , aocl_dlp_blocked, true, false, false, 1.0, 0.0, none, 0, f32, 1000
+1, 1536, 2560, 1000, bf16:bf16:bf16, false, , , , aocl_dlp_blocked, true, false, false, 1.0, 0.0, none, 0, f32, 1000
+1, 1536, 5120, 1000, bf16:bf16:bf16, false, , , , aocl_dlp_blocked, true, false, false, 1.0, 0.0, none, 0, f32, 1000
+1, 1536, 8960, 1000, bf16:bf16:bf16, false, , , , aocl_dlp_blocked, true, false, false, 1.0, 0.0, none, 0, f32, 1000
+1, 1536, 12288, 1000, bf16:bf16:bf16, false, , , , aocl_dlp_blocked, true, false, false, 1.0, 0.0, none, 0, f32, 1000
+1, 1536, 24576, 1000, bf16:bf16:bf16, false, , , , aocl_dlp_blocked, true, false, false, 1.0, 0.0, none, 0, f32, 1000
+1, 1536, 262144, 1000, bf16:bf16:bf16, false, , , , aocl_dlp_blocked, true, false, false, 1.0, 0.0, none, 0, f32, 1000
+1, 2048, 1536, 1000, bf16:bf16:bf16, false, , , , aocl_dlp_blocked, true, false, false, 1.0, 0.0, none, 0, f32, 1000
+1, 3072, 768, 1000, bf16:bf16:bf16, false, , , , aocl_dlp_blocked, true, false, false, 1.0, 0.0, none, 0, f32, 1000
+1, 4096, 1536, 1000, bf16:bf16:bf16, false, , , , aocl_dlp_blocked, true, false, false, 1.0, 0.0, none, 0, f32, 1000
+1, 6144, 1536, 1000, bf16:bf16:bf16, false, , , , aocl_dlp_blocked, true, false, false, 1.0, 0.0, none, 0, f32, 1000
+1, 12288, 1536, 1000, bf16:bf16:bf16, false, , , , aocl_dlp_blocked, true, false, false, 1.0, 0.0, none, 0, f32, 1000
+
+# ── gemma-4-E4B ──
+1, 256, 2560, 1000, bf16:bf16:bf16, false, , , , aocl_dlp_blocked, true, false, false, 1.0, 0.0, none, 0, f32, 1000
+1, 768, 2560, 1000, bf16:bf16:bf16, false, , , , aocl_dlp_blocked, true, false, false, 1.0, 0.0, none, 0, f32, 1000
+1, 768, 3072, 1000, bf16:bf16:bf16, false, , , , aocl_dlp_blocked, true, false, false, 1.0, 0.0, none, 0, f32, 1000
+1, 2048, 2560, 1000, bf16:bf16:bf16, false, , , , aocl_dlp_blocked, true, false, false, 1.0, 0.0, none, 0, f32, 1000
+1, 2560, 256, 1000, bf16:bf16:bf16, false, , , , aocl_dlp_blocked, true, false, false, 1.0, 0.0, none, 0, f32, 1000
+1, 2560, 3072, 1000, bf16:bf16:bf16, false, , , , aocl_dlp_blocked, true, false, false, 1.0, 0.0, none, 0, f32, 1000
+1, 2560, 6144, 1000, bf16:bf16:bf16, false, , , , aocl_dlp_blocked, true, false, false, 1.0, 0.0, none, 0, f32, 1000
+1, 2560, 10752, 1000, bf16:bf16:bf16, false, , , , aocl_dlp_blocked, true, false, false, 1.0, 0.0, none, 0, f32, 1000
+1, 2560, 20480, 1000, bf16:bf16:bf16, false, , , , aocl_dlp_blocked, true, false, false, 1.0, 0.0, none, 0, f32, 1000
+1, 2560, 262144, 1000, bf16:bf16:bf16, false, , , , aocl_dlp_blocked, true, false, false, 1.0, 0.0, none, 0, f32, 1000
+1, 3072, 768, 1000, bf16:bf16:bf16, false, , , , aocl_dlp_blocked, true, false, false, 1.0, 0.0, none, 0, f32, 1000
+1, 4096, 2560, 1000, bf16:bf16:bf16, false, , , , aocl_dlp_blocked, true, false, false, 1.0, 0.0, none, 0, f32, 1000
+1, 10240, 2560, 1000, bf16:bf16:bf16, false, , , , aocl_dlp_blocked, true, false, false, 1.0, 0.0, none, 0, f32, 1000
+
+# ── gemma-4-E4B-it ──
+1, 256, 2560, 1000, bf16:bf16:bf16, false, , , , aocl_dlp_blocked, true, false, false, 1.0, 0.0, none, 0, f32, 1000
+1, 768, 2560, 1000, bf16:bf16:bf16, false, , , , aocl_dlp_blocked, true, false, false, 1.0, 0.0, none, 0, f32, 1000
+1, 768, 3072, 1000, bf16:bf16:bf16, false, , , , aocl_dlp_blocked, true, false, false, 1.0, 0.0, none, 0, f32, 1000
+1, 2048, 2560, 1000, bf16:bf16:bf16, false, , , , aocl_dlp_blocked, true, false, false, 1.0, 0.0, none, 0, f32, 1000
+1, 2560, 256, 1000, bf16:bf16:bf16, false, , , , aocl_dlp_blocked, true, false, false, 1.0, 0.0, none, 0, f32, 1000
+1, 2560, 3072, 1000, bf16:bf16:bf16, false, , , , aocl_dlp_blocked, true, false, false, 1.0, 0.0, none, 0, f32, 1000
+1, 2560, 6144, 1000, bf16:bf16:bf16, false, , , , aocl_dlp_blocked, true, false, false, 1.0, 0.0, none, 0, f32, 1000
+1, 2560, 10752, 1000, bf16:bf16:bf16, false, , , , aocl_dlp_blocked, true, false, false, 1.0, 0.0, none, 0, f32, 1000
+1, 2560, 20480, 1000, bf16:bf16:bf16, false, , , , aocl_dlp_blocked, true, false, false, 1.0, 0.0, none, 0, f32, 1000
+1, 2560, 262144, 1000, bf16:bf16:bf16, false, , , , aocl_dlp_blocked, true, false, false, 1.0, 0.0, none, 0, f32, 1000
+1, 3072, 768, 1000, bf16:bf16:bf16, false, , , , aocl_dlp_blocked, true, false, false, 1.0, 0.0, none, 0, f32, 1000
+1, 4096, 2560, 1000, bf16:bf16:bf16, false, , , , aocl_dlp_blocked, true, false, false, 1.0, 0.0, none, 0, f32, 1000
+1, 10240, 2560, 1000, bf16:bf16:bf16, false, , , , aocl_dlp_blocked, true, false, false, 1.0, 0.0, none, 0, f32, 1000
+
+# ── gemma-4-26B-A4B ──
+1, 768, 1152, 1000, bf16:bf16:bf16, false, , , , aocl_dlp_blocked, true, false, false, 1.0, 0.0, none, 0, f32, 1000
+1, 1152, 1152, 1000, bf16:bf16:bf16, false, , , , aocl_dlp_blocked, true, false, false, 1.0, 0.0, none, 0, f32, 1000
+1, 1152, 2816, 1000, bf16:bf16:bf16, false, , , , aocl_dlp_blocked, true, false, false, 1.0, 0.0, none, 0, f32, 1000
+1, 1152, 4304, 1000, bf16:bf16:bf16, false, , , , aocl_dlp_blocked, true, false, false, 1.0, 0.0, none, 0, f32, 1000
+1, 2112, 2816, 1000, bf16:bf16:bf16, false, , , , aocl_dlp_blocked, true, false, false, 1.0, 0.0, none, 0, f32, 1000
+1, 2816, 128, 1000, bf16:bf16:bf16, false, , , , aocl_dlp_blocked, true, false, false, 1.0, 0.0, none, 0, f32, 1000
+1, 2816, 4224, 1000, bf16:bf16:bf16, false, , , , aocl_dlp_blocked, true, false, false, 1.0, 0.0, none, 0, f32, 1000
+1, 2816, 8192, 1000, bf16:bf16:bf16, false, , , , aocl_dlp_blocked, true, false, false, 1.0, 0.0, none, 0, f32, 1000
+1, 2816, 10240, 1000, bf16:bf16:bf16, false, , , , aocl_dlp_blocked, true, false, false, 1.0, 0.0, none, 0, f32, 1000
+1, 2816, 262144, 1000, bf16:bf16:bf16, false, , , , aocl_dlp_blocked, true, false, false, 1.0, 0.0, none, 0, f32, 1000
+1, 4096, 2816, 1000, bf16:bf16:bf16, false, , , , aocl_dlp_blocked, true, false, false, 1.0, 0.0, none, 0, f32, 1000
+1, 4304, 1152, 1000, bf16:bf16:bf16, false, , , , aocl_dlp_blocked, true, false, false, 1.0, 0.0, none, 0, f32, 1000
+1, 8192, 2816, 1000, bf16:bf16:bf16, false, , , , aocl_dlp_blocked, true, false, false, 1.0, 0.0, none, 0, f32, 1000
+
+# ═══════════════════════════════════════════════════════════════════════
+# GPT-OSS
+# ═══════════════════════════════════════════════════════════════════════
+#
+# ── gpt-oss-20b-BF16 ──
+1, 2880, 32, 1000, bf16:bf16:bf16, false, , , , aocl_dlp_blocked, true, false, false, 1.0, 0.0, none, 0, f32, 1000
+1, 2880, 5120, 1000, bf16:bf16:bf16, false, , , , aocl_dlp_blocked, true, false, false, 1.0, 0.0, none, 0, f32, 1000
+1, 2880, 201088, 1000, bf16:bf16:bf16, false, , , , aocl_dlp_blocked, true, false, false, 1.0, 0.0, none, 0, f32, 1000
+1, 4096, 2880, 1000, bf16:bf16:bf16, false, , , , aocl_dlp_blocked, true, false, false, 1.0, 0.0, none, 0, f32, 1000
+
+# ═══════════════════════════════════════════════════════════════════════
+# WHISPER
+# ═══════════════════════════════════════════════════════════════════════
+#
+# ── whisper-large-v3 ──
+1, 1280, 1280, 1000, bf16:bf16:bf16, false, , , , aocl_dlp_blocked, true, false, false, 1.0, 0.0, none, 0, f32, 1000
+1, 1280, 3840, 1000, bf16:bf16:bf16, false, , , , aocl_dlp_blocked, true, false, false, 1.0, 0.0, none, 0, f32, 1000
+1, 1280, 5120, 1000, bf16:bf16:bf16, false, , , , aocl_dlp_blocked, true, false, false, 1.0, 0.0, none, 0, f32, 1000
+1, 1280, 51866, 1000, bf16:bf16:bf16, false, , , , aocl_dlp_blocked, true, false, false, 1.0, 0.0, none, 0, f32, 1000
+1, 5120, 1280, 1000, bf16:bf16:bf16, false, , , , aocl_dlp_blocked, true, false, false, 1.0, 0.0, none, 0, f32, 1000

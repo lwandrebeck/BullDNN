@@ -16,6 +16,14 @@
 
 #include "matmul_utils.hpp"
 
+#include <cctype>
+#include <iomanip>
+#include <iostream>
+#include <set>
+#include <sstream>
+#include <stdexcept>
+#include <unordered_map>
+
 namespace zendnnl {
 namespace benchdnn {
 namespace matmul {
@@ -28,7 +36,7 @@ static bool is_w4a8_benchdnn_config(const MatmulConfig &cfg) {
          cfg.dt[2] == data_type_t::bf16;
 }
 
-static void normalize_w4a8_quant_config(MatmulConfig &cfg) {
+void normalize_w4a8_quant_config(MatmulConfig &cfg) {
   if (!is_w4a8_benchdnn_config(cfg)) {
     if (cfg.dt.size() >= 2 &&
         (cfg.dt[1] == data_type_t::s4 ||
@@ -55,6 +63,262 @@ static void normalize_w4a8_quant_config(MatmulConfig &cfg) {
   }
 }
 
+// Enforces the granularity/group-size pairing shared by weight and src scales:
+//   per-group  -> group size must be non-zero
+//   per-token / per-channel -> group size must be zero
+// Granularity "none"/"per-tensor" imposes no group-size constraint.
+static bool check_granularity_group_size(const std::string &granularity,
+                                         uint64_t group_size, const char *what,
+                                         const std::string &ctx) {
+  const bool is_group = (granularity == "group" || granularity == "per-group");
+  const bool is_token =
+      (granularity == "channel" || granularity == "per-token");
+  if (is_group && group_size == 0) {
+    commonlog_error(ctx, ": ", what, " granularity '", granularity,
+                    "' requires a non-zero group size.");
+    return false;
+  }
+  if (is_token && group_size != 0) {
+    commonlog_error(ctx, ": ", what, " granularity '", granularity,
+                    "' requires group size 0 (got ", group_size, ").");
+    return false;
+  }
+  return true;
+}
+
+// Strip inline '#' comments from an input line (everything from '#' onward).
+static void strip_inline_hash_comment(std::string &line) {
+  const std::size_t hashPos = line.find('#');
+  if (hashPos != std::string::npos) {
+    line.erase(hashPos);
+  }
+}
+
+// Normalize the src-scale granularity/group-size for a config that carries a
+// source scale (dynamic or static int8/int4). Src and weight granularity are
+// independent, so an explicit per-token/per-group src granularity is honored;
+// only an unset/invalid one defaults to mirroring the weight granularity. A
+// per-group src with no group size falls back to the weight group size (or K).
+static void couple_src_scale_to_weight(MatmulConfig &cfg) {
+  const bool wei_per_group = (cfg.scale_granularity == "group");
+  if (cfg.src_scale_granularity != "per-group" &&
+      cfg.src_scale_granularity != "per-token") {
+    cfg.src_scale_granularity = wei_per_group ? "per-group" : "per-token";
+  }
+  if (cfg.src_scale_granularity == "per-group") {
+    if (cfg.src_group_size == 0) {
+      cfg.src_group_size = cfg.group_size != 0 ? cfg.group_size : cfg.k;
+    }
+  } else {
+    cfg.src_group_size = 0;
+  }
+}
+
+// Validates/normalizes a parsed row against its weight dtype. The row parser is
+// positional and defaults missing tail fields, so a quantized row missing quant
+// metadata would otherwise parse "successfully" then crash at kernel dispatch.
+// Returns false to skip the row; may adjust cfg (forces bf16 src/dst, couples
+// src granularity/dtype to the weight scale). bf16->bf16:bf16:bf16,
+// s8->bf16:s8:bf16, s4->bf16:s4:bf16.
+static bool validate_dtype_fields(MatmulConfig &cfg, const std::string &line) {
+  if (cfg.dt.size() < 3) {
+    commonlog_error("Expected 3 data types (in:weights:out) for row: ", line);
+    return false;
+  }
+
+  const data_type_t src_dt = cfg.dt[0];
+  const data_type_t wei_dt = cfg.dt[1];
+  const bool is_int8 = (wei_dt == data_type_t::s8);
+  const bool is_int4 = (wei_dt == data_type_t::s4 || wei_dt == data_type_t::u4);
+  const bool is_bf16 = (wei_dt == data_type_t::bf16);
+
+  // Static int8 activation quant: the source is already integer (s8) with a
+  // precomputed (static) scale, as opposed to INT8 dynamic quant where a bf16/f32
+  // source is quantized to s8 at runtime. It is detected from the source dtype
+  // so we neither rewrite the activations to bf16 nor require dynamic quant.
+  // Note: u8 (asymmetric) is not currently supported in benchdnn static int8;
+  // u8 src/dst rows are normalized below (see validate_dtype_fields).
+  const bool is_static_int8 = is_int8 && (src_dt == data_type_t::s8);
+
+  // u8 (asymmetric) is not currently exercised in benchdnn matmul; normalize so
+  // rows still run with the nearest supported dtype triple.
+  if (is_int8 && src_dt == data_type_t::u8) {
+    commonlog_warning(
+      "Row '", line, "' u8 src is not currently supported in benchdnn matmul; "
+      "forcing src to bf16.");
+    cfg.dt[0] = data_type_t::bf16;
+  }
+
+  // Enforce the canonical dtype triple: activations and output are bf16 for the
+  // bf16 / dynamic-int8 / int4 weight cases. Populate (and warn) rather than
+  // fail so a row that only got the weight dtype right still runs with the
+  // intended config. Static int8 is excluded: it keeps its integer source and
+  // its chosen output dtype (s8 or bf16).
+  if ((is_bf16 || is_int8 || is_int4) && !is_static_int8) {
+    if (cfg.dt[0] != data_type_t::bf16 || cfg.dt[2] != data_type_t::bf16) {
+      commonlog_warning(
+        "Row '", line, "' expected dtype 'bf16:", datatypeToStr(wei_dt),
+        ":bf16' but got '", datatypeToStr(cfg.dt[0]), ":",
+        datatypeToStr(wei_dt), ":", datatypeToStr(cfg.dt[2]),
+        "'. Forcing src and dst to bf16.");
+      cfg.dt[0] = data_type_t::bf16;
+      cfg.dt[2] = data_type_t::bf16;
+    }
+  }
+
+  const std::string dt_str = datatypeToStr(cfg.dt[0]) + ":" +
+                             datatypeToStr(wei_dt) + ":" +
+                             datatypeToStr(cfg.dt[2]);
+
+  if (is_static_int8) {
+    // Static INT8: integer (s8) source with a precomputed per-tensor scale
+    // (created by the tensor factory). No runtime dynamic quant. The output may
+    // be integer (s8) or dequantized (bf16/f32). u8 is not currently supported
+    // in benchdnn static int8 (see u8 normalization above / dst check below).
+    // Weight scales are still required.
+    if (cfg.src_dynamic_quant) {
+      commonlog_warning(
+        "Row '", line, "' uses a static int8 source (", dt_str,
+        ") but src_dynamic_quant is enabled; static and dynamic quant are "
+        "mutually exclusive. Forcing src_dynamic_quant to false.");
+      cfg.src_dynamic_quant = false;
+    }
+    if (cfg.dt[2] != data_type_t::s8 && cfg.dt[2] != data_type_t::bf16 &&
+        cfg.dt[2] != data_type_t::f32) {
+      commonlog_warning(
+        "Row '", line, "' static int8 dst dtype '", datatypeToStr(cfg.dt[2]),
+        "' is unsupported (use s8, bf16 or f32; u8 is not currently supported). "
+        "Forcing dst to bf16.");
+      cfg.dt[2] = data_type_t::bf16;
+    }
+    if (cfg.scale_granularity != "group" &&
+        cfg.scale_granularity != "channel") {
+      commonlog_error(
+        "Row '", line, "' static int8 weights require a weight scale "
+        "granularity (group|channel), got '", cfg.scale_granularity, "'.");
+      return false;
+    }
+    // The static-quant scale layout depends on the output dtype:
+    //   * Integer (s8) output applies the weight dequant scale as a
+    //     per-channel post-op (length N) and only supports a per-tensor static
+    //     source scale (dlp: "Post_op.scale PER_CHANNEL requires
+    //     scale_factor_len == n"). Per-group weight/src is not expressible.
+    //   * Dequantized (bf16/f32) output supports per-group/per-channel weights
+    //     and per-group/per-token static source scales.
+    if (cfg.dt[2] == data_type_t::s8) {
+      if (cfg.scale_granularity != "channel") {
+        commonlog_warning(
+          "Row '", line, "' static int8 with integer output (", dt_str,
+          ") only supports per-channel weight scales; forcing weight "
+          "granularity to per-channel.");
+        cfg.scale_granularity = "channel";
+      }
+      cfg.group_size = 0;
+      cfg.src_scale_granularity = "per-tensor";
+      cfg.src_group_size = 0;
+    } else {
+      if (cfg.scale_granularity == "channel") {
+        cfg.group_size = 0;
+      }
+      couple_src_scale_to_weight(cfg);
+    }
+    // Match the weight scale dtype (kernel requires src and weight scale dtypes
+    // to be equal).
+    if (cfg.src_scale_dt != cfg.scale_dt) {
+      cfg.src_scale_dt = cfg.scale_dt;
+    }
+    if (!check_granularity_group_size(cfg.src_scale_granularity,
+                                      cfg.src_group_size, "src scale", line)) {
+      return false;
+    }
+  }
+  else if (is_int8) {
+    // INT8 dynamic quant (s8 weights). The integer GEMM needs the activation pre/post-quant
+    // metadata, which is only produced when src_dynamic_quant is on.
+    if (!cfg.src_dynamic_quant) {
+      commonlog_error(
+        "Row '", line, "' uses int8 weights (", dt_str,
+        ") but src_dynamic_quant is not enabled. int8 requires dynamic source "
+        "quant; append the tail fields: "
+        "src_dynamic_quant=true, src_scale_granularity (per-token|per-group), "
+        "src_group_size, src_scale_dt.");
+      return false;
+    }
+    if (cfg.scale_granularity != "group" &&
+        cfg.scale_granularity != "channel") {
+      commonlog_error(
+        "Row '", line, "' int8 weights require a weight scale granularity "
+        "(group|channel), got '", cfg.scale_granularity, "'.");
+      return false;
+    }
+    // The INT8 dynamic kernel (s8 weights) couples activation and weight scale granularity: per-group
+    // weights require per-group activation scales; per-channel weights require
+    // per-token activation scales (dlp: "Per-token source scale requires
+    // per-channel weight scale"). Weight granularity is authoritative.
+    const std::string expected_src =
+        (cfg.scale_granularity == "group") ? "per-group" : "per-token";
+    if (cfg.src_scale_granularity != expected_src) {
+      commonlog_warning(
+        "Row '", line, "' weight granularity '", cfg.scale_granularity,
+        "' implies src_scale_granularity '", expected_src, "' but got '",
+        cfg.src_scale_granularity, "'. Forcing src to '", expected_src, "'.");
+      cfg.src_scale_granularity = expected_src;
+    }
+    if (cfg.scale_granularity == "group") {
+      if (cfg.src_group_size == 0) {
+        cfg.src_group_size = cfg.group_size;
+      }
+    }
+    else {
+      cfg.group_size = 0;
+      cfg.src_group_size = 0;
+    }
+    // The GEMM kernel requires the src (A) and weight (B) scale dtypes to match
+    // (dlp_gemm_post_ops.c: "A and B scale factor type mismatch"). Force the
+    // src scale dtype to the weight scale dtype.
+    if (cfg.src_scale_dt != cfg.scale_dt) {
+      commonlog_warning(
+        "Row '", line, "' src scale dtype (", datatypeToStr(cfg.src_scale_dt),
+        ") must match weight scale dtype (", datatypeToStr(cfg.scale_dt),
+        "); forcing src scale dtype to ", datatypeToStr(cfg.scale_dt), ".");
+      cfg.src_scale_dt = cfg.scale_dt;
+    }
+  }
+  else if (is_int4) {
+    // Weight-only (or W4A8) quant. Weight scales are always needed; the shared
+    // group-size check below rejects 'group' with a zero group size.
+    if (cfg.scale_granularity == "none") {
+      commonlog_error(
+        "Row '", line, "' int4 weights require a weight scale granularity "
+        "(group|channel), got 'none'.");
+      return false;
+    }
+  }
+  else {
+    // Plain float weights (bf16/f32): there is no per-group/per-token quant, so
+    // any quant/scale tail fields after warmup_iters are meaningless. Silently
+    // ignore them by resetting to the non-quantized defaults.
+    cfg.src_dynamic_quant = false;
+    cfg.src_scale_granularity = "per-tensor";
+    cfg.src_group_size = 0;
+    cfg.src_scale_dt = data_type_t::f32;
+    cfg.scale_granularity = "none";
+    cfg.group_size = 0;
+    cfg.scale_dt = data_type_t::f32;
+  }
+
+  if (!check_granularity_group_size(cfg.scale_granularity, cfg.group_size,
+                                    "weight scale", line)) {
+    return false;
+  }
+  if (cfg.src_dynamic_quant &&
+      !check_granularity_group_size(cfg.src_scale_granularity,
+                                    cfg.src_group_size, "src scale", line)) {
+    return false;
+  }
+  return true;
+}
+
 void inputFileParser(std::ifstream &infile, std::vector<MatmulConfig> &configs,
                      bool &isPipeline, const global_options &options) {
   std::string line;
@@ -62,6 +326,14 @@ void inputFileParser(std::ifstream &infile, std::vector<MatmulConfig> &configs,
   // Parse each line of the input file into a MatmulConfig object
   while (std::getline(infile, line)) {
     if (line.empty()) {
+      continue;
+    }
+
+    // Strip inline '#' comments and skip comment-only lines. This lets input
+    // files carry documentation headers, section separators, and per-line
+    // annotations (e.g. "# Llama-3.1_8B") without affecting parsing.
+    strip_inline_hash_comment(line);
+    if (line.find_first_not_of(" \t\r\n") == std::string::npos) {
       continue;
     }
 
@@ -144,6 +416,7 @@ void inputFileParser(std::ifstream &infile, std::vector<MatmulConfig> &configs,
       cfg.iters = std::stoi(fields[id++]);
       // Parse data types (input:weights:output)
       auto dt = split(fields[id++], ':');
+      cfg.provided.dt = fields[id - 1].size() > 0;
       if (fields[id - 1].size() > 0) {
         auto i = 0;
         for (; i < dt.size(); i++) {
@@ -246,6 +519,8 @@ void inputFileParser(std::ifstream &infile, std::vector<MatmulConfig> &configs,
       else {
         cfg.kernel_name = algoToStr(algo);
       }
+      // A forced algo or a non-empty kernel field both count as user-provided.
+      cfg.provided.kernel = (algo != matmul_algo_t::none) || !fields[id].empty();
       id++;
 
       if (fields[id].empty()) {
@@ -305,6 +580,7 @@ void inputFileParser(std::ifstream &infile, std::vector<MatmulConfig> &configs,
       id++;
       if (cfg.dt[1] == data_type_t::s4 || cfg.dt[1] == data_type_t::s8 ||
           cfg.dt[1] == data_type_t::u4) {
+        cfg.provided.wei_scale = !fields[id].empty();
         if (!fields[id].empty()) {
           std::string scale_gran = fields[id];
           std::transform(scale_gran.begin(), scale_gran.end(), scale_gran.begin(),
@@ -336,6 +612,7 @@ void inputFileParser(std::ifstream &infile, std::vector<MatmulConfig> &configs,
         cfg.group_size = fields[id].empty() ? 0 : std::stoul(fields[id]);
         id++;
         // Defaulting scale data type to f32 if not specified
+        cfg.provided.wei_scale_dt = !fields[id].empty();
         cfg.scale_dt = fields[id].empty() ? zendnnl::common::data_type_t::f32 :
                        strToDatatype(fields[id]);
         id++;
@@ -398,6 +675,10 @@ void inputFileParser(std::ifstream &infile, std::vector<MatmulConfig> &configs,
       }
       id++;
 
+      // The src scale granularity is the source of truth for the src-quant
+      // block: when present, src_dynamic_quant and src_group_size are treated
+      // as file-provided too (they sit alongside it in the row).
+      cfg.provided.src_scale = (id < fields.size() && !(fields[id].empty()));
       if (id < fields.size() && !(fields[id].empty())) {
         std::string gran = fields[id];
         std::transform(gran.begin(), gran.end(), gran.begin(), ::tolower);
@@ -425,6 +706,7 @@ void inputFileParser(std::ifstream &infile, std::vector<MatmulConfig> &configs,
       id++;
 
       if (id < fields.size() && !(fields[id].empty())) {
+        cfg.provided.src_scale_dt = true;
         cfg.src_scale_dt = strToDatatype(fields[id]);
       }
 
@@ -446,6 +728,9 @@ void inputFileParser(std::ifstream &infile, std::vector<MatmulConfig> &configs,
         }
       }
 
+      if (!validate_dtype_fields(cfg, line)) {
+        continue;
+      }
       normalize_w4a8_quant_config(cfg);
       configs.push_back(cfg);
     }
@@ -464,6 +749,14 @@ void inputModelFileParser(std::ifstream &infile,
   // Parse each line of the input file into a MatmulConfig object
   while (std::getline(infile, line)) {
     if (line.empty()) {
+      continue;
+    }
+
+    // Strip inline '#' comments and skip comment-only lines. This lets input
+    // files carry documentation headers, section separators, and per-line
+    // annotations (e.g. "# Llama-3.1_8B") without affecting parsing.
+    strip_inline_hash_comment(line);
+    if (line.find_first_not_of(" \t\r\n") == std::string::npos) {
       continue;
     }
 
@@ -522,11 +815,17 @@ void inputModelFileParser(std::ifstream &infile,
       cfg.bs = 1;
       // Handle different field counts based on ndims
       if (fields_size == 3) {
-        if (options.m <= 0) {
+        if (options.sweep_enabled) {
+          // Placeholder; expand_matmul_sweep() assigns each M from --m_sweep.
+          cfg.m = 1;
+        }
+        else if (options.m <= 0) {
           commonlog_error("M value cannot be <= 0. Please provide a valid number.");
           continue;
         }
-        cfg.m = options.m;
+        else {
+          cfg.m = options.m;
+        }
       }
       else if (fields_size == 4) {
         if (options.ndims != 2) {
@@ -780,6 +1079,651 @@ void inputCommandLineParser(std::vector<MatmulConfig> &configs,
   }
 }
 
+namespace {
+
+// Complete, self-contained description of one sweep dtype. There is no
+// cross-dtype inheritance: every field a config needs is spelled out here so
+// each dtype's parameter set stays independent and easy to audit. The
+// per-config field requirements are not duplicated here; validate_dtype_fields()
+// derives them from the dtype/quant fields, so the sweep reuses the exact same
+// validation as the --input_file path.
+struct SweepDTypeSpec {
+  const char *name;                  // canonical name (matches a --dtype_sweep token)
+  data_type_t sdt;                   // src (activation) dtype
+  data_type_t wdt;                   // weight dtype
+  data_type_t ddt;                   // dst dtype
+  const char *kernel;                // default kernel when algo is unset
+  bool requires_lowoha;              // dtype only valid on the LOWOHA path
+  const char *wei_scale_granularity; // "none" | "channel" | "group"
+  uint64_t wei_group_size;           // weight group size (per-group only)
+  data_type_t wei_scale_dt;          // weight scale dtype
+  bool src_dynamic_quant;            // enable dynamic activation quant
+  const char *src_scale_granularity; // "per-tensor" | "per-token" | "per-group"
+  uint64_t src_group_size;           // src group size (per-group only)
+  data_type_t src_scale_dt;          // src scale dtype
+};
+
+// The sweep catalog is not spelled out field-by-field. Instead each entry is
+// described by a few orthogonal axes and the full SweepDTypeSpec is derived
+// from them (see derive_sweep_spec), so adding a config is a one-line axis row
+// and the low-level fields stay internally consistent by construction.
+//
+//   weight dtype  : f32 | bf16 | s8 | s4
+//   quant scheme  : how the *activation* (src) is handled
+//   weight gran   : per-channel (group 0) | per-group (group N)
+//   src gran      : per-channel/per-token (group 0) | per-group (group N)
+//
+// Weight and src granularity are independent axes: the runtime classifies the
+// src-scale granularity from the src-scale tensor shape, so e.g. per-group
+// weights can pair with per-token activation scales. The derivation rules
+// mirror validate_dtype_fields.
+enum class QuantScheme {
+  kNone,     // plain float weights, no quantization
+  kWoq,      // weight-only quant (int4/int8 weights, bf16 activations, no src quant)
+  kDynamic,  // dynamic activation quant (INT8 dynamic / W4A8): bf16 src quantized at runtime
+  kStatic,   // static activation quant: integer (s8) src with a precomputed scale
+};
+
+enum class QuantGran {
+  kPerChannel, // per-channel weights / per-token activations; group size 0
+  kPerGroup,   // per-group; group size N
+};
+
+// One orthogonal-axis description of a sweep config. `name` is the stable
+// --dtype_sweep token; every other SweepDTypeSpec field is derived from these.
+// Weight and src granularity are separate so decoupled combinations (e.g.
+// per-group weights + per-token activations) are expressible.
+struct SweepAxis {
+  const char *name;
+  data_type_t wdt;         // weight dtype (f32 | bf16 | s8 | s4)
+  data_type_t ddt;         // dst dtype (src dtype is derived from the scheme)
+  QuantScheme scheme;
+  QuantGran wei_gran;      // weight scale granularity (quantized schemes)
+  uint64_t wei_group_size; // weight group size (per-group only)
+  QuantGran src_gran;      // src scale granularity (dynamic/static schemes)
+  uint64_t src_group_size; // src group size (per-group only)
+  data_type_t scale_dt;    // weight+src scale dtype (quantized schemes only)
+};
+
+// Canonical sweep configs as orthogonal axes. Order defines the --dtype_sweep
+// index and the "all" expansion; the first six preserve the historical indices.
+// Layout: {name, wdt, ddt, scheme, wei_gran, wei_grp, src_gran, src_grp, scale_dt}.
+static const SweepAxis kSweepAxes[] = {
+    // 0-1: plain float, no quantization.
+    {"bf16", data_type_t::bf16, data_type_t::bf16, QuantScheme::kNone,
+     QuantGran::kPerChannel, 0, QuantGran::kPerChannel, 0, data_type_t::f32},
+    {"fp32", data_type_t::f32, data_type_t::f32, QuantScheme::kNone,
+     QuantGran::kPerChannel, 0, QuantGran::kPerChannel, 0, data_type_t::f32},
+    // 2-3: int8 dynamic (s8 weights). The kernel couples activation and weight scale
+    // granularity, so per-token activations require per-channel weights.
+    {"int8_per_group", data_type_t::s8, data_type_t::bf16, QuantScheme::kDynamic,
+     QuantGran::kPerGroup, 32, QuantGran::kPerGroup, 32, data_type_t::bf16},
+    {"int8_per_token", data_type_t::s8, data_type_t::bf16, QuantScheme::kDynamic,
+     QuantGran::kPerChannel, 0, QuantGran::kPerChannel, 0, data_type_t::bf16},
+    // 4-5: int4 weight-only quant (WoQ). No src quant.
+    {"int4_per_group", data_type_t::s4, data_type_t::bf16, QuantScheme::kWoq,
+     QuantGran::kPerGroup, 32, QuantGran::kPerChannel, 0, data_type_t::bf16},
+    {"int4_per_token", data_type_t::s4, data_type_t::bf16, QuantScheme::kWoq,
+     QuantGran::kPerChannel, 0, QuantGran::kPerChannel, 0, data_type_t::bf16},
+    // 6-7: int4 dynamic (W4A8). Per-group weights; src granularity varies.
+    {"int4_dyn_per_group", data_type_t::s4, data_type_t::bf16, QuantScheme::kDynamic,
+     QuantGran::kPerGroup, 32, QuantGran::kPerGroup, 32, data_type_t::bf16},
+    {"int4_dyn_per_token", data_type_t::s4, data_type_t::bf16, QuantScheme::kDynamic,
+     QuantGran::kPerGroup, 32, QuantGran::kPerChannel, 0, data_type_t::bf16},
+    // 8-9: int8 static, integer (s8) dst. Integer output only supports a
+    // per-channel weight scale + per-tensor static source scale, so the
+    // validator forces both entries to that layout (the per_group token folds
+    // onto the per_channel config and dedups under --dtype_sweep=all).
+    {"int8_static_s8_per_group", data_type_t::s8, data_type_t::s8, QuantScheme::kStatic,
+     QuantGran::kPerGroup, 32, QuantGran::kPerGroup, 32, data_type_t::bf16},
+    {"int8_static_s8_per_token", data_type_t::s8, data_type_t::s8, QuantScheme::kStatic,
+     QuantGran::kPerChannel, 0, QuantGran::kPerChannel, 0, data_type_t::bf16},
+    // 10-11: int8 static, bf16 dst. Per-token/per-group static src scales are
+    // supported with dequantized (bf16) output.
+    {"int8_static_bf16_per_group", data_type_t::s8, data_type_t::bf16, QuantScheme::kStatic,
+     QuantGran::kPerGroup, 32, QuantGran::kPerGroup, 32, data_type_t::bf16},
+    {"int8_static_bf16_per_token", data_type_t::s8, data_type_t::bf16, QuantScheme::kStatic,
+     QuantGran::kPerChannel, 0, QuantGran::kPerChannel, 0, data_type_t::bf16},
+};
+
+// Derive the full, low-level spec for one axis row. Keeps the derivation in one
+// place so the catalog stays consistent with validate_dtype_fields.
+static SweepDTypeSpec derive_sweep_spec(const SweepAxis &ax) {
+  SweepDTypeSpec s{};
+  s.name = ax.name;
+  s.wdt = ax.wdt;
+  s.ddt = ax.ddt;
+  // Source (activation) dtype follows the scheme: float schemes keep the
+  // weight's float dtype, static int8 keeps an integer source, and
+  // weight-only / dynamic schemes feed a bf16 activation.
+  switch (ax.scheme) {
+  case QuantScheme::kNone:   s.sdt = ax.wdt;             break;
+  case QuantScheme::kStatic: s.sdt = data_type_t::s8;    break;
+  default:                   s.sdt = data_type_t::bf16;  break;
+  }
+
+  const bool quantized = ax.scheme != QuantScheme::kNone;
+  s.kernel = quantized ? "aocl_dlp" : "aocl_dlp_blocked";
+  s.requires_lowoha = quantized;
+
+  const bool wei_per_group = ax.wei_gran == QuantGran::kPerGroup;
+  if (ax.scheme == QuantScheme::kNone) {
+    s.wei_scale_granularity = "none";
+    s.wei_group_size = 0;
+    s.wei_scale_dt = data_type_t::f32;
+  } else {
+    s.wei_scale_granularity = wei_per_group ? "group" : "channel";
+    s.wei_group_size = wei_per_group ? ax.wei_group_size : 0;
+    s.wei_scale_dt = ax.scale_dt;
+  }
+
+  const bool has_src_scale =
+      ax.scheme == QuantScheme::kDynamic || ax.scheme == QuantScheme::kStatic;
+  if (has_src_scale) {
+    // Dynamic quantizes the source at runtime; static carries a precomputed
+    // integer source with the same scale-tensor granularity. Either way the
+    // src granularity is independent of the weights, and the kernel requires
+    // the src scale dtype to equal the weight scale dtype.
+    const bool src_per_group = ax.src_gran == QuantGran::kPerGroup;
+    s.src_dynamic_quant = ax.scheme == QuantScheme::kDynamic;
+    s.src_scale_granularity = src_per_group ? "per-group" : "per-token";
+    s.src_group_size = src_per_group ? ax.src_group_size : 0;
+    s.src_scale_dt = ax.scale_dt;
+  } else {
+    // none / woq: no source scale.
+    s.src_dynamic_quant = false;
+    s.src_scale_granularity = "per-tensor";
+    s.src_group_size = 0;
+    s.src_scale_dt = data_type_t::f32;
+  }
+  return s;
+}
+
+// Materialize the derived catalog once. Order matches kSweepAxes, so the
+// --dtype_sweep index and "all" ordering are unchanged for existing entries.
+static const std::vector<SweepDTypeSpec> &sweep_dtypes() {
+  static const std::vector<SweepDTypeSpec> catalog = [] {
+    std::vector<SweepDTypeSpec> v;
+    v.reserve(sizeof(kSweepAxes) / sizeof(kSweepAxes[0]));
+    for (const auto &ax : kSweepAxes) {
+      v.push_back(derive_sweep_spec(ax));
+    }
+    return v;
+  }();
+  return catalog;
+}
+
+static size_t kNumSweepDTypes() { return sweep_dtypes().size(); }
+
+// Comma-separated list of the canonical dtype names, built from the catalog so
+// the accepted-values hint stays in sync automatically.
+static std::string sweep_dtype_names_csv() {
+  std::string s;
+  const auto &catalog = sweep_dtypes();
+  for (size_t i = 0; i < catalog.size(); ++i) {
+    s += (i ? ", " : "");
+    s += catalog[i].name;
+  }
+  return s;
+}
+
+static constexpr size_t kDefaultMSweep[] = {
+    1, 4, 8, 16, 32, 64, 512, 1024, 2048,
+};
+
+static std::string to_lower(std::string s) {
+  std::transform(s.begin(), s.end(), s.begin(),
+                 [](unsigned char c) {
+                   return static_cast<char>(std::tolower(c));
+                 });
+  return s;
+}
+
+static const SweepDTypeSpec &lookup_dtype(size_t idx) {
+  const auto &catalog = sweep_dtypes();
+  if (idx >= catalog.size()) {
+    throw std::invalid_argument("Unknown sweep dtype index");
+  }
+  return catalog[idx];
+}
+
+// name -> catalog index, derived once from the catalog itself.
+static const std::unordered_map<std::string, size_t> &sweep_dtype_name_map() {
+  static const std::unordered_map<std::string, size_t> names = [] {
+    std::unordered_map<std::string, size_t> m;
+    const auto &catalog = sweep_dtypes();
+    for (size_t i = 0; i < catalog.size(); ++i) {
+      m.emplace(catalog[i].name, i);
+    }
+    return m;
+  }();
+  return names;
+}
+
+static std::vector<size_t> parse_m_sweep_values(const std::string &s) {
+  if (s.empty()) {
+    return {std::begin(kDefaultMSweep), std::end(kDefaultMSweep)};
+  }
+  std::vector<size_t> out;
+  for (const auto &token : split(s, ':')) {
+    if (token.empty()) {
+      continue;
+    }
+    const size_t m = std::stoull(token);
+    if (m == 0) {
+      throw std::invalid_argument("M sweep values must be > 0");
+    }
+    out.push_back(m);
+  }
+  if (out.empty()) {
+    throw std::invalid_argument("No valid M values in --m_sweep");
+  }
+  return out;
+}
+
+static size_t parse_sweep_dtype_index(const std::string &token) {
+  const auto &names = sweep_dtype_name_map();
+  const auto it = names.find(to_lower(token));
+  if (it == names.end()) {
+    throw std::invalid_argument("Unknown sweep dtype '" + token +
+                                "'. Use all or: " + sweep_dtype_names_csv());
+  }
+  return it->second;
+}
+
+static std::vector<size_t> parse_sweep_dtype_indices(const std::string &s) {
+  if (s.empty()) {
+    return {};
+  }
+  if (to_lower(s) == "all") {
+    std::vector<size_t> all;
+    all.reserve(kNumSweepDTypes());
+    for (size_t i = 0; i < kNumSweepDTypes(); ++i) {
+      all.push_back(i);
+    }
+    return all;
+  }
+  std::vector<size_t> out;
+  for (const auto &token : split(s, ',')) {
+    if (token.empty()) {
+      continue;
+    }
+    const size_t idx = parse_sweep_dtype_index(token);
+    if (std::find(out.begin(), out.end(), idx) == out.end()) {
+      out.push_back(idx);
+    }
+  }
+  if (out.empty()) {
+    throw std::invalid_argument("No valid dtypes in --dtype_sweep");
+  }
+  return out;
+}
+
+// Human-readable cache mode used in the expansion table, dedup signature and
+// per-config results output.
+static const char *cache_mode_to_str(CacheMode mode) {
+  switch (mode) {
+  case CacheMode::COLD: return "cold";
+  case CacheMode::WARM: return "warm";
+  case CacheMode::HOT:  return "hot";
+  }
+  return "hot";
+}
+
+// Parse the --cache_sweep list (comma-separated hot/cold/warm). An empty string
+// means "no cache sweep": the returned vector is empty and callers keep each
+// config's inherited cache_mode (the global --cache_mode). Duplicates collapse.
+static std::vector<CacheMode> parse_cache_sweep_modes(const std::string &s) {
+  std::vector<CacheMode> out;
+  if (s.empty()) {
+    return out;
+  }
+  for (const auto &token : split(s, ',')) {
+    if (token.empty()) {
+      continue;
+    }
+    const std::string t = to_lower(token);
+    CacheMode mode;
+    if (t == "cold") {
+      mode = CacheMode::COLD;
+    } else if (t == "warm") {
+      mode = CacheMode::WARM;
+    } else if (t == "hot") {
+      mode = CacheMode::HOT;
+    } else {
+      throw std::invalid_argument("Unknown cache mode '" + token +
+                                  "'. Use hot, cold or warm.");
+    }
+    if (std::find(out.begin(), out.end(), mode) == out.end()) {
+      out.push_back(mode);
+    }
+  }
+  if (out.empty()) {
+    throw std::invalid_argument("No valid cache modes in --cache_sweep");
+  }
+  return out;
+}
+
+static void resolve_kernel(MatmulConfig &cfg, const global_options &options,
+                           const char *dtype_kernel) {
+  zendnnl::ops::matmul_config_t &matmul_config =
+      zendnnl::ops::matmul_config_t::instance();
+  const int32_t algo_ = options.ndims > 2 ? matmul_config.get_bmm_algo()
+                                          : matmul_config.get_algo();
+  const matmul_algo_t algo = static_cast<matmul_algo_t>(algo_);
+  if (algo == matmul_algo_t::none) {
+    cfg.kernel_name = dtype_kernel;
+  } else {
+    cfg.kernel_name = algoToStr(algo);
+  }
+}
+
+// Merge a catalog dtype onto a base config. The input file has priority: only
+// fields the row did not provide (see MatmulConfig::provided) are filled from
+// the catalog, which acts purely as a default source. Numeric/bool quant
+// fields follow their granularity flag, matching how the parser records them.
+//
+// Exception: when --dtype_sweep is explicitly present (force_profile), the
+// swept dtype's full profile -- dt plus the weight/src quant granularity,
+// group sizes and scale dtypes -- overrides the file so the dtype axis truly
+// sweeps (e.g. a per-token entry becomes per-token even if the row was
+// per-group). Non-quant fields (kernel, bias, transpose, alpha/beta, iters)
+// still come from the file.
+static void apply_sweep_dtype(MatmulConfig &cfg,
+                              const SweepDTypeSpec &spec,
+                              const global_options &options,
+                              bool force_profile) {
+  if (force_profile || !cfg.provided.dt) {
+    cfg.dt = {spec.sdt, spec.wdt, spec.ddt};
+  }
+  if (!cfg.provided.kernel) {
+    resolve_kernel(cfg, options, spec.kernel);
+  }
+  if (force_profile || !cfg.provided.wei_scale) {
+    cfg.scale_granularity = spec.wei_scale_granularity;
+    cfg.group_size = spec.wei_group_size;
+  }
+  if (force_profile || !cfg.provided.wei_scale_dt) {
+    cfg.scale_dt = spec.wei_scale_dt;
+  }
+  if (force_profile || !cfg.provided.src_scale) {
+    cfg.src_dynamic_quant = spec.src_dynamic_quant;
+    cfg.src_scale_granularity = spec.src_scale_granularity;
+    cfg.src_group_size = spec.src_group_size;
+  }
+  if (force_profile || !cfg.provided.src_scale_dt) {
+    cfg.src_scale_dt = spec.src_scale_dt;
+  }
+}
+
+// --- M sweep --------------------------------------------------------------
+// Expand one base config across the M sweep values. M is the only field that
+// varies here; everything else is inherited from the base row.
+static std::vector<MatmulConfig> expand_m_sweep(
+    const MatmulConfig &base, const std::vector<size_t> &m_values) {
+  std::vector<MatmulConfig> out;
+  out.reserve(m_values.size());
+  for (const size_t m : m_values) {
+    MatmulConfig cfg = base;
+    cfg.m = m;
+    out.push_back(std::move(cfg));
+  }
+  return out;
+}
+
+// --- dtype sweep ----------------------------------------------------------
+// Expand one config across the requested catalog dtypes. Each entry applies its
+// dtype/quant profile (subject to force_profile), is checked with the shared
+// --input_file validator, and normalized. Entries that are invalid or require
+// the LOWOHA path when it is off are dropped.
+static std::vector<MatmulConfig> expand_dtype_sweep(
+    const MatmulConfig &base, const std::vector<size_t> &dtype_indices,
+    const global_options &options, bool force_profile, bool is_lowoha) {
+  std::vector<MatmulConfig> out;
+  if (dtype_indices.empty()) {
+    out.push_back(base);
+    return out;
+  }
+  out.reserve(dtype_indices.size());
+  for (const size_t dtype_idx : dtype_indices) {
+    const SweepDTypeSpec &spec = lookup_dtype(dtype_idx);
+    if (spec.requires_lowoha && !is_lowoha) {
+      continue;
+    }
+    MatmulConfig cfg = base;
+    apply_sweep_dtype(cfg, spec, options, force_profile);
+    // Reuse the exact same dtype/quant validation as the --input_file path
+    // instead of a parallel sweep-only validator.
+    const std::string ctx =
+        std::string("sweep dtype '") + spec.name + "' (k=" +
+        std::to_string(cfg.k) + ", n=" + std::to_string(cfg.n_values[0]) + ")";
+    if (!validate_dtype_fields(cfg, ctx)) {
+      continue;
+    }
+    normalize_w4a8_quant_config(cfg);
+    out.push_back(std::move(cfg));
+  }
+  return out;
+}
+
+// --- cache sweep ----------------------------------------------------------
+// Expand one config across the requested cache modes. cache_mode is a
+// process-independent, per-config measurement setting, so each mode simply
+// becomes its own config; the benchmark driver reads cfg.cache_mode. When the
+// mode list is empty (no --cache_sweep) the config passes through unchanged,
+// keeping its inherited global --cache_mode.
+static std::vector<MatmulConfig> expand_cache_sweep(
+    const MatmulConfig &base, const std::vector<CacheMode> &cache_modes) {
+  std::vector<MatmulConfig> out;
+  if (cache_modes.empty()) {
+    out.push_back(base);
+    return out;
+  }
+  out.reserve(cache_modes.size());
+  for (const CacheMode mode : cache_modes) {
+    MatmulConfig cfg = base;
+    cfg.cache_mode = mode;
+    out.push_back(std::move(cfg));
+  }
+  return out;
+}
+
+} // namespace
+
+// Display helpers (defined further below) reused for the sweep expansion table.
+static std::string disp_wei_group_size(const MatmulConfig &c);
+static std::string disp_wei_scale_dt(const MatmulConfig &c);
+static std::string disp_src_scale_granularity(const MatmulConfig &c);
+static std::string disp_src_group_size(const MatmulConfig &c);
+static std::string disp_src_scale_dt(const MatmulConfig &c);
+
+// Print the fully expanded sweep as an aligned table so the exact set of
+// generated configurations is visible before benchmarking begins.
+static void print_sweep_expansion_table(const std::vector<MatmulConfig> &out,
+                                        const global_options &options) {
+  const bool has_bs = options.ndims > 2;
+  struct Col {
+    const char *name;
+    int width;
+  };
+  std::vector<Col> cols = {{"#", 4}};
+  if (has_bs) {
+    cols.push_back({"BS", 6});
+  }
+  const std::vector<Col> tail = {
+      {"M", 7},       {"K", 8},         {"N", 8},       {"dt", 16},
+      {"kernel", 18}, {"w_gran", 9},    {"w_grp", 7},   {"w_sdt", 7},
+      {"src_dq", 7},  {"src_gran", 11}, {"src_grp", 8}, {"src_sdt", 8},
+      {"cache", 6}};
+  cols.insert(cols.end(), tail.begin(), tail.end());
+
+  auto print_row = [&](const std::vector<std::string> &vals) {
+    for (size_t j = 0; j < cols.size(); ++j) {
+      std::cout << std::left << std::setw(cols[j].width)
+                << (j < vals.size() ? vals[j] : std::string()) << ' ';
+    }
+    std::cout << '\n';
+  };
+
+  std::vector<std::string> header;
+  size_t rule_width = 0;
+  for (const auto &c : cols) {
+    header.emplace_back(c.name);
+    rule_width += c.width + 1;
+  }
+  std::cout << "Sweep expansion table (" << out.size() << " config(s)):\n";
+  print_row(header);
+  std::cout << std::string(rule_width, '-') << '\n';
+
+  for (size_t i = 0; i < out.size(); ++i) {
+    const MatmulConfig &c = out[i];
+    std::vector<std::string> vals;
+    vals.push_back(std::to_string(i));
+    if (has_bs) {
+      vals.push_back(std::to_string(c.bs));
+    }
+    vals.push_back(std::to_string(c.m));
+    vals.push_back(std::to_string(c.k));
+    vals.push_back(std::to_string(c.n_values[0]));
+    vals.push_back(datatypeToStr(c.dt[0]) + ":" + datatypeToStr(c.dt[1]) + ":" +
+                   datatypeToStr(c.dt[2]));
+    vals.push_back(c.kernel_name);
+    vals.push_back(c.scale_granularity);
+    vals.push_back(disp_wei_group_size(c));
+    vals.push_back(disp_wei_scale_dt(c));
+    vals.push_back(std::to_string(c.src_dynamic_quant));
+    vals.push_back(disp_src_scale_granularity(c));
+    vals.push_back(disp_src_group_size(c));
+    vals.push_back(disp_src_scale_dt(c));
+    vals.push_back(cache_mode_to_str(c.cache_mode));
+    print_row(vals);
+  }
+  std::cout << std::flush;
+}
+
+std::vector<MatmulConfig> expand_matmul_sweep(
+    const std::vector<MatmulConfig> &base, const global_options &options,
+    bool is_lowoha) {
+  const auto m_values = parse_m_sweep_values(options.m_sweep_str);
+  const auto dtype_indices = parse_sweep_dtype_indices(options.dtype_sweep_str);
+  const auto cache_modes = parse_cache_sweep_modes(options.cache_sweep_str);
+
+  // An explicit --dtype_sweep string means the user wants to sweep the dtype
+  // itself: the swept dtype's full quant profile (dt + granularity + group
+  // sizes + scale dtypes) overrides the file, so per-token vs per-group etc.
+  // actually vary. Non-quant fields still come from the file. With no
+  // --dtype_sweep it stays an M-only sweep and the file's dtype is preserved.
+  const bool force_profile = !options.dtype_sweep_str.empty();
+
+  std::vector<MatmulConfig> out;
+  const size_t cache_factor = cache_modes.empty() ? 1 : cache_modes.size();
+  const size_t dtype_factor = dtype_indices.empty() ? 1 : dtype_indices.size();
+  out.reserve(base.size() * m_values.size() * dtype_factor * cache_factor);
+
+  // A benchmark is uniquely identified by the shape plus the full dtype/quant
+  // config it ends up running, so dedup on the final config signature rather
+  // than on shape alone. This keeps distinct rows that share a shape but differ
+  // in quant (e.g. per-group vs per-token) while still collapsing genuinely
+  // identical configs -- whether they come from repeated input rows or from a
+  // forced-dtype sweep where several catalog dtypes reduce to the same dt.
+  std::set<std::string> seen_configs;
+  size_t duplicate_configs = 0;
+  auto config_signature = [](const MatmulConfig &c) {
+    std::ostringstream os;
+    os << c.bs << '|' << c.m << '|' << c.k << '|' << c.n_values[0] << '|';
+    for (const auto d : c.dt) {
+      os << static_cast<int>(d) << ',';
+    }
+    os << '|' << c.kernel_name << '|' << c.scale_granularity << '|'
+       << c.group_size << '|' << static_cast<int>(c.scale_dt) << '|'
+       << c.src_dynamic_quant << '|' << c.src_scale_granularity << '|'
+       << c.src_group_size << '|' << static_cast<int>(c.src_scale_dt) << '|'
+       << static_cast<int>(c.cache_mode);
+    return os.str();
+  };
+
+  for (const auto &base_cfg : base) {
+    if (base_cfg.n_values.size() != 1) {
+      commonlog_warning("Skipping pipeline row '", base_cfg.modelName,
+                        "' during sweep expansion.");
+      continue;
+    }
+    if (base_cfg.k == 0 || base_cfg.n_values[0] == 0) {
+      continue;
+    }
+
+    // Compose the independent axes: first vary M, then dtype on each
+    // M-expanded config, then cache mode on each dtype-expanded config. Dedup
+    // the fully-built configs.
+    for (const MatmulConfig &m_cfg : expand_m_sweep(base_cfg, m_values)) {
+      for (MatmulConfig &d_cfg : expand_dtype_sweep(
+               m_cfg, dtype_indices, options, force_profile, is_lowoha)) {
+        for (MatmulConfig &cfg : expand_cache_sweep(d_cfg, cache_modes)) {
+          if (!seen_configs.insert(config_signature(cfg)).second) {
+            duplicate_configs++;
+            continue;
+          }
+          out.push_back(std::move(cfg));
+        }
+      }
+    }
+  }
+
+  if (out.empty()) {
+    commonlog_warning("Sweep expansion produced no configurations.");
+    return out;
+  }
+
+  std::cout << "Sweep expansion: " << base.size() << " input row(s) -> "
+            << out.size() << " config(s) (M x dtype"
+            << (cache_modes.empty() ? "" : " x cache")
+            << " cross-product).";
+  if (duplicate_configs > 0) {
+    std::cout << " Skipped " << duplicate_configs
+              << " duplicate config(s).";
+  }
+  std::cout << std::endl;
+
+  print_sweep_expansion_table(out, options);
+  return out;
+}
+
+// Display helpers for the results tables/CSVs. Several quant columns hold
+// non-empty defaults (e.g. src_scale_granularity="per-tensor", scale_dt="f32")
+// even when quantization is inactive, which is misleading in output (a plain
+// bf16 row appears to use per-tensor src quant). These blank out the columns
+// that do not apply so an inactive default is not mistaken for a real setting.
+static std::string disp_wei_group_size(const MatmulConfig &c) {
+  return c.scale_granularity == "none" ? std::string()
+                                       : std::to_string(c.group_size);
+}
+static std::string disp_wei_scale_dt(const MatmulConfig &c) {
+  return c.scale_granularity == "none" ? std::string()
+                                       : datatypeToStr(c.scale_dt);
+}
+// A config carries a source scale when it either dynamically quantizes the
+// source (INT8 dynamic / W4A8) or feeds a statically-quantized integer source (s8/u8 src
+// with s8 weights). Both cases have meaningful src-scale fields to display.
+static bool config_has_src_scale(const MatmulConfig &c) {
+  if (c.src_dynamic_quant) {
+    return true;
+  }
+  return c.dt.size() >= 2 &&
+         (c.dt[0] == data_type_t::s8 || c.dt[0] == data_type_t::u8) &&
+         c.dt[1] == data_type_t::s8;
+}
+static std::string disp_src_scale_granularity(const MatmulConfig &c) {
+  return config_has_src_scale(c) ? c.src_scale_granularity : std::string();
+}
+static std::string disp_src_group_size(const MatmulConfig &c) {
+  return config_has_src_scale(c) ? std::to_string(c.src_group_size)
+                                 : std::string();
+}
+static std::string disp_src_scale_dt(const MatmulConfig &c) {
+  return config_has_src_scale(c) ? datatypeToStr(c.src_scale_dt)
+                                 : std::string();
+}
+
 void log_benchmark_failure(const MatmulConfig &cfg) {
   std::string post_op = "";
   if (!cfg.post_ops.empty()) {
@@ -838,13 +1782,13 @@ void print_matmul_execution_summary(const MatmulConfig &cfg,
             << cfg.alpha << ", "
             << cfg.beta << ", "
             << cfg.scale_granularity << ", "
-            << cfg.group_size << ", "
-            << datatypeToStr(cfg.scale_dt) << ", "
+            << disp_wei_group_size(cfg) << ", "
+            << disp_wei_scale_dt(cfg) << ", "
             << cfg.warmup_iters << ", "
             << cfg.src_dynamic_quant << ", "
-            << cfg.src_scale_granularity << ", "
-            << cfg.src_group_size << ", "
-            << datatypeToStr(cfg.src_scale_dt) << ", "
+            << disp_src_scale_granularity(cfg) << ", "
+            << disp_src_group_size(cfg) << ", "
+            << disp_src_scale_dt(cfg) << ", "
             << total_time << std::endl;
 }
 
@@ -886,13 +1830,13 @@ void write_each_config_result(const MatmulConfig &config,
           << config.alpha << ", "
           << config.beta << ", "
           << config.scale_granularity << ", "
-          << config.group_size << ", "
-          << datatypeToStr(config.scale_dt) << ", "
+          << disp_wei_group_size(config) << ", "
+          << disp_wei_scale_dt(config) << ", "
           << config.warmup_iters << ", "
           << config.src_dynamic_quant << ", "
-          << config.src_scale_granularity << ", "
-          << config.src_group_size << ", "
-          << datatypeToStr(config.src_scale_dt) << ", "
+          << disp_src_scale_granularity(config) << ", "
+          << disp_src_group_size(config) << ", "
+          << disp_src_scale_dt(config) << ", "
           << stat[layer_num].total_time_ms
           << ", " << (stat[layer_num].total_time_ms / config.iters)
           << ", " << gflops_val;
@@ -970,19 +1914,19 @@ void cal_column_width(const MatmulConfig &config,
   col_widths[col++] = std::max(col_widths[col],
                                config.scale_granularity.size() + 2);
   col_widths[col++] = std::max(col_widths[col],
-                               std::to_string(config.group_size).size() + 2);
+                               disp_wei_group_size(config).size() + 2);
   col_widths[col++] = std::max(col_widths[col],
-                               datatypeToStr(config.scale_dt).size() + 2);
+                               disp_wei_scale_dt(config).size() + 2);
   col_widths[col++] = std::max(col_widths[col],
                                std::to_string(config.warmup_iters).size() + 2);
   col_widths[col++] = std::max(col_widths[col],
                                std::to_string(config.src_dynamic_quant).size() + 2);
   col_widths[col++] = std::max(col_widths[col],
-                               config.src_scale_granularity.size() + 2);
+                               disp_src_scale_granularity(config).size() + 2);
   col_widths[col++] = std::max(col_widths[col],
-                               std::to_string(config.src_group_size).size() + 2);
+                               disp_src_group_size(config).size() + 2);
   col_widths[col++] = std::max(col_widths[col],
-                               datatypeToStr(config.src_scale_dt).size() + 2);
+                               disp_src_scale_dt(config).size() + 2);
   col_widths[col++] = std::max(col_widths[col],
                                std::to_string((int)stat[0].total_time_ms).size() + 2);
   col_widths[col++] = std::max(col_widths[col],
@@ -1054,13 +1998,13 @@ void fill_row(const MatmulConfig &config,
   row.push_back(std::to_string(config.alpha));
   row.push_back(std::to_string(config.beta));
   row.push_back(config.scale_granularity);
-  row.push_back(std::to_string(config.group_size));
-  row.push_back(datatypeToStr(config.scale_dt));
+  row.push_back(disp_wei_group_size(config));
+  row.push_back(disp_wei_scale_dt(config));
   row.push_back(std::to_string(config.warmup_iters));
   row.push_back(std::to_string(config.src_dynamic_quant));
-  row.push_back(config.src_scale_granularity);
-  row.push_back(std::to_string(config.src_group_size));
-  row.push_back(datatypeToStr(config.src_scale_dt));
+  row.push_back(disp_src_scale_granularity(config));
+  row.push_back(disp_src_group_size(config));
+  row.push_back(disp_src_scale_dt(config));
   std::ostringstream total_time_ss;
   total_time_ss << std::fixed << std::setprecision(2) <<
                 stat[layer_num].total_time_ms;
@@ -1175,13 +2119,13 @@ void log_pipeline_results(
             << config.alpha << ", "
             << config.beta << ", "
             << config.scale_granularity << ", "
-            << config.group_size << ", "
-            << datatypeToStr(config.scale_dt) << ", "
+            << disp_wei_group_size(config) << ", "
+            << disp_wei_scale_dt(config) << ", "
             << config.warmup_iters << ", "
             << config.src_dynamic_quant << ", "
-            << config.src_scale_granularity << ", "
-            << config.src_group_size << ", "
-            << datatypeToStr(config.src_scale_dt) << ", "
+            << disp_src_scale_granularity(config) << ", "
+            << disp_src_group_size(config) << ", "
+            << disp_src_scale_dt(config) << ", "
             << total_time;
     outfile << std::endl;
 
@@ -1296,19 +2240,19 @@ void print_pipeline_results(
     col_widths[col++] = std::max(col_widths[col],
                                  config.scale_granularity.size() + 2);
     col_widths[col++] = std::max(col_widths[col],
-                                 std::to_string(config.group_size).size() + 2);
+                                 disp_wei_group_size(config).size() + 2);
     col_widths[col++] = std::max(col_widths[col],
-                                 datatypeToStr(config.scale_dt).size() + 2);
+                                 disp_wei_scale_dt(config).size() + 2);
     col_widths[col++] = std::max(col_widths[col],
                                  std::to_string(config.warmup_iters).size() + 2);
     col_widths[col++] = std::max(col_widths[col],
                                  std::to_string(config.src_dynamic_quant).size() + 2);
     col_widths[col++] = std::max(col_widths[col],
-                                 config.src_scale_granularity.size() + 2);
+                                 disp_src_scale_granularity(config).size() + 2);
     col_widths[col++] = std::max(col_widths[col],
-                                 std::to_string(config.src_group_size).size() + 2);
+                                 disp_src_group_size(config).size() + 2);
     col_widths[col++] = std::max(col_widths[col],
-                                 datatypeToStr(config.src_scale_dt).size() + 2);
+                                 disp_src_scale_dt(config).size() + 2);
     col_widths[col++] = std::max(col_widths[col],
                                  std::to_string((int)total_time).size() + 2);
     col_widths[col++] = std::max(col_widths[col],
@@ -1411,13 +2355,13 @@ void print_pipeline_results(
     summary_row.push_back(std::to_string(config.alpha));
     summary_row.push_back(std::to_string(config.beta));
     summary_row.push_back(config.scale_granularity);
-    summary_row.push_back(std::to_string(config.group_size));
-    summary_row.push_back(datatypeToStr(config.scale_dt));
+    summary_row.push_back(disp_wei_group_size(config));
+    summary_row.push_back(disp_wei_scale_dt(config));
     summary_row.push_back(std::to_string(config.warmup_iters));
     summary_row.push_back(std::to_string(config.src_dynamic_quant));
-    summary_row.push_back(config.src_scale_granularity);
-    summary_row.push_back(std::to_string(config.src_group_size));
-    summary_row.push_back(datatypeToStr(config.src_scale_dt));
+    summary_row.push_back(disp_src_scale_granularity(config));
+    summary_row.push_back(disp_src_group_size(config));
+    summary_row.push_back(disp_src_scale_dt(config));
     std::ostringstream total_time_oss;
     total_time_oss << std::fixed << std::setprecision(2) << total_time;
     summary_row.push_back(total_time_oss.str());

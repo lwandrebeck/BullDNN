@@ -314,7 +314,7 @@ int matmul_lowoha_benchdnn(std::vector<MatmulConfig> configs,
         continue;
       }
 
-      if (options.cache_mode == CacheMode::WARM) {
+      if (cfg.cache_mode == CacheMode::WARM) {
         // Warm cache: rotate several weight buffers across iterations so one resident
         // copy does not dominate timings. Auto (-1): size the pool from weight bytes vs
         // CACHE_SIZE_MULTIPLIER * cache_size, then clamp with MIN_NUM_WEIGHT_BUFFERS and
@@ -417,7 +417,7 @@ int matmul_lowoha_benchdnn(std::vector<MatmulConfig> configs,
         }
       }
 
-      if (options.cache_mode == CacheMode::WARM) {
+      if (cfg.cache_mode == CacheMode::WARM) {
         flush_cache(cache_size);
       }
       // warm-up iterations
@@ -473,14 +473,14 @@ int matmul_lowoha_benchdnn(std::vector<MatmulConfig> configs,
       }
 
       for (auto j = 0; j < cfg.iters && !skip; j++) {
-        if (options.cache_mode == CacheMode::COLD) {
+        if (cfg.cache_mode == CacheMode::COLD) {
           flush_cache(cache_size);
         }
         for (auto i = 0; i < cfg.n_values.size(); i++) {
           const int K = (i == 0) ? cfg.k : cfg.n_values[i - 1];
           const int N = cfg.n_values[i];
           auto input_tensor_ = (i == 0) ? input_tensor : output_tensor[i - 1];
-          auto weight_tensor_ = (options.cache_mode == CacheMode::WARM) ?
+          auto weight_tensor_ = (cfg.cache_mode == CacheMode::WARM) ?
                                 weights_buffer_pool[(1 + j) % num_weight_buffers][i] :
                                 weights_buffer_pool[0][i];
           auto output_tensor_ = output_tensor[i];

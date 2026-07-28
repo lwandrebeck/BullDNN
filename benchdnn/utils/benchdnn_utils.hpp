@@ -84,6 +84,12 @@ struct global_options {
   uint64_t src_group_size; /**< K-direction group size for per-group source scales. */
   data_type_t src_scale_dt; /**< Datatype of source scale (f32 | bf16). */
 
+  // Sweep-specific options (used by --sweep).
+  bool sweep_enabled; /**< Expand model-file shapes across M and sweep dtypes. */
+  std::string m_sweep_str; /**< Colon-separated M values for --sweep (empty = default). */
+  std::string dtype_sweep_str; /**< Comma-separated sweep dtypes or "all" for --dtype_sweep. */
+  std::string cache_sweep_str; /**< Comma-separated cache modes (hot,cold,warm) for --cache_sweep; empty = no cache sweep. */
+
   // SDPA-specific options (used by --op=sdpa).
   // Two different conventions are used for the default-constructed values below:
   //   * Required dimensions (num_heads, seq_len, head_dim) use 0 as an "unset"
@@ -131,6 +137,8 @@ struct global_options {
     num_weight_buffers(-1),
     src_dynamic_quant(false), src_scale_granularity("per-tensor"),
     src_group_size(0), src_scale_dt(data_type_t::f32),
+    sweep_enabled(false), m_sweep_str(""), dtype_sweep_str(""),
+    cache_sweep_str(""),
     num_heads(0), seq_len(0), kv_seq_len(0), head_dim(0),
     mask_ndims(0), mask_dt(data_type_t::none), is_causal(false),
     scale(0.0), num_threads(0), out_dt(data_type_t::none),

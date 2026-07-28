@@ -304,11 +304,39 @@ int create_input_tensor(tensor_factory_t &tensor_factory,
       }
     }
 
-    // Existing static int8 source path (s8/u8 src). Mutually exclusive with
-    // the dynamic-quant branch above at the dtype level.
+    // Static int8 source path (s8/u8 src) with a precomputed scale. Mutually
+    // exclusive with the dynamic-quant branch above at the dtype level. The
+    // scale-tensor shape encodes the granularity, mirroring the dynamic path:
+    //   per-tensor -> {1, 1}   per-token -> {M, 1}   per-group -> {M, K/gs}
     if (cfg.dt[0] == data_type_t::s8 || cfg.dt[0] == data_type_t::u8) {
-      src_scale = tensor_factory.uniform_dist_tensor({1, 1},
-                  data_type_t::f32, 0.3);
+      const uint64_t M = cfg.m;
+      const uint64_t K = cfg.k;
+      std::vector<uint64_t> src_scale_dims;
+      const std::string &gran = cfg.src_scale_granularity;
+      if (gran == "per-token") {
+        src_scale_dims = {M, 1};
+      }
+      else if (gran == "per-group") {
+        const uint64_t gs = cfg.src_group_size;
+        if (gs == 0 || K % gs != 0) {
+          commonlog_warning(
+            "static src_group_size=", gs, " is invalid for K=", K,
+            "; falling back to per-token static src-scale granularity.");
+          src_scale_dims = {M, 1};
+        }
+        else {
+          src_scale_dims = {M, K / gs};
+        }
+      }
+      else {
+        // per-tensor (or unspecified) static scale.
+        src_scale_dims = {1, 1};
+      }
+      const data_type_t src_scale_dt =
+        (cfg.src_scale_dt != data_type_t::none) ? cfg.src_scale_dt
+                                                : data_type_t::f32;
+      src_scale = tensor_factory.uniform_dist_tensor(src_scale_dims,
+                  src_scale_dt, 0.3);
       if (cfg.dt[0] == data_type_t::u8) {
         src_zp = tensor_factory.uniform_tensor({1, 1}, data_type_t::u8, 16);
       }

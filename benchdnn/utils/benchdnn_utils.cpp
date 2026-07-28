@@ -955,6 +955,41 @@ int parseCLArgs(benchdnn::global_options &options, std::string arg) {
     }
     options.src_scale_dt = src_scale_dt;
   }
+  else if (arg.find("--sweep=") == 0) {
+    const std::string val = arg.substr(8);
+    if (val == "true" || val == "1") {
+      options.sweep_enabled = true;
+    }
+    else if (val == "false" || val == "0") {
+      options.sweep_enabled = false;
+    }
+    else {
+      commonlog_error("Invalid value for sweep='", val,
+                      "'. Use true/false or 1/0.");
+      return NOT_OK;
+    }
+  }
+  else if (arg.find("--m_sweep=") == 0) {
+    options.m_sweep_str = arg.substr(10);
+    if (options.m_sweep_str.empty()) {
+      commonlog_error("m_sweep cannot be empty. Provide colon-separated M values.");
+      return NOT_OK;
+    }
+  }
+  else if (arg.find("--dtype_sweep=") == 0) {
+    options.dtype_sweep_str = arg.substr(14);
+    if (options.dtype_sweep_str.empty()) {
+      commonlog_error("dtype_sweep cannot be empty. Use 'all' or a comma-separated list.");
+      return NOT_OK;
+    }
+  }
+  else if (arg.find("--cache_sweep=") == 0) {
+    options.cache_sweep_str = arg.substr(14);
+    if (options.cache_sweep_str.empty()) {
+      commonlog_error("cache_sweep cannot be empty. Use a comma-separated list of hot,cold,warm.");
+      return NOT_OK;
+    }
+  }
   else {
     commonlog_error("Unknown argument: ", arg);
     return NOT_OK;

@@ -207,7 +207,7 @@ int matmul_benchdnn(std::vector<MatmulConfig> configs,
         continue;
       }
 
-      if (options.cache_mode == CacheMode::WARM) {
+      if (cfg.cache_mode == CacheMode::WARM) {
         // Warm cache: rotate several weight buffers across iterations so one resident
         // copy does not dominate timings. Auto (-1): size the pool from weight bytes vs
         // CACHE_SIZE_MULTIPLIER * cache_size, then clamp with MIN_NUM_WEIGHT_BUFFERS and
@@ -286,7 +286,7 @@ int matmul_benchdnn(std::vector<MatmulConfig> configs,
         continue;
       }
 
-      if (options.cache_mode == CacheMode::WARM) {
+      if (cfg.cache_mode == CacheMode::WARM) {
         flush_cache(cache_size);
       }
       TimingStats time_stats;
@@ -317,7 +317,7 @@ int matmul_benchdnn(std::vector<MatmulConfig> configs,
       std::vector<double> elapsed_ms_layer(cfg.n_values.size(), 0.0);
 
       for (auto j = 0; j < cfg.iters && !skip; j++) {
-        if (options.cache_mode == CacheMode::COLD) {
+        if (cfg.cache_mode == CacheMode::COLD) {
           flush_cache(cache_size);
         }
         for (auto i = 0; i < cfg.n_values.size(); i++) {
@@ -327,7 +327,7 @@ int matmul_benchdnn(std::vector<MatmulConfig> configs,
           TimingStats time_stats; // Per-layer, per-iteration
           int ret = run_matmul(output_tensor[i],
                                (i == 0) ? input_tensor : output_tensor[i - 1],
-                               (options.cache_mode == CacheMode::WARM)
+                               (cfg.cache_mode == CacheMode::WARM)
                                ? weights_buffer_pool[(1 + j) % num_weight_buffers][i]
                                : weights_buffer_pool[0][i],
                                (bias.empty() ? tensor_t() : bias[i]),
@@ -408,6 +408,38 @@ int bench(const std::string &in_filename, const std::string &out_filename,
   }
   else if (inputMode == InputMode::COMMAND_LINE) {
     inputCommandLineParser(matmulConfig, isPipeline, options);
+  }
+
+  // Seed every parsed config with the global --cache_mode. Non-sweep runs use
+  // this directly; sweep base configs inherit it and the --cache_sweep axis (if
+  // present) overrides it per expanded config.
+  for (auto &cfg : matmulConfig) {
+    cfg.cache_mode = options.cache_mode;
+  }
+
+  if (options.sweep_enabled) {
+    if (inputMode != InputMode::MODEL && inputMode != InputMode::FILE) {
+      commonlog_warning(
+          "--sweep is only supported with --input_model_file or --input_file; "
+          "ignoring sweep.");
+    }
+    else if (isPipeline) {
+      commonlog_warning(
+          "--sweep does not support pipeline (multi-layer) configs; ignoring sweep.");
+    }
+    else {
+      try {
+        matmulConfig = expand_matmul_sweep(matmulConfig, options, isLOWOHA);
+        if (matmulConfig.empty()) {
+          testlog_error("Sweep expansion produced no benchmark configurations.");
+          return NOT_OK;
+        }
+      }
+      catch (const std::exception &e) {
+        testlog_error("Sweep expansion failed: ", e.what());
+        return NOT_OK;
+      }
+    }
   }
 
   std::vector<std::pair<MatmulConfig, std::vector<TimingStats>>> matmul_results;
