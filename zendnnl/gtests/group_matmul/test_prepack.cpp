@@ -3156,7 +3156,7 @@ TEST_F(TestPrepackFingerprintInvariance, PoolSizeChangeRefireWarm) {
 //      Tightened gates (prepack now mirrors):
 //        * activation in {swiglu_oai_mul, none}
 //        * act_dtype = bf16 when act != none
-//        * bias_dtype in {none, bf16, f32}
+//        * bias_dtype in {none, bf16, f32, f16}
 //        * dst_dtype in {bf16, f32} — the kernel serves both
 //          `kBF16_BF16_BF16` and `kBF16_BF16_F32` runtime variants;
 //          (swiglu_oai_mul, f32 dst) is structurally refused (the
@@ -3361,14 +3361,17 @@ TEST_F(TestPrepackCkGateSymmetry, ActNoneIgnoresActDtype) {
       << "act=none ignores act_dtype; CK must engage";
 }
 
-TEST_F(TestPrepackCkGateSymmetry, BiasDtypeF16RefusedNoCkWarm) {
+TEST_F(TestPrepackCkGateSymmetry, BiasDtypeF16AcceptedCkWarms) {
   namespace prepack = zendnnl::lowoha::matmul::group_matmul_prepack;
   using zendnnl::lowoha::matmul::custom_kernel::clear_custom_kernel_pack_cache;
   clear_custom_kernel_pack_cache();
   prepack::clear_fingerprint_cache_for_test();
   prepack::test_api::clear_last_invocation_stats();
 
-  // bias_dtype = f16 -> runtime CK refuses (only none / bf16 / f32).
+  // bias_dtype = f16 -> runtime CK now ACCEPTS it for all families (the
+  // bf16 / DQ-INT8 kernels widen it to fp32 via _mm512_cvtph_ps; the
+  // FP16 kernel loads it directly), so prepack must warm the CK pack
+  // arena just like the bf16 / f32 bias cases.
   auto h = make_harness(/*total=*/4, /*active=*/4,
                         /*K=*/32, /*N=*/64, /*fill=*/0.406f);
   h.pp.act        = grp_matmul_gated_act_t::none;
@@ -3379,9 +3382,9 @@ TEST_F(TestPrepackCkGateSymmetry, BiasDtypeF16RefusedNoCkWarm) {
 
   const auto stats = prepack::test_api::get_last_invocation_stats();
   ASSERT_TRUE(stats.valid);
-  EXPECT_EQ(stats.ck.cache_misses + stats.ck.cache_hits, 0)
-      << "bias_dtype=f16 is refused by runtime CK; prepack must NOT "
-         "warm CK pack arena";
+  EXPECT_GT(stats.ck.cache_misses + stats.ck.cache_hits, 0)
+      << "bias_dtype=f16 is accepted by runtime CK; prepack must warm "
+         "the CK pack arena";
 }
 
 TEST_F(TestPrepackCkGateSymmetry, BiasDtypeBf16AndF32Accepted) {
@@ -4133,6 +4136,204 @@ TEST_F(TestPrepackInt8WarmDtypeFamily, ClearInt8CacheDoesNotEvictBf16) {
               zendnnl::error_handling::status_t::success);
     EXPECT_EQ(s.cache_misses, E)
         << "int8 entries must be evicted by `clear_custom_kernel_pack_cache_int8`";
+    EXPECT_EQ(s.cache_hits, 0);
+  }
+}
+
+// ===============================================================================
+// [F16WarmDtypeFamily] PREPACK warmer FP16 dtype-family dispatch
+//
+// Sibling of TestPrepackInt8WarmDtypeFamily for the third pack family.
+// `warm_pack_all_custom_kernel_experts(..., dtype_family=kF16)` must
+// route to `get_or_pack_weight_f16` (the plain, non-K-interleaved
+// native-AVX-512-FP16 pack) and populate the f16 LRU singleton, which
+// is DISJOINT from both the bf16 and int8 singletons.  Tests:
+//   1. F16 warm followed by F16 probe sees `cache_hits == E`.
+//   2. F16 warm followed by BF16 probe sees `cache_misses == E`
+//      (the bf16 LRU was NOT polluted — the families are disjoint).
+//   3. `clear_custom_kernel_pack_cache_f16()` evicts ONLY the f16
+//      LRU; the bf16 LRU remains intact.
+//
+// Gated on `avx512f16_available()` (CPUID + toolchain) rather than the
+// VNNI/BF16 gates — the f16 pack path is only reachable when the host
+// can actually run the f16 microkernel.
+// ===============================================================================
+class TestPrepackF16WarmDtypeFamily : public ::testing::Test {
+ protected:
+  void SetUp() override {
+    if (!ck::avx512f16_available()) {
+      GTEST_SKIP() << "AVX-512-FP16 not available on this host/toolchain";
+    }
+    reset_grp_matmul_caches();
+  }
+};
+
+TEST_F(TestPrepackF16WarmDtypeFamily, F16WarmHitsF16Probe) {
+  namespace prepack = zendnnl::lowoha::matmul::group_matmul_prepack;
+
+  constexpr int E = 6;
+  constexpr int K_in = 64, N1 = 128;
+
+  // Per-expert f16 weight buffers — unique pointers ensure each
+  // expert gets its own cache key.
+  std::vector<std::vector<float16_t>> wei_f16(E);
+  for (int e = 0; e < E; ++e) {
+    wei_f16[e].assign(static_cast<size_t>(K_in) * N1,
+                      float16_t(0.01f * (e + 1)));
+  }
+  std::vector<const void *> wei_ptrs(E);
+  for (int e = 0; e < E; ++e) {
+    wei_ptrs[e] = wei_f16[e].data();
+  }
+
+  std::vector<int>  Ks(E, K_in);
+  std::vector<int>  Ns(E, N1);
+  std::vector<int>  ldbs(E, N1);
+  std::vector<bool> transBs(E, false);
+
+  prepack::custom_kernel::PackProbeStats warm_stats;
+  ASSERT_EQ(prepack::custom_kernel::warm_pack_all_custom_kernel_experts(
+                wei_ptrs, Ks, Ns, ldbs, transBs,
+                /*is_weights_const=*/std::vector<bool>{},
+                /*total_count=*/E, warm_stats,
+                /*interleave_split_halves=*/false,
+                prepack::custom_kernel::WarmDtypeFamily::kF16),
+            zendnnl::error_handling::status_t::success);
+  EXPECT_EQ(warm_stats.cache_hits + warm_stats.cache_misses, E)
+      << "warm must visit every expert (or short-circuit cleanly)";
+
+  prepack::custom_kernel::PackProbeStats probe_stats;
+  ASSERT_EQ(prepack::custom_kernel::warm_pack_all_custom_kernel_experts(
+                wei_ptrs, Ks, Ns, ldbs, transBs,
+                /*is_weights_const=*/std::vector<bool>{},
+                /*total_count=*/E, probe_stats,
+                /*interleave_split_halves=*/false,
+                prepack::custom_kernel::WarmDtypeFamily::kF16),
+            zendnnl::error_handling::status_t::success);
+  EXPECT_EQ(probe_stats.cache_hits, E)
+      << "second f16 warm probe must hit every entry seeded by the "
+         "first pass — confirms `dtype_family=kF16` writes the f16 "
+         "LRU singleton and reads it back on the next call";
+  EXPECT_EQ(probe_stats.cache_misses, 0);
+}
+
+TEST_F(TestPrepackF16WarmDtypeFamily, F16WarmDoesNotPolluteBf16Cache) {
+  namespace prepack = zendnnl::lowoha::matmul::group_matmul_prepack;
+
+  constexpr int E = 4;
+  constexpr int K_in = 64, N1 = 128;
+
+  std::vector<std::vector<float16_t>> wei_f16(E);
+  std::vector<const void *> wei_ptrs(E);
+  for (int e = 0; e < E; ++e) {
+    wei_f16[e].assign(static_cast<size_t>(K_in) * N1, float16_t(0.02f * e));
+    wei_ptrs[e] = wei_f16[e].data();
+  }
+
+  std::vector<int>  Ks(E, K_in);
+  std::vector<int>  Ns(E, N1);
+  std::vector<int>  ldbs(E, N1);
+  std::vector<bool> transBs(E, false);
+
+  prepack::custom_kernel::PackProbeStats f16_stats;
+  ASSERT_EQ(prepack::custom_kernel::warm_pack_all_custom_kernel_experts(
+                wei_ptrs, Ks, Ns, ldbs, transBs,
+                /*is_weights_const=*/std::vector<bool>{},
+                /*total_count=*/E, f16_stats,
+                /*interleave_split_halves=*/false,
+                prepack::custom_kernel::WarmDtypeFamily::kF16),
+            zendnnl::error_handling::status_t::success);
+
+  // Probe the bf16 LRU for the SAME pointers + shapes.  The f16 warm
+  // wrote a disjoint singleton, so the bf16 probe must miss every
+  // entry (a hit would mean cross-family aliasing — feeding the bf16
+  // microkernel an f16 pack at runtime).
+  prepack::custom_kernel::PackProbeStats bf16_stats;
+  ASSERT_EQ(prepack::custom_kernel::warm_pack_all_custom_kernel_experts(
+                wei_ptrs, Ks, Ns, ldbs, transBs,
+                /*is_weights_const=*/std::vector<bool>{},
+                /*total_count=*/E, bf16_stats,
+                /*interleave_split_halves=*/false,
+                prepack::custom_kernel::WarmDtypeFamily::kBF16),
+            zendnnl::error_handling::status_t::success);
+  EXPECT_EQ(bf16_stats.cache_hits, 0)
+      << "bf16 warm following an f16 warm at the same (pointer, K, N) "
+         "MUST see zero hits — the f16 and bf16 families have disjoint "
+         "LRU singletons (kCustomKernelF16Marker vs the bf16 key), and "
+         "cross-family aliasing would silently feed a bf16 microkernel "
+         "an f16 pack (or vice-versa) at runtime";
+  EXPECT_EQ(bf16_stats.cache_misses, E);
+}
+
+TEST_F(TestPrepackF16WarmDtypeFamily, ClearF16CacheDoesNotEvictBf16) {
+  namespace prepack = zendnnl::lowoha::matmul::group_matmul_prepack;
+
+  constexpr int E = 3;
+  constexpr int K_in = 64, N1 = 64;
+
+  // Disjoint f16 and bf16 weight pools (distinct pointers so LRU keys
+  // cannot collide across families even by accident).
+  std::vector<std::vector<float16_t>>  wei_f16(E);
+  std::vector<std::vector<bfloat16_t>> wei_bf16(E);
+  std::vector<const void *> wei_ptrs_f16(E), wei_ptrs_bf16(E);
+  for (int e = 0; e < E; ++e) {
+    wei_f16[e].assign(static_cast<size_t>(K_in) * N1, float16_t(0.01f * e));
+    wei_bf16[e].assign(static_cast<size_t>(K_in) * N1, bfloat16_t(0.02f * e));
+    wei_ptrs_f16[e]  = wei_f16[e].data();
+    wei_ptrs_bf16[e] = wei_bf16[e].data();
+  }
+  std::vector<int>  Ks(E, K_in), Ns(E, N1), ldbs(E, N1);
+  std::vector<bool> transBs(E, false);
+
+  // Warm both families.
+  {
+    prepack::custom_kernel::PackProbeStats s;
+    ASSERT_EQ(prepack::custom_kernel::warm_pack_all_custom_kernel_experts(
+                  wei_ptrs_f16, Ks, Ns, ldbs, transBs,
+                  std::vector<bool>{}, E, s,
+                  /*interleave_split_halves=*/false,
+                  prepack::custom_kernel::WarmDtypeFamily::kF16),
+              zendnnl::error_handling::status_t::success);
+  }
+  {
+    prepack::custom_kernel::PackProbeStats s;
+    ASSERT_EQ(prepack::custom_kernel::warm_pack_all_custom_kernel_experts(
+                  wei_ptrs_bf16, Ks, Ns, ldbs, transBs,
+                  std::vector<bool>{}, E, s,
+                  /*interleave_split_halves=*/false,
+                  prepack::custom_kernel::WarmDtypeFamily::kBF16),
+              zendnnl::error_handling::status_t::success);
+  }
+
+  // Clear ONLY the f16 LRU.
+  ck::clear_custom_kernel_pack_cache_f16();
+
+  // After clear: bf16 probe still hits, f16 probe misses.
+  {
+    prepack::custom_kernel::PackProbeStats s;
+    ASSERT_EQ(prepack::custom_kernel::warm_pack_all_custom_kernel_experts(
+                  wei_ptrs_bf16, Ks, Ns, ldbs, transBs,
+                  std::vector<bool>{}, E, s,
+                  /*interleave_split_halves=*/false,
+                  prepack::custom_kernel::WarmDtypeFamily::kBF16),
+              zendnnl::error_handling::status_t::success);
+    EXPECT_EQ(s.cache_hits, E)
+        << "bf16 entries must survive `clear_custom_kernel_pack_cache_f16` — "
+           "the per-family clear hooks must be disjoint, otherwise an "
+           "f16 runtime config change would silently evict every bf16 "
+           "pack and force a re-warm storm";
+    EXPECT_EQ(s.cache_misses, 0);
+  }
+  {
+    prepack::custom_kernel::PackProbeStats s;
+    ASSERT_EQ(prepack::custom_kernel::warm_pack_all_custom_kernel_experts(
+                  wei_ptrs_f16, Ks, Ns, ldbs, transBs,
+                  std::vector<bool>{}, E, s,
+                  /*interleave_split_halves=*/false,
+                  prepack::custom_kernel::WarmDtypeFamily::kF16),
+              zendnnl::error_handling::status_t::success);
+    EXPECT_EQ(s.cache_misses, E)
+        << "f16 entries must be evicted by `clear_custom_kernel_pack_cache_f16`";
     EXPECT_EQ(s.cache_hits, 0);
   }
 }

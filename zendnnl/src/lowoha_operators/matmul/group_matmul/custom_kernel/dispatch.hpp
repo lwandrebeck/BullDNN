@@ -14,7 +14,13 @@
  * limitations under the License.
  *******************************************************************************/
 
-/// BF16 custom kernel — public dispatcher.
+/// Group-matmul custom kernel — public dispatcher.
+///
+/// Serves three per-tile microkernel families through one surface:
+/// BF16 (`bf16×bf16→{bf16,f32}`), DQ-INT8 (`s8×s8→{bf16,f32}`), and
+/// FP16 (native AVX-512-FP16 `f16×f16→{f16,f32}`).  `resolve_variant`
+/// is the single source of truth for which (src, wei, dst, …) tuples
+/// each family serves.
 ///
 /// Consumed through a single caller: `flat_n_tile` (ALGO 3).  That
 /// executor serves both non-fused group_matmul (act=none) and the
@@ -64,9 +70,13 @@
 /// swiglu_oai_mul interleaved layout — only the kernel-side
 /// activation math (silu vs gelu_tanh vs swiglu_oai) differs.
 ///
-/// For BF16 src + BF16 wei (the only src/wei tuple the kernel serves
-/// today; see `resolve_variant` for the full truth table) the
-/// directly-served cells are:
+/// For BF16 src + BF16 wei — one of the served src/wei families (the
+/// FP16 family serves f16 src + f16 wei with the SAME act × dst
+/// structure as the BF16 cells below, substituting f16 for bf16: the
+/// gated acts are f16-dst ONLY, and f32 dst is served for `act = none`
+/// only — gated-act + f32-dst is refused just as it is for BF16; the
+/// DQ-INT8 family serves s8 wei; see `resolve_variant` for the full
+/// truth table) — the directly-served cells are:
 ///
 ///   * (act = none,           dst = bf16) — CK serves via
 ///       `kBF16_BF16_BF16` matmul-only; epilogue stores BF16.
@@ -117,9 +127,14 @@
 /// implementation runs the matmul and (for swiglu+f32) the
 /// activation.
 ///
-/// `bias_dtype` ∈ {none, bf16, f32} and `act_dtype` (when
-/// `act != none`) must equal `bf16` for fused activation; the
-/// non-fused activation pass handles its own dtype routing.
+/// `bias_dtype` ∈ {none, bf16, f32, f16} for ALL families.  The FP16
+/// microkernel seeds its f16 accumulator with an f16 bias directly; the
+/// BF16 / DQ-INT8 microkernels widen an f16 bias to fp32 via
+/// `_mm512_cvtph_ps` (VCVTPH2PS, part of AVX-512F — no native
+/// AVX-512-FP16 ISA required).  `act_dtype` (when `act != none`) must
+/// equal `bf16` for the BF16 / DQ-INT8 families, or `f16` for the FP16
+/// family, for fused activation; the non-fused activation pass handles
+/// its own dtype routing.
 
 #ifndef ZENDNNL_GROUP_MATMUL_CUSTOM_KERNEL_DISPATCH_HPP
 #define ZENDNNL_GROUP_MATMUL_CUSTOM_KERNEL_DISPATCH_HPP
@@ -133,6 +148,7 @@
 #include "lowoha_operators/matmul/group_matmul/group_matmul_direct.hpp"
 #include "ukernel/bf16_microkernel.hpp"
 #include "ukernel/int8_microkernel.hpp"
+#include "ukernel/f16_microkernel.hpp"
 
 namespace zendnnl {
 namespace lowoha {
@@ -140,6 +156,7 @@ namespace matmul {
 namespace custom_kernel {
 
 using zendnnl::common::bfloat16_t;
+using zendnnl::common::float16_t;
 using zendnnl::common::data_type_t;
 using zendnnl::error_handling::status_t;
 using zendnnl::lowoha::matmul::grp_matmul_gated_act_t;
@@ -147,6 +164,17 @@ using zendnnl::lowoha::matmul::grp_matmul_gated_act_t;
 /// Quick CPUID gate (cached after first call).  Cheap; callers can
 /// use this to early-out before building any inputs to
 /// `prepare_for_call`.
+///
+/// NOTE: this is the BF16/INT8 ISA gate ONLY (it returns
+/// `avx512bf16_available()`, which the DQ-INT8 VNNI parts are a
+/// superset of on our targets).  It is NOT a gate for the FP16
+/// family: a pure-FP16 host (AVX-512-FP16 present, AVX-512-BF16
+/// absent) can still serve the `kF16_F16_F16` / `kF16_F16_F32`
+/// variants even though this returns false.  FP16 callers must
+/// early-out on `avx512f16_available()` directly instead; the real
+/// per-variant ISA gate lives in `prepare_for_call` (bf16 → BF16,
+/// int8 → VNNI, f16 → FP16), so a false here does not preclude the
+/// FP16 fast path.
 bool dispatch_supported();
 
 // ────────────────────────────────────────────────────────────────────
@@ -161,8 +189,9 @@ bool dispatch_supported();
 // `kBF16_BF16_BF16` and `kBF16_BF16_F32` are the bf16-family
 // variants; `kS8_S8_BF16_SYM` / `kU8_S8_BF16_ASYM` (bf16 dst) and
 // `kS8_S8_F32_SYM` / `kU8_S8_F32_ASYM` (f32 dst, act=none only) are
-// the DQ-INT8 variants.  Any tuple outside these six resolves to
-// `kUnsupported` and the caller falls back to DLP.
+// the DQ-INT8 variants.  The FP16 family adds `kF16_F16_F16` and
+// `kF16_F16_F32` (native AVX-512-FP16).  Any tuple outside these
+// eight resolves to `kUnsupported` and the caller falls back to DLP.
 enum class KernelVariant : uint8_t {
   kUnsupported       = 0,  ///< Not supported by the custom kernel; caller falls back to DLP.
   kBF16_BF16_BF16    = 1,  ///< `bf16:bf16:bf16`.
@@ -171,6 +200,8 @@ enum class KernelVariant : uint8_t {
   kU8_S8_BF16_ASYM   = 4,  ///< DQ-INT8 asymmetric: src(hoisted u8) × wei(s8) → bf16.
   kS8_S8_F32_SYM     = 5,  ///< DQ-INT8 symmetric: src(hoisted s8) × wei(s8) → f32.
   kU8_S8_F32_ASYM    = 6,  ///< DQ-INT8 asymmetric: src(hoisted u8) × wei(s8) → f32.
+  kF16_F16_F16       = 7,  ///< `f16:f16:f16` (native AVX-512-FP16).
+  kF16_F16_F32       = 8,  ///< `f16:f16:f32` (native AVX-512-FP16, act=none only).
 };
 
 /// Predicate: is this variant in the DQ-INT8 family?
@@ -186,6 +217,19 @@ inline bool is_int8_variant(KernelVariant v) noexcept {
       || v == KernelVariant::kU8_S8_BF16_ASYM
       || v == KernelVariant::kS8_S8_F32_SYM
       || v == KernelVariant::kU8_S8_F32_ASYM;
+}
+
+/// Predicate: is this variant in the FP16 family?
+///
+/// Sibling of `is_int8_variant` — call sites that branch on bf16 vs
+/// DQ-INT8 vs FP16 ahead of the `dispatch_tile()` call use this to
+/// route the FP16 variants to the native-AVX-512-FP16 path.  The FP16
+/// family is non-quant (like bf16), so the per-tile call passes null
+/// `src_scale` / `src_zp` / `wei_scale` exactly like the bf16 path.
+/// Kept `noexcept` so the optimiser folds it into a `cmp + or`.
+inline bool is_f16_variant(KernelVariant v) noexcept {
+  return v == KernelVariant::kF16_F16_F16
+      || v == KernelVariant::kF16_F16_F32;
 }
 
 /// Map a (src, wei, dst, dynamic_quant, compute_dtype) tuple to a
@@ -215,6 +259,13 @@ inline bool is_int8_variant(KernelVariant v) noexcept {
 ///       f32 dst (Act = none only):
 ///         `(s8*, s8, f32 , _, s8)`           → `kS8_S8_F32_SYM`
 ///         `(s8*, s8, f32 , _, u8)`           → `kU8_S8_F32_ASYM`
+///
+///   * FP16 family (`dynamic_quant == false`):
+///     `(f16, f16, f16, _, _)`               → `kF16_F16_F16`
+///     `(f16, f16, f32, _, _)`               → `kF16_F16_F32`  (Act = none only)
+///     Both require `avx512f16_available()` at runtime (native
+///     AVX-512-FP16); `resolve_variant` maps the tuple regardless, and
+///     `prepare_for_call` refuses → DLP when the ISA is absent.
 ///
 ///   * any other tuple                        → `kUnsupported`
 ///
@@ -256,8 +307,10 @@ struct CallContext {
 
   /// Resolved kernel variant for this call.  Set by
   /// `prepare_for_call()` via `resolve_variant()`.  On the success
-  /// path it is one of the six served variants (bf16 bf16/f32 dst, or
-  /// DQ-INT8 sym/asym × bf16/f32 dst).  `dispatch_tile()` reads this
+  /// path it is one of the eight served variants: the two BF16 family
+  /// variants (bf16/f32 dst), the four DQ-INT8 variants (sym/asym ×
+  /// bf16/f32 dst), or one of the two FP16 family variants
+  /// (`kF16_F16_F16` / `kF16_F16_F32`).  `dispatch_tile()` reads this
   /// to route to the correct kernel instantiation.
   KernelVariant variant = KernelVariant::kUnsupported;
 
@@ -297,14 +350,21 @@ struct CallContext {
   // Sized via `kMaxMR` so any future max_mr bump only needs a constant
   // update in `ukernel/bf16_microkernel.hpp`.
   //
-  // BF16 family uses `kfn_table`; DQ-INT8 family uses
-  // `kfn_table_int8` (one entry per MR, already specialised on
-  // `compute_int` + `act_kind` at `prepare_for_call` time).  Only
-  // one of the two tables is populated per call (the other stays
-  // zero-initialised); `dispatch_tile()` reads the right table
+  // Three per-family tables, one per served ISA family:
+  //   * BF16 family    → `kfn_table`.
+  //   * DQ-INT8 family → `kfn_table_int8` (one entry per MR, already
+  //       specialised on `compute_int` + `act_kind` at
+  //       `prepare_for_call` time).
+  //   * FP16 family    → `kfn_table_f16`.
+  // Only ONE of the three tables is populated per call (the other two
+  // stay zero-initialised); `dispatch_tile()` reads the right table
   // off `variant`.
   ukernel_fn_t       kfn_table[kMaxMR + 1]      = {};
   int8_ukernel_fn_t  kfn_table_int8[kMaxMR + 1] = {};
+  /// FP16 family per-MR table.  Populated only when the variant is
+  /// `kF16_F16_F16` / `kF16_F16_F32`; stays zero otherwise.
+  /// `dispatch_tile()` reads it off `is_f16_variant(variant)`.
+  f16_ukernel_fn_t   kfn_table_f16[kMaxMR + 1]  = {};
 
   /// Maximum experts per call we cache packed pointers for.  Must
   /// match (or exceed) each caller's own expert-count cap.
@@ -318,6 +378,13 @@ struct CallContext {
   /// passes the raw `int8_t *` to the microkernel which reads the
   /// compensation row by byte arithmetic.
   std::array<const int8_t *, kMaxExperts> packed_ptrs_int8{};
+  /// FP16 packed-weight pointers (`float16_t *`).  Populated when the
+  /// variant is `kF16_F16_F16` / `kF16_F16_F32`; stays all-null on the
+  /// bf16 / int8 paths.  Layout per o-block is the plain
+  /// `[K][pack_nr]` FP16 slab (no K-interleave / compensation; see
+  /// pack.hpp).  `dispatch_tile()` passes the raw `float16_t *` to the
+  /// FP16 microkernel.
+  std::array<const float16_t *, kMaxExperts> packed_ptrs_f16{};
 
   /// Per-expert L2-friendly N-chunk width (cols).  Sized individually
   /// so small-M experts (low A footprint) get a wider subtile with
@@ -354,6 +421,16 @@ struct CallContext {
   /// lifetime contract as the bf16 array; the destructor /
   /// `release_owned_buffers()` zero both on exit.
   std::array<const int8_t *, kMaxExperts> owned_packed_ptrs_int8{};
+  /// FP16 sibling of `owned_packed_ptrs` — caller-owned FP16 packed-
+  /// weight pointers, used in the `weight_cache_type == 0` (cache-off
+  /// mode) branch ONLY.  Unlike the bf16 array this is NOT reused for
+  /// WC=2: the FP16 pack family has no in-place (WC=2) mode (see
+  /// `get_or_pack_weight_f16` in pack.hpp), so WC=2 falls through to
+  /// the out-of-place LRU and never populates this array.
+  /// Freed via `free_owned_packed_weight_f16()`.  Same lifetime
+  /// contract as the bf16 array; the destructor /
+  /// `release_owned_buffers()` zero it on exit.
+  std::array<const float16_t *, kMaxExperts> owned_packed_ptrs_f16{};
 
   /// Free every caller-owned packed buffer this context holds and
   /// zero the `owned_packed_ptrs` array.  Idempotent and safe to
@@ -411,13 +488,23 @@ struct CallContext {
 ///     SUPPORTED (returns `out.enabled = true`):
 ///       (bf16, bf16, bf16)  -> kBF16_BF16_BF16
 ///       (bf16, bf16, f32 )  -> kBF16_BF16_F32
+///       (f16 , f16 , f16 )  -> kF16_F16_F16   (native AVX-512-FP16;
+///                              additionally gated on avx512f16_available())
+///       (f16 , f16 , f32 )  -> kF16_F16_F32   (act=none only)
+///       DQ-INT8 family (dynamic_quant=true, or s8 src, with wei=s8):
+///         (s8*, s8, {bf16,f32}) + compute_dtype ∈ {s8, u8}
+///                             -> kS8/U8_S8_{BF16,F32}_{SYM,ASYM}
+///                              (see the DQ-INT8 truth table on
+///                              `resolve_variant` above)
 ///
 ///     REJECTED (returns failure -> caller falls back to DLP):
 ///       Anything else, including:
-///         (f32 , f32 , *   )  -- no FP32 GEMM in this kernel
+///         (f32 , f32 , *   )  -- no FP32-src GEMM in this kernel
 ///         (f32 , bf16, *   )  -- mixed-precision src
-///         (bf16, bf16, f16 )  -- F16 dst not implemented
-///         any tuple involving `data_type_t::u8` / `f16` / `s8`
+///         (bf16, bf16, f16 )  -- f16 dst requires f16 src+wei (the
+///                                FP16 family is homogeneous f16 only;
+///                                mixed bf16-src/f16-dst is not served)
+///         any other mixed / unsupported dtype tuple
 ///
 ///   On a rejected tuple the caller is expected to take its standard
 ///   path (e.g., AOCL DLP via `execute_expert_slice`) — failure to
@@ -425,14 +512,20 @@ struct CallContext {
 ///   in `dispatch_tile()`.
 ///
 /// `act_dtype` is consulted only when `act != ActKind::none`; for
-/// `act = none` the dispatcher skips the bf16 check so callers that
-/// pass `act_dtype = none` (plain GEMM, no activation) are accepted
-/// transparently.
+/// `act = none` the dispatcher skips the act-dtype check so callers
+/// that pass `act_dtype = none` (plain GEMM, no activation) are
+/// accepted transparently.  When a fused activation IS present the
+/// required `act_dtype` is family-dependent: `bf16` for the BF16 /
+/// DQ-INT8 families, `f16` for the FP16 family (their fused gated
+/// store helpers write bf16 and f16 respectively).
 ///
-/// `bias_dtype` must be one of `{none, bf16, f32}`.  `none` means no
-/// bias at all (per-expert bias pointers are expected to be null).
-/// Any other value causes `out.enabled` to be left false and the
-/// caller falls back to its standard path.  The dispatcher resolves
+/// `bias_dtype` must be one of `{none, bf16, f32, f16}` for ALL three
+/// families.  An f16 bias is loaded directly by the FP16 microkernel
+/// and widened via `_mm512_cvtph_ps` (AVX-512F, no native AVX-512-FP16
+/// ISA) by the BF16 / DQ-INT8 microkernels.  `none` means
+/// no bias at all (per-expert bias pointers are expected to be null).
+/// Any other value (e.g. s8) causes `out.enabled` to be left false and
+/// the caller falls back to its standard path.  The dispatcher resolves
 /// this into `out.bias_kind` which the microkernel branches on once
 /// per tile (no specialisation explosion).
 ///

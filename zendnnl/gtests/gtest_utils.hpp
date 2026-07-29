@@ -986,7 +986,9 @@ void clear_matmul_test_caches();
  *  @brief Clear every cache the `group_matmul` operator stack can populate.
  *
  *  Clears, in order:
- *    1. Custom-kernel BF16 pack arena (`clear_custom_kernel_pack_cache()`)
+ *    1. Custom-kernel pack arenas — BF16 (`clear_custom_kernel_pack_cache()`),
+ *       DQ-INT8 (`clear_custom_kernel_pack_cache_int8()`), and FP16
+ *       (`clear_custom_kernel_pack_cache_f16()`); each is a disjoint singleton.
  *    2. Prepack-module fingerprint cache (`clear_fingerprint_cache_for_test()`)
  *    3. All matmul weight caches via `clear_matmul_test_caches()`:
  *         - AOCL DLP weight LRU (typed: float, int16_t, uint16_t, int8_t;

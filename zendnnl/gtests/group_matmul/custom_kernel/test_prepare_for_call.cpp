@@ -103,9 +103,11 @@ static std::vector<ck_test::PrepCallCase> make_prepare_cases() {
     // N=256 satisfies both.
     cases.push_back(c);
   }
-  // Bias dtype variants on the supported tuple.
+  // Bias dtype variants on the supported tuple.  The bf16 family now
+  // also accepts an f16 bias (widened to fp32 via _mm512_cvtph_ps
+  // inside the microkernel — no AVX-512-FP16 ISA required).
   for (auto bias : {data_type_t::none, data_type_t::bf16,
-                    data_type_t::f32}) {
+                    data_type_t::f32, data_type_t::f16}) {
     auto c = baseline(std::string("pos_bias_") + ck_test::dt_name(bias));
     c.bias_dt = bias;
     cases.push_back(c);
@@ -167,8 +169,10 @@ static std::vector<ck_test::PrepCallCase> make_prepare_cases() {
     cases.push_back(c);
   }
 
-  // ── [Negative] Bias dtype outside {none, bf16, f32} ───────────
-  for (auto bias : {data_type_t::f16, data_type_t::s8, data_type_t::u8}) {
+  // ── [Negative] Bias dtype outside {none, bf16, f32, f16} ───────
+  // (f16 is now accepted for all families — see the positive grid
+  // above; only integer bias dtypes are refused.)
+  for (auto bias : {data_type_t::s8, data_type_t::u8}) {
     auto c = baseline(std::string("neg_bias_") + ck_test::dt_name(bias),
                       /*expect_success=*/false);
     c.bias_dt = bias;
@@ -253,13 +257,14 @@ static std::vector<ck_test::PrepCallCase> make_prepare_cases() {
   // [gate_bias | up_bias] in permuted order to match the prepack
   // permutation; both fused split-halves paths decline biased calls
   // through the same `split_halves_act_with_bias_not_fused` reason
-  // string (planned follow-up).  Asserts for both supported bias
-  // dtypes × both gated kinds = 4 cases.
+  // string (planned follow-up).  Asserts for all supported bias
+  // dtypes × both gated kinds = 6 cases.
   for (auto act : {grp_matmul_gated_act_t::silu_and_mul,
                    grp_matmul_gated_act_t::gelu_and_mul}) {
     const char *act_name =
         (act == grp_matmul_gated_act_t::silu_and_mul) ? "silu" : "gelu";
-    for (auto bias : {data_type_t::bf16, data_type_t::f32}) {
+    for (auto bias : {data_type_t::bf16, data_type_t::f32,
+                      data_type_t::f16}) {
       auto c = baseline(
           std::string("neg_") + act_name + "_bias_" + ck_test::dt_name(bias)
           + "_refused_at_gate",
@@ -770,6 +775,194 @@ TEST(CkPrepareForCallInt8Refusal, RefusesKNotMultipleOfFour) {
   ck::CallContext kctx;
   EXPECT_EQ(ck_test::run_prepare(c, storage, kctx), status_t::failure);
   EXPECT_FALSE(kctx.enabled);
+}
+
+// ──────────────────────────────────────────────────────────────────
+// [Property] FP16 prepare_for_call — the native AVX-512-FP16 variants
+// are accepted through `prepare_for_call` exactly when their tuple
+// matches the f16 truth table in `resolve_variant`.  These tests run
+// only on hosts/toolchains with AVX-512-FP16 (the dispatcher refuses
+// the f16 family at its ISA gate otherwise — the BF16-only gate is
+// not enough; the f16 family has its own `avx512f16_available()`
+// branch inside prepare_for_call).  Sibling of the
+// `CkPrepareForCallInt8` section above.
+//
+// Coverage:
+//   * (f16, f16, f16) act=none           → accept, kF16_F16_F16.
+//   * (f16, f16, f32) act=none           → accept, kF16_F16_F32.
+//   * f16 + {swiglu, silu, gelu}, f16 dst → accept (gated f16 dst).
+//   * f16 + gated act + f32 dst          → refuse (gated store is
+//                                          f16-dst only).
+//   * f16 + gated act + bias             → refuse (bias-into-init under
+//                                          the interleaved layout is a
+//                                          follow-up, same as bf16).
+//   * f16 + gated act + act_dtype=bf16   → refuse (the f16 family's
+//                                          fused store writes f16, so
+//                                          the act_dtype gate wants f16).
+//   * f16 + bias dtype ∈ {none, bf16, f32, f16}, act=none → accept
+//                                          (bf16/f32 bias narrowed to
+//                                          f16 at init; f16 bias loaded
+//                                          directly).
+// ──────────────────────────────────────────────────────────────────
+namespace {
+
+// f16-family baseline: src=wei=dst=f16, act_dtype=f16 (the fused-act
+// gate wants the family's store dtype).  N=256 satisfies the
+// pack_nr / swiglu (N/2 % 16) divisibility constraints.
+inline ck_test::PrepCallCase f16_baseline(const std::string &label,
+                                          bool expect_success = true) {
+  ck_test::PrepCallCase c;
+  c.label          = label;
+  c.src_dt         = data_type_t::f16;
+  c.wei_dt         = data_type_t::f16;
+  c.dst_dt         = data_type_t::f16;
+  c.act_dt         = data_type_t::f16;
+  c.expect_success = expect_success;
+  return c;
+}
+
+}  // namespace
+
+TEST(CkPrepareForCallF16, AcceptsF16F16F16) {
+  CK_SKIP_IF_NO_F16_ISA();
+  auto c = f16_baseline("f16_f16_f16_act_none");
+  ck_test::PrepCallStorage storage;
+  ck::CallContext kctx;
+  ASSERT_EQ(ck_test::run_prepare(c, storage, kctx), status_t::success);
+  EXPECT_TRUE(kctx.enabled);
+  EXPECT_EQ(kctx.variant, ck::KernelVariant::kF16_F16_F16);
+  EXPECT_GT(kctx.pack_nr, 0);
+}
+
+TEST(CkPrepareForCallF16, AcceptsF16F16F32) {
+  CK_SKIP_IF_NO_F16_ISA();
+  auto c = f16_baseline("f16_f16_f32_act_none");
+  c.dst_dt = data_type_t::f32;
+  ck_test::PrepCallStorage storage;
+  ck::CallContext kctx;
+  ASSERT_EQ(ck_test::run_prepare(c, storage, kctx), status_t::success);
+  EXPECT_TRUE(kctx.enabled);
+  EXPECT_EQ(kctx.variant, ck::KernelVariant::kF16_F16_F32);
+}
+
+TEST(CkPrepareForCallF16, AcceptsAllGatedActsF16Dst) {
+  CK_SKIP_IF_NO_F16_ISA();
+  struct Row {
+    grp_matmul_gated_act_t act;
+    ck::ActKind            expect_act_kind;
+    const char            *name;
+  };
+  for (const auto &row : {
+           Row{grp_matmul_gated_act_t::swiglu_oai_mul,
+               ck::ActKind::swiglu_oai_mul, "swiglu"},
+           Row{grp_matmul_gated_act_t::silu_and_mul,
+               ck::ActKind::silu_and_mul, "silu"},
+           Row{grp_matmul_gated_act_t::gelu_and_mul,
+               ck::ActKind::gelu_and_mul, "gelu"},
+       }) {
+    auto c = f16_baseline(std::string("f16_") + row.name + "_f16dst");
+    c.act     = row.act;
+    c.bias_dt = data_type_t::none;
+    ck_test::PrepCallStorage storage;
+    ck::CallContext kctx;
+    EXPECT_EQ(ck_test::run_prepare(c, storage, kctx), status_t::success)
+        << "f16 + " << row.name << " (f16 dst, no bias) must be accepted";
+    EXPECT_TRUE(kctx.enabled);
+    EXPECT_EQ(kctx.variant, ck::KernelVariant::kF16_F16_F16);
+    EXPECT_EQ(kctx.act_kind, row.expect_act_kind);
+  }
+}
+
+TEST(CkPrepareForCallF16, RefusesGatedActF32Dst) {
+  CK_SKIP_IF_NO_F16_ISA();
+  // Every gated kind's f16 pair-store helper writes f16 only, so an
+  // f32 dst is structurally invalid — symmetric with the bf16 family.
+  for (auto act : {grp_matmul_gated_act_t::swiglu_oai_mul,
+                   grp_matmul_gated_act_t::silu_and_mul,
+                   grp_matmul_gated_act_t::gelu_and_mul}) {
+    auto c = f16_baseline("f16_gated_f32dst_refused",
+                          /*expect_success=*/false);
+    c.act    = act;
+    c.dst_dt = data_type_t::f32;
+    ck_test::PrepCallStorage storage;
+    ck::CallContext kctx;
+    EXPECT_EQ(ck_test::run_prepare(c, storage, kctx), status_t::failure)
+        << "f16 gated activation + f32 dst must be refused";
+    EXPECT_FALSE(kctx.enabled);
+  }
+}
+
+TEST(CkPrepareForCallF16, RefusesSiluGeluWithBias) {
+  CK_SKIP_IF_NO_F16_ISA();
+  // bias-into-init under the prepack-permuted interleaved layout is a
+  // follow-up for the split-halves kinds — refused for f16 exactly as
+  // for bf16.
+  for (auto act : {grp_matmul_gated_act_t::silu_and_mul,
+                   grp_matmul_gated_act_t::gelu_and_mul}) {
+    for (auto bias : {data_type_t::bf16, data_type_t::f32,
+                      data_type_t::f16}) {
+      auto c = f16_baseline("f16_split_halves_bias_refused",
+                            /*expect_success=*/false);
+      c.act     = act;
+      c.bias_dt = bias;
+      ck_test::PrepCallStorage storage;
+      ck::CallContext kctx;
+      EXPECT_EQ(ck_test::run_prepare(c, storage, kctx), status_t::failure)
+          << "f16 split-halves gated activation + bias must be refused";
+      EXPECT_FALSE(kctx.enabled);
+    }
+  }
+}
+
+TEST(CkPrepareForCallF16, RefusesGatedActWrongActDtype) {
+  CK_SKIP_IF_NO_F16_ISA();
+  // The f16 family's fused store writes f16, so a fused activation
+  // requires act_dtype=f16; act_dtype=bf16 must be refused at the
+  // early act_dtype gate.
+  auto c = f16_baseline("f16_swiglu_actdt_bf16_refused",
+                        /*expect_success=*/false);
+  c.act    = grp_matmul_gated_act_t::swiglu_oai_mul;
+  c.act_dt = data_type_t::bf16;  // wrong for the f16 family
+  ck_test::PrepCallStorage storage;
+  ck::CallContext kctx;
+  EXPECT_EQ(ck_test::run_prepare(c, storage, kctx), status_t::failure);
+  EXPECT_FALSE(kctx.enabled);
+}
+
+TEST(CkPrepareForCallF16, AcceptsBiasDtypesActNone) {
+  CK_SKIP_IF_NO_F16_ISA();
+  // Plain matmul (act=none) admits all four bias kinds for the FP16
+  // family: a bf16 / f32 bias is narrowed to f16 at accumulator init,
+  // while an f16 bias is loaded directly.
+  struct Row { data_type_t dt; ck::BiasKind expected; };
+  for (auto r : {Row{data_type_t::none, ck::BiasKind::none},
+                 Row{data_type_t::bf16, ck::BiasKind::bf16},
+                 Row{data_type_t::f32 , ck::BiasKind::fp32},
+                 Row{data_type_t::f16 , ck::BiasKind::f16}}) {
+    auto c = f16_baseline(std::string("f16_bias_")
+                          + ck_test::dt_name(r.dt));
+    c.bias_dt = r.dt;
+    ck_test::PrepCallStorage storage;
+    ck::CallContext kctx;
+    ASSERT_EQ(ck_test::run_prepare(c, storage, kctx), status_t::success)
+        << "f16 + bias " << ck_test::dt_name(r.dt) << " must be accepted";
+    EXPECT_TRUE(kctx.enabled);
+    EXPECT_EQ(kctx.bias_kind, r.expected);
+  }
+}
+
+TEST(CkPrepareForCallF16, VariantFieldMatchesResolveVariant) {
+  CK_SKIP_IF_NO_F16_ISA();
+  for (auto dst : {data_type_t::f16, data_type_t::f32}) {
+    auto c = f16_baseline(std::string("f16_variant_match_dst_")
+                          + ck_test::dt_name(dst));
+    c.dst_dt = dst;
+    ck_test::PrepCallStorage storage;
+    ck::CallContext kctx;
+    ASSERT_EQ(ck_test::run_prepare(c, storage, kctx), status_t::success);
+    EXPECT_EQ(kctx.variant,
+              ck::resolve_variant(c.src_dt, c.wei_dt, c.dst_dt));
+  }
 }
 
 }  // namespace

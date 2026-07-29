@@ -43,6 +43,7 @@ namespace ck_test {
 
 namespace ck = zendnnl::lowoha::matmul::custom_kernel;
 using moe_test_utils::bfloat16_t;
+using moe_test_utils::float16_t;
 using moe_test_utils::data_type_t;
 using zendnnl::error_handling::status_t;
 using zendnnl::lowoha::matmul::grp_matmul_gated_act_t;
@@ -83,6 +84,29 @@ using zendnnl::lowoha::matmul::grp_matmul_gated_act_t;
              "custom kernel cannot run, so any per-tile or "           \
              "prepare_for_call probe of the int8 variants would "      \
              "refuse cleanly at the ISA gate";                         \
+    }                                                                  \
+  } while (0)
+
+// ──────────────────────────────────────────────────────────────────
+// FP16 ISA gate — needed for tests that exercise the native AVX-512-
+// FP16 microkernel family (`f16:f16:f16` / `f16:f16:f32`).  The FP16
+// path uses VFMADD*PH (AVX-512-FP16), which is an independent feature
+// flag from AVX-512-BF16 and is ALSO gated on the toolchain having
+// compiled the FP16 intrinsics — `avx512f16_available()` folds both
+// the runtime CPUID probe and the compile-time availability into one
+// predicate (returns false when either is missing).  Tests that probe
+// the FP16 end-to-end path call this macro instead of (or in addition
+// to) `CK_SKIP_IF_NO_BF16_ISA`.  Note `dispatch_supported()` only
+// reports the BF16 ISA, so the FP16 suite must gate on this macro
+// rather than `CK_SKIP_IF_NO_BF16_ISA()`.
+#define CK_SKIP_IF_NO_F16_ISA()                                        \
+  do {                                                                 \
+    if (!::ck_test::ck::avx512f16_available()) {                       \
+      GTEST_SKIP()                                                     \
+          << "AVX-512-FP16 not available on this host/toolchain; the " \
+             "FP16 custom kernel cannot run, so any per-tile or "      \
+             "end-to-end probe of the f16 variants would refuse and "  \
+             "fall back to AOCL DLP at the ISA gate";                  \
     }                                                                  \
   } while (0)
 
@@ -144,8 +168,10 @@ struct PrepCallCase {
 struct PrepCallStorage {
   std::vector<bfloat16_t>     wei_storage;
   std::vector<int8_t>         wei_int8_storage;
+  std::vector<float16_t>      wei_f16_storage;
   std::vector<bfloat16_t>     bias_bf16_storage;
   std::vector<float>          bias_f32_storage;
+  std::vector<float16_t>      bias_f16_storage;
 };
 
 // One-shot driver for `prepare_for_call` — populates `storage` with
@@ -165,6 +191,15 @@ inline status_t run_prepare(const PrepCallCase &c,
     storage.wei_int8_storage.assign(
         static_cast<size_t>(c.K) * c.N, static_cast<int8_t>(1));
     wei_ptr = storage.wei_int8_storage.data();
+  } else if (c.wei_dt == data_type_t::f16) {
+    // FP16 family — the f16 pack path reads the weight as
+    // `float16_t`, so the storage element type must match (a bf16
+    // buffer reinterpreted as f16 would feed wrong bit patterns to
+    // any test that inspects packed values, e.g. the interleave
+    // bit-equality check).
+    storage.wei_f16_storage.assign(
+        static_cast<size_t>(c.K) * c.N, float16_t(0.05f));
+    wei_ptr = storage.wei_f16_storage.data();
   } else {
     storage.wei_storage.assign(
         static_cast<size_t>(c.K) * c.N, bfloat16_t(0.05f));
@@ -178,6 +213,11 @@ inline status_t run_prepare(const PrepCallCase &c,
   } else if (c.bias_dt == data_type_t::f32) {
     storage.bias_f32_storage.assign(c.N, 0.01f);
     bias_ptr = storage.bias_f32_storage.data();
+  } else if (c.bias_dt == data_type_t::f16) {
+    // f16 bias — accepted by all families (FP16 loads it directly;
+    // bf16 / DQ-INT8 widen it to fp32 via _mm512_cvtph_ps).
+    storage.bias_f16_storage.assign(c.N, float16_t(0.01f));
+    bias_ptr = storage.bias_f16_storage.data();
   }
 
   std::vector<bool>  transA_v;

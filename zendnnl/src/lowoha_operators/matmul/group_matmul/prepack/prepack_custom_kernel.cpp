@@ -29,6 +29,7 @@ namespace group_matmul_prepack {
 namespace custom_kernel {
 
 using zendnnl::common::bfloat16_t;
+using zendnnl::common::float16_t;
 using zendnnl::ops::matmul_config_t;
 
 namespace ck = zendnnl::lowoha::matmul::custom_kernel;
@@ -100,6 +101,11 @@ status_t warm_pack_all_custom_kernel_experts(
   // runtime would refuse the matching call identically.
   if (dtype_family == WarmDtypeFamily::kINT8) {
     if (!ck::avx512vnni_available())
+      return status_t::success;
+  } else if (dtype_family == WarmDtypeFamily::kF16) {
+    // FP16 family needs native AVX-512-FP16 (and a toolchain that
+    // compiled the intrinsics, folded into avx512f16_available()).
+    if (!ck::avx512f16_available())
       return status_t::success;
   } else if (!ck::dispatch_supported()) {  // bf16 family needs AVX-512 BF16
     return status_t::success;
@@ -209,6 +215,13 @@ status_t warm_pack_all_custom_kernel_experts(
       const int8_t *packed_ignored = nullptr;
       pst = ck::get_or_pack_weight_int8(
           static_cast<const int8_t *>(weight[i]),
+          K[i], N[i], ldb[i], pack_nr, transB[i],
+          /*interleave_split_halves=*/interleave_split_halves,
+          &packed_ignored, &was_hit);
+    } else if (dtype_family == WarmDtypeFamily::kF16) {
+      const float16_t *packed_ignored = nullptr;
+      pst = ck::get_or_pack_weight_f16(
+          static_cast<const float16_t *>(weight[i]),
           K[i], N[i], ldb[i], pack_nr, transB[i],
           /*interleave_split_halves=*/interleave_split_halves,
           &packed_ignored, &was_hit);

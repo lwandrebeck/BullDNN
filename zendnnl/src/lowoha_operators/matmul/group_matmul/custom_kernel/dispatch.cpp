@@ -90,6 +90,15 @@ void CallContext::release_owned_buffers() {
       ptr = nullptr;
     }
   }
+  // FP16 sibling — disjoint free sink (the f16 cache and its
+  // disable-cache buffers come from a separate aligned_alloc region
+  // tagged by the per-pack family in `pack.cpp`).
+  for (auto &ptr : owned_packed_ptrs_f16) {
+    if (ptr != nullptr) {
+      free_owned_packed_weight_f16(ptr);
+      ptr = nullptr;
+    }
+  }
 }
 
 void CallContext::reset() {
@@ -114,8 +123,10 @@ void CallContext::reset() {
   scale_kind    = ScaleKind::kF32;
   for (auto &fn : kfn_table)      fn = nullptr;
   for (auto &fn : kfn_table_int8) fn = nullptr;
+  for (auto &fn : kfn_table_f16)  fn = nullptr;
   packed_ptrs.fill(nullptr);
   packed_ptrs_int8.fill(nullptr);
+  packed_ptrs_f16.fill(nullptr);
   subtile_cols_per_expert.fill(0);
 }
 
@@ -125,9 +136,11 @@ void CallContext::reset() {
 // owns the logging (this helper is also called from gtests that
 // want to assert the routing without any side effect).
 //
-// The BF16-BF16-BF16 and BF16-BF16-F32 rows are wired up.  Any other
+// The wired-up rows are: the BF16 family (BF16-BF16-BF16 /
+// BF16-BF16-F32), the DQ-INT8 family (s8 wei × {bf16,f32} dst, sym /
+// asym), and the FP16 family (F16-F16-F16 / F16-F16-F32).  Any other
 // tuple falls through to `kUnsupported`, which the caller routes to
-// DLP.
+// DLP.  See the full truth table on `resolve_variant` in dispatch.hpp.
 // ────────────────────────────────────────────────────────────────────
 KernelVariant resolve_variant(data_type_t src, data_type_t wei,
                               data_type_t dst,
@@ -184,6 +197,18 @@ KernelVariant resolve_variant(data_type_t src, data_type_t wei,
         return KernelVariant::kU8_S8_F32_ASYM;
     }
   }
+  // FP16 family — native AVX-512-FP16.  `dynamic_quant` MUST be false
+  // (the FP16 path is non-quant, like the bf16 family); a quantised
+  // f16 tuple has no CK route and falls through to kUnsupported.
+  //   (f16, f16, f16) → kF16_F16_F16
+  //   (f16, f16, f32) → kF16_F16_F32  (act=none only; gated kinds are
+  //                                    f16-dst, refused by select_*)
+  if (!dynamic_quant
+      && src == data_type_t::f16
+      && wei == data_type_t::f16) {
+    if (dst == data_type_t::f16) return KernelVariant::kF16_F16_F16;
+    if (dst == data_type_t::f32) return KernelVariant::kF16_F16_F32;
+  }
   return KernelVariant::kUnsupported;
 }
 
@@ -200,6 +225,8 @@ DstDt dst_dt_for_variant(KernelVariant v) noexcept {
     case KernelVariant::kU8_S8_BF16_ASYM: return DstDt::kBf16;
     case KernelVariant::kS8_S8_F32_SYM:   return DstDt::kF32;
     case KernelVariant::kU8_S8_F32_ASYM:  return DstDt::kF32;
+    case KernelVariant::kF16_F16_F16:     return DstDt::kF16;
+    case KernelVariant::kF16_F16_F32:     return DstDt::kF32;
     default: return DstDt::kBf16;  // unreachable on the success path
   }
 }
@@ -295,6 +322,16 @@ inline SubtileBytes subtile_bytes_for_variant(KernelVariant v) {
     // Comp row is int32 per-column appended after each o-block.
     return {1, 1, 4};
   }
+  if (is_f16_variant(v)) {
+    // FP16 family — src/wei are native f16 (2 bytes each), no
+    // compensation row (non-quant, like bf16).  Numerically identical
+    // to the bf16 fallthrough below, but stated explicitly so a future
+    // narrower family (e.g. FP8 / INT4) cannot silently inherit the
+    // 2-byte bf16 model via the fallthrough.
+    return {2, 2, 0};
+  }
+  // BF16 family (default) — src/wei are bf16 (2 bytes each), no
+  // compensation row.
   return {2, 2, 0};
 }
 
@@ -323,6 +360,21 @@ status_t fill_kfn_table_int8(
   const int max_mr = max_mr_for_nv(NV);
   for (int mr = 1; mr <= max_mr; ++mr) {
     kfn_table[mr] = select_int8_ukernel(mr, NV, compute, act_kind, dst_dt);
+    if (kfn_table[mr] == nullptr) return status_t::failure;
+  }
+  return status_t::success;
+}
+
+// FP16 sibling of `fill_kfn_table` — same loop shape, different
+// selector (`select_f16_ukernel`).  On a toolchain without AVX-512-FP16
+// intrinsics `select_f16_ukernel` returns nullptr for every MR, so
+// this fails and `prepare_for_call` refuses the call (caller → AOCL).
+status_t fill_kfn_table_f16(
+    int NV, ActKind act_kind, DstDt dst_dt,
+    f16_ukernel_fn_t (&kfn_table)[kMaxMR + 1]) {
+  const int max_mr = max_mr_for_nv(NV);
+  for (int mr = 1; mr <= max_mr; ++mr) {
+    kfn_table[mr] = select_f16_ukernel(mr, NV, act_kind, dst_dt);
     if (kfn_table[mr] == nullptr) return status_t::failure;
   }
   return status_t::success;
@@ -447,8 +499,9 @@ status_t prepare_for_call(
   // is present; the precise per-variant ISA gate runs after
   // `resolve_variant()` below (bf16 -> BF16, int8 -> VNNI) so a
   // VNNI-only host can still serve the DQ-INT8 fast path.
-  if (!avx512bf16_available() && !avx512vnni_available())
-    return refuse("no_avx512_bf16_or_vnni");
+  if (!avx512bf16_available() && !avx512vnni_available()
+      && !avx512f16_available())
+    return refuse("no_avx512_bf16_vnni_or_fp16");
 
   // ── Library-wide weight-cache toggle ─────────────────────────────
   // `ZENDNNL_MATMUL_WEIGHT_CACHE` (read via
@@ -551,9 +604,13 @@ status_t prepare_for_call(
   }
   // Per-variant ISA gate (the early run-once check above only confirms
   // at least ONE family's ISA exists).  bf16 variants require AVX-512
-  // BF16; int8 variants require AVX-512 VNNI.  Splitting the gate here
-  // lets a VNNI-only host (no BF16) still serve DQ-INT8.
-  if (!is_int8_variant(variant) && !avx512bf16_available()) {
+  // BF16; int8 variants require AVX-512 VNNI; fp16 variants require
+  // AVX-512-FP16 (checked by its own gate below).  Splitting the gate
+  // here lets a VNNI-only host (no BF16) still serve DQ-INT8, and a
+  // FP16-only host (no BF16) still serve the FP16 variants — the bf16
+  // ISA requirement must therefore only apply to the bf16 variants.
+  if (!is_int8_variant(variant) && !is_f16_variant(variant)
+      && !avx512bf16_available()) {
     return refuse("avx512bf16_not_available",
                   "BF16 custom kernel requires AVX-512 BF16 (VDPBF16PS)"
                   " — runtime CPU detection failed");
@@ -562,6 +619,17 @@ status_t prepare_for_call(
     return refuse("avx512vnni_not_available",
                   "DQ-INT8 custom kernel requires AVX-512 VNNI "
                   "(VPDPBUSD) — runtime CPU detection failed");
+  }
+  // FP16 variants require native AVX-512-FP16 (VFMADD*PH).  On Zen4
+  // and other AVX-512 parts without FP16, `avx512f16_available()`
+  // returns false (and on a toolchain without the intrinsics the
+  // microkernels weren't compiled), so refuse cleanly and fall back
+  // to AOCL DLP.
+  if (is_f16_variant(variant) && !avx512f16_available()) {
+    return refuse("avx512fp16_not_available",
+                  "FP16 custom kernel requires native AVX-512-FP16 "
+                  "(VFMADD*PH) — runtime CPU / toolchain detection "
+                  "failed");
   }
   // Cache the variant on the per-call context so `dispatch_tile()`
   // can route to the right kernel instantiation without re-running
@@ -631,16 +699,32 @@ status_t prepare_for_call(
   // for `act = none` (plain GEMM) we accept any act_dtype (including
   // `none`) so callers that have no activation at all don't have to
   // fabricate a dummy value.
-  if (act != grp_matmul_gated_act_t::none
-      && act_dtype != data_type_t::bf16) {
-    return refuse("unsupported_act_dtype",
-                  "fused activation requires act_dtype=bf16");
+  // Fused activation dtype must match the family's store dtype: bf16
+  // for the BF16 / DQ-INT8 families (their gated store helpers write
+  // BF16), f16 for the FP16 family (its gated store helpers write
+  // F16).  `variant` is already resolved above, so gate on it.
+  if (act != grp_matmul_gated_act_t::none) {
+    const data_type_t want_act_dt = is_f16_variant(variant)
+        ? data_type_t::f16 : data_type_t::bf16;
+    if (act_dtype != want_act_dt) {
+      return refuse("unsupported_act_dtype",
+                    is_f16_variant(variant)
+                        ? "fused activation requires act_dtype=f16 "
+                          "(FP16 family)"
+                        : "fused activation requires act_dtype=bf16");
+    }
   }
-  // Bias dtype resolution — the ukernel handles three cases:
+  // Bias dtype resolution — handled by all three microkernel families
+  // (bf16, DQ-INT8, FP16):
   //   * no bias buffer at all (caller passes nullptr per-expert).
   //   * bf16 bias — load 16 bf16 lanes, convert to fp32 in-register.
   //   * fp32 bias — load 16 fp32 lanes directly.
-  // Anything else (e.g. f16, s8) falls back to the standard path.
+  //   * f16  bias — load 16 f16 lanes.  The FP16 kernel
+  //     seeds its __m512h accumulator directly; the bf16 / DQ-INT8
+  //     kernels widen to fp32 via `_mm512_cvtph_ps` (VCVTPH2PS, part of
+  //     AVX-512F — NOT the native AVX-512-FP16 ISA), so f16 bias works on
+  //     any bf16/VNNI-capable host regardless of FP16 ISA / toolchain.
+  // Anything else (e.g. s8) falls back to the standard path.
   BiasKind bias_kind = BiasKind::none;
   if (bias_dtype == data_type_t::none) {
     bias_kind = BiasKind::none;
@@ -648,9 +732,11 @@ status_t prepare_for_call(
     bias_kind = BiasKind::bf16;
   } else if (bias_dtype == data_type_t::f32) {
     bias_kind = BiasKind::fp32;
+  } else if (bias_dtype == data_type_t::f16) {
+    bias_kind = BiasKind::f16;
   } else {
     return refuse("unsupported_bias_dtype",
-                  "custom kernel supports none/bf16/fp32 bias only");
+                  "custom kernel supports none/bf16/fp32/f16 bias only");
   }
 
   const int num_ops = static_cast<int>(M.size());
@@ -785,6 +871,17 @@ status_t prepare_for_call(
                     "act_kind, dst_dt) tuple — note gated act + FP32-dst "
                     "is intentionally rejected (BF16 dst only)");
     }
+  } else if (is_f16_variant(out.variant)) {
+    const DstDt dst_dt = dst_dt_for_variant(out.variant);
+    if (fill_kfn_table_f16(out.NV, out.act_kind, dst_dt, out.kfn_table_f16)
+        != status_t::success) {
+      return refuse("kfn_table_f16_fill_failed",
+                    "no FP16 microkernel for this (NV, act_kind, dst_dt) "
+                    "tuple — note gated act + FP32-dst is intentionally "
+                    "rejected (F16 dst only), and on a toolchain without "
+                    "AVX-512-FP16 intrinsics every FP16 selector slot is "
+                    "nullptr so the call falls back to AOCL DLP");
+    }
   } else {
     const DstDt dst_dt = dst_dt_for_variant(out.variant);
     if (fill_kfn_table(out.NV, out.act_kind, dst_dt, out.kfn_table)
@@ -822,11 +919,14 @@ status_t prepare_for_call(
       || (act == grp_matmul_gated_act_t::gelu_and_mul);
   out.packed_ptrs.fill(nullptr);
   out.packed_ptrs_int8.fill(nullptr);
+  out.packed_ptrs_f16.fill(nullptr);
   out.subtile_cols_per_expert.fill(0);
-  // `out.owned_packed_ptrs` / `owned_packed_ptrs_int8` were already
-  // zeroed by `out.reset()` at entry; only the `cache_off` branch
+  // `out.owned_packed_ptrs` / `owned_packed_ptrs_int8` /
+  // `owned_packed_ptrs_f16` were already zeroed by `out.reset()` at
+  // entry (via `release_owned_buffers()`); only the `cache_off` branch
   // below stores into them.
   const bool variant_is_int8 = is_int8_variant(out.variant);
+  const bool variant_is_f16  = is_f16_variant(out.variant);
   for (int i = 0; i < num_ops; ++i) {
     if (M[i] <= 0) continue;
     bool was_hit_unused = false;
@@ -843,6 +943,8 @@ status_t prepare_for_call(
     if (prepacked_i) {
       if (variant_is_int8) {
         out.packed_ptrs_int8[i] = static_cast<const int8_t *>(weight[i]);
+      } else if (variant_is_f16) {
+        out.packed_ptrs_f16[i] = static_cast<const float16_t *>(weight[i]);
       } else {
         out.packed_ptrs[i] = static_cast<const bfloat16_t *>(weight[i]);
       }
@@ -855,7 +957,27 @@ status_t prepare_for_call(
       }
       continue;
     }
-    if (variant_is_int8) {
+    if (variant_is_f16) {
+      // FP16 path — caller's weight is f16; the plain (non-K-
+      // interleaved) FP16 pack mirrors the bf16 contract for
+      // is_weights_const / pack_nr / ldb / transB.
+      status_t pst = get_or_pack_weight_f16(
+          static_cast<const float16_t *>(weight[i]),
+          K[i], N[i], ldb[i], pack_nr,
+          /*transB=*/transB[i],
+          /*interleave_split_halves=*/interleave_split_halves,
+          &out.packed_ptrs_f16[i],
+          /*was_hit_out=*/&was_hit_unused,
+          /*disable_cache=*/cache_off);
+      if (pst != status_t::success) {
+        return refuse("weight_pack_failed",
+                      "get_or_pack_weight_f16 returned failure — "
+                      "see preceding log_error for OOM/arg detail");
+      }
+      if (cache_off) {
+        out.owned_packed_ptrs_f16[i] = out.packed_ptrs_f16[i];
+      }
+    } else if (variant_is_int8) {
       // DQ-INT8 path — caller's weight is signed s8 (`is_weights_const`
       // / pack_nr / ldb / transB contracts are the same as bf16).
       // The int8 pack writes both the VNNI-quad weight slab and the
@@ -918,6 +1040,8 @@ status_t prepare_for_call(
         : (out.variant == KernelVariant::kU8_S8_BF16_ASYM) ? "u8_s8_bf16_asym"
         : (out.variant == KernelVariant::kS8_S8_F32_SYM) ? "s8_s8_f32_sym"
         : (out.variant == KernelVariant::kU8_S8_F32_ASYM) ? "u8_s8_f32_asym"
+        : (out.variant == KernelVariant::kF16_F16_F16) ? "f16_f16_f16"
+        : (out.variant == KernelVariant::kF16_F16_F32) ? "f16_f16_f32"
         : "unsupported";
     apilog_verbose("[GRP_MATMUL.CK ENGAGED] variant=", variant_name,
                 " pack_nr=", out.pack_nr,
@@ -932,6 +1056,7 @@ status_t prepare_for_call(
                                    ? "gelu_and_mul" : "none"),
                 " bias_kind=", (out.bias_kind == BiasKind::none ? "none"
                                 : out.bias_kind == BiasKind::bf16 ? "bf16"
+                                : out.bias_kind == BiasKind::f16  ? "f16"
                                 : "fp32"),
                 " num_ops=", num_ops,
                 " per_expert_subtile=", (per_expert_subtile ? 1 : 0));
@@ -1045,7 +1170,7 @@ inline void dispatch_tile_int8(
 
   const size_t bias_elem_bytes = (ctx.bias_kind == BiasKind::fp32)
       ? sizeof(float)
-      : sizeof(bfloat16_t);
+      : sizeof(bfloat16_t);  // bf16 or f16 (both 2B)
 
   // Scale element width — the microkernel reads src/wei scales as bf16
   // (converting on load) or f32.  The dispatcher slices both scale
@@ -1174,6 +1299,162 @@ inline void dispatch_tile_int8(
 }
 }  // namespace
 
+// FP16 dispatch tile — owns the per-tile sub-tile + per-MR loop for the
+// `kF16_F16_F16` / `kF16_F16_F32` variants.  Structurally identical to
+// the BF16 `dispatch_tile` body (no scales / zp / compensation), with
+// two differences isolated here:
+//   * `o_blk_stride` is the plain FP16 pack stride `K * pack_nr`
+//     (the native-FMA pack carries no K-pair interleave), vs the bf16
+//     `K_pair * pack_nr * 2`.
+//   * the act=none dst element width tracks the resolved variant
+//     (F16 = 2B for kF16_F16_F16, FP32 = 4B for kF16_F16_F32); gated
+//     epilogues are F16-dst-only (2B) like the bf16 sibling.
+namespace {
+inline void dispatch_tile_f16(
+    const CallContext &ctx,
+    int   expert_idx,
+    int   M, int K,
+    int   n_tile, int col_start,
+    const void *src,  int lda,
+    const void *bias,
+    void       *tight_dst, int tight_ldc) {
+
+  const float16_t *Bpacked_full = ctx.packed_ptrs_f16[expert_idx];
+  const auto      *A            = static_cast<const float16_t *>(src);
+  std::byte       *Tight_bytes  = static_cast<std::byte *>(tight_dst);
+  const size_t dst_elem_bytes   =
+      (ctx.variant == KernelVariant::kF16_F16_F32)
+          ? sizeof(float) : sizeof(float16_t);
+
+  // Plain FP16 pack: one o-block is `K` rows of `pack_nr` FP16 cols.
+  // units: float16_t elements (not bytes) — pointer arithmetic below is
+  // on `float16_t *`.  No K-pair interleave and no odd-K pad (the native
+  // FP16 FMA consumes one K-lane per step, unlike the bf16 VDPBF16PS
+  // K-pair pack whose stride is `K_pair * pack_nr * 2`), so the stride
+  // is exactly `K * pack_nr`.
+  const size_t o_blk_stride =
+      static_cast<size_t>(K) * ctx.pack_nr;
+
+  const int subtile_cols = (ctx.subtile_cols_per_expert[expert_idx] > 0)
+      ? ctx.subtile_cols_per_expert[expert_idx]
+      : ctx.subtile_cols;
+
+  // Balanced MR partition — identical scheme to the bf16 sibling.
+  const int n_calls = (M + ctx.max_mr - 1) / ctx.max_mr;
+  const int mr_base = M / n_calls;
+  const int n_big   = M - mr_base * n_calls;
+
+  // Per-col bias byte stride.  The FP16 microkernel accepts a bf16,
+  // fp32, or f16 bias.  Only the fp32 case is 4 bytes; bf16 and
+  // f16 are both 2-byte element widths, so the non-fp32 arm uses a
+  // 2-byte stride (`sizeof(float16_t) == sizeof(bfloat16_t)`).  This is
+  // the bias element width, NOT the f16 dst width — they merely coincide
+  // at 2 bytes.
+  const size_t bias_elem_bytes = (ctx.bias_kind == BiasKind::fp32)
+      ? sizeof(float)
+      : sizeof(float16_t);
+
+  const bool is_gated_act =
+      (ctx.act_kind == ActKind::swiglu_oai_mul)
+      || (ctx.act_kind == ActKind::silu_and_mul)
+      || (ctx.act_kind == ActKind::gelu_and_mul);
+
+  if (is_gated_act) {
+    for (int sub_off = 0; sub_off < n_tile; sub_off += subtile_cols) {
+      const int sub_n        = std::min(subtile_cols, n_tile - sub_off);
+      const int sub_col_base = col_start + sub_off;
+      const int n_blocks     = sub_n / ctx.pack_nr;
+
+      const float16_t *Bpacked_blk_base = Bpacked_full
+          + static_cast<size_t>(sub_col_base / ctx.pack_nr) * o_blk_stride;
+      const char *bias_blk_base = (bias != nullptr)
+          ? static_cast<const char *>(bias)
+              + static_cast<size_t>(sub_col_base) * bias_elem_bytes
+          : nullptr;
+
+      int m_off = 0;
+      for (int c = 0; c < n_calls; ++c) {
+        const int mr_now = (c < n_big) ? mr_base + 1 : mr_base;
+        const f16_ukernel_fn_t kfn = ctx.kfn_table_f16[mr_now];
+
+        const float16_t *A_chunk =
+            A + static_cast<size_t>(m_off) * lda;
+        // Gated-act epilogues are F16-dst-only, so the half-width tight
+        // arena is a plain float16_t matrix (`tight_ldc` in elements).
+        // Index it as float16_t* so the element→byte scaling is implicit
+        // — avoids a sizeof multiply against a byte pointer.
+        // /2: the output is half-width (one post-activation col per
+        // gate/up pair), so the wide input column `sub_col_base` maps to
+        // output column `sub_col_base / 2`.  Offset is in float16_t
+        // elements, not bytes.
+        float16_t *Tight_row_base = static_cast<float16_t *>(tight_dst)
+            + static_cast<size_t>(m_off) * tight_ldc
+            + (sub_col_base / 2);
+
+        for (int b = 0; b < n_blocks; ++b) {
+          const float16_t *Bpacked_blk =
+              Bpacked_blk_base + static_cast<size_t>(b) * o_blk_stride;
+          const void *bias_blk = (bias_blk_base != nullptr)
+              ? static_cast<const void *>(bias_blk_base
+                  + static_cast<size_t>(b) * ctx.pack_nr * bias_elem_bytes)
+              : nullptr;
+          float16_t *Tight_row = Tight_row_base
+              + static_cast<size_t>(b) * (ctx.pack_nr / 2);
+
+          kfn(A_chunk, lda, Bpacked_blk, bias_blk, ctx.bias_kind,
+              /*Cout=*/nullptr, /*ldc=*/0,
+              static_cast<void *>(Tight_row), tight_ldc, K);
+        }
+        m_off += mr_now;
+      }
+    }
+    return;
+  }
+
+  // Act = none — wide output to the [M, N] dst arena.
+  for (int sub_off = 0; sub_off < n_tile; sub_off += subtile_cols) {
+    const int sub_n        = std::min(subtile_cols, n_tile - sub_off);
+    const int sub_col_base = col_start + sub_off;
+    const int n_blocks     = sub_n / ctx.pack_nr;
+
+    const float16_t *Bpacked_blk_base = Bpacked_full
+        + static_cast<size_t>(sub_col_base / ctx.pack_nr) * o_blk_stride;
+    const char *bias_blk_base = (bias != nullptr)
+        ? static_cast<const char *>(bias)
+            + static_cast<size_t>(sub_col_base) * bias_elem_bytes
+        : nullptr;
+
+    int m_off = 0;
+    for (int c = 0; c < n_calls; ++c) {
+      const int mr_now = (c < n_big) ? mr_base + 1 : mr_base;
+      const f16_ukernel_fn_t kfn = ctx.kfn_table_f16[mr_now];
+
+      const float16_t *A_chunk =
+          A + static_cast<size_t>(m_off) * lda;
+      std::byte *Wide_row_base = Tight_bytes
+          + (static_cast<size_t>(m_off) * tight_ldc
+             + sub_col_base) * dst_elem_bytes;
+
+      for (int b = 0; b < n_blocks; ++b) {
+        const float16_t *Bpacked_blk =
+            Bpacked_blk_base + static_cast<size_t>(b) * o_blk_stride;
+        const void *bias_blk = (bias_blk_base != nullptr)
+            ? static_cast<const void *>(bias_blk_base
+                + static_cast<size_t>(b) * ctx.pack_nr * bias_elem_bytes)
+            : nullptr;
+        std::byte *Wide_row = Wide_row_base
+            + static_cast<size_t>(b) * ctx.pack_nr * dst_elem_bytes;
+
+        kfn(A_chunk, lda, Bpacked_blk, bias_blk, ctx.bias_kind,
+            static_cast<void *>(Wide_row), tight_ldc,
+            /*Cout_tight=*/nullptr, /*ldc_tight=*/0, K);
+      }
+      m_off += mr_now;
+    }
+  }
+}
+}  // namespace
+
 void dispatch_tile(
     const CallContext &ctx,
     int   expert_idx,
@@ -1245,6 +1526,14 @@ void dispatch_tile(
                        src_scale, src_zp, wei_scale);
     return;
   }
+  // FP16 fast path — native AVX-512-FP16.  Non-quant like the bf16
+  // path, so the scale / zp / wei_scale args are unused (asserted null
+  // below for the bf16 branch; the f16 branch returns before that).
+  if (is_f16_variant(ctx.variant)) {
+    dispatch_tile_f16(ctx, expert_idx, M, K, n_tile, col_start,
+                      src, lda, bias, tight_dst, tight_ldc);
+    return;
+  }
   // BF16 callers must NOT pass src_scale / src_zp / wei_scale —
   // those are DQ-INT8-only.  If they did, fail loudly in debug so
   // the contract violation is visible; in release the BF16 body
@@ -1304,7 +1593,7 @@ void dispatch_tile(
   // per-block bias window.
   const size_t bias_elem_bytes = (ctx.bias_kind == BiasKind::fp32)
       ? sizeof(float)
-      : sizeof(bfloat16_t);  // bf16 (and none — unused when bias==null)
+      : sizeof(bfloat16_t);  // bf16 or f16 (both 2B); none unused when bias==null
 
   // Hoist the act-kind branch out of the loops — straight-line code
   // with one indirect call per microkernel invocation.  All three

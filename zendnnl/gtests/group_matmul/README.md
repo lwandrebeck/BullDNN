@@ -18,7 +18,7 @@ consume, and which bug class does each test lock down".
 
 | Question | Answer |
 |---|---|
-| What gets tested? | The public `group_matmul_direct(...)` dispatcher and everything reachable from it: scheduling ALGOs 1..5, custom BF16 microkernel, F16 entry path (basic correctness, see §4.1), fused-MoE (Op1 + activation + Op2), gated activations, MoE post-op (weighted reduce), per-expert active/total contract, internal-alloc patterns, prepack module, quantization (WOQ + INT8 + dynamic). |
+| What gets tested? | The public `group_matmul_direct(...)` dispatcher and everything reachable from it: scheduling ALGOs 1..5, the custom microkernels (BF16 / FP16 / DQ-INT8 — direct-surface + e2e, see §4.6), F16 basic correctness (see §4.1), fused-MoE (Op1 + activation + Op2), gated activations, MoE post-op (weighted reduce), per-expert active/total contract, internal-alloc patterns, prepack module, quantization (WOQ + INT8 + dynamic). |
 | What isn't tested here? | Operator-agnostic infrastructure tests (`test_matmul.cpp`, `test_batchmatmul.cpp`, etc.) live at the parent `zendnnl/gtests/` level. The AI-gtests framework (`ai_gtests/`) is its own subsystem. |
 | Single binary? | Yes. All test files in this folder compile into the same `gtests` executable produced by the parent CMakeLists. Filter via `--gtest_filter=*Prepack*`, `--gtest_filter=*FusedMoE*`, etc. |
 | Helpers reuse policy? | One sibling header (`moe_test_utils.hpp`) for cross-file helpers; one helper TU (`group_matmul_test_helpers.{hpp,cpp}`) for the dispatch shim + quant fixture. File-local helpers stay in anonymous namespaces inside their owning `.cpp`. |
@@ -77,7 +77,31 @@ zendnnl/gtests/group_matmul/
                                     [28] TestPrepackEnvInteractionMatrix,
                                     [29] TestPrepackCrossWarmRegimes,
                                     [30] TestPrepackFingerprintInvariance,
-                                    [32] TestPrepackCkGateSymmetry
+                                    [32] TestPrepackCkGateSymmetry,
+                                    [F16] TestPrepackF16WarmDtypeFamily (WarmDtypeFamily::kF16)
+  custom_kernel/                    Direct-surface tests for the CK stack (dispatcher,
+                                    resolve_variant, prepare_for_call, pack, per-tile
+                                    microkernels).  One dtype family per *_bf16 / *_int8 /
+                                    *_f16 sibling file; the shared harness is
+                                    ck_test_helpers.hpp (ISA-gate macros
+                                    CK_SKIP_IF_NO_{BF16,INT8,F16}_ISA, PrepCallCase,
+                                    run_prepare).
+    ck_test_helpers.hpp             shared CK gtest scaffolding + ISA gates
+    test_dispatch_supported.cpp     dispatch_supported() BF16 gate + FP16 ISA-symmetry
+    test_resolve_variant.cpp        (src,wei,dst) -> KernelVariant truth table (BF16/INT8/F16)
+    test_prepare_for_call.cpp       per-call gating matrix (CkPrepareForCall{,Int8,F16})
+    test_features.cpp               resolved CallContext fields (act/bias kind, subtile,
+                                    packed_ptrs / packed_ptrs_f16)
+    test_dispatch_routing.cpp       CK -> AOCL-DLP fallback + family cross-reuse
+    test_pack_bf16.cpp              BF16 pack cache: plan_pack_nr, warm/hit, interleave
+    test_pack_int8.cpp              DQ-INT8 pack (K/4 VNNI + compensation row)
+    test_pack_f16.cpp               FP16 pack cache (plain [K][pack_nr] layout, disjoint
+                                    kCustomKernelF16Marker LRU, silu/gelu interleave,
+                                    WEIGHT_CACHE=0 no-cache mode)
+    test_ukernel_bf16.cpp           BF16 microkernel e2e vs inline scalar FP32 reference
+    test_ukernel_int8.cpp           DQ-INT8 microkernel direct-surface correctness
+    test_ukernel_f16.cpp            FP16 microkernel e2e vs inline scalar FP32 reference
+                                    (CkF16UkernelCorrectness matrix + Engages/Fallback gates)
 ```
 
 LOC summary (current tree, `wc -l`):
@@ -212,11 +236,42 @@ The env-knob matrix in `test_prepack.cpp` `[26]`-`[28]` runs each ALGO
 in its own subprocess for full coverage of the `static const`-cached
 env-getter paths.
 
-### 4.6 Custom BF16 microkernel
+### 4.6 Custom microkernels (BF16 / FP16 / DQ-INT8)
+Through the dispatcher (`test_prepack.cpp` / `test_fused_moe.cpp`):
 - Pack/unpack semantics             — `test_prepack.cpp` `[18]`, `[22]` (clear/re-fire)
 - NR=32 vs NR=64                    — `test_prepack.cpp` `[26]` (env matrix)
 - Fused swiglu_oai epilogue         — `test_fused_moe.cpp` `[7b]`, `test_prepack.cpp`
 - Wide-swiglu correctness guard     — `test_prepack.cpp` `[28]` `algo3_wide_layout`
+
+Direct-surface CK tests live under `custom_kernel/` (one dtype family per
+sibling file; see §2).  Each per-tile suite passes CK-compliant inputs
+(`is_weights_const=true`, `alpha=1`, `beta=0`, `transA=false`, `N % pack_nr == 0`),
+forces `ALGO=3` + the CK override, and validates the kernel output against an
+**inline scalar FP32 reference** (no library reference kernel), asserting the
+`_custom` gemm_mode actually fired:
+
+| Surface | BF16 | DQ-INT8 | FP16 |
+|---|---|---|---|
+| ISA gate            | `CK_SKIP_IF_NO_BF16_ISA` | `CK_SKIP_IF_NO_INT8_ISA` | `CK_SKIP_IF_NO_F16_ISA` |
+| resolve_variant     | `kBF16_BF16_{BF16,F32}` | `kS8/U8_*` | `kF16_F16_{F16,F32}` |
+| prepare_for_call    | `CkPrepareForCallTest` | `CkPrepareForCallInt8` | `CkPrepareForCallF16` |
+| pack cache          | `test_pack_bf16.cpp` | `test_pack_int8.cpp` | `test_pack_f16.cpp` |
+| microkernel e2e     | `test_ukernel_bf16.cpp` | `test_ukernel_int8.cpp` | `test_ukernel_f16.cpp` |
+| prepack warm family | `WarmDtypeFamily::kBF16` | `kINT8` (`test_prepack.cpp`) | `kF16` (`TestPrepackF16WarmDtypeFamily`) |
+
+FP16 notes (differ from BF16):
+- The FP16 microkernel accumulates in **native FP16** (`_mm512_fmadd_ph`), so
+  BOTH the f16-dst and f32-dst variants carry the native-FP16-accumulate
+  divergence vs the FP32 reference; `test_ukernel_f16.cpp` uses the f16
+  tolerance band (`tol_act(f16)`) for every dst dtype.
+- The FP16 pack is the plain `[O/pack_nr][K][pack_nr]` slab (no K-pair VNNI
+  doubling) in a disjoint LRU singleton keyed with `kCustomKernelF16Marker`;
+  `reset_grp_matmul_caches()` clears it alongside the BF16/INT8 caches.
+- Gated activations (swiglu_oai_mul / silu_and_mul / gelu_and_mul) are
+  **f16-dst only** (the fused pair-store writes f16); `(gated, f32-dst)` is
+  refused, mirroring the BF16 `(gated, f32)` refusal.
+- Requires native AVX-512-FP16 (CPUID + GCC ≥ 12); on hosts/toolchains
+  without it every `Ck*F16*` case `GTEST_SKIP()`s cleanly.
 
 ### 4.7 Quantization
 
@@ -288,7 +343,9 @@ first read for the process lifetime, in-process `setenv` is a no-op).
 | `ZENDNNL_GRP_MATMUL_PREPACK` | ON | yes | Master prepack switch (PR-443) |
 | `ZENDNNL_GRP_MATMUL_CROSS_WARM` | ON | yes | Opportunistic CK-aware cross-regime warm in `prepack/prepack.cpp::cross_warm` (eliminates decode-first-call spike when prompt-only warmup runs) |
 | `ZENDNNL_GRP_MATMUL_AOCL_STABLE_NTILE` | ON | yes | Pin n_thr to a num_threads-only formula -> AOCL cache key stability |
-| `ZENDNNL_GRP_MATMUL_CUSTOM_KERNEL` | OFF | yes | BF16 microkernel master switch |
+| `ZENDNNL_GRP_MATMUL_CUSTOM_KERNEL` | ON | yes | CK master switch (all families: BF16 / DQ-INT8 / FP16) |
+| `ZENDNNL_GRP_MATMUL_CUSTOM_KERNEL_INT8` | ON | yes | DQ-INT8 CK sub-toggle (cascades under the master switch); test override `s_grp_matmul_custom_kernel_int8_override` / `CustomKernelInt8Override` |
+| `ZENDNNL_GRP_MATMUL_CUSTOM_KERNEL_F16` | ON | yes | FP16 CK sub-toggle for the native AVX-512-FP16 microkernel (cascades under the master switch); also requires `avx512f16_available()`.  Test override `s_grp_matmul_custom_kernel_f16_override` / `CustomKernelF16Override` |
 | `ZENDNNL_GRP_MATMUL_FUSED_MOE_TIGHT` | 1 | yes | Force tight-dst layout for fused-MoE Op1 |
 | `ZENDNNL_GRP_MATMUL_N_TILE_FUSED_ACT` | ON | yes | Fuse swiglu_oai into ALGO 3 epilogue |
 | `ZENDNNL_GRP_MATMUL_N_ROUNDS` | 0 (auto) | yes | ALGO 3 round-mode (single/multi/balanced) |
@@ -324,6 +381,9 @@ make gtests -j$(nproc)
 ./gtests --gtest_filter='*GroupMatmulQuant*'       # quantization
 ./gtests --gtest_filter='*EnvBucketA*'             # perf-critical env knobs
 ./gtests --gtest_filter='*EnvInteraction*'         # production env combos
+./gtests --gtest_filter='CkF16*'                   # FP16 custom-kernel direct-surface
+./gtests --gtest_filter='CkF16UkernelCorrectness*' # FP16 microkernel e2e matrix
+./gtests --gtest_filter='*PrepackF16Warm*'        # FP16 prepack warm family
 
 # Single test by parameterised name:
 ./gtests --gtest_filter='*KDownSynthesis*/act_silu_and_mul_E8_N1_64'
@@ -349,6 +409,10 @@ Is it a fused-MoE end-to-end correctness test (any (act, fused, moe_postop) comb
 
 Is it sweeping the scheduling-ALGO matrix or custom-kernel env knobs in-process?
   yes -> test_algos.cpp
+
+Is it a direct-surface custom-kernel test (resolve_variant, prepare_for_call,
+pack cache, per-tile microkernel e2e)?
+  yes -> custom_kernel/test_*.cpp  (one *_bf16 / *_int8 / *_f16 sibling per family)
 
 Is it WOQ / INT8 / dynamic-quant?
   yes -> test_quant.cpp

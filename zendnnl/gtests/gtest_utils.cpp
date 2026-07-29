@@ -110,6 +110,14 @@ void reset_grp_matmul_caches() {
   // (now-freed) buffer — an order-dependent silent wrong-answer bite
   // identical to the one the BF16 clear above guards against.
   zendnnl::lowoha::matmul::custom_kernel::clear_custom_kernel_pack_cache_int8();
+  // The FP16 CK pack cache is ALSO a separate singleton
+  // (`pack_cache_singleton_f16`, keyed with `kCustomKernelF16Marker`),
+  // disjoint from the BF16 and INT8 ones.  Clear it for the same
+  // reason: pointer-keyed entries that survive across tests let
+  // heap-address reuse return a stale f16 packed weight built from a
+  // prior test's freed buffer — the identical order-dependent silent
+  // wrong-answer bite the BF16 / INT8 clears above guard against.
+  zendnnl::lowoha::matmul::custom_kernel::clear_custom_kernel_pack_cache_f16();
   zendnnl::lowoha::matmul::group_matmul_prepack::clear_fingerprint_cache_for_test();
   // The GGML unpack/reorder cache is ALSO pointer-keyed (weight_ptr + shape)
   // and process-wide, so it has the exact same heap-address-reuse hazard as

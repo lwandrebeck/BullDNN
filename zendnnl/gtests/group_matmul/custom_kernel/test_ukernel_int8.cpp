@@ -31,7 +31,8 @@
 ///     production NRs (`plan_pack_nr_int8` returns one of these).
 ///   * Compute ∈ {kS8_Sym, kU8_Asym}.
 ///   * Act    ∈ {none, swiglu_oai_mul, silu_and_mul, gelu_and_mul}.
-///   * Bias   ∈ {none, bf16, f32}.
+///   * Bias   ∈ {none, bf16, f32, f16} (f16 widened to fp32 in-kernel
+///     via `_mm512_cvtph_ps`).
 ///
 /// `select_int8_ukernel` returning `nullptr` for any (MR, NV) tuple
 /// where `MR > max_mr_for_nv(NV)` is asserted in the negative
@@ -131,6 +132,9 @@ void scalar_ref_dq_int8(int M, int K, int N,
         if (bias_kind == ck::BiasKind::bf16) {
           y += static_cast<float>(
               reinterpret_cast<const bfloat16_t *>(bias)[v]);
+        } else if (bias_kind == ck::BiasKind::f16) {
+          y += static_cast<float>(
+              reinterpret_cast<const mt::float16_t *>(bias)[v]);
         } else {
           y += reinterpret_cast<const float *>(bias)[v];
         }
@@ -338,8 +342,9 @@ TEST_P(CkInt8UkernelTest, MatchesScalarReference) {
   for (int v = 0; v < NR; ++v) wei_scale[v] = sc(rng);
 
   // Bias buffer (only consulted when bias != BiasKind::none).
-  std::vector<bfloat16_t> bias_bf16(NR, bfloat16_t(0.0f));
-  std::vector<float>      bias_f32(NR, 0.0f);
+  std::vector<bfloat16_t>    bias_bf16(NR, bfloat16_t(0.0f));
+  std::vector<float>         bias_f32(NR, 0.0f);
+  std::vector<mt::float16_t> bias_f16(NR, mt::float16_t(0.0f));
   const void *bias_ptr = nullptr;
   if (c.bias == ck::BiasKind::bf16) {
     for (int v = 0; v < NR; ++v) bias_bf16[v] = bfloat16_t(0.02f * v);
@@ -347,6 +352,10 @@ TEST_P(CkInt8UkernelTest, MatchesScalarReference) {
   } else if (c.bias == ck::BiasKind::fp32) {
     for (int v = 0; v < NR; ++v) bias_f32[v] = 0.02f * v;
     bias_ptr = bias_f32.data();
+  } else if (c.bias == ck::BiasKind::f16) {
+    // f16 bias — widened via _mm512_cvtph_ps in the int8 kernel.
+    for (int v = 0; v < NR; ++v) bias_f16[v] = mt::float16_t(0.02f * v);
+    bias_ptr = bias_f16.data();
   }
 
   // Kernel output buffer.  For gated activations the kernel writes
@@ -526,6 +535,14 @@ INSTANTIATE_TEST_SUITE_P(
         Int8UkernelCase{8, 2, 64,  ck::IntCompute::kS8_Sym,
                         ck::ActKind::none, ck::BiasKind::fp32,
                         "sym_mr8_nv2_K64_f32bias"},
+        // f16 bias (widened via _mm512_cvtph_ps in the int8
+        // kernel — no AVX-512-FP16 ISA needed); sym + asym coverage.
+        Int8UkernelCase{4, 2, 128, ck::IntCompute::kS8_Sym,
+                        ck::ActKind::none, ck::BiasKind::f16,
+                        "sym_mr4_nv2_K128_f16bias"},
+        Int8UkernelCase{6, 4, 64,  ck::IntCompute::kU8_Asym,
+                        ck::ActKind::none, ck::BiasKind::f16,
+                        "asym_mr6_nv4_K64_f16bias"},
         Int8UkernelCase{4, 4, 128, ck::IntCompute::kS8_Sym,
                         ck::ActKind::none, ck::BiasKind::none,
                         "sym_mr4_nv4_K128_none"},

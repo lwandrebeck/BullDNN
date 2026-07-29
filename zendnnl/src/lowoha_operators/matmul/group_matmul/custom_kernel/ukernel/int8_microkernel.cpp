@@ -485,7 +485,7 @@ static void ukernel_impl(
     }
   }
 
-  // Load per-channel bias[v] if present (BF16 or FP32 → FP32 in
+  // Load per-channel bias[v] if present (BF16 / FP32 / F16 → FP32 in
   // registers).  Mirror of the bf16 sibling's bias load — the
   // dispatcher resolves `bias_kind` once at `prepare_for_call`
   // time and the branch is outside the per-(m, v) loop below.
@@ -499,6 +499,25 @@ static void ukernel_impl(
         __m256i b16 = _mm256_loadu_si256(
             reinterpret_cast<const __m256i *>(bias_bf16 + v * 16));
         bias_v[v] = bf16x16_to_f32(b16);
+      }
+    } else if (bias_kind == BiasKind::f16) {
+      // f16 bias.  `_mm512_cvtph_ps` (VCVTPH2PS, part of
+      // AVX-512F — NOT the native AVX-512-FP16 ISA) widens 16 f16 lanes
+      // to fp32, so this path needs no AVX-512-FP16 toolchain / CPU.
+      //
+      // `float16_t` is a class wrapper, and casting `float16_t*` to
+      // `uint16_t*` (then reading it) is strict-aliasing UB — see
+      // common/float16.hpp.  Copy the 16-lane f16 payload through
+      // `memcpy` into a `__m256i` (once per tile — negligible cost) so the
+      // load stays well-defined under -O2 / -fstrict-aliasing.
+      const auto *bias_bytes = static_cast<const char *>(bias);
+      #pragma GCC unroll 4
+      for (int v = 0; v < NV; ++v) {
+        __m256i h16;
+        std::memcpy(&h16,
+                    bias_bytes + static_cast<size_t>(v) * sizeof(h16),
+                    sizeof(h16));
+        bias_v[v] = _mm512_cvtph_ps(h16);
       }
     } else {
       const auto *bias_fp32 = static_cast<const float *>(bias);

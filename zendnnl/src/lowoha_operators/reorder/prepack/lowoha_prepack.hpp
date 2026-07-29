@@ -45,7 +45,7 @@ struct reorder_params_t;
 //       matmul time, set @c matmul_params::mem_format_b = 'r' (with
 //       @c lowoha_algo == matmul_algo_t::aocl_dlp_blocked).
 //   - matmul_algo_t::moe_custom_kernel
-//       group_matmul custom-kernel VNNI weight layout (bf16 or s8).
+//       group_matmul custom-kernel VNNI weight layout (bf16, f16, or s8).
 //       Consumed DIRECTLY by the ALGO 3 (N-tile) custom kernel: set
 //       @c matmul_params::mem_format_b = 'r' AND
 //       @c matmul_params::lowoha_algo == matmul_algo_t::moe_custom_kernel
@@ -177,6 +177,9 @@ struct prepack_params_t {
 //       path. Pack family chosen by wei_dtype:
 //         wei_dtype = bf16 -> VDPBF16PS VNNI pack
 //                             (layout [O/pack_nr][K/2][pack_nr][2])
+//         wei_dtype = f16  -> native AVX-512-FP16 plain slab
+//                             (layout [O/pack_nr][K][pack_nr]; no K-pair
+//                             VNNI doubling and no compensation row)
 //         wei_dtype = s8   -> DQ-INT8 VPDPBUSD VNNI-quad pack
 //                             + per-column int32 compensation row
 //                             (requires K % 4 == 0)

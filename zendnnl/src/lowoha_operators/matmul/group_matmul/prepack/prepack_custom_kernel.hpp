@@ -147,12 +147,17 @@ struct PackProbeStats {
 ///     K-quad VNNI pack + per-column compensation row).  The
 ///     caller is responsible for ensuring `weight[i]` points to s8
 ///     bytes; the warmer casts unconditionally.
-/// The two families pack into DISJOINT LRU singletons (see
-/// pack.cpp), so a process that warms both for the same model
-/// pays one warm per family.
+///   * `kF16`            — warm via `get_or_pack_weight_f16` (the
+///     plain, non-K-interleaved native-AVX-512-FP16 pack).  The caller
+///     ensures `weight[i]` points to f16 bytes; the warmer casts
+///     unconditionally.
+/// The three families pack into DISJOINT LRU singletons (see
+/// pack.cpp), so a process that warms more than one for the same
+/// model pays one warm per family.
 enum class WarmDtypeFamily : uint8_t {
   kBF16 = 0,
   kINT8 = 1,
+  kF16  = 2,
 };
 
 status_t warm_pack_all_custom_kernel_experts(

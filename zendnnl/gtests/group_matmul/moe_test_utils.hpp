@@ -724,6 +724,30 @@ struct CustomKernelInt8Override {
   CustomKernelInt8Override &operator=(CustomKernelInt8Override &&) = delete;
 };
 
+// Sibling guard for the FP16 CK sub-knob — sets / restores
+// `s_grp_matmul_custom_kernel_f16_override` over a single scope.
+// Used by the FP16 dispatch / pack / e2e gtests to flip the native
+// AVX-512-FP16 CK path on and off without disturbing the master CK
+// switch or the bf16 / int8 sub-knobs.  Same save/restore-on-scope-
+// exit contract as `CustomKernelOverride` / `CustomKernelInt8Override`.
+struct CustomKernelF16Override {
+  int prev;
+  explicit CustomKernelF16Override(bool value) {
+    prev = zendnnl::lowoha::matmul::test_api
+           ::s_grp_matmul_custom_kernel_f16_override.exchange(
+             value ? 1 : 0, std::memory_order_relaxed);
+  }
+  ~CustomKernelF16Override() {
+    zendnnl::lowoha::matmul::test_api
+    ::s_grp_matmul_custom_kernel_f16_override.store(
+      prev, std::memory_order_relaxed);
+  }
+  CustomKernelF16Override(const CustomKernelF16Override &) = delete;
+  CustomKernelF16Override &operator=(const CustomKernelF16Override &) = delete;
+  CustomKernelF16Override(CustomKernelF16Override &&) = delete;
+  CustomKernelF16Override &operator=(CustomKernelF16Override &&) = delete;
+};
+
 struct NRoundsModeOverride {
   int prev;
   explicit NRoundsModeOverride(int value) {

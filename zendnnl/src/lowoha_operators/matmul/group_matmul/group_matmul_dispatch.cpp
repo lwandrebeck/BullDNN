@@ -1458,6 +1458,18 @@ bool group_matmul_run_parallel_dispatch(
       && (params[rep].dtypes.src == data_type_t::bf16)
       && (params[rep].dtypes.wei == data_type_t::bf16)
       && !params[rep].dynamic_quant;
+    // FP16 family hint — native AVX-512-FP16 f16×f16→{f16,f32}.
+    // Gated on the master CK env AND the F16 sub-knob; the runtime
+    // `prepare_for_call` adds the AVX-512-FP16 ISA / toolchain check
+    // not visible here, so this is a structural hint, not a guarantee.
+    const int log_custom_kernel_f16 = get_grp_matmul_custom_kernel_f16();
+    const bool ck_hint_f16 =
+      (use_algo == 3)
+      && log_custom_kernel
+      && log_custom_kernel_f16
+      && (params[rep].dtypes.src == data_type_t::f16)
+      && (params[rep].dtypes.wei == data_type_t::f16)
+      && !params[rep].dynamic_quant;
     // B.6 hardening — DQ-INT8 family hint.  Mirrors the upstream
     // `ck_eligible_int8` predicate (in prepack/prepack.cpp) so the
     // PLAN apilog surfaces both regimes.  Evaluating either family
@@ -1489,11 +1501,12 @@ bool group_matmul_run_parallel_dispatch(
            && params[rep].dtypes.src == data_type_t::bf16)
           || (params[rep].dtypes.src == data_type_t::s8
               && params[rep].quant_params.src_scale.buff != nullptr));
-    const bool ck_hint = ck_hint_bf16 || ck_hint_int8;
+    const bool ck_hint = ck_hint_bf16 || ck_hint_int8 || ck_hint_f16;
     const char *ck_family =
       ck_hint_bf16  ? "bf16"
       : ck_hint_int8  ? (params[rep].dtypes.compute == data_type_t::u8
                          ? "int8_asym" : "int8_sym")
+      : ck_hint_f16   ? "f16"
       :                 "none";
     // SELECTION record (emitted BEFORE the executor runs): `chosen=ALGO_X`
     // is the algo the selector picked, with `reason` explaining the gate.

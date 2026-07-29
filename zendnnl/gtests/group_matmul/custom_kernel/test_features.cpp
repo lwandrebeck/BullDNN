@@ -45,6 +45,7 @@ namespace {
 
 namespace ck = ck_test::ck;
 using ck_test::bfloat16_t;
+using ck_test::float16_t;
 using ck_test::data_type_t;
 using ck_test::grp_matmul_gated_act_t;
 using ck_test::status_t;
@@ -76,7 +77,8 @@ TEST(CkFeatures, ResolvedBiasKindMatches) {
   struct Row { data_type_t dt; ck::BiasKind expected; };
   for (auto r : {Row{data_type_t::none, ck::BiasKind::none},
                  Row{data_type_t::bf16, ck::BiasKind::bf16},
-                 Row{data_type_t::f32 , ck::BiasKind::fp32}}) {
+                 Row{data_type_t::f32 , ck::BiasKind::fp32},
+                 Row{data_type_t::f16 , ck::BiasKind::f16}}) {
     ck_test::PrepCallCase c{};
     c.bias_dt = r.dt;
     c.label = "bias_resolved";
@@ -262,6 +264,58 @@ TEST(CkFeatures, MultiExpertPreparePopulatesActiveOnly) {
        i < static_cast<int>(kctx.packed_ptrs.size()); ++i) {
     EXPECT_EQ(kctx.packed_ptrs[i], nullptr)
         << "inactive slot " << i << " has non-null packed_ptr";
+  }
+}
+
+// ──────────────────────────────────────────────────────────────────
+// FP16 sibling of MultiExpertPreparePopulatesActiveOnly.  The f16
+// family populates the SEPARATE `packed_ptrs_f16` array (not the bf16
+// `packed_ptrs`), so the active/inactive contract the per-tile
+// dispatch (`dispatch_tile_f16`) relies on must be pinned on that
+// array specifically.  Gated on the f16 ISA (the dispatcher refuses
+// the f16 family otherwise and the array would stay all-null).
+// ──────────────────────────────────────────────────────────────────
+TEST(CkFeatures, MultiExpertPrepareF16PopulatesActiveOnly) {
+  CK_SKIP_IF_NO_F16_ISA();
+
+  constexpr int kNumActive = 3;
+  constexpr int M = 8, K = 64, N = 256;
+  std::vector<float16_t> wei0(K * N, float16_t(0.05f));
+  std::vector<float16_t> wei1(K * N, float16_t(0.06f));
+  std::vector<float16_t> wei2(K * N, float16_t(0.07f));
+  std::vector<const void *> weight = {wei0.data(), wei1.data(),
+                                      wei2.data()};
+  std::vector<bool>  transA(kNumActive, false), transB(kNumActive, false);
+  std::vector<bool>  is_wc(kNumActive, true);
+  std::vector<int>   M_v(kNumActive, M), N_v(kNumActive, N),
+                     K_v(kNumActive, K), ldb_v(kNumActive, N);
+  std::vector<float> alpha_v(kNumActive, 1.0f),
+                     beta_v(kNumActive, 0.0f);
+
+  ck::CallContext kctx;
+  const auto status = ck::prepare_for_call(
+      grp_matmul_gated_act_t::none, data_type_t::f16, data_type_t::f16,
+      data_type_t::f16, data_type_t::f16, data_type_t::none,
+      transA, transB, M_v, N_v, K_v, ldb_v, alpha_v, beta_v,
+      weight, is_wc, kctx);
+  ASSERT_EQ(status, status_t::success);
+  EXPECT_TRUE(kctx.enabled);
+  EXPECT_EQ(kctx.variant, ck::KernelVariant::kF16_F16_F16);
+
+  // Active slots populated in `packed_ptrs_f16`; bf16 `packed_ptrs`
+  // stays all-null (the f16 path never touches it); inactive f16 tail
+  // stays null.
+  for (int i = 0; i < kNumActive; ++i) {
+    EXPECT_NE(kctx.packed_ptrs_f16[i], nullptr)
+        << "active f16 expert " << i << " has nullptr packed_ptrs_f16";
+    EXPECT_EQ(kctx.packed_ptrs[i], nullptr)
+        << "f16 path must not populate the bf16 packed_ptrs array "
+           "(expert " << i << ")";
+  }
+  for (int i = kNumActive;
+       i < static_cast<int>(kctx.packed_ptrs_f16.size()); ++i) {
+    EXPECT_EQ(kctx.packed_ptrs_f16[i], nullptr)
+        << "inactive f16 slot " << i << " has non-null packed_ptrs_f16";
   }
 }
 

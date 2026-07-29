@@ -796,12 +796,19 @@ static bool run_config(const GrpMatmulConfig &cfg, std::ostream &csv,
   else {
     fused_str = "off";
   }
-  // DQ-INT8 column — surfaces the variant on the console / CSV so
-  // a sweep that mixes bf16 and int8 lines is visually self-
-  // describing.  "bf16" is the default (no DQ-INT8); "dq8s" / "dq8u"
-  // distinguish sym vs asym so a tuning script can plot the two
-  // families separately without re-reading the input file.
-  std::string quant_str = "bf16";
+  // Quant / precision column — surfaces the variant on the console /
+  // CSV so a sweep that mixes float and int8 lines is visually self-
+  // describing.  For the non-DQ path it prints the src (compute-input)
+  // dtype ("f16" / "bf16" / "f32"), which is what selects the kernel
+  // family (the f16 vs bf16 microkernel keys off the input precision;
+  // dst is only the epilogue store format, so a bf16:bf16:f32 config
+  // still runs the bf16 kernel).  This makes an f16-vs-bf16 sweep
+  // distinguishable at a glance without cross-referencing the wider
+  // `dtypes` column; "dq8s" / "dq8u" distinguish per-token/per-channel
+  // sym vs asym; "pg<group_size>" (e.g. pg128) marks the per-group
+  // sym-only variant.  A tuning script can plot the families
+  // separately without re-reading the input file.
+  std::string quant_str = datatypeToStr(cfg.src_dt);
   if (cfg.dynamic_quant) {
     if (cfg.group_size > 0)
       quant_str = "pg" + std::to_string(cfg.group_size);
@@ -916,7 +923,8 @@ int bench(const std::string &in_filename, const std::string &out_filename,
             << std::endl;
   std::cout << "  (fused column: 'N_down=X' = caller-allocated, "
             "'N_down=X*' = library-allocated + src-reuse;\n"
-            "   quant column: bf16 = standard bf16 path, "
+            "   quant column: f16/bf16/f32 = standard float path "
+            "(src compute dtype), "
             "dq8s/dq8u = DQ-INT8 per-token/channel sym/asym, "
             "pg<group_size> = per-group sym (e.g. pg128))"
             << std::endl;

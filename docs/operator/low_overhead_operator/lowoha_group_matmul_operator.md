@@ -82,7 +82,7 @@ Per-op vectors must all have length `num_ops = M.size()`, except `src` whose len
 | `is_weights_const` | `vector<bool>` | Weight-caching hint per op |
 | `params` | `vector<matmul_params>&` | dtypes, threads, post-ops, plus the optional `active_matmul / total_matmul` prepack-extras hint (see [Framework prepack-extras contract](#framework-prepack-extras-contract)) |
 | `moe_postop` | `const group_matmul_moe_postop_params*` | Optional MoE post-op; **`nullptr`** disables (default) |
-| `gated_act` | `const grp_matmul_gated_act_params*` | Optional gated activation; **`nullptr`** disables (default). Requires N even, dst dtype f32/bf16. Applied after GEMM, before `moe_postop`. |
+| `gated_act` | `const grp_matmul_gated_act_params*` | Optional gated activation; **`nullptr`** disables (default). Requires N even, dst dtype f32/bf16/f16. Applied after GEMM, before `moe_postop`. |
 | `fused_moe` | `const grp_matmul_fused_moe_params*` | Optional fused MoE: Op1(gate+up) → activation → Op2(down_proj) in one call; **`nullptr`** disables (default). See [Fused MoE](#fused-moe-op1--activation--op2). |
 
 ### Return value
@@ -194,7 +194,59 @@ User-facing knobs that affect `group_matmul_direct` behaviour.  All are read onc
 | Variable | Default | Effect |
 |---|---|---|
 | `ZENDNNL_GRP_MATMUL_ALGO` | `0` (auto) | Force a parallel strategy. `0` = auto, `1`-`5` = ALGO 1-5. See the table above. |
-| `ZENDNNL_MATMUL_WEIGHT_CACHE` | `1` (ON) | Standard weight-reorder cache for AOCL DLP / BRGEMM. Setting `0` disables both lazy and prepack populations — prepack short-circuits to a no-op rather than wasting CPU on entries that won't be cached. |
+| `ZENDNNL_GRP_MATMUL_PREPACK` | `1` (ON) | Ahead-of-time weight prepack.  When ON, the first call that observes a given configuration eagerly warms the AOCL DLP and custom-kernel weight caches for all expert slots so timed iterations never pay an on-the-fly reorder cost.  Set `0` for lazy-on-first-touch behaviour. |
+| `ZENDNNL_MATMUL_WEIGHT_CACHE` | `1` (ON) | Standard weight-reorder cache for AOCL DLP / BRGEMM. Setting `0` disables both lazy and prepack populations — prepack short-circuits to a no-op rather than wasting CPU on entries that won't be cached.  The custom-kernel pack path honours the same knob: `0` allocates caller-owned packed buffers per call (no stale pointer hits). |
+| `ZENDNNL_GRP_MATMUL_CUSTOM_KERNEL` | `1` (ON) | Master switch for the in-house AVX-512 custom microkernel under ALGO 3 (`flat_n_tile`).  OFF forces every expert through AOCL DLP / BRGEMM regardless of dtype. |
+| `ZENDNNL_GRP_MATMUL_CUSTOM_KERNEL_INT8` | `1` (ON) | Sub-toggle for the DQ-INT8 custom microkernel (`s8×s8→{bf16,f32}` with runtime BF16→S8 hoist).  Cascades under the master switch — effective only when `_CUSTOM_KERNEL=1`. |
+| `ZENDNNL_GRP_MATMUL_CUSTOM_KERNEL_F16` | `1` (ON) | Sub-toggle for the native AVX-512-FP16 custom microkernel (`f16×f16→{f16,f32}`).  Cascades under the master switch.  Even when ON, the FP16 path also needs the host to have AVX-512-FP16 at runtime and a toolchain that compiled the FP16 intrinsics (GCC ≥ 12).  Two distinct outcomes when unavailable: (1) if the **host lacks the AVX-512-FP16 ISA**, `group_matmul_direct` rejects any f16 call upstream with `status_t::isa_unsupported` (the whole call fails — there is no AOCL DLP fallback, because no F16 GEMM backend can run without the ISA); (2) if the **ISA is present but the CK kernels were not compiled** (pre-GCC-12 build) or `_CUSTOM_KERNEL_F16=0`, `prepare_for_call` refuses and the call falls back to the AOCL DLP F16 path. |
+
+Additional tuning knobs (`ZENDNNL_GRP_MATMUL_CUSTOM_KERNEL_NR`, `_SUBTILE_PER_EXPERT`, `_N_TILE`, `_AOCL_STABLE_NTILE`, etc.) are documented in `group_matmul_parallel_common.hpp` and the [group_matmul gtests README](../../../zendnnl/gtests/group_matmul/README.md) (§5).
+
+## Custom microkernel (ALGO 3)
+
+When ALGO 3 (`flat_n_tile`) is selected and `prepare_for_call()` succeeds, per-thread N-range GEMMs run through the hand-rolled custom microkernel stack in `custom_kernel/` instead of AOCL DLP.  The same path serves plain group_matmul, fused-MoE Op1 (with a gated activation epilogue), and fused-MoE Op2 (`act = none`).  If any expert violates the CK contract, that call falls back cleanly to the standard AOCL DLP path — callers outside the supported envelope see no behaviour change.
+
+Three dtype families share one dispatcher surface (`prepare_for_call` / `dispatch_tile`):
+
+| Family | `(src, wei, dst)` tuples | ISA gate |
+|---|---|---|
+| BF16 | `bf16:bf16:bf16`, `bf16:bf16:f32` | AVX-512 BF16 (`VDPBF16PS`) |
+| DQ-INT8 | `bf16:bf16→s8` hoist × `s8:s8→{bf16,f32}` (sym / asym) | AVX-512 VNNI |
+| **FP16** | **`f16:f16:f16`, `f16:f16:f32`** | **Native AVX-512-FP16** (`_mm512_fmadd_ph`) |
+
+### FP16 family specifics
+
+- **Homogeneous dtypes only** — mixed `bf16` src with `f16` dst (or any non-`f16:f16:*` tuple) resolves to `kUnsupported` and falls back to AOCL DLP.
+- **Native FP16 accumulation** — the inner loop accumulates in `__m512h` via `_mm512_fmadd_ph`, not FP32.  Both `f16`-dst and `f32`-dst variants carry this divergence vs an FP32-accumulate reference; callers needing strict FP32-accumulate parity should set `ZENDNNL_GRP_MATMUL_CUSTOM_KERNEL_F16=0`.
+- **Pack layout** — plain `[O/pack_nr][K][pack_nr]` slab (no K-pair VNNI doubling), in a disjoint LRU singleton from the BF16 / INT8 pack caches.
+- **Gated activations** (`swiglu_oai_mul`, `silu_and_mul`, `gelu_and_mul`) are **`f16`-dst only** — the fused pair-store helpers write F16.  `(gated, f32-dst)` is refused, mirroring the BF16 `(gated, f32)` refusal.
+- **Bias** — `none`, `bf16`, `f32`, or `f16`, for **all three CK families** (BF16, DQ-INT8, FP16).  The FP16 microkernel seeds its `f16` accumulator with an `f16` bias directly (and narrows `bf16`/`f32` biases to `f16` at init); the BF16 / DQ-INT8 microkernels widen an `f16` bias to `fp32` via `_mm512_cvtph_ps` (VCVTPH2PS — part of AVX-512F, so no native AVX-512-FP16 ISA/toolchain is required for f16 bias on those families).  `(silu/gelu, +bias)` on split-halves layouts is not fused and falls back to the two-pass route.
+- **ISA** — requires AVX-512-FP16 at runtime plus GCC ≥ 12 at build time.  Hosts without the FP16 ISA are rejected **upstream** by `group_matmul_direct` with `status_t::isa_unsupported` (the whole f16 call fails, before the CK dispatcher ever runs) — they are **not** silently routed to AOCL DLP, because no F16 GEMM backend (native or AOCL DLP) can run without the ISA.  The AOCL DLP F16 fallback applies only when the ISA *is* present but the CK path is unavailable (pre-GCC-12 build) or disabled (`_CUSTOM_KERNEL_F16=0`).  This differs from the BF16 / DQ-INT8 families, which have no upstream hard gate and always fall back to AOCL DLP when their CK ISA is missing.
+
+### Activation × destination matrix (BF16 and FP16 families)
+
+The gated-activation cells are parallel across BF16 and FP16 — substitute `bf16` / `f16` for the family's store dtype:
+
+| Activation | BF16 dst | F32 dst |
+|---|---|---|
+| `none` | CK matmul | CK matmul |
+| `swiglu_oai_mul` | CK fused epilogue | AOCL DLP + separate pass |
+| `silu_and_mul` / `gelu_and_mul` (no bias) | CK fused epilogue | AOCL DLP + separate pass |
+| `silu_and_mul` / `gelu_and_mul` (+ bias) | two-pass fallback | two-pass fallback |
+
+DQ-INT8 follows the BF16-dst column for gated activations; `f32`-dst DQ-INT8 is matmul-only (`act = none`).
+
+### Env-var cascade
+
+```
+ZENDNNL_GRP_MATMUL_CUSTOM_KERNEL=0          → all CK families off
+ZENDNNL_GRP_MATMUL_CUSTOM_KERNEL=1
+  && _CUSTOM_KERNEL_INT8=0                  → BF16 + FP16 CK on, DQ-INT8 off
+  && _CUSTOM_KERNEL_F16=0                  → BF16 + DQ-INT8 CK on, FP16 off
+  && both sub-toggles = 1 (default)        → all three families on (subject to per-family ISA gates)
+```
+
+See `custom_kernel/dispatch.hpp` for the full `resolve_variant()` truth table and `prepare_for_call()` gate cascade.  Direct-surface and e2e test coverage lives in [group_matmul gtests README](../../../zendnnl/gtests/group_matmul/README.md) (§4.6).
 
 ## MoE post-op (parallel mode only)
 
@@ -218,7 +270,7 @@ The library performs **only** the weighted-reduce — not the gather. The caller
 struct group_matmul_moe_postop_params {
   int num_tokens = 0;           // rows in the output buffer
   int topk = 0;                 // experts per token
-  void *output = nullptr;       // [num_tokens, ldc_output] FP32 or BF16
+  void *output = nullptr;       // [num_tokens, ldc_output] FP32, BF16, or F16
   int ldc_output = 0;           // leading dim of output (>= D)
   const float *topk_weights = nullptr;  // [num_tokens, topk] routing weights
   bool skip_weighted = false;   // true → all weights = 1.0
@@ -230,7 +282,7 @@ struct group_matmul_moe_postop_params {
 |-------|-------------|
 | `num_tokens` | > 0 |
 | `topk` | > 0 |
-| `output` | Non-null. dtype must match expert `dst` dtype (FP32 or BF16). |
+| `output` | Non-null. dtype must match expert `dst` dtype (FP32, BF16, or F16). |
 | `ldc_output` | ≥ D (where D = N[0]) |
 | `topk_weights` | Required unless `skip_weighted == true` |
 | `row_ptrs` | Non-null. Each entry points to a D-wide row in an expert dst buffer. |
@@ -339,7 +391,7 @@ struct grp_matmul_gated_act_params {
 | Constraint | Requirement |
 |------------|-------------|
 | `N` | Must be even (`N = 2 * dim`) for all experts |
-| `dst dtype` | Must be FP32 or BF16 (uniform across experts) |
+| `dst dtype` | Must be FP32, BF16, or F16 (uniform across experts) |
 | `layout` | Must be row-major (`'r'` / `'R'`) for all experts |
 | Mode | Parallel only (`src.size() > 1`) |
 
@@ -765,6 +817,7 @@ Set `ZENDNNL_API_LOG_LEVEL=3` to see the dispatch trail; the per-call summary wi
 2. **Chaining**: In sequential mode `K[i+1] == N[i]`.
 3. **Parallel independence**: Each op uses its own `src[i]`, `weight[i]`, `dst[i]`.
 4. **MoE**: Pass `nullptr` when not needed. When enabled, provide `row_ptrs` (built during scatter) and `topk_weights`.
-5. **Gated activation**: Pass `nullptr` when not needed. When enabled, N must be even and dst dtype must be FP32 or BF16.  Applied after GEMM, before MoE weighted-reduce.
+5. **Gated activation**: Pass `nullptr` when not needed. When enabled, N must be even and dst dtype must be FP32, BF16, or F16.  Applied after GEMM, before MoE weighted-reduce.
+6. **Custom microkernel (FP16)**: Under ALGO 3 with `ZENDNNL_GRP_MATMUL_CUSTOM_KERNEL=1` and `_CUSTOM_KERNEL_F16=1`, homogeneous `f16:f16:f16` (and `f16:f16:f32` with `act = none`) routes through the native AVX-512-FP16 microkernel when the host ISA and build toolchain permit.  Set `_CUSTOM_KERNEL_F16=0` (or the master `_CUSTOM_KERNEL=0`) to force AOCL DLP for FP32-accumulate parity or ISA-poor hosts.  See [Custom microkernel (ALGO 3)](#custom-microkernel-algo-3).
 7. **Fused-MoE Op2 quantization**: Op2 (down_proj) uses the **same** quant scheme as Op1 by construction — the dispatcher inherits `dynamic_quant`, `dtypes.compute`, and `quant_params.src_scale.{dt, dims}` from `params[i]` into Op2's internal `params_down[i]`.  The only Op2-specific quant artefact is the down_weight scale (because `down_weight[i]` is a different tensor from Op1's `weight[i]`), carried via the new optional `fused.down_scale` and `fused.down_zp` vectors (see [Op2 quantization](#op2-quantization-optional)).  Both default to empty for backward compatibility.  Use WOQ-S4 or dynamic INT8 on Op2 — pure WOQ-S8 (BF16 src + S8 wei + only `wei_scale`) is rejected by AOCL DLP's `is_woq` gate (s4 / u4 only).
 8. **Tiled algos (2/3)**: Both require row-major layout, uniform per-expert dtypes, and standard unpacked A/B. ALGO 2 (M-tile, `m_tile_safe`) additionally supports the full quantization stack — weight-only (S4 sym, U4 asym), static W8A8 (per-tensor / per-channel / per-group / per-token), and **dynamic INT8** (BF16/F32 source quantised at runtime; per-token `{M, 1}` and per-group `{M, G}` activation scales only) — and most post-ops. It blocks: packed B (GGML Q8_0), softmax/pooling, and dynamic-quant with non-row-local src granularity (per-tensor `{}` / `{1}` / `{1, 1}`, per-column `{1, K}`, per-channel-on-src `{1, N}`) because the per-thread reorder would race on the shared scale/zp buffer and use slice-local statistics. M-indexed source-quant metadata (`src_scale` / `src_zp`) is row-offset and dim-sliced per thread inside `m_tile/group_matmul_m_tile.cpp::offset_quant_by_row` so the dynamic-quant per-group reorder dispatch sees a slice-shaped `src_shape × dims`. ALGO 3 (N-tile, `n_tile_safe`) is stricter: only buffer-free element-wise post-ops (relu, gelu, swish, etc.) are safe under column slicing, and any non-null quant scale/zero-point buffer disables it. Falls back to ALGO 1 automatically when the required safety check fails.

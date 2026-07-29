@@ -495,6 +495,11 @@ inline std::atomic<int> s_grp_matmul_custom_kernel_override{-1};
 // tests / deployments can toggle the int8 fast path without
 // disturbing the bf16 path.  Sentinel `-1` = no override (env / default).
 inline std::atomic<int> s_grp_matmul_custom_kernel_int8_override{-1};
+// FP16 CK sub-knob — independent from the master CK switch and the
+// int8 sub-knob so tests / deployments can A/B the native
+// AVX-512-FP16 fast path in isolation.  Sentinel `-1` = no override
+// (env / default).
+inline std::atomic<int> s_grp_matmul_custom_kernel_f16_override{-1};
 // NOTE: `s_grp_matmul_custom_kernel_n_tile_override` and
 // `s_grp_n_tile_strategy_override` moved to `group_matmul_n_tile.hpp`
 // (Section A.3) together with the rest of the N-tile override atoms.
@@ -768,6 +773,51 @@ inline bool get_grp_matmul_custom_kernel_int8() {
   if (ovr >= 0) return ovr != 0;
   static const bool v = []() {
     const char *e = std::getenv("ZENDNNL_GRP_MATMUL_CUSTOM_KERNEL_INT8");
+    if (e == nullptr || e[0] == '\0') return true;  // default: ON
+    return e[0] != '0';
+  }();
+  return v;
+}
+
+// ZENDNNL_GRP_MATMUL_CUSTOM_KERNEL_F16 = { "0", "1" } — cached, default ON.
+//   Independent sub-switch for the hand-rolled native AVX-512-FP16
+//   microkernel (`custom_kernel/ukernel/f16_microkernel.{hpp,cpp}`).
+//   Lets deployments A/B the f16×f16→{f16,f32} fast path against the
+//   AOCL DLP F16 reference without affecting the bf16 / int8 CK paths.
+//
+//   Cascade with the master `_CUSTOM_KERNEL` switch (same shape as the
+//   `_INT8` sub-knob):
+//     * `_CUSTOM_KERNEL=0`                      → every CK route off.
+//     * `_CUSTOM_KERNEL=1 && _CUSTOM_KERNEL_F16=0` → bf16 / int8 CK on,
+//                                                 f16 CK off (f16
+//                                                 N-tile calls fall back
+//                                                 to AOCL DLP F16).
+//     * `_CUSTOM_KERNEL=1 && _CUSTOM_KERNEL_F16=1` → f16 CK on (default).
+//
+//   Even when ON, the f16 CK also needs `avx512f16_available()` true —
+//   which folds TWO independent conditions with DIFFERENT routing when
+//   they fail:
+//     * TOOLCHAIN missing the FP16 intrinsics (built with GCC < 12, so
+//       the compile-time gate `ZENDNNL_GRP_F16_CK_AVAILABLE == 0`) while
+//       the CPU DOES have the ISA: `prepare_for_call` refuses the f16 CK
+//       and the call falls back to AOCL DLP F16 (which runs natively on
+//       the FP16-capable CPU) — same routing as `_CUSTOM_KERNEL_F16=0`.
+//     * CPU missing the AVX-512-FP16 ISA (`get_avx512_f16_status()`
+//       false): this is NOT a CK-vs-DLP fallback.  `group_matmul_direct`
+//       hard-rejects the WHOLE call for any f16 operand up front with
+//       `status_t::isa_unsupported` (the AOCL DLP F16 path cannot serve
+//       it either), before the CK dispatch is even reached.  The caller
+//       must handle the isa_unsupported status; there is no f16 GEMM on
+//       such a host.
+//
+//   Tests can pin the value via `s_grp_matmul_custom_kernel_f16_override`
+//   (sentinel `-1` = no override).
+inline bool get_grp_matmul_custom_kernel_f16() {
+  const int ovr = test_api::s_grp_matmul_custom_kernel_f16_override.load(
+      std::memory_order_relaxed);
+  if (ovr >= 0) return ovr != 0;
+  static const bool v = []() {
+    const char *e = std::getenv("ZENDNNL_GRP_MATMUL_CUSTOM_KERNEL_F16");
     if (e == nullptr || e[0] == '\0') return true;  // default: ON
     return e[0] != '0';
   }();

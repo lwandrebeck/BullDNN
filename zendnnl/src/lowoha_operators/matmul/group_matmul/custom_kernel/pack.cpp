@@ -173,6 +173,65 @@ void pack_bf16_vnni(const bfloat16_t *weight, int K, int N, int ldb,
   }
 }
 
+// FP16 pack of caller's weight → [O/pack_nr, K, pack_nr].  Unlike the
+// bf16 K-pair VNNI layout, the native-FP16-FMA microkernel
+// (`_mm512_fmadd_ph`) consumes ONE K-element per lane, so each K row
+// stores `pack_nr` contiguous FP16 cols with no K-interleave and no
+// trailing K-pad.  `transB` and `interleave_split_halves` carry the
+// same semantics as the bf16 sibling (`pack_bf16_vnni_impl` doc-block):
+//   * transB=false → [K, N] row-major, weight[k][col] = weight[k*ldb+col].
+//   * transB=true  → [N, K] row-major (PyTorch), weight[col][k] = weight[col*ldb+k].
+//   * Interleave   → with I = N/2, pack col 2i reads canonical gate
+//                    col i and pack col 2i+1 reads canonical up col
+//                    (I + i), so the silu/gelu fused epilogues see the
+//                    swiglu layout.
+// The element copy is a verbatim FP16 bit-copy (no conversion), so the
+// packed bytes feed `_mm512_loadu_ph` directly.
+template <bool Interleave>
+inline void pack_f16_simple_impl(const float16_t *weight, int K, int N,
+                                 int ldb, int pack_nr, bool transB,
+                                 float16_t *packed) {
+  const int n_blocks = N / pack_nr;
+  const size_t ldb_z = static_cast<size_t>(ldb);
+  // Precondition when Interleave=true: N must be even — the gate cols
+  // occupy [0, N/2) and the up cols [N/2, N), so I = N/2 is the split
+  // point the pair-interleave indexing below reads from.  The caller
+  // (`get_or_pack_weight_f16`) enforces this before dispatching here.
+  const int I = N / 2;
+  if constexpr (!Interleave) (void)I;
+
+  for (int o_blk = 0; o_blk < n_blocks; ++o_blk) {
+    float16_t *blk_base = packed
+        + static_cast<size_t>(o_blk) * K * pack_nr;
+    const int n_base = o_blk * pack_nr;
+
+    for (int k = 0; k < K; ++k) {
+      float16_t *k_base = blk_base + static_cast<size_t>(k) * pack_nr;
+      for (int n = 0; n < pack_nr; ++n) {
+        const int col_pack = n_base + n;
+        const int col_canon = Interleave
+            ? ((col_pack & 1) ? (I + (col_pack >> 1)) : (col_pack >> 1))
+            : col_pack;
+        const size_t off = transB
+            ? static_cast<size_t>(col_canon) * ldb_z + k
+            : static_cast<size_t>(k) * ldb_z + col_canon;
+        k_base[n] = weight[off];
+      }
+    }
+  }
+}
+
+void pack_f16_simple(const float16_t *weight, int K, int N, int ldb,
+                     int pack_nr, bool transB,
+                     bool interleave_split_halves,
+                     float16_t *packed) {
+  if (interleave_split_halves) {
+    pack_f16_simple_impl<true>(weight, K, N, ldb, pack_nr, transB, packed);
+  } else {
+    pack_f16_simple_impl<false>(weight, K, N, ldb, pack_nr, transB, packed);
+  }
+}
+
 // ── Shared per-process cache state (see doc-block below) ────────────
 // Pulled out of `get_or_pack_weight_bf16()` so
 // `clear_custom_kernel_pack_cache()` can reach the same singleton.
@@ -378,6 +437,21 @@ lru_cache_t<Key_matmul, void *> &pack_cache_singleton_int8() {
   return pack_cache;
 }
 std::mutex &pack_mutex_singleton_int8() {
+  static std::mutex pack_mutex;
+  return pack_mutex;
+}
+
+// Separate singleton from the BF16 / INT8 packs — different LRU
+// instance so f16 entries cannot drift into a bf16 / int8 lookup and
+// vice-versa even if the cache-key marker logic ever regressed.  Type
+// stays `void *` so all three caches share the same `lru_cache_t`
+// template instantiation — the per-pack getter casts on input / output.
+lru_cache_t<Key_matmul, void *> &pack_cache_singleton_f16() {
+  static lru_cache_t<Key_matmul, void *> pack_cache(
+      std::numeric_limits<uint32_t>::max());
+  return pack_cache;
+}
+std::mutex &pack_mutex_singleton_f16() {
   static std::mutex pack_mutex;
   return pack_mutex;
 }
@@ -737,6 +811,181 @@ void free_owned_packed_weight(const bfloat16_t *packed) {
   std::free(const_cast<bfloat16_t *>(packed));
 }
 
+// ── FP16 pack get / free / clear (mirror of BF16 trio) ────────────
+// Same shape as `get_or_pack_weight_bf16` / `free_owned_packed_weight`
+// / `clear_custom_kernel_pack_cache`.  Differences vs the bf16
+// sibling are isolated and tagged below:
+//   * Cache singleton + mutex: SEPARATE instances
+//     (`pack_cache_singleton_f16` / `pack_mutex_singleton_f16`).
+//   * Cache-key marker: `kCustomKernelF16Marker` instead of
+//     `kCustomKernelAlgoMarker` so a bf16 / int8 pack and an f16
+//     pack for the same `(weight, K, N, ldb, transB, pack_nr)` tuple
+//     occupy disjoint LRU entries.
+//   * Buffer footprint: `O/pack_nr * K * pack_nr * sizeof(float16_t)`
+//     bytes — plain (non-K-interleaved) FP16 slab, no compensation
+//     row and no odd-K pad.  See `pack_f16_simple_impl` above for
+//     the layout contract.
+//
+// Eviction, alignment, log gating, and disable-cache behaviour are
+// identical to the bf16 sibling; the comments there apply verbatim
+// here and are not duplicated.
+status_t get_or_pack_weight_f16(
+    const float16_t *weight,
+    int K, int N, int ldb, int pack_nr,
+    bool transB,
+    bool interleave_split_halves,
+    const float16_t **out_packed,
+    bool *was_hit_out,
+    bool disable_cache) {
+
+  if (was_hit_out != nullptr) *was_hit_out = false;
+
+  if (weight == nullptr || K <= 0 || N <= 0
+      || (pack_nr != kNRMin && pack_nr != kNRMax)
+      || (N % pack_nr) != 0
+      || ldb <= 0
+      || out_packed == nullptr) {
+    log_error("custom_kernel pack f16: invalid arg "
+              "(weight, K, N, ldb must be valid; pack_nr in {",
+              kNRMin, ",", kNRMax, "}; N %% pack_nr == 0)");
+    return status_t::failure;
+  }
+  if (interleave_split_halves && (N & 1)) {
+    log_error("custom_kernel pack f16: interleave_split_halves "
+              "requires even N (got N=", N, ")");
+    return status_t::failure;
+  }
+  const int min_ldb = transB ? K : N;
+  if (ldb < min_ldb) {
+    log_error("custom_kernel pack f16: ldb=", ldb,
+              " smaller than minimum row stride (",
+              transB ? "K=" : "N=", min_ldb,
+              " for transB=", (transB ? "true" : "false"), ")");
+    return status_t::failure;
+  }
+
+  // Buffer size: plain FP16 slab, no K-pair pad / compensation row.
+  const size_t bytes         = static_cast<size_t>(N / pack_nr)
+      * K * pack_nr * sizeof(float16_t);
+  const size_t alignment     = 64;
+  const size_t bytes_aligned = (bytes + alignment - 1) & ~(alignment - 1);
+
+  static const bool s_pack_log = apilog_verbose_enabled();
+
+  if (disable_cache) {
+    if (s_pack_log) {
+      apilog_verbose("[GRP_MATMUL.PACK NOCACHE F16] weight=", weight,
+                     " K=", K, " N=", N, " ldb=", ldb,
+                     " transB=", (transB ? 1 : 0),
+                     " interleave=", (interleave_split_halves ? 1 : 0),
+                     " pack_nr=", pack_nr);
+    }
+    void *raw = std::aligned_alloc(alignment, bytes_aligned);
+    if (raw == nullptr) {
+      log_error("custom_kernel pack f16 (disable_cache): aligned_alloc "
+                "failed for ", bytes_aligned, " bytes");
+      return status_t::failure;
+    }
+    pack_f16_simple(weight, K, N, ldb, pack_nr, transB,
+                    interleave_split_halves,
+                    static_cast<float16_t *>(raw));
+    *out_packed = static_cast<const float16_t *>(raw);
+    return status_t::success;
+  }
+
+  auto &pack_cache = pack_cache_singleton_f16();
+
+  // Cache-key marker for the FP16 family.  `0xC0DE4000` is the bf16
+  // marker `0xC0DE0000` with bit 14 set; bit 14 is in the low all-
+  // clear nibble of the bf16 marker, distinct from the int8 marker
+  // (`0xC0DE8000`, bit 15), and clear of every variant bit
+  // (pack_nr ≤ 64 → bits 0..6; transB → bit 16; interleave → bit 24),
+  // so the three families never alias on the same weight pointer.
+  static constexpr uint32_t kCustomKernelF16Marker    = 0xC0DE4000U;
+  static constexpr uint32_t kTransBMarker             = 0x00010000U;
+  static constexpr uint32_t kInterleaveSplitMarker    = 0x01000000U;
+  static_assert(
+      (kCustomKernelF16Marker & kTransBMarker) == 0u,
+      "kTransBMarker collides with kCustomKernelF16Marker — pick "
+      "a clear bit.");
+  static_assert(
+      (kCustomKernelF16Marker & kInterleaveSplitMarker) == 0u,
+      "kInterleaveSplitMarker collides with kCustomKernelF16Marker — "
+      "pick a clear bit.");
+  static constexpr uint32_t kCustomKernelAlgoMarkerBF16 = 0xC0DE0000U;
+  static constexpr uint32_t kCustomKernelInt8MarkerCmp  = 0xC0DE8000U;
+  static_assert(
+      kCustomKernelF16Marker != kCustomKernelAlgoMarkerBF16
+      && kCustomKernelF16Marker != kCustomKernelInt8MarkerCmp,
+      "FP16 cache-key marker must differ from BF16 and INT8 markers "
+      "so the three pack families never alias.");
+  const uint32_t variant_bits =
+      static_cast<uint32_t>(pack_nr)
+      | (transB ? kTransBMarker : 0u)
+      | (interleave_split_halves ? kInterleaveSplitMarker : 0u);
+  const size_t extra_hash = static_cast<size_t>(
+      kCustomKernelF16Marker | variant_bits);
+  Key_matmul key(weight, static_cast<unsigned>(N),
+                 static_cast<unsigned>(K), extra_hash);
+  key.ldb = static_cast<unsigned>(ldb);
+
+  std::lock_guard<std::mutex> lock(pack_mutex_singleton_f16());
+
+  if (void *cached_pack = nullptr; pack_cache.try_get(key, cached_pack)) {
+    // No nullptr in-place sentinel to decode here (contrast the bf16
+    // HIT path above): the F16 pack family has no in-place (WC=2)
+    // mode, so it never stores a nullptr sentinel — a cache HIT always
+    // yields a valid out-of-place packed pointer.
+    *out_packed = static_cast<const float16_t *>(cached_pack);
+    if (was_hit_out != nullptr) *was_hit_out = true;
+    if (s_pack_log) {
+      apilog_verbose("[GRP_MATMUL.PACK HIT F16] weight=", weight,
+                     " K=", K, " N=", N, " ldb=", ldb,
+                     " transB=", (transB ? 1 : 0),
+                     " interleave=", (interleave_split_halves ? 1 : 0),
+                     " pack_nr=", pack_nr);
+    }
+    return status_t::success;
+  }
+
+  if (s_pack_log) {
+    apilog_verbose("[GRP_MATMUL.PACK MISS F16] weight=", weight,
+                   " K=", K, " N=", N, " ldb=", ldb,
+                   " transB=", (transB ? 1 : 0),
+                   " interleave=", (interleave_split_halves ? 1 : 0),
+                   " pack_nr=", pack_nr);
+  }
+  void *raw = std::aligned_alloc(alignment, bytes_aligned);
+  if (raw == nullptr) {
+    log_error("custom_kernel pack f16: aligned_alloc failed for ",
+              bytes_aligned, " bytes");
+    return status_t::failure;
+  }
+
+  pack_f16_simple(weight, K, N, ldb, pack_nr, transB,
+                  interleave_split_halves,
+                  static_cast<float16_t *>(raw));
+  pack_cache.add(key, raw);
+
+  *out_packed = static_cast<const float16_t *>(raw);
+  return status_t::success;
+}
+
+void free_owned_packed_weight_f16(const float16_t *packed) {
+  if (packed == nullptr) return;
+  std::free(const_cast<float16_t *>(packed));
+}
+
+void clear_custom_kernel_pack_cache_f16() {
+  std::lock_guard<std::mutex> lock(pack_mutex_singleton_f16());
+  auto &pack_cache = pack_cache_singleton_f16();
+  pack_cache.clear();
+  static const bool s_pack_log = apilog_verbose_enabled();
+  if (s_pack_log) {
+    apilog_verbose("[GRP_MATMUL.PACK cleared F16] Pack cache cleared");
+  }
+}
+
 // See pack.hpp for the quiescent-window safety contract.  The
 // implementation calls `lru_cache_t::clear()` under the same
 // `pack_mutex_singleton()` that `get_or_pack_weight_bf16()` holds,
@@ -1047,6 +1296,44 @@ status_t prepack_weight_into_int8(
   }
   pack_int8_vnni(weight, K, N, ldb, pack_nr, transB,
                  interleave_split_halves, static_cast<int8_t *>(dst));
+  return status_t::success;
+}
+
+size_t packed_weight_size_f16(int K, int N, int pack_nr) {
+  if (!prepack_shape_valid(K, N, pack_nr)) return 0;
+  // Plain FP16 slab: no K-pair pad, no compensation row.  Mirror of the
+  // internal `get_or_pack_weight_f16` buffer-size formula.
+  const size_t bytes = static_cast<size_t>(N / pack_nr)
+      * K * pack_nr * sizeof(float16_t);
+  return align_up_dst(bytes);
+}
+
+status_t prepack_weight_into_f16(
+    const float16_t *weight,
+    int K, int N, int ldb, int pack_nr,
+    bool transB,
+    bool interleave_split_halves,
+    void *dst) {
+  if (weight == nullptr || dst == nullptr
+      || !prepack_shape_valid(K, N, pack_nr) || ldb <= 0) {
+    log_error("prepack_weight_into_f16: invalid arg "
+              "(weight/dst non-null; pack_nr in {", kNRMin, ",", kNRMax,
+              "}; N %% pack_nr == 0; ldb > 0)");
+    return status_t::failure;
+  }
+  if (interleave_split_halves && (N & 1)) {
+    log_error("prepack_weight_into_f16: interleave_split_halves "
+              "requires even N (got N=", N, ")");
+    return status_t::failure;
+  }
+  const int min_ldb = transB ? K : N;
+  if (ldb < min_ldb) {
+    log_error("prepack_weight_into_f16: ldb=", ldb,
+              " smaller than minimum row stride (", min_ldb, ")");
+    return status_t::failure;
+  }
+  pack_f16_simple(weight, K, N, ldb, pack_nr, transB,
+                  interleave_split_halves, static_cast<float16_t *>(dst));
   return status_t::success;
 }
 

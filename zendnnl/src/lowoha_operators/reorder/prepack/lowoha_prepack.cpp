@@ -96,10 +96,11 @@ status_t validate_prepack_params(const char *caller,
   // mirroring custom_kernel/dispatch.cpp::prepare_for_call.
   if (params.algo == matmul_algo_t::moe_custom_kernel) {
     if (params.wei_dtype != data_type_t::bf16 &&
-        params.wei_dtype != data_type_t::s8) {
+        params.wei_dtype != data_type_t::s8 &&
+        params.wei_dtype != data_type_t::f16) {
       apilog_error(caller,
-                   ": custom_kernel prepack supports wei_dtype bf16 or "
-                   "s8 (got ", dtype_info(params.wei_dtype), ")");
+                   ": custom_kernel prepack supports wei_dtype bf16, f16 "
+                   "or s8 (got ", dtype_info(params.wei_dtype), ")");
       return status_t::failure;
     }
     if (ck_resolve_pack_nr(params) == 0) {
@@ -312,16 +313,19 @@ status_t aocl_prepack(const void *weights, const prepack_params_t &params,
 // the custom kernel consumes; it does NOT touch the per-process LRU
 // pack cache (that is the matmul side's job when it consumes the
 // already-reordered weight). Family is chosen by wei_dtype
-// (bf16 -> VDPBF16PS pack; s8 -> DQ-INT8 VPDPBUSD pack + comp row).
+// (bf16 -> VDPBF16PS pack; f16 -> plain native-FP16 slab; s8 ->
+// DQ-INT8 VPDPBUSD pack + comp row).
 // =====================================================================
 size_t ck_compute_size(const prepack_params_t &params) {
   const int pack_nr = ck_resolve_pack_nr(params);
   if (pack_nr == 0) return 0;  // validation already logged the cause
   const int K = static_cast<int>(params.K);
   const int N = static_cast<int>(params.N);
-  return (params.wei_dtype == data_type_t::s8)
-      ? ck::packed_weight_size_int8(K, N, pack_nr)
-      : ck::packed_weight_size_bf16(K, N, pack_nr);
+  if (params.wei_dtype == data_type_t::s8)
+    return ck::packed_weight_size_int8(K, N, pack_nr);
+  if (params.wei_dtype == data_type_t::f16)
+    return ck::packed_weight_size_f16(K, N, pack_nr);
+  return ck::packed_weight_size_bf16(K, N, pack_nr);
 }
 
 status_t ck_prepack(const void *weights,
@@ -340,6 +344,12 @@ status_t ck_prepack(const void *weights,
   if (params.wei_dtype == data_type_t::s8) {
     return ck::prepack_weight_into_int8(
         static_cast<const int8_t *>(weights), K, N, ldb, pack_nr,
+        params.transposed, params.interleave_split_halves, dst);
+  }
+  if (params.wei_dtype == data_type_t::f16) {
+    return ck::prepack_weight_into_f16(
+        static_cast<const zendnnl::common::float16_t *>(weights),
+        K, N, ldb, pack_nr,
         params.transposed, params.interleave_split_halves, dst);
   }
   return ck::prepack_weight_into_bf16(

@@ -103,6 +103,12 @@ enum class ActKind {
 ///   * `none` → skip the bias add entirely (bias pointer ignored).
 ///   * `bf16` → load 16 BF16 cols per NV step, convert to FP32.
 ///   * `fp32` → load 16 FP32 cols per NV step directly.
+///   * `f16`  → load 16 f16 cols per NV step.  All three
+///     families accept it: the FP16 kernel seeds its `__m512h`
+///     accumulator directly, while the BF16 and DQ-INT8 kernels widen to
+///     FP32 via `_mm512_cvtph_ps` (VCVTPH2PS — part of AVX-512F, NOT the
+///     native AVX-512-FP16 ISA), so an f16 bias needs no FP16 ISA /
+///     toolchain on the bf16 / int8 paths.
 /// Keeping `bias_kind` as a runtime argument (not a template parameter)
 /// avoids doubling the specialisation count — the bias-add block runs
 /// once per (M, NR) tile and the branch cost is negligible vs the FMA
@@ -111,6 +117,7 @@ enum class BiasKind {
   none,
   bf16,
   fp32,
+  f16,
 };
 
 /// Destination data-type — selects the kernel's store-epilogue branch.
@@ -128,9 +135,16 @@ enum class BiasKind {
 /// downstream consumers (Op2 in fused MoE) read BF16.  `select_ukernel`
 /// returns `nullptr` for any (gated_act, kF32) tuple so the dispatcher's
 /// `fill_kfn_table` refuses the call cleanly.
+/// `kF16` is consumed only by the FP16 microkernel family
+/// (`f16_microkernel.{hpp,cpp}`); the BF16 and DQ-INT8 selectors
+/// never receive it (their `resolve_variant` rows only ever produce
+/// `kBf16` / `kF32`), so their `if (dst_dt == kF32) … else <bf16>`
+/// branches are unaffected.  Kept in this shared enum so all three
+/// families thread store-dtype through one `DstDt` axis.
 enum class DstDt {
   kBf16,
   kF32,
+  kF16,
 };
 
 /// True when the running CPU supports AVX512_BF16 (VDPBF16PS).
@@ -140,8 +154,9 @@ bool avx512bf16_available();
 /// Function-pointer type for one (MR, NV, Act, DstDt) microkernel
 /// specialization.  Whichever of `Cout` / `Cout_tight` is unused is
 /// passed nullptr / 0 — see the dispatcher for argument routing.
-/// `bias` may be BF16 or FP32; `bias_kind` tells the kernel how to
-/// load it.  Pass `bias=nullptr` / `bias_kind=BiasKind::none` when no
+/// `bias` may be BF16, FP32, or F16 (see `BiasKind`); `bias_kind` tells
+/// the kernel how to load it — a BF16/F16 bias is widened to FP32 in
+/// registers.  Pass `bias=nullptr` / `bias_kind=BiasKind::none` when no
 /// bias is applied.
 ///
 /// `Cout` / `Cout_tight` are typed `void *` because the destination

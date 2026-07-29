@@ -32,7 +32,9 @@
 /// dtype values that's 13³ = 2197 combinations — `resolve_variant`
 /// is a pure switch with no I/O so the sweep is cheap and proves
 /// every dtype outside the served set lands on `kUnsupported`,
-/// including the rarely-used integer widths and the f16 row.
+/// including the rarely-used integer widths and every f16 tuple
+/// OTHER than the homogeneous (f16, f16, {f16, f32}) rows now
+/// served by the native AVX-512-FP16 family.
 
 #include <gtest/gtest.h>
 
@@ -59,6 +61,13 @@ constexpr PositiveRow kPositiveTable[] = {
      ck::KernelVariant::kBF16_BF16_BF16},
     {data_type_t::bf16, data_type_t::bf16, data_type_t::f32,
      ck::KernelVariant::kBF16_BF16_F32},
+    // FP16 family — native AVX-512-FP16 (non-quant, like bf16).  The
+    // 3-arg overload (dynamic_quant=false) routes these directly; see
+    // `resolve_variant` in custom_kernel/dispatch.cpp.
+    {data_type_t::f16, data_type_t::f16, data_type_t::f16,
+     ck::KernelVariant::kF16_F16_F16},
+    {data_type_t::f16, data_type_t::f16, data_type_t::f32,
+     ck::KernelVariant::kF16_F16_F32},
 };
 
 // Every value declared in `data_type_t` (see `common/data_types.hpp`).
@@ -203,17 +212,49 @@ TEST(CkResolveVariantProperties, NoneOnAnyDtypeIsUnsupported) {
   }
 }
 
-TEST(CkResolveVariantProperties, F16IsAlwaysUnsupportedToday) {
-  // F16 is not supported in any (src, wei, dst) slot — even though
-  // the dispatcher's `dt_name` recognises it for logging.
+TEST(CkResolveVariantProperties, F16OnlyHomogeneousF16IsSupported) {
+  // The native AVX-512-FP16 family serves exactly two tuples on the
+  // 3-arg (non-quant) overload:
+  //   (f16, f16, f16) → kF16_F16_F16
+  //   (f16, f16, f32) → kF16_F16_F32
+  // Every OTHER (src, wei, dst) tuple that mentions f16 — mixed
+  // src/wei dtypes, or an f16 dst with non-f16 src/wei — has no CK
+  // route and must resolve to `kUnsupported`.
+  EXPECT_EQ(ck::resolve_variant(data_type_t::f16, data_type_t::f16,
+                                data_type_t::f16),
+            ck::KernelVariant::kF16_F16_F16);
+  EXPECT_EQ(ck::resolve_variant(data_type_t::f16, data_type_t::f16,
+                                data_type_t::f32),
+            ck::KernelVariant::kF16_F16_F32);
+
+  // Helper: the only supported f16-mentioning tuples are
+  // (f16, f16, {f16, f32}).
+  auto is_supported_f16 = [](data_type_t s, data_type_t w,
+                             data_type_t d) {
+    return s == data_type_t::f16 && w == data_type_t::f16
+        && (d == data_type_t::f16 || d == data_type_t::f32);
+  };
+
   for (auto dt1 : kAllDtypes) {
     for (auto dt2 : kAllDtypes) {
-      EXPECT_EQ(ck::resolve_variant(data_type_t::f16, dt1, dt2),
-                ck::KernelVariant::kUnsupported);
-      EXPECT_EQ(ck::resolve_variant(dt1, data_type_t::f16, dt2),
-                ck::KernelVariant::kUnsupported);
-      EXPECT_EQ(ck::resolve_variant(dt1, dt2, data_type_t::f16),
-                ck::KernelVariant::kUnsupported);
+      if (!is_supported_f16(data_type_t::f16, dt1, dt2)) {
+        EXPECT_EQ(ck::resolve_variant(data_type_t::f16, dt1, dt2),
+                  ck::KernelVariant::kUnsupported)
+            << "src=f16 wei=" << ck_test::dt_name(dt1)
+            << " dst=" << ck_test::dt_name(dt2);
+      }
+      if (!is_supported_f16(dt1, data_type_t::f16, dt2)) {
+        EXPECT_EQ(ck::resolve_variant(dt1, data_type_t::f16, dt2),
+                  ck::KernelVariant::kUnsupported)
+            << "src=" << ck_test::dt_name(dt1)
+            << " wei=f16 dst=" << ck_test::dt_name(dt2);
+      }
+      if (!is_supported_f16(dt1, dt2, data_type_t::f16)) {
+        EXPECT_EQ(ck::resolve_variant(dt1, dt2, data_type_t::f16),
+                  ck::KernelVariant::kUnsupported)
+            << "src=" << ck_test::dt_name(dt1)
+            << " wei=" << ck_test::dt_name(dt2) << " dst=f16";
+      }
     }
   }
 }

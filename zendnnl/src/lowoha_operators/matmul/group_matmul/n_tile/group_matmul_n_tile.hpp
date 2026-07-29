@@ -810,6 +810,13 @@ inline void engage_ntile_custom_kernel(
       dynamic_quant
       || (src_dtype == data_type_t::s8 && wei_dtype == data_type_t::s8);
   if (is_dq_int8_call && !get_grp_matmul_custom_kernel_int8()) return;
+  // FP16 CK sub-toggle — independent from the master + int8 knobs so
+  // operators can A/B the native AVX-512-FP16 fast path without
+  // disturbing the bf16 / int8 paths.  An f16×f16 call honours it;
+  // bf16 / int8 calls never satisfy this clause.
+  const bool is_f16_call =
+      (src_dtype == data_type_t::f16 && wei_dtype == data_type_t::f16);
+  if (is_f16_call && !get_grp_matmul_custom_kernel_f16()) return;
   custom_kernel::prepare_for_call(
       act, src_dtype, wei_dtype, dst_dtype, act_dtype, bias_dtype,
       transA, transB, M, N, K, ldb, alpha, beta, weight,

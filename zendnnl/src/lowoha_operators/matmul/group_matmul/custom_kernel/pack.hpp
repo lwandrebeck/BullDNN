@@ -56,6 +56,7 @@
 
 #include "common/bfloat16.hpp"
 #include "common/error_status.hpp"
+#include "common/float16.hpp"
 
 namespace zendnnl {
 namespace lowoha {
@@ -63,6 +64,7 @@ namespace matmul {
 namespace custom_kernel {
 
 using zendnnl::common::bfloat16_t;
+using zendnnl::common::float16_t;
 using zendnnl::error_handling::status_t;
 
 /// VNNI K-pair multiplicity (= 2: two consecutive K-rows per VDPBF16PS lane).
@@ -208,6 +210,82 @@ status_t get_or_pack_weight_bf16(
 /// calls it directly.
 void free_owned_packed_weight(const bfloat16_t *packed);
 
+// ── FP16 pack ───────────────────────────────────────────────────
+// Adaptive FP16 weight pack consumed by the FP16 microkernel
+// (custom_kernel/ukernel/f16_microkernel.{hpp,cpp}) for the
+// f16 × f16 → {f16, f32} native AVX-512-FP16 fast path.
+//
+// PACK LAYOUT (FP16, native `_mm512_fmadd_ph`-friendly):
+//
+//     packed[O / pack_nr][K][pack_nr]
+//
+//   * `pack_nr` is a runtime parameter — supported values 32 and 64
+//     (shared with the bf16 / int8 packs).
+//   * Unlike the bf16 K-pair (`VDPBF16PS`) and int8 K-quad
+//     (`VPDPBUSD`) layouts, the FP16 path uses a NATIVE FMA
+//     (`_mm512_fmadd_ph`) that consumes ONE K-element per lane, so
+//     there is no K-interleave and no trailing K-pad: each K row
+//     stores `pack_nr` contiguous FP16 cols, and one `_mm512_loadu_ph`
+//     of 32 FP16 lanes feeds the FMA directly (`pack_nr / 32` loads
+//     cover the o-block's columns).
+//   * No odd-K padding is needed — the K loop is a plain stride-1
+//     walk over `[0, K)`.
+//
+// `interleave_split_halves` carries the same gate / silu / gelu
+// semantic as the bf16 / int8 siblings: when true, pack output
+// column `2i+0` reads canonical column `i` (gate i) and `2i+1`
+// reads canonical column `I + i` (up i) with `I = N / 2`, so the
+// in-register pair-store epilogues see the interleaved layout
+// regardless of the caller's split-halves W13.  Requires even N.
+//
+// CACHE: SEPARATE singleton from the BF16 and INT8 packs — different
+// value type (`float16_t *`) and a distinct cache-key marker bit
+// (`kCustomKernelF16Marker`) so an f16 pack and a bf16 / int8 pack
+// for the same weight pointer occupy disjoint LRU entries.  Same
+// eviction-disabled (UINT32_MAX capacity) policy and quiescent-window
+// clear contract as the bf16 sibling.
+
+/// Look up the pre-packed FP16 weight for one
+/// (weight, K, N, pack_nr, transB) tuple, packing on the first miss
+/// and caching for subsequent calls.  Contract is identical to
+/// `get_or_pack_weight_bf16` (see above) with the element type
+/// changed to `float16_t` and the plain (non-K-interleaved) layout
+/// documented in the section comment above.  `disable_cache=true`
+/// behaves identically to the bf16 sibling: allocate a fresh aligned
+/// buffer per call, skip the LRU singleton, and let the caller free
+/// via `free_owned_packed_weight_f16()`.
+///
+/// Precondition when `interleave_split_halves == true`: N must be even
+/// — the packer reads gate col `i` from `[0, N/2)` and up col `I + i`
+/// from `[N/2, N)` with `I = N/2`, so an odd N has no valid split.
+/// The function refuses (returns failure) on odd N in that mode.
+///
+/// IN-PLACE (WEIGHT_CACHE=2) IS NOT SUPPORTED for the F16 pack family:
+/// note there is deliberately NO `in_place` parameter here (contrast
+/// the bf16 sibling's trailing `in_place = false`).  Even though the
+/// FP16 pack is the same size as the raw weight (`packed_bytes ==
+/// K*N*sizeof(float16_t)`, no K-interleave/pad — so an in-place
+/// write-back would be layout-feasible), the F16 path conservatively
+/// declines it and always uses the out-of-place LRU (or the
+/// caller-owned buffer under `disable_cache`).  A WC=2 request from
+/// the dispatcher therefore transparently falls through to the
+/// out-of-place cache for f16 — behaviourally correct, just without
+/// the one-buffer saving the bf16 even-K in-place path gets.
+status_t get_or_pack_weight_f16(
+    const float16_t *weight,
+    int K, int N, int ldb, int pack_nr,
+    bool transB,
+    bool interleave_split_halves,
+    const float16_t **out_packed,
+    bool *was_hit_out = nullptr,
+    bool disable_cache = false);
+
+/// Free a packed-weight buffer returned by
+/// `get_or_pack_weight_f16(..., disable_cache=true)`.  Safe with
+/// `nullptr`.  Same lifetime contract as `free_owned_packed_weight`
+/// (the bf16 sibling).
+void free_owned_packed_weight_f16(const float16_t *packed);
+
 // ── DQ-INT8 pack ────────────────────────────────────────────────
 // Adaptive INT8 weight pack with a per-column compensation row.
 // Used by the INT8 microkernel (custom_kernel/ukernel/
@@ -321,6 +399,24 @@ status_t prepack_weight_into_int8(
     bool interleave_split_halves,
     void *dst);
 
+/// FP16 sibling of `packed_weight_size_bf16`.  The FP16 pack is the
+/// plain `[O/pack_nr][K][pack_nr]` slab (native AVX-512-FP16 FMA
+/// consumes one K-lane per step, so there is NO K-pair VNNI doubling,
+/// no odd-K pad, and no compensation row).  Identical to the
+/// allocation `get_or_pack_weight_f16` makes internally.  Returns 0
+/// for invalid args.
+size_t packed_weight_size_f16(int K, int N, int pack_nr);
+
+/// FP16 sibling of `prepack_weight_into_bf16`.  Writes the plain
+/// `[O/pack_nr][K][pack_nr]` FP16 slab into `dst` (no VNNI doubling /
+/// compensation row).  Returns failure on bad args.
+status_t prepack_weight_into_f16(
+    const float16_t *weight,
+    int K, int N, int ldb, int pack_nr,
+    bool transB,
+    bool interleave_split_halves,
+    void *dst);
+
 /// Release every cached packed BF16 weight and reset the cache to
 /// empty.  Intended for weight-rotating deployments (dynamic
 /// LoRA hot-swap, retraining loops, recompile / redeploy cycles)
@@ -355,6 +451,13 @@ void clear_custom_kernel_pack_cache();
 /// quiescence contract applies (no in-flight INT8 CK dispatch on
 /// any thread).
 void clear_custom_kernel_pack_cache_int8();
+
+/// Release every cached packed FP16 weight and reset the cache to
+/// empty.  Mirror of `clear_custom_kernel_pack_cache()` for the
+/// disjoint FP16 LRU singleton.  See the warning on the bf16
+/// sibling — the same quiescence contract applies (no in-flight
+/// FP16 CK dispatch on any thread).
+void clear_custom_kernel_pack_cache_f16();
 
 } // namespace custom_kernel
 } // namespace matmul

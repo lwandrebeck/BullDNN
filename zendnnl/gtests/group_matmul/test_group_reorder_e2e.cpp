@@ -39,6 +39,11 @@
 /// which bypasses the process-cached ZENDNNL_GRP_MATMUL_CUSTOM_KERNEL
 /// snapshot a sibling test may have taken). The host-support check at entry
 /// skips the test where AVX-512 BF16 is unavailable.
+///
+/// Two variants live here: the bf16 flow (VDPBF16PS VNNI pack) and an
+/// FP16 sibling (native AVX-512-FP16 plain slab, gated on
+/// `avx512f16_available()`) that exercises the f16 external-prepack
+/// surface (`prepack_weight_into_f16` via group_reorder).
 
 #include <gtest/gtest.h>
 
@@ -226,6 +231,145 @@ TEST(GroupReorderModelE2E, WarmUpThenInferenceFetchesReorderedWeights) {
   }
   EXPECT_TRUE(ok)
       << "group_matmul output mismatch vs reference (prepacked weights)";
+
+  for (int e = 0; e < E; ++e) std::free(prepacked[e]);
+}
+
+// ──────────────────────────────────────────────────────────────────
+// FP16 sibling of the bf16 e2e above.  Same prepack-at-load → infer
+// flow, but the weight family is native AVX-512-FP16 (plain
+// [O/pack_nr][K][pack_nr] slab, no VNNI K-pair doubling).  Exercises
+// the f16 external-prepack surface (`prepack_weight_into_f16` reached
+// via group_reorder(moe_custom_kernel, wei_dtype=f16)) and the
+// dispatcher's f16 caller-prepacked aliasing.
+//
+// Gated on `avx512f16_available()` (CPUID + toolchain FP16 intrinsics),
+// NOT `dispatch_supported()` (which only checks bf16): a bf16-only host
+// has no FP16 microkernel, so the CK f16 path cannot engage and the
+// CK-only-or-fail guard would (correctly) fail the prepacked call.
+// ──────────────────────────────────────────────────────────────────
+TEST(GroupReorderModelE2E, F16WarmUpThenInferenceFetchesReorderedWeights) {
+  if (!ck::avx512f16_available()) {
+    GTEST_SKIP() << "AVX-512-FP16 not available (CPU or toolchain); the "
+                    "custom-kernel FP16 pack path cannot run on this host";
+  }
+  prepack::clear_fingerprint_cache_for_test();
+  reset_grp_matmul_caches();
+  prepack::test_api::clear_last_invocation_stats();
+
+  mt::AlgoEnvGuard         algo3(3);
+  mt::CustomKernelOverride ck_on(true);
+  WeightCacheGuard         wc_on(1);
+  mt::LastInvocationCaptureGuard stats_capture;
+
+  constexpr int E = 8;     // experts
+  constexpr int M = 16;    // tokens routed to each expert
+  constexpr int K = 256;   // in features
+  constexpr int N = 256;   // out features (multiple of pack_nr=32)
+  constexpr matmul_algo_t kAlgo = matmul_algo_t::aocl_dlp_blocked;
+
+  // FP16 accumulates natively (`_mm512_fmadd_ph`), so the tolerance
+  // band is wider than bf16 — mirror the f16 group basic test
+  // (`test_basic.cpp`: 5x rtol_bf16 / 16x epsilon_bf16).
+  const float f16_rtol = 5.0f * rtol_bf16;
+  const float f16_eps  = 16.0f * epsilon_bf16;
+
+  tensor_factory_t tf{};
+  std::vector<tensor_t> inp(E), wt(E), bias(E), out(E), out_ref(E);
+  std::vector<const void *> wptr(E);
+  for (int e = 0; e < E; ++e) {
+    inp[e]     = tf.uniform_dist_tensor({M, K}, data_type_t::f16, 2.0, false);
+    wt[e]      = tf.uniform_dist_tensor({K, N}, data_type_t::f16, 2.0, false);
+    bias[e]    = tensor_t{};  // no bias (CK f16 none-act path)
+    out[e]     = tf.uniform_dist_tensor({M, N}, data_type_t::f16, 2.0);
+    out_ref[e] = tf.uniform_dist_tensor({M, N}, data_type_t::f16, 2.0);
+    wptr[e]    = wt[e].get_raw_handle_unsafe();
+  }
+
+  // ── PREPACK: group_reorder → caller-owned FP16 VNNI slab. ──────────
+  std::vector<rdr::reorder_params_t> rp(E);
+  std::vector<const void *>          src_w(E);
+  std::vector<void *>                prepacked(E, nullptr);
+  for (int e = 0; e < E; ++e) {
+    rp[e].is_prepack         = true;
+    rp[e].prepack.algo       = matmul_algo_t::moe_custom_kernel;
+    rp[e].prepack.wei_dtype  = data_type_t::f16;
+    rp[e].prepack.src_dtype  = data_type_t::f16;
+    rp[e].prepack.K          = K;
+    rp[e].prepack.N          = N;
+    rp[e].prepack.ldb        = N;        // row-major [K, N]
+    rp[e].prepack.transposed = false;
+    rp[e].prepack.pack_nr    = 0;        // auto (plan_pack_nr)
+
+    const size_t bytes = rdr::weight_prepack_size(rp[e]);
+    ASSERT_GT(bytes, 0u)
+        << "weight_prepack_size (f16) returned 0 for expert " << e;
+    prepacked[e] = std::aligned_alloc(64, bytes);
+    ASSERT_NE(prepacked[e], nullptr);
+    src_w[e] = wptr[e];
+  }
+  ASSERT_EQ(rdr::group_reorder(src_w, prepacked, rp),
+            zendnnl::memory::status_t::success)
+      << "group_reorder (f16 memory-format change) failed";
+
+  // ── INFERENCE over the prepacked f16 weights (mem_format_b='r'). ────
+  std::vector<char>  layouts(E, 'r');
+  std::vector<bool>  transAs(E, false), transBs(E, false);
+  std::vector<int>   Ms(E, M), Ns(E, N), Ks(E, K);
+  std::vector<float> alphas(E, 1.0f), betas(E, 0.0f);
+  std::vector<int>   ldas(E, K), ldbs(E, N), ldcs(E, N);
+  std::vector<bool>  is_wc(E, true);
+
+  std::vector<const void *> srcs(E), weis(E), biases(E, nullptr);
+  std::vector<void *>       dsts(E);
+  std::vector<matmul_params> params(E);
+  for (int e = 0; e < E; ++e) {
+    srcs[e] = inp[e].get_raw_handle_unsafe();
+    weis[e] = prepacked[e];
+    dsts[e] = out[e].get_raw_handle_unsafe();
+    params[e].dtypes.src  = data_type_t::f16;
+    params[e].dtypes.wei  = data_type_t::f16;
+    params[e].dtypes.dst  = data_type_t::f16;
+    params[e].dtypes.bias = data_type_t::none;
+    params[e].mem_format_b = 'r';
+    params[e].lowoha_algo  = matmul_algo_t::moe_custom_kernel;
+    params[e].num_threads  = 0;
+  }
+
+  status_t st = group_matmul_direct(
+      layouts, transAs, transBs, Ms, Ns, Ks, alphas,
+      srcs, ldas, weis, ldbs, biases, betas, dsts, ldcs,
+      is_wc, params, /*moe_postop=*/nullptr);
+  ASSERT_EQ(st, status_t::success)
+      << "group_matmul_direct (f16, mem_format_b='r') failed";
+
+  // No re-pack: a prepacked weight is consumed directly, so the eager
+  // ALGO-3 warm must be skipped.
+  auto stats = prepack::test_api::get_last_invocation_stats();
+  EXPECT_FALSE(stats.valid)
+      << "eager ALGO-3 warm ran for a prepacked (f16, mem_format_b='r') "
+         "weight; it must be skipped";
+
+  // Reference: per-expert GEMM on the ORIGINAL (un-packed) f16 weights.
+  status_t ref_st = status_t::success;
+  for (int e = 0; e < E && ref_st == status_t::success; ++e) {
+    std::vector<post_op_type_t> ref_po;
+    std::vector<tensor_t>       bin;
+    ref_st = matmul_forced_ref_kernel_test(inp[e], wt[e], bias[e],
+                                           out_ref[e], ref_po, bin,
+                                           /*is_woq=*/false, kAlgo,
+                                           /*alpha=*/1.0f, /*beta=*/0.0f);
+  }
+  ASSERT_EQ(ref_st, status_t::success) << "reference GEMM (f16) failed";
+
+  bool ok = true;
+  for (int e = 0; e < E && ok; ++e) {
+    compare_tensor_2D_matrix(out[e], out_ref[e], M, N, K,
+                             f16_rtol, f16_eps, ok,
+                             /*enable_f32_relaxation=*/false, /*alpha=*/1.0f);
+  }
+  EXPECT_TRUE(ok)
+      << "group_matmul f16 output mismatch vs reference (prepacked weights)";
 
   for (int e = 0; e < E; ++e) std::free(prepacked[e]);
 }

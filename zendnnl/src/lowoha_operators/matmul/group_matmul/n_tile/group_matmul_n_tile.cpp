@@ -501,7 +501,7 @@ inline void GroupNTileContext::do_tile(const GroupNTilePlan &plan,
   // the tight ldc.  Either way, no per-thread scratch is needed.
   if (use_custom && kctx != nullptr) {
     // bias[e] is passed as `const void *` — the dispatcher resolves
-    // the dtype via `kctx->bias_kind` (bf16 or fp32) and branches
+    // the dtype via `kctx->bias_kind` (bf16, fp32, or f16) and branches
     // the load path inside the ukernel.
     //
     // ── DQ-INT8 quant args ──────────────────────────────────────────
@@ -3376,7 +3376,10 @@ void flat_n_tile(
   const size_t bias_elem = (params[0].dtypes.bias != data_type_t::none)
       ? size_of(params[0].dtypes.bias) : sizeof(float);
 
-  // ── Custom BF16 microkernel opt-in (ZENDNNL_GRP_MATMUL_CUSTOM_KERNEL=1) ──
+  // ── Custom microkernel opt-in (ZENDNNL_GRP_MATMUL_CUSTOM_KERNEL, master
+  //    knob, default ON; per-family sub-knobs _INT8 / _F16 cascade under it) ──
+  //    Serves the BF16, DQ-INT8, and native FP16 microkernel families
+  //    (resolve_variant picks the family from the dtype tuple).
   // Engage for both the non-fused path (act=none — plain matmul tile)
   // AND for the inline gated-act fused epilogue (act ∈
   // {swiglu_oai_mul, silu_and_mul, gelu_and_mul}).

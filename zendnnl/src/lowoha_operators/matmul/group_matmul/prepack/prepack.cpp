@@ -728,10 +728,18 @@ inline custom_kernel::PackProbeStats warm_custom(const PrepackParams &p) {
   // Keying on `dynamic_quant` here routed grouped-s8 (src=s8,
   // dynamic_quant=false) to the bf16 pack arena, so the int8 CK pack
   // LRU was never warmed for the production decode path.
+  // Family selection: int8 (wei=s8 + compute s8/u8) → kINT8; an
+  // f16×f16 call → kF16; everything else → kBF16.  A pure dtype
+  // discriminator (rather than `ck_eligible_*`) keeps this branch
+  // forward-reference-free and robust — `warm_custom` is only reached
+  // for CK-eligible calls, so the dtype alone determines the arena.
   const custom_kernel::WarmDtypeFamily family =
     int8_aocl_warm_candidate(p)
     ? custom_kernel::WarmDtypeFamily::kINT8
-    : custom_kernel::WarmDtypeFamily::kBF16;
+    : (p.src_dtype == data_type_t::f16
+       && p.wei_dtype == data_type_t::f16)
+      ? custom_kernel::WarmDtypeFamily::kF16
+      : custom_kernel::WarmDtypeFamily::kBF16;
   custom_kernel::warm_pack_all_custom_kernel_experts(
     *p.weight, *p.K, *p.N, *p.ldb, *p.transB, iwc,
     p.num_ops_total, st, interleave_split_halves, family);
@@ -993,7 +1001,7 @@ inline void log_pack_probe_skip(int scheduling_algo,
 //     call neither warms a CK arena nor skips the AOCL per-tile
 //     warm.
 //   * act_dtype = bf16 when act != none (refusal: `unsupported_act_dtype`)
-//   * bias_dtype in {none, bf16, f32} (refusal: `unsupported_bias_dtype`)
+//   * bias_dtype in {none, bf16, f32, f16} (refusal: `unsupported_bias_dtype`)
 //   * pack_nr ∈ {32, 64} divides N (refusal: `N_not_multiple_of_pack_nr`)
 //
 // Per-expert refusals (`transA_not_supported`, `null_weight_in_active_
@@ -1088,7 +1096,8 @@ inline bool ck_eligible_bf16(const PrepackParams &p) {
   }
   if (p.bias_dtype != data_type_t::none
       && p.bias_dtype != data_type_t::bf16
-      && p.bias_dtype != data_type_t::f32) {
+      && p.bias_dtype != data_type_t::f32
+      && p.bias_dtype != data_type_t::f16) {
     return false;
   }
   // Per-expert runtime-gate mirroring.  Each gate below has a
@@ -1211,7 +1220,7 @@ inline bool ck_eligible_bf16(const PrepackParams &p) {
 //   * Activation: same four (none / swiglu_oai_mul / silu_and_mul
 //     / gelu_and_mul) as bf16, with the silu/gelu + bias refusal
 //     mirrored.
-//   * bias_dtype ∈ {none, bf16, f32}.
+//   * bias_dtype ∈ {none, bf16, f32, f16}.
 //   * pack_nr ∈ {32, 64} divides the representative N (uses
 //     `plan_pack_nr` from dispatch.cpp — single source of truth
 //     shared with the bf16 family).
@@ -1287,7 +1296,8 @@ inline bool ck_eligible_int8(const PrepackParams &p) {
   }
   if (p.bias_dtype != data_type_t::none
       && p.bias_dtype != data_type_t::bf16
-      && p.bias_dtype != data_type_t::f32) {
+      && p.bias_dtype != data_type_t::f32
+      && p.bias_dtype != data_type_t::f16) {
     return false;
   }
   // Per-expert runtime-gate mirroring — identical to ck_eligible_bf16.
@@ -1358,14 +1368,124 @@ inline bool ck_eligible_int8(const PrepackParams &p) {
   return true;
 }
 
-// Outer `ck_eligible` — true when either the BF16 family or the
-// DQ-INT8 family is eligible.  Callers continue to consult this
-// single predicate; the family choice is implicit in the fingerprint
-// (folded via `dynamic_quant` + `compute_dtype`) and in the
-// downstream warmer's per-call dtype switch (see
-// `warm_pack_all_custom_kernel_experts` in prepack_custom_kernel.cpp).
+// Eligibility for the FP16 custom-kernel pack (ALGO 3 only).  Mirrors
+// the static-knowable refusal gates `prepare_for_call` applies to the
+// FP16 family.  Same asymmetry argument as `ck_eligible_bf16`:
+// warming an arena the runtime refuses wastes memory and disables
+// Fix-B on regime 2.  The runtime additionally requires native
+// AVX-512-FP16 (and a toolchain that compiled the intrinsics), checked
+// in `warm_pack_all_custom_kernel_experts` via `avx512f16_available()`,
+// so this predicate stays purely shape/dtype/knob structural.
+inline bool ck_eligible_f16(const PrepackParams &p) {
+  if (!p.custom_kernel_on) return false;
+  if (!get_grp_matmul_custom_kernel_f16()) return false;
+  // FP16 family requires dynamic_quant == false (non-quant, like bf16).
+  if (p.dynamic_quant) return false;
+  if (p.src_dtype != data_type_t::f16) return false;
+  if (p.wei_dtype != data_type_t::f16) return false;
+  // dst ∈ {f16, f32} — mirrors resolve_variant's kF16_F16_F16 /
+  // kF16_F16_F32; the pack format is dst-independent.
+  if (p.dst_dtype != data_type_t::f16
+      && p.dst_dtype != data_type_t::f32) return false;
+  // Activation acceptance + layout: same set as the bf16 family
+  // (none / swiglu_oai_mul / silu_and_mul / gelu_and_mul; silu/gelu
+  // bias-free only).
+  const bool split_halves_no_bias =
+      (p.act == grp_matmul_gated_act_t::silu_and_mul
+       || p.act == grp_matmul_gated_act_t::gelu_and_mul)
+      && (p.bias_dtype == data_type_t::none);
+  if (p.act != grp_matmul_gated_act_t::swiglu_oai_mul
+      && p.act != grp_matmul_gated_act_t::none
+      && !split_halves_no_bias) {
+    return false;
+  }
+  // Any gated activation is F16-dst only for this family (the FP16
+  // pair-store helpers write 16 F16 lanes); mirror select_f16_ukernel's
+  // (gated_act, !kF16) refusal.
+  const bool is_gated_act =
+      (p.act == grp_matmul_gated_act_t::swiglu_oai_mul)
+      || (p.act == grp_matmul_gated_act_t::silu_and_mul)
+      || (p.act == grp_matmul_gated_act_t::gelu_and_mul);
+  if (is_gated_act && p.dst_dtype != data_type_t::f16) {
+    return false;
+  }
+  // Fused activation dtype must be f16 for this family (the runtime
+  // gate in prepare_for_call requires act_dtype == f16 when the
+  // resolved variant is FP16).
+  if (p.act != grp_matmul_gated_act_t::none
+      && p.act_dtype != data_type_t::f16) {
+    return false;
+  }
+  // Bias dtype ∈ {none, bf16, f32, f16} — same set as the bf16 /
+  // DQ-INT8 eligibility siblings and the `prepare_for_call` bias gate.
+  // (The FP16 kernel loads an f16 bias directly; bf16 / DQ-INT8 widen it
+  // via `_mm512_cvtph_ps`.)
+  if (p.bias_dtype != data_type_t::none
+      && p.bias_dtype != data_type_t::bf16
+      && p.bias_dtype != data_type_t::f32
+      && p.bias_dtype != data_type_t::f16) {
+    return false;
+  }
+  // Per-expert runtime-gate mirroring — identical to the bf16 sibling
+  // (transA / alpha / beta / is_weights_const over the active range).
+  const int n_active = p.num_ops_active;
+  for (int i = 0; i < n_active; ++i) {
+    if (p.transA != nullptr
+        && i < static_cast<int>(p.transA->size())
+        && (*p.transA)[i]) {
+      return false;
+    }
+    if (p.alpha != nullptr
+        && i < static_cast<int>(p.alpha->size())
+        && (*p.alpha)[i] != 1.0f) {
+      return false;
+    }
+    if (p.beta != nullptr
+        && i < static_cast<int>(p.beta->size())
+        && (*p.beta)[i] != 0.0f) {
+      return false;
+    }
+    if (p.is_weights_const != nullptr
+        && !p.is_weights_const->empty()
+        && i < static_cast<int>(p.is_weights_const->size())
+        && !(*p.is_weights_const)[i]) {
+      return false;
+    }
+  }
+  // pack_nr ∈ {32, 64} divides the representative N (single source of
+  // truth shared with the runtime via `plan_pack_nr`).  No K-quad
+  // alignment requirement (FP16 FMA is K-stride-1).
+  namespace ck = ::zendnnl::lowoha::matmul::custom_kernel;
+  if (p.K == nullptr || p.K->empty()) return false;
+  if (p.N == nullptr || p.N->empty()) return false;
+  int rep_K = (*p.K)[0];
+  int rep_N = (*p.N)[0];
+  if (p.M != nullptr) {
+    const int sweep = std::min<int>(
+        p.num_ops_active,
+        static_cast<int>(std::min({p.K->size(), p.N->size(),
+                                   p.M->size()})));
+    for (int i = 0; i < sweep; ++i) {
+      if ((*p.M)[i] > 0) {
+        rep_K = (*p.K)[i];
+        rep_N = (*p.N)[i];
+        break;
+      }
+    }
+  }
+  const int pack_nr = ck::plan_pack_nr(rep_K, rep_N);
+  if (pack_nr != ck::kNRMin && pack_nr != ck::kNRMax) return false;
+  return true;
+}
+
+// Outer `ck_eligible` — true when the BF16, DQ-INT8, or FP16 family
+// is eligible.  Callers continue to consult this single predicate;
+// the family choice is implicit in the fingerprint (folded via dtype
+// + `dynamic_quant` + `compute_dtype`) and in the downstream warmer's
+// per-call dtype switch (see `warm_pack_all_custom_kernel_experts` in
+// prepack_custom_kernel.cpp).
 inline bool ck_eligible(const PrepackParams &p) {
-  return ck_eligible_bf16(p) || ck_eligible_int8(p);
+  return ck_eligible_bf16(p) || ck_eligible_int8(p) || ck_eligible_f16(p);
 }
 
 // ──────────────────────────────────────────────────────────────────────

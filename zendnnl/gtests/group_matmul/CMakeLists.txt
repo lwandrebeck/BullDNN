@@ -44,6 +44,13 @@ target_sources(gtests
     ${CMAKE_CURRENT_SOURCE_DIR}/custom_kernel/test_prepare_for_call.cpp
     ${CMAKE_CURRENT_SOURCE_DIR}/custom_kernel/test_pack_bf16.cpp
     ${CMAKE_CURRENT_SOURCE_DIR}/custom_kernel/test_ukernel_bf16.cpp
+    # FP16 sibling suites -- mirror test_ukernel_bf16.cpp /
+    # test_pack_bf16.cpp for the native AVX-512-FP16 microkernel family
+    # (f16:f16:f16 / f16:f16:f32) and its disjoint f16 pack cache, gated
+    # on CK_SKIP_IF_NO_F16_ISA() so they skip cleanly on hosts /
+    # toolchains without AVX-512-FP16.
+    ${CMAKE_CURRENT_SOURCE_DIR}/custom_kernel/test_ukernel_f16.cpp
+    ${CMAKE_CURRENT_SOURCE_DIR}/custom_kernel/test_pack_f16.cpp
     # DQ-INT8 sibling suites — mirror the bf16 set 1:1 (microkernel
     # direct-surface correctness + pack module coverage with K/4
     # interleave + compensation row).

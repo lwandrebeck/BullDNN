@@ -33,12 +33,17 @@
 ///       path and `flat_n_tile`'s post-pass applies the activation
 ///       to dst[:, 0:N/2).  cols [N/2, N) become garbage by contract.
 ///     - `none` — plain matmul, full N-wide output.
-///   * Bias dtype: {none, bf16, f32}.
-///   * Dst dtype: {bf16, f32} — but `(swiglu, f32)` is structurally
-///     invalid (kernel refuses), tested by negative-gate tests in
-///     test_prepare_for_call.cpp; we filter it here.  silu/gelu
-///     accept both dst dtypes (the matmul-only path doesn't constrain
-///     dst beyond the variant gate).
+///   * Bias dtype: {none, bf16, f32, f16} (a native f16 bias is widened
+///     to fp32 in-kernel via `_mm512_cvtph_ps`).
+///   * Dst dtype: {bf16, f32} — every gated kind (swiglu_oai_mul,
+///     silu_and_mul, gelu_and_mul) is exercised with a bf16 dst only:
+///     `(gated, f32)` is filtered here (swiglu is structurally invalid
+///     — the fused epilogue is bf16-only and the kernel refuses, as
+///     covered by the negative-gate tests in test_prepare_for_call.cpp).
+///     silu_and_mul / gelu_and_mul are additionally bias-free on the
+///     fused path, so biased silu/gelu tuples are filtered as well (see
+///     the filter in make_ukernel_cases).  Only `none` runs the full
+///     {bf16, f32} dst × {none, bf16, f32, f16} bias grid.
 ///
 /// Reference: a scalar FP32 GEMM computed inline (no library call).
 /// For swiglu the reference reads gate / up from interleaved cols
@@ -116,7 +121,7 @@ constexpr int kCkTestThreads = 4;
 // ──────────────────────────────────────────────────────────────────
 // Scalar FP32 reference GEMM with optional bias + swiglu_oai_mul
 // activation.  Mirrors the kernel's contract:
-//   * src is BF16; weights are BF16; bias is BF16 or FP32 or absent.
+//   * src is BF16; weights are BF16; bias is BF16, FP32, F16, or absent.
 //   * Output is BF16 or FP32 per `dst_is_f32`.
 //   * Activation is applied AFTER the matmul + bias.  swiglu_oai_mul
 //     halves N — output cols are N/2.
@@ -142,6 +147,8 @@ inline float ref_matmul_elem(int m, int n,
     acc += to_f32(static_cast<const bfloat16_t *>(bias)[n]);
   } else if (bias_dt == data_type_t::f32) {
     acc += static_cast<const float *>(bias)[n];
+  } else if (bias_dt == data_type_t::f16) {
+    acc += static_cast<float>(static_cast<const mt::float16_t *>(bias)[n]);
   }
   return acc;
 }
@@ -375,10 +382,12 @@ TEST_P(CkUkernelCorrectness, MatchesScalarRef) {
     mt::fill_wei1(wei_bufs[e], /*e=*/e, 0.005f);
   }
 
-  // Bias buffer per expert (when bias_dt != none).
-  std::vector<std::vector<bfloat16_t>> bias_bf16_bufs(kNumOps);
-  std::vector<std::vector<float>>      bias_f32_bufs(kNumOps);
-  std::vector<const void *>            bias_ptrs(kNumOps, nullptr);
+  // Bias buffer per expert (when bias_dt != none).  The bf16 CK also
+  // accepts an f16 bias (widened via _mm512_cvtph_ps in-kernel).
+  std::vector<std::vector<bfloat16_t>>    bias_bf16_bufs(kNumOps);
+  std::vector<std::vector<float>>         bias_f32_bufs(kNumOps);
+  std::vector<std::vector<mt::float16_t>> bias_f16_bufs(kNumOps);
+  std::vector<const void *>               bias_ptrs(kNumOps, nullptr);
   for (int e = 0; e < kNumOps; ++e) {
     if (c.bias_dt == data_type_t::bf16) {
       bias_bf16_bufs[e].assign(c.N, bfloat16_t(0.0f));
@@ -392,6 +401,12 @@ TEST_P(CkUkernelCorrectness, MatchesScalarRef) {
         bias_f32_bufs[e][n] =
             0.0005f * static_cast<float>((n + e * 7) % 13 - 6);
       bias_ptrs[e] = bias_f32_bufs[e].data();
+    } else if (c.bias_dt == data_type_t::f16) {
+      bias_f16_bufs[e].assign(c.N, mt::float16_t(0.0f));
+      for (int n = 0; n < c.N; ++n)
+        bias_f16_bufs[e][n] = mt::float16_t(
+            0.0005f * static_cast<float>((n + e * 7) % 13 - 6));
+      bias_ptrs[e] = bias_f16_bufs[e].data();
     }
   }
 
@@ -617,12 +632,14 @@ static std::vector<UkernelCase> make_ukernel_cases() {
   };
 
   std::vector<UkernelCase> cases;
-  // 5 small_shapes × 21 (act × bias × dst, swiglu+f32 filtered) = 105
-  // 2 large_shapes × 4 smoke cases each                          =   8
-  // 3 edge_shapes × 4                                            =  12
-  // 2 nr64_shapes × 4 NR=64-pinned tuples each                   =   8
-  // Total                                                        ~133
-  cases.reserve(5 * 21 + 2 * 4 + 3 * 4 + 2 * 4);
+  // 5 small_shapes × 14 (act × bias × dst, (gated+f32) and
+  //   (silu/gelu+bias) filtered: none=8, swiglu=4, silu=1, gelu=1) = 70
+  //   (bias set is now {none, bf16, f32, f16})
+  // 2 large_shapes × 4 smoke cases each                            =   8
+  // 3 edge_shapes × 4                                              =  12
+  // 2 nr64_shapes × 4 NR=64-pinned tuples each                     =   8
+  // Total                                                          ~98
+  cases.reserve(5 * 14 + 2 * 4 + 3 * 4 + 2 * 4);
 
   for (const auto &s : small_shapes) {
     for (auto act : {grp_matmul_gated_act_t::none,
@@ -630,7 +647,7 @@ static std::vector<UkernelCase> make_ukernel_cases() {
                      grp_matmul_gated_act_t::silu_and_mul,
                      grp_matmul_gated_act_t::gelu_and_mul}) {
       for (auto bias : {data_type_t::none, data_type_t::bf16,
-                        data_type_t::f32}) {
+                        data_type_t::f32, data_type_t::f16}) {
         for (auto dst : {data_type_t::bf16, data_type_t::f32}) {
           // Filter structurally invalid (gated-fused, FP32-dst)
           // tuples — every fused gated kind (swiglu_oai_mul,

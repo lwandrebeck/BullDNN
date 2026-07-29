@@ -342,6 +342,26 @@ static void ukernel_impl(
             reinterpret_cast<const __m256i *>(bias_bf16 + v * 16));
         bias_vec[v] = bf16x16_to_f32(b16);
       }
+    } else if (bias_kind == BiasKind::f16) {
+      // f16 bias.  `_mm512_cvtph_ps` (VCVTPH2PS, part of
+      // AVX-512F — NOT the native AVX-512-FP16 ISA) widens 16 f16 lanes
+      // to fp32, so this path compiles and runs on any bf16-capable host
+      // (no GCC-12 / AVX-512-FP16 dependency).
+      //
+      // `float16_t` is a class wrapper, and casting `float16_t*` to
+      // `uint16_t*` (then reading it) is strict-aliasing UB — see
+      // common/float16.hpp.  Copy the 16-lane f16 payload through
+      // `memcpy` into a `__m256i` (once per tile — negligible cost) so the
+      // load stays well-defined under -O2 / -fstrict-aliasing.
+      const auto *bias_bytes = static_cast<const char *>(bias);
+      #pragma GCC unroll 4
+      for (int v = 0; v < NV; ++v) {
+        __m256i h16;
+        std::memcpy(&h16,
+                    bias_bytes + static_cast<size_t>(v) * sizeof(h16),
+                    sizeof(h16));
+        bias_vec[v] = _mm512_cvtph_ps(h16);
+      }
     } else {
       const auto *bias_fp32 = static_cast<const float *>(bias);
       #pragma GCC unroll 4
