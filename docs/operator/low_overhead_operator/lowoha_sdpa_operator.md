@@ -15,8 +15,8 @@ $$
 
 Where:
 - *Q* ∈ ℝ<sup>B×H×S<sub>q</sub>×D</sup>: Query tensor
-- *K* ∈ ℝ<sup>B×H×S<sub>kv</sub>×D</sup>: Key tensor
-- *V* ∈ ℝ<sup>B×H×S<sub>kv</sub>×D</sup>: Value tensor
+- *K* ∈ ℝ<sup>B×H<sub>kv</sub>×S<sub>kv</sub>×D</sup>: Key tensor
+- *V* ∈ ℝ<sup>B×H<sub>kv</sub>×S<sub>kv</sub>×D</sup>: Value tensor
 - *M*: Optional attention mask (additive, broadcastable 2-D or 4-D)
 - *d<sub>k</sub>*: Head dimension (used for default scaling)
 
@@ -41,8 +41,8 @@ Include `lowoha_operators/sdpa/lowoha_sdpa.hpp` (namespace `zendnnl::lowoha::sdp
 ```cpp
 status_t sdpa_direct(
   const void *query,      // Query tensor data pointer  [B, H, S_q,  D]
-  const void *key,        // Key tensor data pointer    [B, H, S_kv, D]
-  const void *value,      // Value tensor data pointer  [B, H, S_kv, D]
+  const void *key,        // Key tensor data pointer    [B, H_kv, S_kv, D]
+  const void *value,      // Value tensor data pointer  [B, H_kv, S_kv, D]
   const void *attn_mask,  // Optional attention mask (can be nullptr)
   void *output,           // Output tensor data pointer [B, H, S_q,  D]
   sdpa_params &params     // SDPA parameters (dimensions, strides, dtypes, etc.)
@@ -58,6 +58,7 @@ struct sdpa_params {
   // Tensor dimensions
   int64_t batch;
   int64_t num_heads;
+  int64_t kv_num_heads;   // K/V heads for GQA/MQA; 0 = num_heads
   int64_t seq_len;         // Q / Output sequence length (S_q)
   int64_t kv_seq_len;      // K / V sequence length (S_kv); 0 = same as seq_len
   int64_t head_dim;
@@ -90,7 +91,8 @@ struct sdpa_params {
 | Field | Type | Description |
 |-------|------|-------------|
 | `batch` | `int64_t` | Batch size (B) |
-| `num_heads` | `int64_t` | Number of attention heads (H) |
+| `num_heads` | `int64_t` | Number of query/output attention heads (H) |
+| `kv_num_heads` | `int64_t` | Number of key/value heads (H<sub>kv</sub>) for GQA/MQA; `0` = same as `num_heads` |
 | `seq_len` | `int64_t` | Query / output sequence length (S<sub>q</sub>) |
 | `kv_seq_len` | `int64_t` | Key / value sequence length (S<sub>kv</sub>); `0` = same as `seq_len` |
 | `head_dim` | `int64_t` | Per-head feature dimension (D) |
@@ -115,6 +117,14 @@ struct sdpa_params {
 For **self-attention** (e.g. ViT encoder, GPT), set `kv_seq_len = 0` or `kv_seq_len = seq_len`.
 
 For **cross-attention** (e.g. T5/MT5 decoder attending to encoder, SigLIP attention pooling), set `kv_seq_len` to the actual K/V sequence length.
+
+#### `num_heads` vs `kv_num_heads`
+
+For standard MHA, set `kv_num_heads = 0` or `kv_num_heads = num_heads`.
+For MQA/GQA, set `kv_num_heads` to the compact K/V head count. The flash
+backend requires `num_heads % kv_num_heads == 0` and maps each query head `h`
+to K/V head `h / (num_heads / kv_num_heads)`, so K/V do not need to be
+expanded or copied before calling `sdpa_direct`.
 
 #### Stride requirements
 

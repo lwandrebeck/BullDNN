@@ -26,11 +26,11 @@ namespace {
 sdpa_flash_cpu_tensor_view build_tensor_view(
   const void *data, const sdpa_params &p,
   int64_t sb, int64_t sh, int64_t ss, int64_t sd,
-  int64_t seq_len) {
+  int64_t num_heads, int64_t seq_len) {
   sdpa_flash_cpu_tensor_view v{};
   v.data      = data;
   v.size_b    = p.batch;
-  v.size_h    = p.num_heads;
+  v.size_h    = num_heads;
   v.size_s    = seq_len;
   v.size_d    = p.head_dim;
   v.stride_b  = sb;
@@ -65,27 +65,30 @@ status_t flash_sdpa(
   const int64_t eff_kv_seq_len = (params.kv_seq_len > 0)
                                  ? params.kv_seq_len
                                  : params.seq_len;
+  const int64_t eff_kv_num_heads = (params.kv_num_heads > 0)
+                                   ? params.kv_num_heads
+                                   : params.num_heads;
 
   sdpa_flash_cpu_tensor_view qv = build_tensor_view(
                                     query, params,
                                     params.q_stride_b, params.q_stride_h,
                                     params.q_stride_s, params.q_stride_d,
-                                    params.seq_len);
+                                    params.num_heads, params.seq_len);
   sdpa_flash_cpu_tensor_view kv = build_tensor_view(
                                     key, params,
                                     params.k_stride_b, params.k_stride_h,
                                     params.k_stride_s, params.k_stride_d,
-                                    eff_kv_seq_len);
+                                    eff_kv_num_heads, eff_kv_seq_len);
   sdpa_flash_cpu_tensor_view vv = build_tensor_view(
                                     value, params,
                                     params.v_stride_b, params.v_stride_h,
                                     params.v_stride_s, params.v_stride_d,
-                                    eff_kv_seq_len);
+                                    eff_kv_num_heads, eff_kv_seq_len);
   sdpa_flash_cpu_tensor_view ov = build_tensor_view(
                                     output, params,
                                     params.o_stride_b, params.o_stride_h,
                                     params.o_stride_s, params.o_stride_d,
-                                    params.seq_len);
+                                    params.num_heads, params.seq_len);
 
   const sdpa_flash_cpu_mask_view *mask_ptr = nullptr;
   sdpa_flash_cpu_mask_view mask_view{};

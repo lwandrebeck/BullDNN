@@ -17,6 +17,7 @@ namespace lowoha {
 namespace sdpa {
 
 /// Layout [Batch, Head, Seq, Dim] (PyTorch-style BHSD).
+/// Q/output use query heads; K/V may use fewer heads for GQA/MQA.
 struct sdpa_flash_cpu_tensor_view {
   const void *data;
   int64_t stride_b;

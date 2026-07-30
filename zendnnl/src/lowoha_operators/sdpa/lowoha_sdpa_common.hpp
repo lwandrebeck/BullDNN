@@ -43,7 +43,7 @@ enum class mask_type_t {
  *
  * Tensor shapes (4D BHSD):
  *   Q/Output     : [batch, num_heads, seq_len, head_dim]
- *   K/V          : [batch, num_heads, kv_seq_len, head_dim]
+ *   K/V          : [batch, kv_num_heads, kv_seq_len, head_dim]
  *   Attention mask: broadcastable 2-D or 4-D (optional)
  *
  * For self-attention seq_len == kv_seq_len.  For cross-attention
@@ -57,6 +57,8 @@ struct sdpa_params {
   // Tensor dimensions [Batch, Heads, Seq, Dim]
   int64_t batch;
   int64_t num_heads;
+  // Number of K/V heads for GQA/MQA. 0 means "same as num_heads" (MHA).
+  int64_t kv_num_heads;
   int64_t seq_len;
   int64_t kv_seq_len;
   int64_t head_dim;
@@ -90,7 +92,8 @@ struct sdpa_params {
   int32_t num_threads;
 
   sdpa_params()
-    : batch(1), num_heads(1), seq_len(0), kv_seq_len(0), head_dim(0),
+    : batch(1), num_heads(1), kv_num_heads(0), seq_len(0), kv_seq_len(0),
+      head_dim(0),
       q_stride_b(0), q_stride_h(0), q_stride_s(0), q_stride_d(1),
       k_stride_b(0), k_stride_h(0), k_stride_s(0), k_stride_d(1),
       v_stride_b(0), v_stride_h(0), v_stride_s(0), v_stride_d(1),

@@ -55,6 +55,26 @@ status_t validate_flash_sdpa_inputs(
     log_error("sdpa_flash_cpu: num_heads must be > 0");
     return status_t::failure;
   }
+  const int64_t eff_kv_num_heads = (params.kv_num_heads > 0)
+                                   ? params.kv_num_heads
+                                   : params.num_heads;
+  if (params.kv_num_heads < 0) {
+    log_error("sdpa_flash_cpu: kv_num_heads must be >= 0 "
+              "(0 means same as num_heads)");
+    return status_t::failure;
+  }
+  if (eff_kv_num_heads <= 0) {
+    log_error("sdpa_flash_cpu: effective kv_num_heads must be > 0");
+    return status_t::failure;
+  }
+  if (eff_kv_num_heads > params.num_heads) {
+    log_error("sdpa_flash_cpu: kv_num_heads must be <= num_heads");
+    return status_t::failure;
+  }
+  if (params.num_heads % eff_kv_num_heads != 0) {
+    log_error("sdpa_flash_cpu: num_heads must be divisible by kv_num_heads");
+    return status_t::failure;
+  }
   if (params.seq_len <= 0) {
     log_error("sdpa_flash_cpu: seq_len must be > 0");
     return status_t::failure;

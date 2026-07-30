@@ -355,6 +355,35 @@ void run_sdpa_f16_test(tensor_factory_t &tensor_factory,
   EXPECT_TRUE(is_test_successful);
 }
 
+void expand_gqa_kv_tensor(tensor_t &compact_tensor,
+                          tensor_t &expanded_tensor,
+                          uint64_t batch, uint64_t num_heads,
+                          uint64_t kv_num_heads,
+                          uint64_t seq_len_kv,
+                          uint64_t head_dim) {
+  ASSERT_GT(kv_num_heads, 0UL);
+  ASSERT_EQ(num_heads % kv_num_heads, 0UL);
+  const uint64_t repeat_factor = num_heads / kv_num_heads;
+  float *expanded = static_cast<float *>(expanded_tensor.get_raw_handle_unsafe());
+  auto expanded_stride = expanded_tensor.get_stride();
+
+  for (uint64_t b = 0; b < batch; ++b) {
+    for (uint64_t h = 0; h < num_heads; ++h) {
+      const uint64_t kv_h = h / repeat_factor;
+      for (uint64_t s = 0; s < seq_len_kv; ++s) {
+        for (uint64_t d = 0; d < head_dim; ++d) {
+          const size_t offset =
+            static_cast<size_t>(b * expanded_stride[0] +
+                                h * expanded_stride[1] +
+                                s * expanded_stride[2] +
+                                d * expanded_stride[3]);
+          expanded[offset] = compact_tensor.at({b, kv_h, s, d});
+        }
+      }
+    }
+  }
+}
+
 }  // namespace
 
 /** @brief TestSdpa is a test class to handle SDPA parameters */
@@ -679,6 +708,69 @@ TEST_P(TestSdpa, F32_F32_MASK) {
                            rtol_f32, epsilon_f32, is_test_successful);
   }
 
+  EXPECT_TRUE(is_test_successful);
+}
+
+TEST(SdpaGqaTest, F32_GQA_MASK_MATCHES_EXPANDED_KV) {
+  tensor_factory_t tensor_factory;
+  constexpr uint64_t batch = 2;
+  constexpr uint64_t num_heads = 8;
+  constexpr uint64_t kv_num_heads = 2;
+  constexpr uint64_t seq_len_q = 5;
+  constexpr uint64_t seq_len_kv = 7;
+  constexpr uint64_t head_dim = 16;
+
+  auto query_tensor = make_uniform_tensor(tensor_factory,
+  {batch, num_heads, seq_len_q, head_dim},
+  data_type_t::f32, 1.0, kBhsdOrder);
+  auto key_tensor = make_uniform_tensor(tensor_factory,
+  {batch, kv_num_heads, seq_len_kv, head_dim},
+  data_type_t::f32, 1.0, kBhsdOrder);
+  auto value_tensor = make_uniform_tensor(tensor_factory,
+  {batch, kv_num_heads, seq_len_kv, head_dim},
+  data_type_t::f32, 1.0, kBhsdOrder);
+
+  auto key_tensor_expanded = make_zero_tensor(tensor_factory,
+  {batch, num_heads, seq_len_kv, head_dim},
+  data_type_t::f32, kBhsdOrder);
+  auto value_tensor_expanded = make_zero_tensor(tensor_factory,
+  {batch, num_heads, seq_len_kv, head_dim},
+  data_type_t::f32, kBhsdOrder);
+  expand_gqa_kv_tensor(key_tensor, key_tensor_expanded,
+                       batch, num_heads, kv_num_heads,
+                       seq_len_kv, head_dim);
+  expand_gqa_kv_tensor(value_tensor, value_tensor_expanded,
+                       batch, num_heads, kv_num_heads,
+                       seq_len_kv, head_dim);
+
+  auto mask_tensor = tensor_factory.uniform_dist_tensor(
+  {batch, num_heads, seq_len_q, seq_len_kv},
+  data_type_t::f32, 0.5);
+  auto output_tensor = make_zero_tensor(tensor_factory,
+  {batch, num_heads, seq_len_q, head_dim},
+  data_type_t::f32, kBhsdOrder);
+  auto output_tensor_ref = make_zero_tensor(tensor_factory,
+  {batch, num_heads, seq_len_q, head_dim},
+  data_type_t::f32, kBhsdOrder);
+
+  status_t status = sdpa_kernel_test(query_tensor, key_tensor,
+                                     value_tensor, mask_tensor,
+                                     output_tensor, /*scale=*/0.0f,
+                                     /*is_causal=*/false,
+                                     /*has_mask=*/true);
+  status_t ref_status = sdpa_kernel_test(query_tensor, key_tensor_expanded,
+                                         value_tensor_expanded, mask_tensor,
+                                         output_tensor_ref, /*scale=*/0.0f,
+                                         /*is_causal=*/false,
+                                         /*has_mask=*/true);
+
+  ASSERT_EQ(status, status_t::success);
+  ASSERT_EQ(ref_status, status_t::success);
+
+  bool is_test_successful = true;
+  compare_tensor_4D_sdpa(output_tensor, output_tensor_ref,
+                         batch, num_heads, seq_len_q, seq_len_kv, head_dim,
+                         rtol_f32, epsilon_f32, is_test_successful);
   EXPECT_TRUE(is_test_successful);
 }
 

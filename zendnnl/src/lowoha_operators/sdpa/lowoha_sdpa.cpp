@@ -64,8 +64,12 @@ status_t sdpa_direct(
     std::ostringstream ss;
     const int64_t eff_kv = (params.kv_seq_len > 0)
                            ? params.kv_seq_len : params.seq_len;
+    const int64_t eff_kv_heads = (params.kv_num_heads > 0)
+                                 ? params.kv_num_heads : params.num_heads;
     ss << "LOWOHA sdpa_direct: batch=" << params.batch
        << ", num_heads=" << params.num_heads
+       << ", kv_num_heads=" << params.kv_num_heads
+       << ", eff_kv_num_heads=" << eff_kv_heads
        << ", seq_len=" << params.seq_len
        << ", kv_seq_len=" << eff_kv
        << ", head_dim=" << params.head_dim

@@ -38,8 +38,8 @@ namespace sdpa {
  *   where causal_mask[i,j] = -inf if j > i, else 0
  *
  * @param query        Query tensor [batch, num_heads, seq_len, head_dim]
- * @param key          Key tensor [batch, num_heads, seq_len, head_dim]
- * @param value        Value tensor [batch, num_heads, seq_len, head_dim]
+ * @param key          Key tensor [batch, kv_num_heads, kv_seq_len, head_dim]
+ * @param value        Value tensor [batch, kv_num_heads, kv_seq_len, head_dim]
  * @param attn_mask    Optional attention mask (can be nullptr)
  * @param output       Output tensor [batch, num_heads, seq_len, head_dim]
  * @param params       SDPA parameters

@@ -567,7 +567,14 @@ void cpu_flash_attention_sa(
   int64_t qSize = query.size_m;
   int64_t kvSize = value.size_m;
   int64_t num_head = query.size_h;
+  int64_t kv_num_head = key.size_h;
   int64_t headSize = query.size_d;
+  SDPA_SA_CHECK(kv_num_head > 0, "K/V head count must be > 0");
+  SDPA_SA_CHECK(key.size_h == value.size_h, "K/V head count mismatch");
+  SDPA_SA_CHECK(key.size_m == value.size_m, "K/V seq len mismatch");
+  SDPA_SA_CHECK(num_head % kv_num_head == 0,
+                "Q heads must be divisible by K/V heads");
+  int64_t repeat_factor = num_head / kv_num_head;
 
   NormalizedMask nmask{};
   const void *mask_data_void = nullptr;
@@ -666,6 +673,7 @@ void cpu_flash_attention_sa(
 
     int64_t m = k * qSplitSize;
     int64_t qBlockSize = std::min(qSplitSize, qSize - m);
+    int64_t kv_j = j / repeat_factor;
     fill_stub_f32<SimdTag>(qk_max_data,
                            -std::numeric_limits<accum_t>::infinity(),
                            qBlockSize);
@@ -681,7 +689,7 @@ void cpu_flash_attention_sa(
       zendnn_gemm<scalar_t>(
         qBlockSize, kvBlockSize, headSize, 1.0f,
         q_data + i * qStrideB + j * qStrideH + m * qStrideM, qStrideM,
-        k_data + i * kStrideB + j * kStrideH + n * kStrideN, kStrideN, 0.0f,
+        k_data + i * kStrideB + kv_j * kStrideH + n * kStrideN, kStrideN, 0.0f,
         qk_data, kvBlockSize, false, true);
 
       if (is_causal && num_keys - n <= kvSplitSize) {
@@ -752,7 +760,7 @@ void cpu_flash_attention_sa(
       zendnn_gemm<scalar_t>(
         qBlockSize, headSize, kvBlockSize, 1.0f,
         conditional_data_ptr(qk_data, qk_reduced_data), kvBlockSize,
-        v_data + i * vStrideB + j * vStrideH + n * vStrideN, vStrideN,
+        v_data + i * vStrideB + kv_j * vStrideH + n * vStrideN, vStrideN,
         n == 0 ? 0.0f : 1.0f, dst_data, headSize, false, false);
     }
 

@@ -33,8 +33,8 @@ namespace sdpa {
  * Tensor layout and strides are described by @c sdpa_params.
  *
  * @param query     Query data  [batch, num_heads, seq_len, head_dim]
- * @param key       Key data    [batch, num_heads, seq_len, head_dim]
- * @param value     Value data  [batch, num_heads, seq_len, head_dim]
+ * @param key       Key data    [batch, kv_num_heads, kv_seq_len, head_dim]
+ * @param value     Value data  [batch, kv_num_heads, kv_seq_len, head_dim]
  * @param attn_mask Optional attention mask (nullptr if none)
  * @param output    Output data [batch, num_heads, seq_len, head_dim]
  * @param params    Shapes, strides, dtypes, scale, flags

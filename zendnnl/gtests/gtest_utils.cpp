@@ -4586,10 +4586,23 @@ status_t sdpa_kernel_test(tensor_t &query_tensor,
       log_error("SDPA LOWOHA: Q/K/V/O tensors must be 4D [B, H, S, D]");
       return status_t::failure;
     }
+    if (k_size[1] != v_size[1]) {
+      log_error("SDPA LOWOHA: K and V must have the same number of heads");
+      return status_t::failure;
+    }
+    if (k_size[2] != v_size[2]) {
+      log_error("SDPA LOWOHA: K and V must have the same sequence length");
+      return status_t::failure;
+    }
+    if (q_size[3] != k_size[3] || q_size[3] != v_size[3]) {
+      log_error("SDPA LOWOHA: Q/K/V must have the same head_dim");
+      return status_t::failure;
+    }
 
     sdpa_params params{};
     params.batch      = static_cast<int64_t>(q_size[0]);
     params.num_heads  = static_cast<int64_t>(q_size[1]);
+    params.kv_num_heads = static_cast<int64_t>(k_size[1]);
     params.seq_len    = static_cast<int64_t>(q_size[2]);
     params.kv_seq_len = static_cast<int64_t>(k_size[2]);
     params.head_dim   = static_cast<int64_t>(q_size[3]);
@@ -4670,6 +4683,7 @@ status_t sdpa_kernel_test(tensor_t &query_tensor,
 
     log_info("SDPA LOWOHA: Calling sdpa_direct with batch=", params.batch,
              ", num_heads=", params.num_heads, ", seq_len=", params.seq_len,
+             ", kv_num_heads=", params.kv_num_heads,
              ", head_dim=", params.head_dim, ", scale=", params.scale,
              ", is_causal=", params.is_causal, ", has_mask=", has_mask);
 

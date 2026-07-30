@@ -1012,11 +1012,13 @@ void reset_grp_matmul_caches();
  *  @brief Compute SDPA Operation using LOWOHA sdpa_direct API.
  *
  *  Executes Scaled Dot-Product Attention via the LOWOHA flash-style backend.
- *  Inputs are 4D tensors with [batch, num_heads, seq_len, head_dim] layout.
+ *  Inputs are 4D tensors with Q/output layout
+ *  [batch, num_heads, seq_len, head_dim] and K/V layout
+ *  [batch, kv_num_heads, kv_seq_len, head_dim].
  *
  *  @param query_tensor  Query tensor (4D)
- *  @param key_tensor    Key tensor (4D)
- *  @param value_tensor  Value tensor (4D)
+ *  @param key_tensor    Key tensor (4D, may use fewer GQA/MQA heads)
+ *  @param value_tensor  Value tensor (4D, may use fewer GQA/MQA heads)
  *  @param mask_tensor   Optional attention mask tensor (empty if has_mask=false)
  *  @param output_tensor Output tensor (4D)
  *  @param scale         Scale factor applied to Q.K^T
