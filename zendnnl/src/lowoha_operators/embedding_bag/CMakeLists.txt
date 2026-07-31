@@ -15,13 +15,15 @@
 # ******************************************************************************
 
 set(lowoha_embag_sources
-  lowoha_embedding_bag.cpp)
+  lowoha_embedding_bag.cpp
+  lowoha_embag_ref_kernel.cpp)
 
 set(lowoha_embag_public_headers
   lowoha_embag_common.hpp
   lowoha_embedding_bag.hpp
   fbgemm_kernel.hpp
-  dispatch_kernel.hpp)
+  dispatch_kernel.hpp
+  lowoha_embag_ref_kernel.hpp)
 
 if(ZENDNNL_LIB_BUILD_ARCHIVE)
   target_sources(zendnnl_archive

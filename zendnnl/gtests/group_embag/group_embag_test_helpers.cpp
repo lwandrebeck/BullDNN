@@ -506,15 +506,17 @@ status_t group_embag_forced_ref_kernel_test(
   for (size_t i = 0; i < num_tables; ++i) {
     const bool lookup_mode = (algos[i] == embag_algo_t::none);
     const bool is_weights  = weights[i].check();
+    // Reference validation always uses the LOWOHA direct API (use_LOWOHA=true).
     status_t st = lookup_mode
-                  ? embedding_forced_ref_kernel_test(
+                  ? embedding_kernel_test(
                     tables[i], indices[i], weights[i], outputs[i],
-                    padding_idxs[i], is_weights, fp16_scale_bias[i])
-                  : embag_forced_ref_kernel_test(
+                    padding_idxs[i], is_weights, fp16_scale_bias[i], embag_kernel_t::reference,
+                    true)
+                  : embag_kernel_test(
                     tables[i], indices[i], offsets[i], weights[i],
                     outputs[i], algos[i], padding_idxs[i],
                     include_last_offsets[i], is_weights,
-                    fp16_scale_bias[i]);
+                    fp16_scale_bias[i], embag_kernel_t::reference, true);
     if (st != status_t::success) {
       return st;
     }

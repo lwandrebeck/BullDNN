@@ -43,6 +43,7 @@
 #include "operators/sdpa/sdpa_encoder_operator.hpp"
 #include "lowoha_operators/softmax/lowoha_softmax.hpp"
 #include "lowoha_operators/softmax/reference_kernel.hpp"
+#include "lowoha_operators/embedding_bag/lowoha_embag_ref_kernel.hpp"
 
 #define MATMUL_SIZE_START 1
 #define MATMUL_SIZE_END 3000
@@ -738,6 +739,10 @@ status_t matmul_forced_ref_kernel_test(tensor_t &input_tensor,
 /** @fn embag_kernel_test
  *  @brief Test function for embag kernel
  *
+ * @param kernel Selects the LOWOHA kernel (`embag_kernel_t::none` for default
+ *        dispatch, `embag_kernel_t::reference` for the reference kernel).
+ *        Ignored when @p use_LOWOHA is false (operator API path).
+ *
  * @return status_t Success or failure status
  */
 status_t embag_kernel_test(tensor_t &table_tensor,
@@ -750,26 +755,15 @@ status_t embag_kernel_test(tensor_t &table_tensor,
                            bool include_last_offset,
                            bool is_weights,
                            bool fp16_scale_bias,
+                           embag_kernel_t kernel,
                            bool use_LOWOHA=false);
-
-/** @fn embag_forced_ref_kernel_test
- *  @brief Test function for embag reference kernel (forced)
- *
- * @return status_t Success or failure status
- */
-status_t embag_forced_ref_kernel_test(tensor_t &table_tensor,
-                                      tensor_t &indices_tensor,
-                                      tensor_t &offsets_tensor,
-                                      tensor_t &weights_tensor,
-                                      tensor_t &output_tensor,
-                                      embag_algo_t algo,
-                                      int64_t padding_index,
-                                      bool include_last_offset,
-                                      bool is_weights,
-                                      bool fp16_scale_bias);
 
 /** @fn embedding_kernel_test
  *  @brief Test function for embedding kernel
+ *
+ * @param kernel Selects the LOWOHA kernel (`embag_kernel_t::none` for default
+ *        dispatch, `embag_kernel_t::reference` for the reference kernel).
+ *        Ignored when @p use_LOWOHA is false (operator API path).
  *
  * @return status_t Success or failure status
  */
@@ -780,20 +774,8 @@ status_t embedding_kernel_test(tensor_t &table_tensor,
                                int64_t padding_index,
                                bool is_weights,
                                bool fp16_scale_bias,
+                               embag_kernel_t kernel,
                                bool use_LOWOHA=false);
-
-/** @fn embedding_forced_ref_kernel_test
- *  @brief Test function for embedding reference kernel (forced)
- *
- * @return status_t Success or failure status
- */
-status_t embedding_forced_ref_kernel_test(tensor_t &table_tensor,
-    tensor_t &indices_tensor,
-    tensor_t &weights_tensor,
-    tensor_t &output_tensor,
-    int64_t padding_index,
-    bool is_weights,
-    bool fp16_scale_bias);
 
 /**
  * @brief Repack separate int8 weights and fp32 scales into GGML Q8_0 blocked format.

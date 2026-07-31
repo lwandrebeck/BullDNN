@@ -32,8 +32,9 @@
 ///   * `group_embag_kernel_test`     - dispatch shim into
 ///                                     `group_embedding_bag_direct`.
 ///   * `group_embag_forced_ref_kernel_test` - reference shim that loops
-///                                     the per-table forced-reference
-///                                     kernel.
+///                                     per-table `embag_kernel_test` /
+///                                     `embedding_kernel_test` with
+///                                     `embag_kernel_t::reference`.
 
 #ifndef ZENDNNL_GTESTS_GROUP_EMBAG_TEST_HELPERS_HPP
 #define ZENDNNL_GTESTS_GROUP_EMBAG_TEST_HELPERS_HPP
@@ -177,11 +178,10 @@ status_t group_embag_kernel_test(
   const std::vector<bool> &fp16_scale_bias,
   eb_thread_algo_t thread_algo);
 
-/** @brief Reference: loops the single-op forced-reference kernel
- *         (`embag_forced_ref_kernel_test` or
- *         `embedding_forced_ref_kernel_test` depending on
- *         `algos[i]`) per table; returns failure on the first
- *         per-table reference failure. */
+/** @brief Reference: loops `embag_kernel_test` or `embedding_kernel_test`
+ *         (with `embag_kernel_t::reference`) per table depending on
+ *         `algos[i]`; returns failure on the first per-table reference
+ *         failure. */
 status_t group_embag_forced_ref_kernel_test(
   std::vector<tensor_t> &tables,
   std::vector<tensor_t> &indices,

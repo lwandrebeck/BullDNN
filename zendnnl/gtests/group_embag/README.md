@@ -72,7 +72,7 @@ status_t group_embag_kernel_test(tables, indices, offsets, weights,
 status_t group_embag_forced_ref_kernel_test(...same vectors...);
 ```
 
-DUT side calls `group_embedding_bag_direct`. Reference side loops the existing single-op `embag_forced_ref_kernel_test` / `embedding_forced_ref_kernel_test` from `gtests/gtest_utils.{hpp,cpp}` per table.
+DUT side calls `group_embedding_bag_direct`. Reference side loops per-table `embag_kernel_test` / `embedding_kernel_test` from `gtests/gtest_utils.{hpp,cpp}` with `embag_kernel_t::reference`.
 
 ---
 

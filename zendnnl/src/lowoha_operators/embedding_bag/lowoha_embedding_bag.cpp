@@ -16,6 +16,7 @@
 
 #include "lowoha_embedding_bag.hpp"
 #include "dispatch_kernel.hpp"
+#include "lowoha_embag_ref_kernel.hpp"
 #include "lowoha_operators/matmul/lowoha_matmul_utils.hpp"
 #include "lowoha_operators/common/omp_thread_control.hpp"
 
@@ -44,29 +45,41 @@ status_t embedding_bag_direct(
     profiler.tbp_start();
   }
 
-  if (validate_embag_inputs(table, indices, dst, params) != status_t::success) {
-    return status_t::failure;
+  status_t status = status_t::success;
+  int32_t num_threads = params.num_threads;
+  // Reference kernel implementation
+  if (params.kernel == embag_kernel_t::reference) {
+    if (params.algo != embag_algo_t::none && offsets == nullptr) {
+      log_error("embedding_bag_direct: offsets required for reduction operations");
+      return status_t::failure;
+    }
+    status = embedding_bag_ref_direct(table, indices, offsets, weights, dst, params);
   }
+  else {
+    if (validate_embag_inputs(table, indices, dst, params) != status_t::success) {
+      return status_t::failure;
+    }
 
-  const bool is_f16 = (params.dtypes.table == data_type_t::f16 ||
-                       params.dtypes.output == data_type_t::f16);
-  if (is_f16 && !zendnnl_platform_info().get_avx512_f16_status()) {
-    log_error("F16 data type is not supported on this platform "
-              "(requires AVX512-FP16).");
-    return status_t::isa_unsupported;
+    const bool is_f16 = (params.dtypes.table == data_type_t::f16 ||
+                         params.dtypes.output == data_type_t::f16);
+    if (is_f16 && !zendnnl_platform_info().get_avx512_f16_status()) {
+      log_error("F16 data type is not supported on this platform "
+                "(requires AVX512-FP16).");
+      return status_t::isa_unsupported;
+    }
+
+    if (params.algo != embag_algo_t::none && offsets == nullptr) {
+      log_error("embedding_bag_direct: offsets required for reduction operations");
+      return status_t::failure;
+    }
+
+    const int32_t omp_mt = thread_guard::max_threads();
+    num_threads = resolve_num_threads(num_threads, omp_mt);
+    thread_guard tg(num_threads, omp_mt);
+
+    // Dispatch to the appropriate kernel
+    dispatch_avx512_kernel(table, indices, offsets, weights, dst, params);
   }
-
-  if (params.algo != embag_algo_t::none && offsets == nullptr) {
-    log_error("embedding_bag_direct: offsets required for reduction operations");
-    return status_t::failure;
-  }
-
-  const int32_t omp_mt = thread_guard::max_threads();
-  const int32_t num_threads = resolve_num_threads(params.num_threads, omp_mt);
-  thread_guard tg(num_threads, omp_mt);
-
-  // Dispatch to the appropriate kernel
-  dispatch_avx512_kernel(table, indices, offsets, weights, dst, params);
 
   if (is_profile) {
     profiler.tbp_stop();
@@ -82,14 +95,15 @@ status_t embedding_bag_direct(
        << ", algo=" << algo_to_string(params.algo)
        << ", table_dtype=" << dtype_to_string(params.dtypes.table)
        << ", output_dtype=" << dtype_to_string(params.dtypes.output)
-       << ", num_threads=" << num_threads;
+       << ", num_threads=" << num_threads
+       << ", kernel=" << kernel_to_string(params.kernel);
     apilog_info(ss.str());
     if (is_profile) {
       profilelog_verbose(ss.str(), ", time=", profiler.tbp_elapsedtime(),
                          profiler.get_res_str());
     }
   }
-  return status_t::success;
+  return status;
 }
 
 // Embedding bag direct implementation
