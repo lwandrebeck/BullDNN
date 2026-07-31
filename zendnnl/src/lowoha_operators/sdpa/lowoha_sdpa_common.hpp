@@ -18,6 +18,7 @@
 #define _LOWOHA_SDPA_COMMON_HPP
 
 #include <cstdint>
+#include "common/logging.hpp"
 #include "memory/memory_utils.hpp"
 
 namespace zendnnl {
@@ -34,6 +35,31 @@ enum class mask_type_t {
   causal = 1,            /*!< Causal mask (upper triangular) */
   custom = 2             /*!< Custom attention mask provided */
 };
+
+enum class sdpa_kernel_t : int32_t {
+  none = -1,             /*!< No kernel selected */
+  flash = 0,             /*!< Flash kernel */
+  bmm = 1,               /*!< BMM kernel */
+  reference = 2          /*!< Reference kernel */
+};
+
+/**
+ * @brief Convert sdpa_kernel_t to string for logging
+ */
+inline const char *kernel_to_string(sdpa_kernel_t kernel) {
+  switch (kernel) {
+  case sdpa_kernel_t::none:
+    return "none";
+  case sdpa_kernel_t::flash:
+    return "flash";
+  case sdpa_kernel_t::bmm:
+    return "bmm";
+  case sdpa_kernel_t::reference:
+    return "reference";
+  default:
+    return "unknown";
+  }
+}
 
 /**
  * @brief Unified parameter structure for all LOWOHA SDPA backends
@@ -91,6 +117,9 @@ struct sdpa_params {
   // num_threads is int32_t to match the type used by OpenMP APIs
   int32_t num_threads;
 
+  // Backend kernel selection (none = default to flash)
+  sdpa_kernel_t kernel;
+
   sdpa_params()
     : batch(1), num_heads(1), kv_num_heads(0), seq_len(0), kv_seq_len(0),
       head_dim(0),
@@ -103,8 +132,33 @@ struct sdpa_params {
       qkv_dt(data_type_t::none), out_dt(data_type_t::none),
       mask_dt(data_type_t::none),
       scale(0.0), is_causal(false), dropout_p(0.0),
-      num_threads(0) {}
+      num_threads(0), kernel(sdpa_kernel_t::none) {}
 };
+
+/**
+ * @brief Select SDPA kernel from params.
+ *
+ * When @p params.kernel is sdpa_kernel_t::none, defaults to flash.
+ * Unknown values are logged as errors and returned unchanged so the
+ * caller can fail the dispatch instead of silently running flash.
+ */
+inline sdpa_kernel_t kernel_select(sdpa_params &params) {
+  sdpa_kernel_t kernel = params.kernel == sdpa_kernel_t::none ?
+                         sdpa_kernel_t::flash :
+                         params.kernel;
+
+  if (kernel != sdpa_kernel_t::flash &&
+      kernel != sdpa_kernel_t::bmm &&
+      kernel != sdpa_kernel_t::reference) {
+    log_error("kernel_select: invalid kernel value ",
+              static_cast<int32_t>(params.kernel),
+              " (", kernel_to_string(params.kernel), ")");
+    return params.kernel;
+  }
+
+  params.kernel = kernel;
+  return kernel;
+}
 
 } // namespace sdpa
 } // namespace lowoha

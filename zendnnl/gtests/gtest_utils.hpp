@@ -39,8 +39,7 @@
 #include "lowoha_operators/normalization/kernel/reference_kernel.hpp"
 #include "lowoha_operators/sdpa/lowoha_sdpa.hpp"
 #include "lowoha_operators/sdpa/lowoha_sdpa_common.hpp"
-#include "operators/sdpa/sdpa_encoder_context.hpp"
-#include "operators/sdpa/sdpa_encoder_operator.hpp"
+#include "lowoha_operators/sdpa/reference/lowoha_sdpa_ref_kernel.hpp"
 #include "lowoha_operators/softmax/lowoha_softmax.hpp"
 #include "lowoha_operators/softmax/reference_kernel.hpp"
 #include "lowoha_operators/embedding_bag/lowoha_embag_ref_kernel.hpp"
@@ -990,10 +989,37 @@ void clear_matmul_test_caches();
  */
 void reset_grp_matmul_caches();
 
-/** @fn sdpa_kernel_test
- *  @brief Compute SDPA Operation using LOWOHA sdpa_direct API.
+/** @fn build_sdpa_params_from_tensors
+ *  @brief Populate @c sdpa_params and raw data pointers from SDPA test tensors.
  *
- *  Executes Scaled Dot-Product Attention via the LOWOHA flash-style backend.
+ *  Shared setup used by @c sdpa_kernel_test.
+ *  Validates 4D Q/K/V/O tensors and their dimension compatibility (batch,
+ *  num_heads, head_dim across Q/K/V; shared K/V seq_len; output matches Q),
+ *  copies per-tensor strides from each tensor, and builds canonical mask
+ *  sizes/strides when @p has_mask is true.
+ *
+ *  @return status_t::success or status_t::failure
+ */
+status_t build_sdpa_params_from_tensors(tensor_t &query_tensor,
+                                        tensor_t &key_tensor,
+                                        tensor_t &value_tensor,
+                                        tensor_t &mask_tensor,
+                                        tensor_t &output_tensor,
+                                        float scale,
+                                        bool is_causal,
+                                        bool has_mask,
+                                        sdpa_params &params,
+                                        void *&q_data,
+                                        void *&k_data,
+                                        void *&v_data,
+                                        void *&o_data,
+                                        const void *&mask_ptr);
+
+/** @fn sdpa_kernel_test
+ *  @brief Compute SDPA via @c sdpa_direct with the selected LOWOHA kernel.
+ *
+ *  Executes Scaled Dot-Product Attention through @c sdpa_direct, dispatching
+ *  to flash, reference, or other backends per @p kernel.
  *  Inputs are 4D tensors with Q/output layout
  *  [batch, num_heads, seq_len, head_dim] and K/V layout
  *  [batch, kv_num_heads, kv_seq_len, head_dim].
@@ -1006,6 +1032,8 @@ void reset_grp_matmul_caches();
  *  @param scale         Scale factor applied to Q.K^T
  *  @param is_causal     If true, apply causal (upper-triangular) mask
  *  @param has_mask      If true, use provided mask_tensor as additive mask
+ *  @param kernel        LOWOHA backend (e.g. @c sdpa_kernel_t::flash or
+ *                       @c sdpa_kernel_t::reference)
  *  @return status_t::success or status_t::failure
  */
 status_t sdpa_kernel_test(tensor_t &query_tensor,
@@ -1015,34 +1043,8 @@ status_t sdpa_kernel_test(tensor_t &query_tensor,
                           tensor_t &output_tensor,
                           float scale,
                           bool is_causal,
-                          bool has_mask);
-
-/** @fn sdpa_forced_ref_kernel_test
- *  @brief Compute SDPA Operation via the operator-based reference path.
- *
- *  Executes Scaled Dot-Product Attention via @c sdpa_encoder_operator_t which
- *  dispatches to the reference kernel based on the Q/K/V dtype (FP32 or BF16).
- *  This serves as the ground-truth reference against which the LOWOHA
- *  implementation is validated.
- *
- *  @param query_tensor  Query tensor (4D)
- *  @param key_tensor    Key tensor (4D)
- *  @param value_tensor  Value tensor (4D)
- *  @param mask_tensor   Optional attention mask tensor (empty if has_mask=false)
- *  @param output_tensor Output tensor (4D)
- *  @param scale         Scale factor applied to Q.K^T
- *  @param is_causal     If true, apply causal mask
- *  @param has_mask      If true, use provided mask_tensor as additive mask
- *  @return status_t::success or status_t::failure
- */
-status_t sdpa_forced_ref_kernel_test(tensor_t &query_tensor,
-                                     tensor_t &key_tensor,
-                                     tensor_t &value_tensor,
-                                     tensor_t &mask_tensor,
-                                     tensor_t &output_tensor,
-                                     float scale,
-                                     bool is_causal,
-                                     bool has_mask);
+                          bool has_mask,
+                          sdpa_kernel_t kernel);
 
 /** @fn compare_tensor_4D_sdpa
  *  @brief Compare two 4D SDPA output tensors element-by-element.

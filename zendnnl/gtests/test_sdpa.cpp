@@ -32,7 +32,8 @@ namespace {
 // All SDPA tests use logical 4D shape [B, H, S, D] (positions a=0, b=1,
 // c=2, d=3); the @c set_order() string controls the *physical* layout by
 // re-ordering which logical dim is innermost / next-innermost / ... The
-// reference operator and the LOWOHA flash backend both read each tensor's
+// LOWOHA reference kernel (reference_sdpa) and flash backend both read each
+// tensor's
 // strides directly, so any per-tensor layout listed here works.
 //
 //   "abcd" -> BHSD canonical contiguous, strides = [H*S*D, S*D,   D, 1]
@@ -135,8 +136,9 @@ tensor_t make_zero_tensor(tensor_factory_t &tf,
 /**
  * @brief Supported additive-mask shape variants.
  *
- * The reference operator and LOWOHA flash backend accept four mask shapes
- * (see sdpa_encoder_operator_impl.cpp::validate). The fixture randomly
+ * Both LOWOHA kernel paths (flash and reference via sdpa_direct) accept four
+ * mask
+ * shapes. The fixture randomly
  * picks one of these per (seed, params) instance and the
  * @c F32_F32_MASK_LAYOUT / @c BF16_BF16_MASK_LAYOUT tests materialise it
  * via @c resolve_mask_shape; this collapses the per-shape and
@@ -170,7 +172,7 @@ std::vector<uint64_t> resolve_mask_shape(mask_shape_kind_t kind,
 }
 
 /**
- * @brief Run an SDPA mask-layout correctness test (LOWOHA vs operator ref).
+ * @brief Run an SDPA mask-layout correctness test (LOWOHA flash vs reference).
  *
  * Allocates Q [B, H, S_q, D], K/V [B, H, S_kv, D], output [B, H, S_q, D] of
  * @p qkv_dtype with the requested physical layout (@p qkv_order, applies
@@ -195,8 +197,8 @@ std::vector<uint64_t> resolve_mask_shape(mask_shape_kind_t kind,
  * @param rtol           Relative tolerance for output comparison.
  * @param epsilon        Per-op numerical epsilon for output comparison.
  * @param mask_dtype     Mask tensor dtype. F32 callers must pass
- *                       @c data_type_t::f32 (the operator's validate()
- *                       rejects bf16 mask when QKV is f32). BF16 callers
+ *                       @c data_type_t::f32 (LOWOHA input validation rejects
+ *                       bf16 mask when QKV is f32). BF16 callers
  *                       typically pass the fixture's randomised
  *                       @c mask_dt member to exercise both supported
  *                       QKV-bf16 mask paths.
@@ -238,11 +240,11 @@ void run_sdpa_mask_layout_test(tensor_factory_t &tensor_factory,
 
   status_t status         = sdpa_kernel_test(query_tensor, key_tensor,
                             value_tensor, mask_tensor, output_tensor,
-                            scale, is_causal, /*has_mask=*/true);
-  status_t ref_status     = sdpa_forced_ref_kernel_test(query_tensor,
+                            scale, is_causal, /*has_mask=*/true, sdpa_kernel_t::flash);
+  status_t ref_status     = sdpa_kernel_test(query_tensor,
                             key_tensor, value_tensor, mask_tensor,
                             output_tensor_ref, scale, is_causal,
-                            /*has_mask=*/true);
+                            /*has_mask=*/true, sdpa_kernel_t::reference);
 
   bool is_test_successful =
     (status == status_t::success && ref_status == status_t::success);
@@ -263,17 +265,17 @@ void run_sdpa_mask_layout_test(tensor_factory_t &tensor_factory,
 
 /**
  * @brief Run an F16 SDPA test by comparing the LOWOHA F16 flash output
- *        against the operator-based F16 reference output.
+ *        against the LOWOHA F16 reference output (reference_sdpa).
  *
  * Mirrors the F32/BF16 inline tests' single-input-stream pattern: both
- * the LOWOHA flash backend (sdpa_kernel_test) and the operator-based
- * reference (sdpa_forced_ref_kernel_test) read the same F16 Q/K/V buffers
+ * @c sdpa_kernel_test calls (flash vs @c sdpa_kernel_t::reference) read the
+ * same F16 Q/K/V buffers
  * and write F16 output buffers, so the comparison is apples-to-apples
  * (both paths see the same F16-precision inputs).
  *
  * The reference kernel performs all arithmetic in FP32 internally
- * (sdpa_encoder_kernel_helpers.hpp widens each F16 element to float at
- * load via @c float16_t::operator float), so it is portable to every CPU
+ * (lowoha_sdpa_ref_kernel widens each F16 element to float at load via
+ * @c float16_t::operator float), so it is portable to every CPU
  * regardless of whether AVX512-FP16 / AVX-NE-CONVERT is available. Tests
  * are nevertheless skipped on systems without an F16-capable ISA because
  * the LOWOHA flash backend gates F16 on that capability and returns
@@ -300,8 +302,8 @@ void run_sdpa_f16_test(tensor_factory_t &tensor_factory,
                        const std::vector<uint64_t> &mask_shape,
                        const std::string &qkv_order) {
   // Single F16 input stream feeds both kernels. FP32 mask is supported by
-  // both the F16 LOWOHA flash backend and the F16 operator reference (per
-  // sdpa_encoder_operator_impl.cpp::validate); F16 mask coverage lives in
+  // both the F16 LOWOHA flash backend and the F16 reference kernel; F16 mask
+  // coverage lives in
   // the BF16-style randomised mask_dt path which does not extend to F16
   // here yet.
   auto query_tensor       = make_uniform_tensor(tensor_factory,
@@ -316,7 +318,7 @@ void run_sdpa_f16_test(tensor_factory_t &tensor_factory,
   auto mask_tensor        = has_mask ?
                             tensor_factory.uniform_dist_tensor(mask_shape,
                                 data_type_t::f32, 0.5)
-    : tensor_t();
+                            : tensor_t();
   auto output_tensor      = make_zero_tensor(tensor_factory,
   {batch, num_heads, seq_len_q, head_dim},
   data_type_t::f16, qkv_order);
@@ -326,18 +328,18 @@ void run_sdpa_f16_test(tensor_factory_t &tensor_factory,
 
   status_t status         = sdpa_kernel_test(query_tensor, key_tensor,
                             value_tensor, mask_tensor, output_tensor,
-                            scale, is_causal, has_mask);
+                            scale, is_causal, has_mask, sdpa_kernel_t::flash);
   // Portable skip on F16-incapable systems (matches the matmul F16 tests).
   // The reference kernel itself doesn't need an F16 ISA, but skipping
   // both keeps the test set coherent: there's nothing meaningful to
   // assert about the LOWOHA backend on a CPU where it can't run.
   if (status == status_t::isa_unsupported) {
     GTEST_SKIP() << "F16 SDPA not supported: requires F16-capable ISA "
-                    "(AVX512-FP16 or AVX-NE-CONVERT)";
+                 "(AVX512-FP16 or AVX-NE-CONVERT)";
   }
-  status_t ref_status     = sdpa_forced_ref_kernel_test(query_tensor,
+  status_t ref_status     = sdpa_kernel_test(query_tensor,
                             key_tensor, value_tensor, mask_tensor,
-                            output_tensor_ref, scale, is_causal, has_mask);
+                            output_tensor_ref, scale, is_causal, has_mask, sdpa_kernel_t::reference);
 
   bool is_test_successful =
     (status == status_t::success && ref_status == status_t::success);
@@ -415,10 +417,10 @@ class TestSdpa : public ::testing::TestWithParam<SdpaType> {
    *  the four axes statistically independent.
    *
    *  F32 and F16 SDPA tests ignore @c mask_dt and pass
-   *  @c data_type_t::f32 directly (the operator's validate() rejects
-   *  bf16 mask when QKV is f32; the F16 tests don't yet randomise their
-   *  mask dtype, even though the operator and LOWOHA F16 backends both
-   *  accept f32 or f16 mask with f16 QKV).
+   *  @c data_type_t::f32 directly (LOWOHA input validation rejects bf16
+   *  mask when QKV is f32; the F16 tests don't yet randomise their mask
+   *  dtype, even though both LOWOHA F16 backends accept f32 or f16 mask
+   *  with f16 QKV).
    */
   virtual void SetUp() {
     SdpaType params = GetParam();
@@ -503,14 +505,14 @@ class TestSdpa : public ::testing::TestWithParam<SdpaType> {
  *  @param TestSdpa parameterized test class to initialize SDPA parameters
  *  @param F32_F32 user-defined name of test
  *  @brief Test to validate SDPA F32 LOWOHA flash kernel against the
- *         operator-based reference (sdpa_encoder_operator_t -> FP32 ref kernel).
+ *         LOWOHA reference kernel (reference_sdpa).
  *
  *  Q/K/V/output are 4D tensors with logical shape [batch, num_heads,
  *  seq_len, head_dim]; the physical layout (BHSD or BSHD) is selected
  *  randomly per instance via the fixture's @c qkv_order. Both backends
  *  consume per-tensor strides via get_stride() so any supported order
  *  works. The same input tensors are fed to both the LOWOHA flash backend
- *  (sdpa_direct) and the reference operator path; outputs are compared
+ *  (sdpa_direct) and the reference kernel path; outputs are compared
  *  element-wise within an SDPA-specific error bound.
  */
 TEST_P(TestSdpa, F32_F32) {
@@ -529,7 +531,7 @@ TEST_P(TestSdpa, F32_F32) {
   // without producing NaNs from a fully-masked row.
   //
   // Shape is [1, 1, S_q, S_kv] (broadcast across batch/heads): both LOWOHA
-  // flash and the operator-based reference agree on this layout regardless of
+  // flash and reference backends agree on this layout regardless of
   // whether self-attention (S_q == S_kv) or cross-attention (S_q != S_kv) is
   // exercised. The full set of supported mask shapes is covered by the
   // F32_F32_MASK_LAYOUT / BF16_BF16_MASK_LAYOUT tests.
@@ -548,10 +550,10 @@ TEST_P(TestSdpa, F32_F32) {
 
   status_t status         = sdpa_kernel_test(query_tensor, key_tensor,
                             value_tensor, mask_tensor, output_tensor,
-                            scale, is_causal, has_mask);
-  status_t ref_status     = sdpa_forced_ref_kernel_test(query_tensor,
-                            key_tensor, value_tensor, mask_tensor,
-                            output_tensor_ref, scale, is_causal, has_mask);
+                            scale, is_causal, has_mask, sdpa_kernel_t::flash);
+  status_t ref_status     = sdpa_kernel_test(query_tensor, key_tensor,
+                            value_tensor, mask_tensor, output_tensor_ref,
+                            scale, is_causal, has_mask, sdpa_kernel_t::reference);
 
   bool is_test_successful =
     (status == status_t::success && ref_status == status_t::success);
@@ -594,11 +596,11 @@ TEST_P(TestSdpa, F32_F32_NO_MASK) {
 
   status_t status         = sdpa_kernel_test(query_tensor, key_tensor,
                             value_tensor, mask_tensor, output_tensor,
-                            scale, /*is_causal=*/false, /*has_mask=*/false);
-  status_t ref_status     = sdpa_forced_ref_kernel_test(query_tensor,
+                            scale, /*is_causal=*/false, /*has_mask=*/false, sdpa_kernel_t::flash);
+  status_t ref_status     = sdpa_kernel_test(query_tensor,
                             key_tensor, value_tensor, mask_tensor,
                             output_tensor_ref, scale,
-                            /*is_causal=*/false, /*has_mask=*/false);
+                            /*is_causal=*/false, /*has_mask=*/false, sdpa_kernel_t::reference);
 
   bool is_test_successful =
     (status == status_t::success && ref_status == status_t::success);
@@ -641,11 +643,11 @@ TEST_P(TestSdpa, F32_F32_CAUSAL) {
 
   status_t status         = sdpa_kernel_test(query_tensor, key_tensor,
                             value_tensor, mask_tensor, output_tensor,
-                            scale, /*is_causal=*/true, /*has_mask=*/false);
-  status_t ref_status     = sdpa_forced_ref_kernel_test(query_tensor,
+                            scale, /*is_causal=*/true, /*has_mask=*/false, sdpa_kernel_t::flash);
+  status_t ref_status     = sdpa_kernel_test(query_tensor,
                             key_tensor, value_tensor, mask_tensor,
                             output_tensor_ref, scale,
-                            /*is_causal=*/true, /*has_mask=*/false);
+                            /*is_causal=*/true, /*has_mask=*/false, sdpa_kernel_t::reference);
 
   bool is_test_successful =
     (status == status_t::success && ref_status == status_t::success);
@@ -693,11 +695,11 @@ TEST_P(TestSdpa, F32_F32_MASK) {
 
   status_t status         = sdpa_kernel_test(query_tensor, key_tensor,
                             value_tensor, mask_tensor, output_tensor,
-                            scale, /*is_causal=*/false, /*has_mask=*/true);
-  status_t ref_status     = sdpa_forced_ref_kernel_test(query_tensor,
+                            scale, /*is_causal=*/false, /*has_mask=*/true, sdpa_kernel_t::flash);
+  status_t ref_status     = sdpa_kernel_test(query_tensor,
                             key_tensor, value_tensor, mask_tensor,
                             output_tensor_ref, scale,
-                            /*is_causal=*/false, /*has_mask=*/true);
+                            /*is_causal=*/false, /*has_mask=*/true, sdpa_kernel_t::reference);
 
   bool is_test_successful =
     (status == status_t::success && ref_status == status_t::success);
@@ -757,12 +759,12 @@ TEST(SdpaGqaTest, F32_GQA_MASK_MATCHES_EXPANDED_KV) {
                                      value_tensor, mask_tensor,
                                      output_tensor, /*scale=*/0.0f,
                                      /*is_causal=*/false,
-                                     /*has_mask=*/true);
-  status_t ref_status = sdpa_kernel_test(query_tensor, key_tensor_expanded,
-                                         value_tensor_expanded, mask_tensor,
+                                     /*has_mask=*/true, sdpa_kernel_t::flash);
+  status_t ref_status = sdpa_kernel_test(query_tensor, key_tensor,
+                                         value_tensor, mask_tensor,
                                          output_tensor_ref, /*scale=*/0.0f,
                                          /*is_causal=*/false,
-                                         /*has_mask=*/true);
+                                         /*has_mask=*/true, sdpa_kernel_t::reference);
 
   ASSERT_EQ(status, status_t::success);
   ASSERT_EQ(ref_status, status_t::success);
@@ -777,8 +779,8 @@ TEST(SdpaGqaTest, F32_GQA_MASK_MATCHES_EXPANDED_KV) {
 /** @fn TEST_P
  *  @param TestSdpa parameterized test class
  *  @param BF16_BF16 BF16 Q/K/V/output (encoder-style self-attention).
- *  @brief Validate SDPA BF16 LOWOHA flash kernel against the operator-based
- *         reference (sdpa_encoder_ref_kernel_t). Mirrors F32_F32 with BF16
+ *  @brief Validate SDPA BF16 LOWOHA flash kernel against the LOWOHA
+ *         reference kernel (reference_sdpa). Mirrors F32_F32 with BF16
  *         storage; arithmetic in both kernels accumulates in FP32 internally.
  */
 TEST_P(TestSdpa, BF16_BF16) {
@@ -793,7 +795,7 @@ TEST_P(TestSdpa, BF16_BF16) {
   data_type_t::bf16, 1.0, qkv_order);
 
   // For BF16 QKV both FP32 and BF16 additive masks are supported by the
-  // reference operator and the LOWOHA flash backend; the fixture's mask_dt
+  // LOWOHA reference and flash backends; the fixture's mask_dt
   // (randomised in SetUp) selects one per (seed, params) instance so both
   // code paths get exercised across parameterisations. The mask is applied
   // to the FP32 score buffer either way (the BF16 path converts each
@@ -814,10 +816,10 @@ TEST_P(TestSdpa, BF16_BF16) {
 
   status_t status         = sdpa_kernel_test(query_tensor, key_tensor,
                             value_tensor, mask_tensor, output_tensor,
-                            scale, is_causal, has_mask);
-  status_t ref_status     = sdpa_forced_ref_kernel_test(query_tensor,
+                            scale, is_causal, has_mask, sdpa_kernel_t::flash);
+  status_t ref_status     = sdpa_kernel_test(query_tensor,
                             key_tensor, value_tensor, mask_tensor,
-                            output_tensor_ref, scale, is_causal, has_mask);
+                            output_tensor_ref, scale, is_causal, has_mask, sdpa_kernel_t::reference);
 
   bool is_test_successful =
     (status == status_t::success && ref_status == status_t::success);
@@ -859,11 +861,11 @@ TEST_P(TestSdpa, BF16_BF16_NO_MASK) {
 
   status_t status         = sdpa_kernel_test(query_tensor, key_tensor,
                             value_tensor, mask_tensor, output_tensor,
-                            scale, /*is_causal=*/false, /*has_mask=*/false);
-  status_t ref_status     = sdpa_forced_ref_kernel_test(query_tensor,
+                            scale, /*is_causal=*/false, /*has_mask=*/false, sdpa_kernel_t::flash);
+  status_t ref_status     = sdpa_kernel_test(query_tensor,
                             key_tensor, value_tensor, mask_tensor,
                             output_tensor_ref, scale,
-                            /*is_causal=*/false, /*has_mask=*/false);
+                            /*is_causal=*/false, /*has_mask=*/false, sdpa_kernel_t::reference);
 
   bool is_test_successful =
     (status == status_t::success && ref_status == status_t::success);
@@ -905,11 +907,11 @@ TEST_P(TestSdpa, BF16_BF16_CAUSAL) {
 
   status_t status         = sdpa_kernel_test(query_tensor, key_tensor,
                             value_tensor, mask_tensor, output_tensor,
-                            scale, /*is_causal=*/true, /*has_mask=*/false);
-  status_t ref_status     = sdpa_forced_ref_kernel_test(query_tensor,
+                            scale, /*is_causal=*/true, /*has_mask=*/false, sdpa_kernel_t::flash);
+  status_t ref_status     = sdpa_kernel_test(query_tensor,
                             key_tensor, value_tensor, mask_tensor,
                             output_tensor_ref, scale,
-                            /*is_causal=*/true, /*has_mask=*/false);
+                            /*is_causal=*/true, /*has_mask=*/false, sdpa_kernel_t::reference);
 
   bool is_test_successful =
     (status == status_t::success && ref_status == status_t::success);
@@ -929,7 +931,7 @@ TEST_P(TestSdpa, BF16_BF16_CAUSAL) {
  *  @brief Exercises the explicit-mask code path with BF16 QKV and a mask
  *         dtype taken from the fixture's @c mask_dt (FP32 or BF16,
  *         randomised in @c SetUp). Both combinations are supported by the
- *         reference operator and the LOWOHA flash backend. Mask values are
+ *         LOWOHA reference and flash backends. Mask values are
  *         bounded so no row degenerates to all -inf. Q/K/V/output physical
  *         layout (BHSD or BSHD) is randomised per instance via the
  *         fixture's @c qkv_order.
@@ -959,11 +961,11 @@ TEST_P(TestSdpa, BF16_BF16_MASK) {
 
   status_t status         = sdpa_kernel_test(query_tensor, key_tensor,
                             value_tensor, mask_tensor, output_tensor,
-                            scale, /*is_causal=*/false, /*has_mask=*/true);
-  status_t ref_status     = sdpa_forced_ref_kernel_test(query_tensor,
+                            scale, /*is_causal=*/false, /*has_mask=*/true, sdpa_kernel_t::flash);
+  status_t ref_status     = sdpa_kernel_test(query_tensor,
                             key_tensor, value_tensor, mask_tensor,
                             output_tensor_ref, scale,
-                            /*is_causal=*/false, /*has_mask=*/true);
+                            /*is_causal=*/false, /*has_mask=*/true, sdpa_kernel_t::reference);
 
   bool is_test_successful =
     (status == status_t::success && ref_status == status_t::success);
@@ -980,8 +982,8 @@ TEST_P(TestSdpa, BF16_BF16_MASK) {
 /** @fn TEST_P
  *  @param TestSdpa parameterized test class
  *  @param F16_F16 F16 Q/K/V/output (encoder-style self-attention).
- *  @brief Validate SDPA F16 LOWOHA flash kernel against the operator-based
- *         F16 reference (sdpa_encoder_operator_t -> F16 ref kernel).
+ *  @brief Validate SDPA F16 LOWOHA flash kernel against the LOWOHA
+ *         F16 reference kernel (reference_sdpa).
  *
  *  Mirrors @c BF16_BF16 with F16 storage; both backends consume the same
  *  F16 Q/K/V buffers (the reference kernel widens each F16 element to FP32
@@ -1033,8 +1035,8 @@ TEST_P(TestSdpa, F16_F16_CAUSAL) {
  *  @param F16_F16_MASK F16 path with explicit additive FP32 mask
  *  @brief Exercises the F16 explicit-mask code path with an FP32 additive
  *         mask. Mask values are bounded so no row degenerates to all -inf.
- *         Mirrors @c BF16_BF16_MASK; the F16 LOWOHA flash backend and the
- *         F16 operator reference both accept FP32 mask. Skipped on systems
+ *         Mirrors @c BF16_BF16_MASK; the F16 LOWOHA flash and reference
+ *         backends both accept FP32 mask. Skipped on systems
  *         without an F16-capable ISA.
  */
 TEST_P(TestSdpa, F16_F16_MASK) {
@@ -1081,8 +1083,8 @@ TEST_P(TestSdpa, BF16_BF16_MASK_LAYOUT) {
 }
 
 /** @brief F16 SDPA mask-layout coverage with random mask shape and random
- *         BHSD/BSHD Q/K/V/output layout. Both the F16 LOWOHA flash backend
- *         and the F16 operator reference accept the FP32 mask used here.
+ *         BHSD/BSHD Q/K/V/output layout. Both the F16 LOWOHA flash and
+ *         reference backends accept the FP32 mask used here.
  *         Skipped on systems without an F16-capable ISA. */
 TEST_P(TestSdpa, F16_F16_MASK_LAYOUT) {
   run_sdpa_f16_test(tensor_factory, batch, num_heads,
