@@ -58,6 +58,7 @@
 #include "n_tile/group_matmul_n_tile.hpp"  // flat_n_tile + N-tile env knobs
 #include "group_matmul_parallel_common.hpp"
 #include "prepack/prepack.hpp"
+#include "lowoha_operators/matmul/backends/aocl/aocl_kernel.hpp"
 
 namespace zendnnl {
 namespace lowoha {
@@ -620,15 +621,29 @@ static bool check_n_tile_extra(
       params[i].dynamic_quant;
 
     if (any_quant) {
-      // W4A8 (s4 weight) is not supported on the N-tile path.
-      // The pre-OMP s4→s8 hoist in flat_n_tile mutates the caller's
-      // params (dtypes.wei, src_scale) which frameworks reuse across
-      // decode iterations — causing garbled output on the second call.
-      // Fall back to ALGO 1 where run_dlp handles W4A8 end-to-end
-      // via w4a8ReorderAndCacheWeightsAocl without caller mutation.
-      if (params[i].dtypes.wei == data_type_t::s4 ||
-          params[i].dtypes.wei == data_type_t::u4) {
+      // W4A8 (s4 weight): accepted on the N-tile path when is_w4a8_config
+      // passes AND the shape is a valid per-group layout that flat_n_tile
+      // can column-slice.  flat_n_tile expands s4→s8 into the W4A8 LRU
+      // (no caller-param mutation) and rewrites tile_params to flow
+      // through the sym-quant GEMM path.
+      // u4 remains rejected (no symmetric W4A8 support).
+      if (params[i].dtypes.wei == data_type_t::u4) {
         return false;
+      }
+      if (is_w4a8_config(params[i])) {
+        // N-tile-specific extra gates beyond is_w4a8_config:
+        // plain row-major weight required for column slicing.
+        if (params[i].mem_format_b != 'n') {
+          return false;
+        }
+        const bool w4a8_src_ok =
+            is_per_token_dyn_src(qp.src_scale, M[i])
+            || is_per_group_src(qp.src_scale, M[i]);
+        const bool w4a8_wei_ok = is_per_group_wei(qp.wei_scale);
+        if (!w4a8_src_ok || !w4a8_wei_ok) {
+          return false;
+        }
+        continue;
       }
 
       // Source side: accept either (a) dynamic BF16/F32 input that
@@ -1121,14 +1136,13 @@ int select_grp_matmul_algo(
           "REJECTED: n_tile unsafe.  Common rejection reasons: "
           "non-row-major layout, per-expert dtype mismatch, "
           "buffer post-op, or a quant configuration outside the "
-          "per-token dynamic-INT8 scope.  ALGO 3 currently "
-          "accepts ONE quant shape: `dynamic_quant=true` with "
-          "`{M[i], 1}` src (the single-row decode case "
-          "`{1, 1}` when M[i]=1 is included) + per-channel "
-          "`{1, N}` wei (statically quantised wei buff supplied "
-          "by caller).  Static src, per-tensor src/wei, "
-          "per-group `{M[i], G}` src, per-group `{G, N}` wei, "
-          "and pure WOQ workloads stay on ALGO 1.  See "
+          "supported N-tile scope.  Accepted quant shapes include: "
+          "(a) DQ-INT8: `dynamic_quant=true` with `{M[i], 1}` src "
+          "(incl. `{1, 1}` when M[i]=1) + per-channel `{1, N}` wei; "
+          "(b) W4A8: `wei=s4`, `dynamic_quant=true`, `compute=s8`, "
+          "symmetric, per-group `{G, N}` wei + per-token `{M[i], 1}` "
+          "or per-group `{M[i], G}` src.  Static src, per-tensor "
+          "src/wei, pure WOQ, and unsigned u4 stay on ALGO 1.  See "
           "`check_n_tile_extra` SCOPE NOTE for the full table.  "
           "FALLBACK algo=1 (sequential_experts).");
       }
@@ -1595,6 +1609,21 @@ bool group_matmul_run_parallel_dispatch(
       return false;
     }
   }
+  // ── W4A8 plain materialization (s4→s8 + plain-s8 LRU) ────────────
+  // Only ALGO 3 (and AUTO which might pick ALGO 3) needs the side table
+  // of s8 pointers for per-tile column slicing.  ALGO 1/2/4/5 discover
+  // plain cache internally inside w4a8ReorderAndCacheWeightsAocl (cache
+  // HIT when prepack already filled the plain cache).  Skipping the
+  // per-expert loop for pinned non-ALGO-3 avoids num_ops × (mutex + hash)
+  // overhead on every call.  No mutation of weight[] or params; side table
+  // only.
+  const int dispatch_num_ops = static_cast<int>(M.size());
+  static thread_local std::vector<void *> w4a8_s8_ptrs;
+  bool any_w4a8 = false;
+  if (use_algo == 3 || use_algo == 0) {
+    w4a8_populate_plain_s8_cache(weight, K, N, ldb, transB, params,
+                          dispatch_num_ops, w4a8_s8_ptrs, any_w4a8);
+  }
 
   switch (use_algo) {
   case 1:
@@ -1628,7 +1657,8 @@ bool group_matmul_run_parallel_dispatch(
                 src, lda, weight, ldb, bias, beta, dst, ldc,
                 is_weights_const, params, num_threads,
                 a3_fuses ? fused_act : grp_matmul_gated_act_t::none,
-                act_dtype, gemm_mode_out);
+                act_dtype, gemm_mode_out,
+                any_w4a8 ? &w4a8_s8_ptrs : nullptr);
     break;
   case 4:
     // parallel_multilevel owns its gemm_mode (multilevel_concurrent /

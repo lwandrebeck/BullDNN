@@ -821,9 +821,19 @@ status_t warm_pack_all_aocl_dlp_experts_w4a8(
                    static_cast<uint32_t>(matmul_algo_t::aocl_dlp_blocked),
                    std::hash<int64_t> {}(src_grp));
 
-    // Call the same function the runtime GEMM uses — this writes into
-    // the dedicated W4A8 LRU cache (get_aocl_w4a8_weight_cache), not
-    // the generic symquant cache, so the runtime gets a HIT.
+    // Plain cache: populate the plain-s8 LRU first so that
+    // w4a8ReorderAndCacheWeightsAocl below gets a plain cache HIT and
+    // skips the internal temp alloc + cvt_s4_to_s8.  This also ensures
+    // the plain cache is warm for ALGO 3 cross-warm / runtime if needed.
+    void *s8_unused = nullptr;
+    w4a8_cvt_and_cache_plain_s8(
+      key, static_cast<const int8_t *>(weight[i]),
+      s8_unused, k, n, ldb[i], transB[i] == true);
+
+    // Blocked cache: full blocked sym-quant reorder into the W4A8 reorder
+    // cache.  w4a8ReorderAndCacheWeightsAocl will get a plain cache HIT
+    // (just populated above) and build the blocked layout from the cached
+    // plain s8.
     void *reordered = nullptr;
     w4a8ReorderAndCacheWeightsAocl(
       key, static_cast<const int8_t *>(weight[i]),
@@ -842,6 +852,160 @@ status_t warm_pack_all_aocl_dlp_experts_w4a8(
   }
 #else
   (void)wei_dtype;
+  (void)group_size;
+  stats.total_attempted += static_cast<int>(bound);
+  stats.skipped_invalid += static_cast<int>(bound);
+#endif
+
+  return status_t::success;
+}
+
+// ─────────────────────────────────────────────────────────────────────
+// W4A8 per-N-tile warm-pack for ALGO 3.
+//
+// Two-level caching strategy:
+//   Plain cache: cvt_s4_to_s8 of the full (K, N) weight per expert,
+//     stored in the plain-s8 LRU (get_w4a8_plain_cache) keyed on the
+//     original s4 weight pointer.  This s8 buffer stays alive in the
+//     LRU across calls.
+//   Blocked cache: AOCL sym-quant blocked reorder of each per-tile
+//     column slice of the plain-s8 buffer, stored in the sym-quant LRU
+//     (reorderAndCacheWeightsSymQuant) keyed on (s8_ptr + col_start,
+//     n_tile, group_size).
+//
+// At runtime flat_n_tile pre-OMP looks up the plain cache (HIT → s8
+// ptr), then each OMP do_tile thread looks up the blocked cache
+// (HIT → blocked reorder).
+// ─────────────────────────────────────────────────────────────────────
+status_t warm_pack_all_aocl_dlp_experts_n_tile_w4a8(
+  const std::vector<const void *> &weight,
+  const std::vector<int>          &K,
+  const std::vector<int>          &N,
+  const std::vector<int>          &ldb,
+  const std::vector<bool>         &transB,
+  const std::vector<bool>         &is_weights_const,
+  int                              total_count,
+  data_type_t                      wei_dtype,
+  int                              num_threads,
+  int                              stable,
+  int                              nr_align,
+  int                              group_size,
+  AoclDlpPackProbeStats           &stats) {
+
+  if (total_count <= 0 || num_threads <= 0
+      || stable <= 0 || nr_align <= 0 || group_size <= 0) {
+    return status_t::success;
+  }
+
+  const int32_t weight_cache_type =
+    matmul_config_t::instance().get_weight_cache();
+  if (weight_cache_type == 0) {
+    return status_t::success;
+  }
+
+  const size_t bound = std::min<size_t>({
+    static_cast<size_t>(total_count),
+    weight.size(), K.size(), N.size(),
+    ldb.size(), transB.size()});
+
+#if ZENDNNL_DEPENDS_AOCLDLP
+  if (wei_dtype != data_type_t::s4) {
+    stats.total_attempted += static_cast<int>(bound);
+    stats.skipped_invalid += static_cast<int>(bound);
+    return status_t::success;
+  }
+
+  for (size_t i = 0; i < bound; ++i) {
+    if (weight[i] == nullptr || K[i] <= 0 || N[i] <= 0 || ldb[i] <= 0) {
+      ++stats.total_attempted;
+      ++stats.skipped_invalid;
+      continue;
+    }
+    if (!is_weights_const.empty()
+        && i < is_weights_const.size()
+        && !is_weights_const[i]) {
+      ++stats.total_attempted;
+      ++stats.skipped_invalid;
+      continue;
+    }
+
+    const int k = K[i], n = N[i];
+
+    // ── Plain cache: s4→s8 plain expansion into dedicated plain-s8 LRU ─
+    const int64_t src_grp = static_cast<int64_t>(group_size);
+    Key_matmul w4a8_key(transB[i], k, n, ldb[i], weight[i],
+                        static_cast<uint32_t>(matmul_algo_t::aocl_dlp_blocked),
+                        std::hash<int64_t>{}(src_grp));
+
+    void *s8_buf = nullptr;
+    w4a8_cvt_and_cache_plain_s8(
+      w4a8_key, static_cast<const int8_t *>(weight[i]),
+      s8_buf, k, n, ldb[i], transB[i] == true);
+
+    if (s8_buf == nullptr) {
+      ++stats.total_attempted;
+      ++stats.skipped_invalid;
+      continue;
+    }
+
+    // ── Blocked cache: per-tile sym-quant reorder of the s8 buffer ────
+    // The s8 buffer from the plain cache is K×N row-major (ldb_s8 = n).
+    const int ldb_s8 = n;
+    const int align_cap = std::max(1, n / std::max(1, nr_align));
+    const int n_thr_e = std::max(1, std::min(stable, align_cap));
+
+    for (int tid = 0; tid < n_thr_e; ++tid) {
+      const auto split = aligned_n_split(n, n_thr_e, tid, nr_align);
+      const int col_start = split.first;
+      const int col_end   = split.second;
+      const int n_tile    = col_end - col_start;
+
+      ++stats.total_attempted;
+
+      if (n_tile <= 0) {
+        ++stats.skipped_invalid;
+        continue;
+      }
+
+      const void *w_tile =
+        static_cast<const char *>(s8_buf)
+          + static_cast<size_t>(col_start) * sizeof(int8_t);
+
+      Key_matmul tile_key(false, k, n_tile, ldb_s8, w_tile,
+                          static_cast<uint32_t>(matmul_algo_t::aocl_dlp_blocked),
+                          std::hash<int64_t>{}(src_grp));
+
+      DLP_SYMM_STAT_QUANT symq_meta;
+      symq_meta.group_size = group_size;
+
+      apilog_verbose("[W4A8.prepack.blocked] expert=", i,
+                     " tid=", tid, " col_start=", col_start,
+                     " n_tile=", n_tile, " K=", k, " ldb_s8=", ldb_s8,
+                     " group_size=", group_size,
+                     " w_tile_ptr=", static_cast<const void*>(w_tile));
+
+      void *reordered_unused = nullptr;
+      const bool warmed = reorderAndCacheWeightsSymQuant<int8_t>(
+                            tile_key, w_tile, reordered_unused, k, n_tile,
+                            ldb_s8,
+                            /*order=*/'r',
+                            /*trans=*/'n',
+                            /*mem_format_b=*/'n',
+                            aocl_get_reorder_buf_size_s8s8s32os32_sym_quant,
+                            aocl_reorder_s8s8s32os32_sym_quant,
+                            &symq_meta, /*weight_cache_type=*/1);
+      if (warmed) {
+        ++stats.packed_ok;
+      } else {
+        ++stats.skipped_invalid;
+      }
+    }
+  }
+#else
+  (void)wei_dtype;
+  (void)num_threads;
+  (void)stable;
+  (void)nr_align;
   (void)group_size;
   stats.total_attempted += static_cast<int>(bound);
   stats.skipped_invalid += static_cast<int>(bound);

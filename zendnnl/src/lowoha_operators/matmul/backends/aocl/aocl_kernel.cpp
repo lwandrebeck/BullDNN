@@ -261,13 +261,126 @@ std::mutex &get_aocl_woq_weight_cache_mutex() {
   return m;
 }
 // Separate W4A8 weight cache (s4 widened to blocked s8 layout).
-lru_cache_t<Key_matmul, void *> &get_aocl_w4a8_weight_cache() {
+lru_cache_t<Key_matmul, void *> &get_w4a8_reorder_blocked_cache() {
   static lru_cache_t<Key_matmul, void *> c;
   return c;
 }
-std::mutex &get_aocl_w4a8_weight_cache_mutex() {
+std::mutex &get_w4a8_reorder_blocked_cache_mutex() {
   static std::mutex m;
   return m;
+}
+
+static lru_cache_t<Key_matmul, void *> &get_w4a8_plain_cache() {
+  static lru_cache_t<Key_matmul, void *> c;
+  return c;
+}
+static std::mutex &get_w4a8_plain_cache_mutex() {
+  static std::mutex m;
+  return m;
+}
+
+}  // namespace
+
+void w4a8_cvt_and_cache_plain_s8(Key_matmul key, const int8_t *weights,
+                            void *&s8_plain, int k, int n, int ldb,
+                            bool is_transposed) {
+  // NOTE: no is_weights_const gate — W4A8 weights are always model constants
+  // (framework contract).  The LRU key includes the original s4 pointer, so
+  // buffer reuse with different data (non-const semantics) would produce a
+  // different key on a new allocation anyway.  Omitting the gate keeps the
+  // API simple without correctness risk for the W4A8 use case.
+  auto &cache = get_w4a8_plain_cache();
+  auto &mtx   = get_w4a8_plain_cache_mutex();
+
+  std::lock_guard<std::mutex> lock(mtx);
+
+  void *cached = nullptr;
+  if (cache.try_get(key, cached)) {
+    apilog_verbose("[W4A8.PLAIN HIT] plain s8 cache hit — reusing cached s4→s8 "
+                   "(K=", k, " N=", n, ")");
+    s8_plain = cached;
+    return;
+  }
+
+  apilog_verbose("[W4A8.PLAIN MISS] plain s8 cache miss — converting s4→s8 "
+                 "(K=", k, " N=", n, " size=", k * n, " bytes)");
+  const size_t alignment = 64;
+  const size_t buf_size =
+      (static_cast<size_t>(k) * n * sizeof(int8_t) + alignment - 1)
+      & ~(alignment - 1);
+  int8_t *buf = static_cast<int8_t *>(aligned_alloc(alignment, buf_size));
+  if (!buf) {
+    s8_plain = nullptr;
+    return;
+  }
+
+  cvt_s4_to_s8(weights, buf, k, n, ldb, is_transposed);
+  cache.add(key, buf);
+  s8_plain = buf;
+}
+
+// Loop over all experts
+void w4a8_populate_plain_s8_cache(
+    const std::vector<const void *> &weight,
+    const std::vector<int> &K,
+    const std::vector<int> &N,
+    const std::vector<int> &ldb,
+    const std::vector<bool> &transB,
+    const std::vector<matmul_params> &params,
+    int num_ops,
+    std::vector<void *> &w4a8_s8_out,
+    bool &any_w4a8) {
+
+  w4a8_s8_out.assign(num_ops, nullptr);
+  any_w4a8 = false;
+
+  auto &cache = get_w4a8_plain_cache();
+  auto &mtx   = get_w4a8_plain_cache_mutex();
+  std::lock_guard<std::mutex> lock(mtx);
+
+  for (int e = 0; e < num_ops; ++e) {
+    if (static_cast<size_t>(e) >= weight.size()) break;
+    if (weight[e] == nullptr || K[e] <= 0 || N[e] <= 0 || ldb[e] <= 0)
+      continue;
+    if (!is_w4a8_config(params[e])) continue;
+
+    const auto &wei_sc = params[e].quant_params.wei_scale;
+    const bool wei_per_group =
+        wei_sc.dims.size() == 2 && wei_sc.dims[0] > 1;
+
+    const int64_t group_size = wei_per_group
+        ? static_cast<int64_t>(K[e]) / wei_sc.dims[0]
+        : static_cast<int64_t>(K[e]);
+
+    Key_matmul w4a8_key(transB[e], K[e], N[e], ldb[e], weight[e],
+                        static_cast<uint32_t>(matmul_algo_t::aocl_dlp_blocked),
+                        std::hash<int64_t>{}(group_size));
+
+    void *cached_ptr = nullptr;
+    if (cache.try_get(w4a8_key, cached_ptr)) {
+      apilog_verbose("[W4A8.PLAIN HIT] plain s8 cache hit — reusing "
+                     "cached s4→s8 (K=", K[e], " N=", N[e], ")");
+      w4a8_s8_out[e] = cached_ptr;
+      if (cached_ptr != nullptr) any_w4a8 = true;
+      continue;
+    }
+
+    apilog_verbose("[W4A8.PLAIN MISS] plain s8 cache miss — converting "
+                   "s4→s8 (K=", K[e], " N=", N[e], " size=",
+                   static_cast<size_t>(K[e]) * N[e], " bytes)");
+    const size_t alignment = 64;
+    const size_t buf_size =
+        (static_cast<size_t>(K[e]) * N[e] * sizeof(int8_t) + alignment - 1)
+        & ~(alignment - 1);
+    int8_t *buf = static_cast<int8_t *>(aligned_alloc(alignment, buf_size));
+    if (!buf) continue;
+
+    cvt_s4_to_s8(static_cast<const int8_t *>(weight[e]),
+                 buf, K[e], N[e], ldb[e], transB[e]);
+    cache.add(w4a8_key, buf);
+    w4a8_s8_out[e] = buf;
+    any_w4a8 = true;
+  }
 }
 
 template <typename T>
@@ -281,15 +394,18 @@ void clear_aocl_woq_weight_cache_under_lock() {
 }
 void clear_aocl_w4a8_weight_cache_under_lock() {
   std::lock_guard<std::mutex>
-  lock(get_aocl_w4a8_weight_cache_mutex());
-  get_aocl_w4a8_weight_cache().clear();
+  lock(get_w4a8_reorder_blocked_cache_mutex());
+  get_w4a8_reorder_blocked_cache().clear();
+}
+void clear_w4a8_plain_s8_cache_under_lock() {
+  std::lock_guard<std::mutex> lock(get_w4a8_plain_cache_mutex());
+  get_w4a8_plain_cache().clear();
 }
 
 void clear_aocl_symquant_weight_cache_under_lock() {
   std::lock_guard<std::mutex> lock(get_aocl_symquant_weight_cache_mutex());
   get_aocl_symquant_weight_cache().clear();
 }
-}  // namespace
 
 void clear_aocl_matmul_weight_caches() {
   // Lock only the mutex paired with each cache so clear does not interleave
@@ -302,6 +418,7 @@ void clear_aocl_matmul_weight_caches() {
   clear_aocl_symquant_weight_cache_under_lock();
   clear_aocl_woq_weight_cache_under_lock();
   clear_aocl_w4a8_weight_cache_under_lock();
+  clear_w4a8_plain_s8_cache_under_lock();
   clear_ggml_weight_unpack_cache();
   clear_zp_compensation_cache();
 }
@@ -544,12 +661,12 @@ bool reorderAndCacheWeightsSymQuant(Key_matmul key, const void *weights,
       // See reorderAndCacheWeights: nullptr means a prior prepack or
       // in-place path made the caller's weight buffer the reordered buffer.
       if (cached_ptr == nullptr) {
-        apilog_info("Read AOCL sym_quant cached weights "
-                    "WEIGHT_CACHE_OUT_OF_PLACE (reusing user buffer)");
+        apilog_verbose("[AOCL.reorder symquant HIT] cached "
+                    "(reusing user buffer)");
         reorder_weights = const_cast<void *>(weights);
       }
       else {
-        apilog_info("Read AOCL sym_quant cached weights WEIGHT_CACHE_OUT_OF_PLACE");
+        apilog_verbose("[AOCL.reorder symquant HIT] cached");
         reorder_weights = cached_ptr;
       }
     }
@@ -566,12 +683,12 @@ bool reorderAndCacheWeightsSymQuant(Key_matmul key, const void *weights,
     void *cached_ptr = nullptr;
     if (matmul_weight_cache.try_get(key, cached_ptr)) {
       if (cached_ptr == nullptr) {
-        apilog_info("Read AOCL sym_quant cached weights WEIGHT_CACHE_IN_PLACE "
+        apilog_verbose("[AOCL.reorder symquant HIT] cached in-place "
                     "(reusing user buffer)");
         reorder_weights = const_cast<void *>(weights);
       }
       else {
-        apilog_info("Read AOCL sym_quant cached weights WEIGHT_CACHE_IN_PLACE "
+        apilog_verbose("[AOCL.reorder symquant HIT] cached in-place "
                     "(fall-back out-of-place buffer)");
         reorder_weights = cached_ptr;
       }
@@ -709,9 +826,9 @@ void w4a8ReorderAndCacheWeightsAocl(Key_matmul key, const int8_t *weights,
                                     int weight_cache_type,
                                     int sym_quant_group_size) {
   lru_cache_t<Key_matmul, void *> &matmul_weight_cache_w4a8 =
-    get_aocl_w4a8_weight_cache();
+    get_w4a8_reorder_blocked_cache();
   std::mutex &w4a8_cache_mutex =
-    get_aocl_w4a8_weight_cache_mutex();
+    get_w4a8_reorder_blocked_cache_mutex();
 
   bool is_transposed = (trans == 't');
 
@@ -730,31 +847,48 @@ void w4a8ReorderAndCacheWeightsAocl(Key_matmul key, const int8_t *weights,
     return;
   }
 
+  // Check the plain-s8 cache BEFORE acquiring the blocked-reorder lock.
+  int8_t *cvt_weights = nullptr;
+  bool own_cvt_buf = false;
+  {
+    auto &plain_cache = get_w4a8_plain_cache();
+    auto &plain_mtx   = get_w4a8_plain_cache_mutex();
+    std::lock_guard<std::mutex> plain_lock(plain_mtx);
+    void *plain_hit = nullptr;
+    if (plain_cache.try_get(key, plain_hit) && plain_hit != nullptr) {
+      cvt_weights = static_cast<int8_t *>(plain_hit);
+      apilog_verbose("[W4A8.REORDER] plain HIT — using cached plain s8 "
+                     "(K=", k, " N=", n, ")");
+    }
+  }
+
   std::lock_guard<std::mutex> lock(w4a8_cache_mutex);
-  // Short-circuit: only consult (and timestamp-bump) the cache when
-  // weights are const. A non-const-weight call always recomputes and
-  // discards the buffer.
   void *cached_w4a8 = nullptr;
   bool found_obj = is_weights_const &&
                    matmul_weight_cache_w4a8.try_get(key, cached_w4a8);
 
   if (!found_obj) {
-    apilog_verbose("[AOCL.reorder W4A8 MISS] W4A8 reorder "
+    apilog_verbose("[W4A8.REORDER MISS] blocked reorder cache miss "
                    "(weight_cache_type=", weight_cache_type, ", src_dt=",
                    static_cast<int>(src_dt), ")");
     size_t alignment = 64;
-    // Temp K×N s8 buffer; freed before return (cache holds blocked reorder).
-    size_t cvt_weights_size = (sizeof(int8_t) * k * n + alignment - 1) & ~
-                              (alignment - 1);
-    int8_t *cvt_weights = (int8_t *)aligned_alloc(alignment, cvt_weights_size);
-    if (!cvt_weights) {
-      apilog_error("[AOCL.reorder W4A8] failed to allocate convert weights");
-      reorder_weights = nullptr;
-      return;
-    }
-    cvt_s4_to_s8(weights, cvt_weights, k, n, ldb, is_transposed);
 
-    // After cvt_s4_to_s8, weights are in K×N row-major layout
+    if (cvt_weights == nullptr) {
+      apilog_verbose("[W4A8.REORDER] plain MISS — allocating temp s4→s8 "
+                     "(K=", k, " N=", n, ")");
+      size_t cvt_weights_size = (sizeof(int8_t) * k * n + alignment - 1) & ~
+                                (alignment - 1);
+      cvt_weights = (int8_t *)aligned_alloc(alignment, cvt_weights_size);
+      if (!cvt_weights) {
+        apilog_error("[W4A8.REORDER] failed to allocate convert weights");
+        reorder_weights = nullptr;
+        return;
+      }
+      cvt_s4_to_s8(weights, cvt_weights, k, n, ldb, is_transposed);
+      own_cvt_buf = true;
+    }
+
+    // After cvt_s4_to_s8 (or plain cache HIT), weights are in K×N row-major layout
     // (non-transposed), so ldb_cvt = n regardless of the original packed
     // buffer's layout.
     int ldb_cvt = n;
@@ -771,22 +905,23 @@ void w4a8ReorderAndCacheWeightsAocl(Key_matmul key, const int8_t *weights,
                    (alignment - 1);
     reorder_weights = (int8_t *)aligned_alloc(alignment, reorder_size);
     if (!reorder_weights) {
-      apilog_error("[AOCL.reorder W4A8] failed to allocate reorder weights");
-      free(cvt_weights);
+      apilog_error("[W4A8.REORDER] failed to allocate reorder weights");
+      if (own_cvt_buf) free(cvt_weights);
       reorder_weights = nullptr;
       return;
     }
+    apilog_verbose("Calling aocl_reorder_s8s8s32os32_sym_quant");
     aocl_reorder_s8s8s32os32_sym_quant(order, trans_cvt, 'B', cvt_weights,
                                        (int8_t *)reorder_weights, k, n,
                                        ldb_cvt, &symq_meta, nullptr);
-    free(cvt_weights);
+    if (own_cvt_buf) free(cvt_weights);
 
     if (is_weights_const && weight_cache_type == 1) {
       matmul_weight_cache_w4a8.add(key, reorder_weights);
     }
   }
   else {
-    apilog_verbose("[AOCL.reorder W4A8 HIT] W4A8 cache hit — "
+    apilog_verbose("[W4A8.REORDER HIT] blocked reorder cache hit — "
                    "reusing cached pack");
     reorder_weights = cached_w4a8;
   }

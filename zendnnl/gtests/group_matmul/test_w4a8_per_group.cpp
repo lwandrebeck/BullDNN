@@ -30,12 +30,12 @@
 /// Inactive experts carry `M == 0` (no routed tokens): the GEMM skips them.
 /// Routed experts are validated against a per-expert reference matmul.
 ///
-/// W4A8 on ALGO 3 (N-tile) currently falls back to ALGO 1 because
-/// `check_n_tile_extra` rejects s4/u4 weights (the pre-OMP s4→s8 hoist
-/// would mutate caller params that frameworks reuse across decode
-/// iterations).  The prepack module still warms the W4A8 weight cache
-/// (s4→s8 + AOCL sym-quant reorder) so the ALGO-1 fallback incurs no
-/// first-call reorder spike.
+/// W4A8 on ALGO 3 (N-tile) is supported: flat_n_tile expands s4→s8 into the
+/// W4A8 LRU cache (no caller-param mutation), rewrites tile_params to
+/// wei=s8 + dynamic_quant=false, then flows through the existing sym-quant
+/// per-tile path (reorderAndCacheWeightsSymQuant → aocl_gemm_s8s8s32obf16).
+/// Prepack warms both the plain-s8 cache and the sym-quant per-tile blocked
+/// cache so runtime calls get cache HITs on both levels.
 
 #include <gtest/gtest.h>
 
@@ -61,7 +61,8 @@ namespace {
 /// reference matmul.
 void run_w4a8_per_group_scenario(const std::string &label,
                                  const std::vector<int> &rows, uint64_t K,
-                                 uint64_t N, uint64_t group_size) {
+                                 uint64_t N, uint64_t group_size,
+                                 float src_range = 2.0f) {
   ASSERT_EQ(K % group_size,
             0u) << label << ": K must be a multiple of group_size";
   const uint64_t G = K / group_size;
@@ -96,7 +97,7 @@ void run_w4a8_per_group_scenario(const std::string &label,
 
     // ── bf16 source [Mbuf, K] with per-token {Mbuf, 1} dynamic scale ──
     auto src_scale = tf.zero_tensor({Mbuf, 1u}, scale_dt);
-    inp[e] = tf.uniform_dist_tensor({Mbuf, K}, data_type_t::bf16, 2.0,
+    inp[e] = tf.uniform_dist_tensor({Mbuf, K}, data_type_t::bf16, src_range,
                                     false, src_scale, tensor_t());
 
     bias[e] = tf.uniform_dist_tensor({1u, N}, out_dt, 2.0);
@@ -205,7 +206,7 @@ void run_w4a8_cross_algo_scenario(const std::string &label,
     st = group_matmul_kernel_test(inp, wt, bias, out_a3, algo, 1.0f, 0.0f,
                                   nullptr, nullptr, {}, active);
   }
-  ASSERT_EQ(st, status_t::success) << label << ": ALGO 3 fallback failed";
+  ASSERT_EQ(st, status_t::success) << label << ": ALGO 3 failed";
 
   {
     moe_test_utils::AlgoEnvGuard g(4);
@@ -387,13 +388,12 @@ TEST(GroupMatmulW4A8PerGroup, CrossAlgoQwen3ManyOpsBF16) {
 }
 
 // ═══════════════════════════════════════════════════════════════════════
-// ALGO 3 (N-tile) fallback validation
+// ALGO 3 (N-tile) direct validation
 // ═══════════════════════════════════════════════════════════════════════
 
-// W4A8 on ALGO 3 must fall back to ALGO 1 and still produce correct output.
-// Pin ALGO 3 and validate the prepack invocation sees the call (the W4A8
-// cache is warmed by prepack), even though execution routes to ALGO 1.
-TEST(GroupMatmulW4A8PerGroup, Algo3FallbackToAlgo1BF16) {
+// W4A8 on ALGO 3 now runs natively (s4→s8 via W4A8 LRU + per-tile
+// sym-quant reorder).  Pin ALGO 3 and verify prepack runs + output matches.
+TEST(GroupMatmulW4A8PerGroup, Algo3DirectBF16) {
   namespace prepack = zendnnl::lowoha::matmul::group_matmul_prepack;
   moe_test_utils::AlgoEnvGuard              algo3(3);
   moe_test_utils::LastInvocationCaptureGuard prepack_capture;
@@ -404,17 +404,21 @@ TEST(GroupMatmulW4A8PerGroup, Algo3FallbackToAlgo1BF16) {
   for (int e : {
          1, 3, 5, 8, 11, 14
        }) rows[e] = 32;
-  run_w4a8_per_group_scenario("15/6 algo3 fallback bf16", rows, /*K=*/128,
+  run_w4a8_per_group_scenario("15/6 algo3 direct bf16", rows, /*K=*/128,
                               /*N=*/64, /*group_size=*/32);
 
   auto stats = prepack::test_api::get_last_invocation_stats();
   ASSERT_TRUE(stats.valid)
-      << "prepack must run for the W4A8 per-group call even when ALGO 3 "
-      "falls back to ALGO 1";
+      << "prepack must run for the W4A8 per-group call on ALGO 3";
+  EXPECT_EQ(stats.scheduling_algo, 3)
+      << "W4A8 per-group + ALGO 3 must route to flat_n_tile (N-tile), "
+         "not fall back to ALGO 1 sequential_experts";
+  EXPECT_GT(stats.aocl.total_attempted, 0)
+      << "ALGO 3 W4A8 prepack must warm at least one AOCL entry";
 }
 
-// Cross-algo comparison: ALGO 1 and ALGO 3 (fallback) must produce identical
-// output for the same W4A8 input.
+// Cross-algo comparison: ALGO 1 and ALGO 3 must produce identical
+// output for the same W4A8 input (ALGO 3 now runs natively, not fallback).
 TEST(GroupMatmulW4A8PerGroup, Algo3MatchesAlgo1BF16) {
   const int E = 15;
   const uint64_t K = 128, N = 64, group_size = 32;
@@ -467,7 +471,7 @@ TEST(GroupMatmulW4A8PerGroup, Algo3MatchesAlgo1BF16) {
     s = group_matmul_kernel_test(inp, wt, bias, out_a3, algo, 1.0f, 0.0f,
                                  nullptr, nullptr, {}, active);
   }
-  ASSERT_EQ(s, status_t::success) << "ALGO 3 (fallback) failed";
+  ASSERT_EQ(s, status_t::success) << "ALGO 3 failed";
 
   const float abs_tol = 128.0f * epsilon_bf16;
   for (int e = 0; e < E; ++e) {
@@ -478,9 +482,23 @@ TEST(GroupMatmulW4A8PerGroup, Algo3MatchesAlgo1BF16) {
     compare_tensor_2D_matrix(out_a3[e], out_a1[e],
                              static_cast<uint64_t>(rows[e]), N, K,
                              rtol_bf16, abs_tol, ok, false, 1.0f, true);
-    EXPECT_TRUE(ok) << "ALGO 3 vs ALGO 1 mismatch on expert " << e
-                    << " — fallback should produce identical output";
+    EXPECT_TRUE(ok) << "ALGO 3 vs ALGO 1 mismatch on expert " << e;
   }
+}
+
+// ALGO 3 decode test: M=1 per expert (typical MoE decode, N-tile dominant).
+TEST(GroupMatmulW4A8PerGroup, Algo3DecodeM1BF16) {
+  moe_test_utils::AlgoEnvGuard algo3(3);
+  std::vector<int> rows(8, 1);
+  run_w4a8_per_group_scenario("algo3 decode M1", rows, 256, 128, 64);
+}
+
+// ALGO 3 with larger shapes (Qwen3-like).
+TEST(GroupMatmulW4A8PerGroup, Algo3Qwen3DecodeBF16) {
+  moe_test_utils::AlgoEnvGuard algo3(3);
+  std::vector<int> rows(8, 0);
+  for (int e : {0, 2, 4, 7}) rows[e] = 7;
+  run_w4a8_per_group_scenario("algo3 qwen3 decode", rows, 4096, 4096, 128);
 }
 
 // ═══════════════════════════════════════════════════════════════════════
@@ -513,3 +531,309 @@ TEST(GroupMatmulW4A8PerGroup, PrepackWarmsAllExpertsBF16) {
       "6 routed ones) to eliminate first-fire reorder spikes on "
       "rotating-experts MoE patterns";
 }
+
+// ═══════════════════════════════════════════════════════════════════════
+// Wide dynamic range (stress dynamic quantization clipping)
+// ═══════════════════════════════════════════════════════════════════════
+
+// Source range 25.0 — exercises the dynamic bf16→s8 quantization with large
+// activations that stress scale computation and potential clipping.
+TEST(GroupMatmulW4A8PerGroup, WideRangeSrcBF16) {
+  std::vector<int> rows(8, 0);
+  for (int e : {0, 2, 4, 7}) rows[e] = 7;
+  run_w4a8_per_group_scenario("wide src range", rows, 4096, 4096, 128,
+                              /*src_range=*/25.0f);
+}
+
+// Source range 20.0 — exercises the dynamic bf16→s8 quantization with larger
+// activations that stress scale computation (typical of layer-norm outputs
+// with outlier channels).
+TEST(GroupMatmulW4A8PerGroup, ExtremeRangeSrcBF16) {
+  std::vector<int> rows(15, 0);
+  for (int e : {1, 3, 5, 8, 11, 14}) rows[e] = 16;
+  run_w4a8_per_group_scenario("extreme src range", rows, 256, 128, 64,
+                              /*src_range=*/20.0f);
+}
+
+// ═══════════════════════════════════════════════════════════════════════
+// Fused MoE W4A8: ALGO 3 vs ALGO 1 accuracy on the full
+//   Op1(gate+up) → silu_and_mul → Op2(down_proj) pipeline
+// ═══════════════════════════════════════════════════════════════════════
+
+// Reproduces the vLLM accuracy failure where ALGO 3's grouped DQ
+// pre-pass stored Op2's per-token src_scale in the hoisted state
+// rather than in params_down[e], leaving params_down[e].src_scale.buff
+// null.  The test drives the raw group_matmul_direct API (not the
+// tensor_factory_t wrapper) so it exercises the exact same fused-MoE
+// code path as the vLLM/Zentorch production caller.
+//
+// Shape: 8 experts, M=128, K=2048, N_gate_up=1024, dim=512,
+//        K_down=512, N_down=2048, group_size=128.
+TEST(GroupMatmulW4A8PerGroup, FusedMoeAlgo3VsAlgo1BF16) {
+  using namespace zendnnl::lowoha::matmul;
+  using bfloat16_t = zendnnl::common::bfloat16_t;
+
+  constexpr int E             = 8;
+  constexpr int M             = 128;
+  constexpr int K             = 2048;
+  constexpr int N_GATE_UP     = 1024;
+  constexpr int DIM           = N_GATE_UP / 2;   // 512
+  constexpr int K_DOWN        = DIM;              // 512
+  constexpr int N_DOWN        = 2048;
+  constexpr int GROUP_SIZE    = 128;
+  constexpr int NUM_GROUPS_W1 = K / GROUP_SIZE;       // 16
+  constexpr int NUM_GROUPS_W2 = K_DOWN / GROUP_SIZE;  // 4
+
+  reset_grp_matmul_caches();
+
+  // ── Allocate per-expert buffers ──────────────────────────────────────
+  std::vector<std::vector<uint16_t>> src_buf(E);
+  std::vector<std::vector<int8_t>>   wei_gu_packed(E);
+  std::vector<std::vector<uint16_t>> wei_gu_scale(E);
+  std::vector<std::vector<uint16_t>> src_scale_buf(E);
+
+  std::vector<std::vector<int8_t>>   wei_down_packed(E);
+  std::vector<std::vector<uint16_t>> wei_down_scale(E);
+
+  auto f32_to_bf16 = [](float v) -> uint16_t {
+    return static_cast<uint16_t>(bfloat16_t::f32_to_bf16_val(v));
+  };
+  auto bf16_to_f32 = [](uint16_t bits) -> float {
+    return static_cast<float>(bfloat16_t::from_bits(bits));
+  };
+
+  std::mt19937 rng(42);
+  auto rand_bf16 = [&]() -> uint16_t {
+    return f32_to_bf16(
+        std::uniform_real_distribution<float>(-1.0f, 1.0f)(rng));
+  };
+  auto rand_s4_byte = [&]() -> int8_t {
+    int lo = std::uniform_int_distribution<int>(-7, 7)(rng);
+    int hi = std::uniform_int_distribution<int>(-7, 7)(rng);
+    return static_cast<int8_t>((hi & 0x0F) << 4 | (lo & 0x0F));
+  };
+
+  for (int i = 0; i < E; ++i) {
+    // bf16 source [M, K]
+    src_buf[i].resize(static_cast<size_t>(M) * K);
+    for (auto &v : src_buf[i]) v = rand_bf16();
+
+    // s4 gate+up weight — packed [N_GATE_UP, K] (transB=T → stored [N,K])
+    wei_gu_packed[i].resize(static_cast<size_t>((N_GATE_UP * K + 1) / 2));
+    for (auto &v : wei_gu_packed[i]) v = rand_s4_byte();
+
+    // per-group weight scale {NUM_GROUPS_W1, N_GATE_UP}
+    wei_gu_scale[i].resize(static_cast<size_t>(NUM_GROUPS_W1) * N_GATE_UP);
+    for (auto &v : wei_gu_scale[i])
+      v = f32_to_bf16(
+            std::uniform_real_distribution<float>(0.5f, 2.0f)(rng));
+
+    // per-token src_scale {M, 1} — zero-initialized; runtime computes
+    src_scale_buf[i].assign(static_cast<size_t>(M), 0u);
+
+    // s4 down_proj weight — packed [N_DOWN, K_DOWN] (transB=T)
+    wei_down_packed[i].resize(static_cast<size_t>((N_DOWN * K_DOWN + 1) / 2));
+    for (auto &v : wei_down_packed[i]) v = rand_s4_byte();
+
+    // per-group down weight scale {NUM_GROUPS_W2, N_DOWN}
+    wei_down_scale[i].resize(static_cast<size_t>(NUM_GROUPS_W2) * N_DOWN);
+    for (auto &v : wei_down_scale[i])
+      v = f32_to_bf16(
+            std::uniform_real_distribution<float>(0.5f, 2.0f)(rng));
+  }
+
+  // ── Build API vectors (common to both ALGO runs) ─────────────────────
+  std::vector<char>  layouts(E, 'r');
+  std::vector<bool>  transAs(E, false);
+  std::vector<bool>  transBs(E, true);
+  std::vector<float> alphas(E, 1.f), betas(E, 0.f);
+  std::vector<bool>  wconst(E, true);
+
+  std::vector<int> Ms(E, M), Ns(E, N_GATE_UP), Ks(E, K);
+  std::vector<int> ldas(E, K);
+  std::vector<int> ldbs(E, K);   // transB=T → ldb = K
+
+  std::vector<const void *> sp(E), wp(E);
+  std::vector<const void *> bp(E, nullptr);
+  for (int i = 0; i < E; ++i) {
+    sp[i] = src_buf[i].data();
+    wp[i] = wei_gu_packed[i].data();
+  }
+
+  // Internal-alloc: dst all nullptr, ldc zeros
+  std::vector<void *> dp(E, nullptr);
+  std::vector<int>    ldcs(E, 0);
+
+  // matmul_params: W4A8 dynamic quant
+  auto build_params = [&]() {
+    std::vector<matmul_params> params(E);
+    for (int i = 0; i < E; ++i) {
+      params[i].dtypes.src     = data_type_t::bf16;
+      params[i].dtypes.wei     = data_type_t::s4;
+      params[i].dtypes.dst     = data_type_t::bf16;
+      params[i].dtypes.compute = data_type_t::s8;
+      params[i].dynamic_quant  = true;
+
+      params[i].quant_params.src_scale.buff = src_scale_buf[i].data();
+      params[i].quant_params.src_scale.dt   = data_type_t::bf16;
+      params[i].quant_params.src_scale.dims = {M, 1};
+
+      params[i].quant_params.wei_scale.buff = wei_gu_scale[i].data();
+      params[i].quant_params.wei_scale.dt   = data_type_t::bf16;
+      params[i].quant_params.wei_scale.dims = {NUM_GROUPS_W1, N_GATE_UP};
+    }
+    return params;
+  };
+
+  // Gated activation: silu_and_mul
+  grp_matmul_gated_act_params act{};
+  act.act = grp_matmul_gated_act_t::silu_and_mul;
+
+  // Fused MoE params (Op2 = down_proj)
+  auto build_fused = [&](std::vector<void *> &dst_down_vec,
+                         std::vector<int>    &ldc_down_vec) {
+    grp_matmul_fused_moe_params fused{};
+    fused.N_down.resize(E, N_DOWN);
+    fused.ldb_down.resize(E, K_DOWN);   // transB=T → ldb_down = K_down
+    fused.bias_down.resize(E, nullptr);
+    fused.down_weight.resize(E);
+    fused.down_scale.resize(E);
+    for (int i = 0; i < E; ++i) {
+      fused.down_weight[i] = wei_down_packed[i].data();
+
+      grp_matmul_fused_moe_params::down_weight_quant_t ds;
+      ds.buff = wei_down_scale[i].data();
+      ds.dt   = data_type_t::bf16;
+      ds.dims = {NUM_GROUPS_W2, N_DOWN};
+      fused.down_scale[i] = ds;
+    }
+    // Caller-allocated Op2 output so we can compare across algo runs
+    fused.dst_down = dst_down_vec;
+    fused.ldc_down = ldc_down_vec;
+    return fused;
+  };
+
+  // ── Run ALGO 1 ───────────────────────────────────────────────────────
+  std::vector<std::vector<uint16_t>> out_a1_buf(E);
+  std::vector<void *> dst_a1(E);
+  std::vector<int>    ldc_a1(E, N_DOWN);
+  for (int i = 0; i < E; ++i) {
+    out_a1_buf[i].assign(static_cast<size_t>(M) * N_DOWN, 0u);
+    dst_a1[i] = out_a1_buf[i].data();
+  }
+
+  {
+    moe_test_utils::AlgoEnvGuard g(1);
+    reset_grp_matmul_caches();
+    auto pf    = build_params();
+    auto fused = build_fused(dst_a1, ldc_a1);
+    status_t s = group_matmul_direct(
+                   layouts, transAs, transBs, Ms, Ns, Ks, alphas,
+                   sp, ldas, wp, ldbs, bp, betas, dp, ldcs,
+                   wconst, pf, nullptr, &act, &fused);
+    ASSERT_EQ(s, status_t::success)
+        << "Fused MoE W4A8 ALGO 1 failed";
+  }
+
+  // ── Run ALGO 3 ───────────────────────────────────────────────────────
+  std::vector<std::vector<uint16_t>> out_a3_buf(E);
+  std::vector<void *> dst_a3(E);
+  std::vector<int>    ldc_a3(E, N_DOWN);
+  for (int i = 0; i < E; ++i) {
+    out_a3_buf[i].assign(static_cast<size_t>(M) * N_DOWN, 0u);
+    dst_a3[i] = out_a3_buf[i].data();
+  }
+
+  {
+    moe_test_utils::AlgoEnvGuard g(3);
+    reset_grp_matmul_caches();
+    auto pf    = build_params();
+    auto fused = build_fused(dst_a3, ldc_a3);
+    status_t s = group_matmul_direct(
+                   layouts, transAs, transBs, Ms, Ns, Ks, alphas,
+                   sp, ldas, wp, ldbs, bp, betas, dp, ldcs,
+                   wconst, pf, nullptr, &act, &fused);
+    ASSERT_EQ(s, status_t::success)
+        << "Fused MoE W4A8 ALGO 3 failed";
+  }
+
+  // ── Compare Op2 output: ALGO 3 vs ALGO 1 ────────────────────────────
+  // Fused W4A8 tolerance: the full pipeline (Op1 W4A8 quant → silu_and_mul
+  // nonlinear activation → Op2 W4A8 quant) amplifies per-element noise
+  // multiplicatively.  ALGO 1 (sequential full-N) and ALGO 3 (N-tile) use
+  // different AOCL blocking layouts, producing slightly different s32→bf16
+  // rounding.  Use 50% relative + generous absolute floor — this is a
+  // "same ballpark, no garbage" gate, not a precision-tracking bound.
+  const float fused_rel = 0.50f;
+  const float fused_abs = 65536.0f;
+  for (int e = 0; e < E; ++e) {
+    bool expert_ok = true;
+    for (int r = 0; r < M && expert_ok; ++r) {
+      for (int c = 0; c < N_DOWN && expert_ok; ++c) {
+        const size_t idx = static_cast<size_t>(r) * N_DOWN + c;
+        const float v1 = bf16_to_f32(out_a1_buf[e][idx]);
+        const float v3 = bf16_to_f32(out_a3_buf[e][idx]);
+        const float err = std::fabs(v3 - v1);
+        const float tol = std::fabs(v1) * fused_rel + fused_abs;
+        if (err > tol) {
+          EXPECT_LE(err, tol)
+              << "ALGO 3 vs ALGO 1 Op2 output mismatch on expert " << e
+              << " row=" << r << " col=" << c
+              << " (algo1=" << v1 << " algo3=" << v3
+              << " err=" << err << " tol=" << tol << ")";
+          expert_ok = false;
+        }
+      }
+    }
+  }
+}
+
+// ═══════════════════════════════════════════════════════════════════════
+// Prepack OFF coverage (validates dispatch-level L1 path independently)
+// ═══════════════════════════════════════════════════════════════════════
+
+// ALGO 3 with prepack disabled — validates that the dispatch-level
+// w4a8_populate_plain_s8_cache fills L1 and runtime per-tile L2 reorders
+// work without any prepack pre-warming.
+TEST(GroupMatmulW4A8PerGroup, Algo3PrepackOffBF16) {
+  moe_test_utils::AlgoEnvGuard algo3(3);
+  moe_test_utils::EnvVarGuard prepack_off("ZENDNNL_GRP_MATMUL_PREPACK", "0");
+  std::vector<int> rows(8, 0);
+  for (int e : {0, 2, 4, 7}) rows[e] = 7;
+  run_w4a8_per_group_scenario("algo3 prepack-off", rows, 4096, 4096, 128);
+}
+
+// ALGO 1 with prepack disabled — validates lazy L2 reorder inside
+// w4a8ReorderAndCacheWeightsAocl without prepack pre-warming.
+TEST(GroupMatmulW4A8PerGroup, Algo1PrepackOffBF16) {
+  moe_test_utils::AlgoEnvGuard algo1(1);
+  moe_test_utils::EnvVarGuard prepack_off("ZENDNNL_GRP_MATMUL_PREPACK", "0");
+  std::vector<int> rows(8, 0);
+  for (int e : {0, 2, 4, 7}) rows[e] = 7;
+  run_w4a8_per_group_scenario("algo1 prepack-off", rows, 4096, 4096, 128);
+}
+
+// ═══════════════════════════════════════════════════════════════════════
+// vLLM shape reproduction (triggers AOCL illegal-value edge case)
+// ═══════════════════════════════════════════════════════════════════════
+
+// Reproduces the Qwen3-30B-A3B vLLM deployment shape that triggers AOCL
+// "illegal value" on per-tile reorder.  K=2048, N=1024, group_size=128
+// produces n_tile=172 with stable=6 threads — the exact parameters that
+// hit the AOCL s8s8s32os32_sym_quant validation.
+TEST(GroupMatmulW4A8PerGroup, Algo3VllmQwen3ShapeBF16) {
+  moe_test_utils::AlgoEnvGuard algo3(3);
+  std::vector<int> rows(8, 0);
+  for (int e : {0, 1, 2, 3, 4, 5, 6, 7}) rows[e] = 4096;
+  run_w4a8_per_group_scenario("vllm qwen3 K2048 N1024", rows, 2048, 1024, 128);
+}
+
+// Same shape with ALGO 1 as a reference — if ALGO 1 passes but ALGO 3 fails,
+// the bug is in the per-tile N-tile path specifically.
+TEST(GroupMatmulW4A8PerGroup, Algo1VllmQwen3ShapeBF16) {
+  moe_test_utils::AlgoEnvGuard algo1(1);
+  std::vector<int> rows(8, 0);
+  for (int e : {0, 1, 2, 3, 4, 5, 6, 7}) rows[e] = 4096;
+  run_w4a8_per_group_scenario("vllm qwen3 algo1 K2048 N1024", rows, 2048, 1024, 128);
+}
+

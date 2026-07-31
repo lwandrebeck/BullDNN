@@ -1014,7 +1014,8 @@ void flat_n_tile(
   int num_threads,
   grp_matmul_gated_act_t fused_act = grp_matmul_gated_act_t::none,
   data_type_t act_dtype = data_type_t::none,
-  const char **gemm_mode_out = nullptr);
+  const char **gemm_mode_out = nullptr,
+  const std::vector<void *> *w4a8_s8_weights = nullptr);
 
 }  // namespace matmul
 }  // namespace lowoha

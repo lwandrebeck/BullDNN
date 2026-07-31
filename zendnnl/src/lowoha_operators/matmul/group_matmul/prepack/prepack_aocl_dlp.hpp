@@ -271,6 +271,31 @@ status_t warm_pack_all_aocl_dlp_experts_w4a8(
   int                              group_size,
   AoclDlpPackProbeStats           &stats);
 
+/// W4A8 per-N-tile warm-pack for ALGO 3.  Two-level caching:
+///   Plain cache: cvt_s4_to_s8 full weight → cached in the plain-s8 LRU
+///     (get_w4a8_plain_cache, keyed on original s4 ptr).  This buffer
+///     stays alive in the LRU.
+///   Blocked cache: per-tile reorderAndCacheWeightsSymQuant on column
+///     slices of the plain-s8 buffer → cached in sym-quant LRU.
+/// At runtime flat_n_tile looks up the plain cache (HIT), then each
+/// do_tile thread looks up the blocked cache (HIT).  Both levels are
+/// populated eagerly here.
+/// @param group_size  K-group size for sym-quant (K/G).  Must be > 0.
+status_t warm_pack_all_aocl_dlp_experts_n_tile_w4a8(
+  const std::vector<const void *> &weight,
+  const std::vector<int>          &K,
+  const std::vector<int>          &N,
+  const std::vector<int>          &ldb,
+  const std::vector<bool>         &transB,
+  const std::vector<bool>         &is_weights_const,
+  int                              total_count,
+  data_type_t                      wei_dtype,
+  int                              num_threads,
+  int                              stable,
+  int                              nr_align,
+  int                              group_size,
+  AoclDlpPackProbeStats           &stats);
+
 } // namespace aocl_dlp
 } // namespace group_matmul_prepack
 } // namespace matmul

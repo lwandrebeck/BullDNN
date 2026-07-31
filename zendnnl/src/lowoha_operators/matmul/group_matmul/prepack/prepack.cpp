@@ -655,6 +655,18 @@ inline aocl_dlp::AoclDlpPackProbeStats warm_aocl_n_tile_sym_quant(
   return st;
 }
 
+// W4A8 per-tile wrapper — two-level cache warm (W4A8 LRU + sym-quant LRU).
+// Used by ALGO 3 and cross-warm when the call is W4A8 per-group.
+inline aocl_dlp::AoclDlpPackProbeStats warm_aocl_n_tile_w4a8(
+  const PrepackParams &p, int stable, int nr_align_eff) {
+  aocl_dlp::AoclDlpPackProbeStats st;
+  aocl_dlp::warm_pack_all_aocl_dlp_experts_n_tile_w4a8(
+    *p.weight, *p.K, *p.N, *p.ldb, *p.transB, warm_iwc(p),
+    p.num_ops_total, p.wei_dtype,
+    p.num_threads, stable, nr_align_eff, p.w4a8_group_size, st);
+  return st;
+}
+
 // Predicate: is this an int8 AOCL-DLP sym-quant warm candidate?  The
 // AOCL `s8s8s32os32_sym_quant` reorder is selected by an s8 weight with
 // an s8/u8 compute dtype — the DQ-INT8 path whether the src arrives as
@@ -1571,6 +1583,9 @@ inline void cross_warm(const PrepackParams                  &p,
     // ALGO 3 → cross-warm the upcoming ALGO 1 prompt path's full-
     // weight AOCL reorder cache.  Family selection:
     //
+    //   * W4A8 family — `warm_aocl_w4a8(p)` warms the dedicated W4A8
+    //     LRU (s4→s8 + AOCL sym-quant blocked reorder); matches the
+    //     runtime `w4a8ReorderAndCacheWeightsAocl` cache key.
     //   * BF16 family (default) — `warm_aocl(p)` warms the standard
     //     bf16 AOCL DLP LRU; matches the runtime
     //     `aocl_reorder_bf16bf16f32of32` cache key.
@@ -1583,6 +1598,16 @@ inline void cross_warm(const PrepackParams                  &p,
     //     first post-CK ALGO 1 prompt call hits the warmed slot
     //     instead of paying the lazy reorder.  This brings int8
     //     decode -> prompt cross-warm to bf16 parity (Gap B).
+    if (w4a8_aocl_warm_candidate(p)) {
+      if (!primary_did_aocl_fw) {
+        const auto st_extra = warm_aocl_w4a8(p, p.w4a8_group_size);
+        st_aocl.total_attempted += st_extra.total_attempted;
+        st_aocl.packed_ok       += st_extra.packed_ok;
+        st_aocl.skipped_invalid += st_extra.skipped_invalid;
+        out_regime = CrossWarmRegime::aocl_full_weight_sym_quant;
+      }
+      return;
+    }
     if (ck_eligible_int8(p)) {
       out_regime = CrossWarmRegime::aocl_full_weight_sym_quant;
       const auto st_extra = warm_aocl_sym_quant(p);
@@ -1650,18 +1675,25 @@ inline void cross_warm(const PrepackParams                  &p,
     const int stable          = aocl_stable_n_thr(p.num_threads, max_N);
     const int max_align_slots = std::max(1, max_N / nr_align_cross);
     if (max_N > 0 && stable > 0 && stable <= max_align_slots) {
-      // M5 — DQ-INT8 (CK off): the upcoming ALGO 3 decode falls to the
-      // AOCL DLP sym-quant reorder per N-tile, so warm the sym-quant
-      // per-tile LRU; bf16 otherwise.
-      const bool int8_dlp = int8_aocl_warm_candidate(p);
-      const auto st_extra = int8_dlp
-                            ? warm_aocl_n_tile_sym_quant(p, stable, nr_align_cross)
-                            : warm_aocl_n_tile(p, stable, nr_align_cross);
-      st_aocl.total_attempted += st_extra.total_attempted;
-      st_aocl.packed_ok       += st_extra.packed_ok;
-      st_aocl.skipped_invalid += st_extra.skipped_invalid;
-      out_regime = int8_dlp ? CrossWarmRegime::aocl_per_tile_sym_quant
-                   : CrossWarmRegime::aocl_per_tile;
+      // M5 — pick the right per-tile warmer for the upcoming ALGO 3 decode:
+      //   W4A8 > DQ-INT8 > bf16.
+      if (w4a8_aocl_warm_candidate(p)) {
+        const auto st_extra = warm_aocl_n_tile_w4a8(p, stable, nr_align_cross);
+        st_aocl.total_attempted += st_extra.total_attempted;
+        st_aocl.packed_ok       += st_extra.packed_ok;
+        st_aocl.skipped_invalid += st_extra.skipped_invalid;
+        out_regime = CrossWarmRegime::aocl_per_tile_sym_quant;
+      } else {
+        const bool int8_dlp = int8_aocl_warm_candidate(p);
+        const auto st_extra = int8_dlp
+                              ? warm_aocl_n_tile_sym_quant(p, stable, nr_align_cross)
+                              : warm_aocl_n_tile(p, stable, nr_align_cross);
+        st_aocl.total_attempted += st_extra.total_attempted;
+        st_aocl.packed_ok       += st_extra.packed_ok;
+        st_aocl.skipped_invalid += st_extra.skipped_invalid;
+        out_regime = int8_dlp ? CrossWarmRegime::aocl_per_tile_sym_quant
+                     : CrossWarmRegime::aocl_per_tile;
+      }
     }
   }
 }
@@ -1888,11 +1920,12 @@ void prepack_for_algo_3(const PrepackParams &p) {
     const int max_align_slots = std::max(1, max_N / nr_align_eff);
     if (max_N > 0 && stable > 0 && stable <= max_align_slots) {
       // Strict-stable ManyExperts: per-tile decomposition matches
-      // the runtime cache key.  M2 — for DQ-INT8 (CK off / ineligible,
-      // gated by `!eligible_ck` above) decode falls to the AOCL DLP
-      // sym-quant reorder per N-tile, so warm the sym-quant per-tile
-      // LRU, not the bf16 one.
-      if (int8_aocl_warm_candidate(p)) {
+      // the runtime cache key.
+      if (w4a8_aocl_warm_candidate(p)) {
+        st_aocl = warm_aocl_n_tile_w4a8(p, stable, nr_align_eff);
+        primary_label = "aocl_per_tile_w4a8";
+      }
+      else if (int8_aocl_warm_candidate(p)) {
         st_aocl = warm_aocl_n_tile_sym_quant(p, stable, nr_align_eff);
         primary_label = "aocl_per_tile_sym_quant";
       }
@@ -1904,8 +1937,12 @@ void prepack_for_algo_3(const PrepackParams &p) {
     else {
       // Narrow-N escape (`stable * nr_align > max_N`): planner
       // routes to Sequential which uses the full-weight key.  M3 —
-      // sym-quant full-weight for DQ-INT8, bf16 otherwise.
-      if (int8_aocl_warm_candidate(p)) {
+      // W4A8 full-weight, sym-quant full-weight for DQ-INT8, bf16 otherwise.
+      if (w4a8_aocl_warm_candidate(p)) {
+        st_aocl = warm_aocl_w4a8(p, p.w4a8_group_size);
+        primary_label = "aocl_full_weight_w4a8";
+      }
+      else if (int8_aocl_warm_candidate(p)) {
         st_aocl = warm_aocl_sym_quant(p);
         primary_label = "aocl_full_weight_sym_quant";
       }

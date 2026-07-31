@@ -128,6 +128,34 @@ void cvt_s4_to_s8(const int8_t *weights, int8_t *wei_s8, int k, int n,
 
 /** Clear AOCL matmul weight caches and zero-point compensation LRU cache. */
 void clear_aocl_matmul_weight_caches();
+/// W4A8 s4→s8 expansion + cache (plain row-major, NO blocked reorder).
+/// Returns a pointer to a plain [k, n] s8 buffer stored in a dedicated
+/// process-lifetime LRU.  The pointer is stable across calls for the same
+/// key (original s4 weight pointer + shape).  Used by the ALGO 3 N-tile
+/// path which needs a column-sliceable s8 buffer for per-tile reordering.
+/// @param[out] s8_plain  Set to the cached plain s8 buffer on success,
+///                       nullptr on failure.
+void w4a8_cvt_and_cache_plain_s8(Key_matmul key, const int8_t *weights,
+                            void *&s8_plain, int k, int n, int ldb,
+                            bool is_transposed);
+
+/// High-level plain-s8 materialization: for every W4A8 expert in the group,
+/// populates the plain-s8 LRU (cvt_s4_to_s8 cached) and fills
+/// `w4a8_s8_out[e]` with the cached s8 pointer.  Iterates ALL experts
+/// (including M[e]==0 cold experts) so rotating MoE doesn't pay a
+/// first-fire conversion spike.  Does NOT mutate `weight[]` or `params`.
+/// @param[out] w4a8_s8_out  Resized to num_ops; non-W4A8 slots are nullptr.
+/// @param[out] any_w4a8     Set to true if at least one expert was W4A8.
+void w4a8_populate_plain_s8_cache(
+    const std::vector<const void *> &weight,
+    const std::vector<int> &K,
+    const std::vector<int> &N,
+    const std::vector<int> &ldb,
+    const std::vector<bool> &transB,
+    const std::vector<matmul_params> &params,
+    int num_ops,
+    std::vector<void *> &w4a8_s8_out,
+    bool &any_w4a8);
 
 /// W4A8 weight reorder + cache: converts s4→s8 then packs through the
 /// AOCL sym-quant s8s8s32os32 path into the dedicated W4A8 LRU cache.
