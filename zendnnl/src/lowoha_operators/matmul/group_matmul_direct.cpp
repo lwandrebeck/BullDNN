@@ -893,11 +893,17 @@ status_t group_matmul_direct(const std::vector<char> &layout,
   // Anything else (mixed algos, non-AOCL F16 kernels) falls back to
   // the F32 accum default so a stray non-AOCL expert can't poison the
   // reference comparison for the whole group.
+  // `is_f16_op` gates the AVX-512-FP16 ISA check, so it must reflect
+  // only the operands whose math actually needs that ISA: the GEMM
+  // compute inputs/outputs (src / wei / dst).  Bias is intentionally
+  // excluded — an f16 bias is widened to f32 in-kernel via VCVTPH2PS
+  // (available with AVX-512F, NOT the AVX-512-FP16 ISA), so a bf16-compute
+  // call carrying an f16 bias runs correctly on a non-FP16 host.  Including
+  // bias here would falsely refuse that call with isa_unsupported.
   auto is_f16_op = [](const matmul_params &p) -> bool {
-    return p.dtypes.src  == data_type_t::f16 ||
-    p.dtypes.wei  == data_type_t::f16 ||
-    p.dtypes.dst  == data_type_t::f16 ||
-    p.dtypes.bias == data_type_t::f16;
+    return p.dtypes.src == data_type_t::f16 ||
+    p.dtypes.wei == data_type_t::f16 ||
+    p.dtypes.dst == data_type_t::f16;
   };
   auto is_aocl_dlp = [](const matmul_params &p) -> bool {
     return p.lowoha_algo == matmul_algo_t::aocl_dlp ||
