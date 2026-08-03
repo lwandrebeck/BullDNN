@@ -39,7 +39,11 @@ platform_info_t::platform_info_t()
     , cpu_uarch {0} {}
 
 status_t platform_info_t::populate() {
-    X86Cpu cpu {0};
+    // AU_CURRENT_CPU_NUM queries the core this thread is already running on.
+    // Passing an explicit core number makes X86Cpu sched_setaffinity() the
+    // calling thread onto that core, which perturbs the host application's
+    // thread placement and fails outright when the process cpuset excludes it.
+    X86Cpu cpu {AU_CURRENT_CPU_NUM};
 
     auto v_info = cpu.getVendorInfo();
     cpu_vendor = static_cast<uint32_t>(v_info.m_mfg);
