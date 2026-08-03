@@ -1,5 +1,5 @@
 /********************************************************************************
-# * Copyright (c) 2023-2025 Advanced Micro Devices, Inc. All rights reserved.
+# * Copyright (c) 2023-2026 Advanced Micro Devices, Inc. All rights reserved.
 # *
 # * Licensed under the Apache License, Version 2.0 (the "License");
 # * you may not use this file except in compliance with the License.
@@ -17,9 +17,9 @@
 #define _COMPARE_OPERATOR_HPP_
 
 #include "common/zendnnl_global.hpp"
-#include "operators/common/operator.hpp"
 #include "compare_context.hpp"
 #include "compare_operator_impl.hpp"
+#include "operators/common/operator.hpp"
 
 namespace zendnnl {
 namespace ops {
@@ -28,22 +28,22 @@ namespace ops {
  *  @brief Implements compare operator.
  *
  */
-class compare_operator_t final : public operator_t<compare_operator_t,
-                                                    compare_context_t,
-                                                    compare_impl_t> {
+class compare_operator_t final
+    : public operator_t<compare_operator_t, compare_context_t, compare_impl_t> {
 public:
-  /** @brief Self type **/
-  using self_type = compare_operator_t;
-  /** @brief Parent type **/
-  using parent_type = operator_t<compare_operator_t, compare_context_t, compare_impl_t>;
-  /** @brief context type **/
-  using context_type = parent_type::context_type;
-  /** @brief impl type **/
-  using impl_type = parent_type::impl_type;
-  /** @brief impl pointer type **/
-  using impl_sptr_type = parent_type::impl_sptr_type;
+    /** @brief Self type **/
+    using self_type = compare_operator_t;
+    /** @brief Parent type **/
+    using parent_type
+            = operator_t<compare_operator_t, compare_context_t, compare_impl_t>;
+    /** @brief context type **/
+    using context_type = parent_type::context_type;
+    /** @brief impl type **/
+    using impl_type = parent_type::impl_type;
+    /** @brief impl pointer type **/
+    using impl_sptr_type = parent_type::impl_sptr_type;
 
-  compare_stats_t get_compare_stats() { return impl->get_compare_stats(); }
+    compare_stats_t get_compare_stats() { return impl->get_compare_stats(); }
 };
 } //namespace ops
 

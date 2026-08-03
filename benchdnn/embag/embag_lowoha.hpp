@@ -17,8 +17,8 @@
 #define _EMBAG_LOWOHA_HPP_
 
 #include "benchdnn.hpp"
-#include "embag_utils.hpp"
 #include "embag_tensor_factory.hpp"
+#include "embag_utils.hpp"
 
 // Include LOWOHA embedding bag API
 using zendnnl::lowoha::embag::embag_data_types_t;
@@ -42,8 +42,8 @@ namespace embag {
  * @return int Returns OK (0) on success, NOT_OK (1) on failure.
  */
 int embag_lowoha_benchdnn(std::vector<EmbagConfig> configs,
-                          std::vector<std::pair<EmbagConfig, TimingStats>> &embag_results,
-                          const global_options &options, size_t cache_size);
+        std::vector<std::pair<EmbagConfig, TimingStats>> &embag_results,
+        const global_options &options, size_t cache_size);
 
 } // namespace embag
 } // namespace benchdnn

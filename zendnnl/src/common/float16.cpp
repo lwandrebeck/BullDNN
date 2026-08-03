@@ -23,39 +23,36 @@ namespace common {
 
 // IEEE 754 half-precision (float16) constants
 // Layout: 1 sign | 5 exponent (bias 15) | 10 mantissa
-static constexpr uint16_t F16_SIGN_MASK     = 0x8000;
-static constexpr uint16_t F16_EXP_MASK      = 0x7C00;
-static constexpr uint16_t F16_MANT_MASK     = 0x03FF;
-static constexpr int      F16_EXP_BIAS      = 15;
-static constexpr int      F16_EXP_MAX       = 31;     // all-ones exponent
-static constexpr int      F16_MANT_BITS     = 10;
+static constexpr uint16_t F16_SIGN_MASK = 0x8000;
+static constexpr uint16_t F16_EXP_MASK = 0x7C00;
+static constexpr uint16_t F16_MANT_MASK = 0x03FF;
+static constexpr int F16_EXP_BIAS = 15;
+static constexpr int F16_EXP_MAX = 31; // all-ones exponent
+static constexpr int F16_MANT_BITS = 10;
 
 // IEEE 754 single-precision (float32) constants
-static constexpr uint32_t F32_SIGN_MASK     = 0x80000000u;
-static constexpr uint32_t F32_EXP_MASK      = 0x7F800000u;
-static constexpr uint32_t F32_MANT_MASK     = 0x007FFFFFu;
-static constexpr int      F32_EXP_BIAS      = 127;
-static constexpr int      F32_MANT_BITS     = 23;
+static constexpr uint32_t F32_SIGN_MASK = 0x80000000u;
+static constexpr uint32_t F32_EXP_MASK = 0x7F800000u;
+static constexpr uint32_t F32_MANT_MASK = 0x007FFFFFu;
+static constexpr int F32_EXP_BIAS = 127;
+static constexpr int F32_MANT_BITS = 23;
 
 // Derived constants
-static constexpr int      MANT_SHIFT        = F32_MANT_BITS -
-    F16_MANT_BITS; // 13
-static constexpr int      EXP_REBIAS        = F32_EXP_BIAS -
-    F16_EXP_BIAS;  // 112
+static constexpr int MANT_SHIFT = F32_MANT_BITS - F16_MANT_BITS; // 13
+static constexpr int EXP_REBIAS = F32_EXP_BIAS - F16_EXP_BIAS; // 112
 
 //===----------------------------------------------------------------------===//
 // Constructors
 //===----------------------------------------------------------------------===//
 
-float16_t::float16_t() : raw_bits_{0} {
-}
+float16_t::float16_t() : raw_bits_ {0} {}
 
-float16_t::float16_t(float f) : raw_bits_{0} {
-  raw_bits_ = f32_to_f16_val(f);
+float16_t::float16_t(float f) : raw_bits_ {0} {
+    raw_bits_ = f32_to_f16_val(f);
 }
 
 float16_t &float16_t::operator=(float f) {
-  return (*this) = float16_t(f);
+    return (*this) = float16_t(f);
 }
 
 //===----------------------------------------------------------------------===//
@@ -63,11 +60,11 @@ float16_t &float16_t::operator=(float f) {
 //===----------------------------------------------------------------------===//
 
 float16_t::operator float() const {
-  return f16_to_f32_val(raw_bits_);
+    return f16_to_f32_val(raw_bits_);
 }
 
 float16_t::operator int() const {
-  return int(f16_to_f32_val(raw_bits_));
+    return int(f16_to_f32_val(raw_bits_));
 }
 
 //===----------------------------------------------------------------------===//
@@ -75,182 +72,171 @@ float16_t::operator int() const {
 //===----------------------------------------------------------------------===//
 
 float float16_t::f16_to_f32_val(uint16_t f16_val) {
-  const uint16_t sign = (f16_val & F16_SIGN_MASK);
-  const uint16_t exp  = (f16_val & F16_EXP_MASK) >> F16_MANT_BITS;
-  const uint16_t mant = (f16_val & F16_MANT_MASK);
+    const uint16_t sign = (f16_val & F16_SIGN_MASK);
+    const uint16_t exp = (f16_val & F16_EXP_MASK) >> F16_MANT_BITS;
+    const uint16_t mant = (f16_val & F16_MANT_MASK);
 
-  uint32_t f32_bits = 0;
+    uint32_t f32_bits = 0;
 
-  if (exp == 0) {
-    if (mant == 0) {
-      // +-Zero: preserve sign
-      f32_bits = static_cast<uint32_t>(sign) << 16;
+    if (exp == 0) {
+        if (mant == 0) {
+            // +-Zero: preserve sign
+            f32_bits = static_cast<uint32_t>(sign) << 16;
+        } else {
+            // Subnormal: value = (-1)^sign * 2^(-14) * (mant / 1024)
+            // Normalize by shifting mantissa until the implicit 1 appears
+            float value = static_cast<float>(mant) / (1 << F16_MANT_BITS);
+            value *= (1.0f / (1 << (F16_EXP_BIAS - 1))); // * 2^(-14)
+            if (sign) { value = -value; }
+            std::memcpy(&f32_bits, &value, sizeof(float));
+        }
+    } else if (exp == F16_EXP_MAX) {
+        // Infinity or NaN
+        f32_bits = (static_cast<uint32_t>(sign) << 16) | F32_EXP_MASK
+                | (static_cast<uint32_t>(mant) << MANT_SHIFT);
+        if (mant != 0) {
+            // Force quiet NaN (set MSB of mantissa)
+            f32_bits |= (1u << (F32_MANT_BITS - 1));
+        }
+    } else {
+        // Normal number: rebias exponent
+        uint32_t f32_exp = static_cast<uint32_t>(exp) + EXP_REBIAS;
+        uint32_t f32_mant = static_cast<uint32_t>(mant) << MANT_SHIFT;
+        f32_bits = (static_cast<uint32_t>(sign) << 16)
+                | (f32_exp << F32_MANT_BITS) | f32_mant;
     }
-    else {
-      // Subnormal: value = (-1)^sign * 2^(-14) * (mant / 1024)
-      // Normalize by shifting mantissa until the implicit 1 appears
-      float value = static_cast<float>(mant) / (1 << F16_MANT_BITS);
-      value *= (1.0f / (1 << (F16_EXP_BIAS - 1))); // * 2^(-14)
-      if (sign) {
-        value = -value;
-      }
-      std::memcpy(&f32_bits, &value, sizeof(float));
-    }
-  }
-  else if (exp == F16_EXP_MAX) {
-    // Infinity or NaN
-    f32_bits = (static_cast<uint32_t>(sign) << 16)
-               | F32_EXP_MASK
-               | (static_cast<uint32_t>(mant) << MANT_SHIFT);
-    if (mant != 0) {
-      // Force quiet NaN (set MSB of mantissa)
-      f32_bits |= (1u << (F32_MANT_BITS - 1));
-    }
-  }
-  else {
-    // Normal number: rebias exponent
-    uint32_t f32_exp  = static_cast<uint32_t>(exp) + EXP_REBIAS;
-    uint32_t f32_mant = static_cast<uint32_t>(mant) << MANT_SHIFT;
-    f32_bits = (static_cast<uint32_t>(sign) << 16)
-               | (f32_exp << F32_MANT_BITS)
-               | f32_mant;
-  }
 
-  float result;
-  std::memcpy(&result, &f32_bits, sizeof(float));
-  return result;
+    float result;
+    std::memcpy(&result, &f32_bits, sizeof(float));
+    return result;
 }
 
 uint16_t float16_t::f32_to_f16_val(float val) {
-  uint32_t f32_bits;
-  std::memcpy(&f32_bits, &val, sizeof(float));
+    uint32_t f32_bits;
+    std::memcpy(&f32_bits, &val, sizeof(float));
 
-  const uint32_t sign = (f32_bits & F32_SIGN_MASK) >> 16; // move to bit 15
-  const uint32_t exp  = (f32_bits & F32_EXP_MASK) >> F32_MANT_BITS;
-  const uint32_t mant = (f32_bits & F32_MANT_MASK);
+    const uint32_t sign = (f32_bits & F32_SIGN_MASK) >> 16; // move to bit 15
+    const uint32_t exp = (f32_bits & F32_EXP_MASK) >> F32_MANT_BITS;
+    const uint32_t mant = (f32_bits & F32_MANT_MASK);
 
-  uint16_t f16_bits = 0;
+    uint16_t f16_bits = 0;
 
-  if (exp == 0) {
-    // f32 zero or subnormal → f16 zero (preserve sign)
-    f16_bits = static_cast<uint16_t>(sign);
-  }
-  else if (exp == 255) {
-    // f32 Infinity or NaN
-    f16_bits = static_cast<uint16_t>(sign) | F16_EXP_MASK;
-    if (mant != 0) {
-      // NaN: truncate mantissa and force quiet NaN
-      uint16_t f16_mant = static_cast<uint16_t>(mant >> MANT_SHIFT);
-      f16_bits |= f16_mant;
-      f16_bits |= (1 << (F16_MANT_BITS - 1)); // force QNAN
-    }
-  }
-  else {
-    // Normal number: rebias exponent
-    int32_t new_exp = static_cast<int32_t>(exp) - EXP_REBIAS;
-
-    if (new_exp >= F16_EXP_MAX) {
-      // Overflow → Infinity
-      f16_bits = static_cast<uint16_t>(sign) | F16_EXP_MASK;
-    }
-    else if (new_exp <= 0) {
-      if (new_exp < -F16_MANT_BITS) {
-        // Too small even for subnormal → zero
+    if (exp == 0) {
+        // f32 zero or subnormal → f16 zero (preserve sign)
         f16_bits = static_cast<uint16_t>(sign);
-      }
-      else {
-        // Subnormal: shift mantissa right, include implicit 1 bit
-        uint32_t full_mant = mant | (1u << F32_MANT_BITS); // add implicit 1
-        int shift = MANT_SHIFT + 1 - new_exp; // total right shift
-
-        // Round-to-nearest-even
-        uint32_t round_bit = 1u << (shift - 1);
-        uint32_t sticky    = (full_mant & (round_bit - 1)) ? 1u : 0u;
-        uint32_t shifted   = full_mant >> shift;
-
-        if ((full_mant & round_bit) && (sticky || (shifted & 1))) {
-          shifted += 1;
+    } else if (exp == 255) {
+        // f32 Infinity or NaN
+        f16_bits = static_cast<uint16_t>(sign) | F16_EXP_MASK;
+        if (mant != 0) {
+            // NaN: truncate mantissa and force quiet NaN
+            uint16_t f16_mant = static_cast<uint16_t>(mant >> MANT_SHIFT);
+            f16_bits |= f16_mant;
+            f16_bits |= (1 << (F16_MANT_BITS - 1)); // force QNAN
         }
+    } else {
+        // Normal number: rebias exponent
+        int32_t new_exp = static_cast<int32_t>(exp) - EXP_REBIAS;
 
-        f16_bits = static_cast<uint16_t>(sign)
-                   | static_cast<uint16_t>(shifted & F16_MANT_MASK);
-      }
-    }
-    else {
-      // Normal range: round-to-nearest-even
-      uint32_t round_bit = 1u << (MANT_SHIFT - 1);
-      uint32_t sticky    = (mant & (round_bit - 1)) ? 1u : 0u;
-      uint32_t truncated = mant >> MANT_SHIFT;
-
-      if ((mant & round_bit) && (sticky || (truncated & 1))) {
-        truncated += 1;
-        if (truncated > F16_MANT_MASK) {
-          // Mantissa overflow: increment exponent
-          truncated = 0;
-          new_exp += 1;
-          if (new_exp >= F16_EXP_MAX) {
-            // Overflow to Infinity after rounding
+        if (new_exp >= F16_EXP_MAX) {
+            // Overflow → Infinity
             f16_bits = static_cast<uint16_t>(sign) | F16_EXP_MASK;
-            return f16_bits;
-          }
+        } else if (new_exp <= 0) {
+            if (new_exp < -F16_MANT_BITS) {
+                // Too small even for subnormal → zero
+                f16_bits = static_cast<uint16_t>(sign);
+            } else {
+                // Subnormal: shift mantissa right, include implicit 1 bit
+                uint32_t full_mant
+                        = mant | (1u << F32_MANT_BITS); // add implicit 1
+                int shift = MANT_SHIFT + 1 - new_exp; // total right shift
+
+                // Round-to-nearest-even
+                uint32_t round_bit = 1u << (shift - 1);
+                uint32_t sticky = (full_mant & (round_bit - 1)) ? 1u : 0u;
+                uint32_t shifted = full_mant >> shift;
+
+                if ((full_mant & round_bit) && (sticky || (shifted & 1))) {
+                    shifted += 1;
+                }
+
+                f16_bits = static_cast<uint16_t>(sign)
+                        | static_cast<uint16_t>(shifted & F16_MANT_MASK);
+            }
+        } else {
+            // Normal range: round-to-nearest-even
+            uint32_t round_bit = 1u << (MANT_SHIFT - 1);
+            uint32_t sticky = (mant & (round_bit - 1)) ? 1u : 0u;
+            uint32_t truncated = mant >> MANT_SHIFT;
+
+            if ((mant & round_bit) && (sticky || (truncated & 1))) {
+                truncated += 1;
+                if (truncated > F16_MANT_MASK) {
+                    // Mantissa overflow: increment exponent
+                    truncated = 0;
+                    new_exp += 1;
+                    if (new_exp >= F16_EXP_MAX) {
+                        // Overflow to Infinity after rounding
+                        f16_bits = static_cast<uint16_t>(sign) | F16_EXP_MASK;
+                        return f16_bits;
+                    }
+                }
+            }
+
+            f16_bits = static_cast<uint16_t>(sign)
+                    | static_cast<uint16_t>(new_exp << F16_MANT_BITS)
+                    | static_cast<uint16_t>(truncated & F16_MANT_MASK);
         }
-      }
-
-      f16_bits = static_cast<uint16_t>(sign)
-                 | static_cast<uint16_t>(new_exp << F16_MANT_BITS)
-                 | static_cast<uint16_t>(truncated & F16_MANT_MASK);
     }
-  }
 
-  return f16_bits;
+    return f16_bits;
 }
 
-void float16_t::f16_to_f32_buf(const uint16_t *f16_buf, float *f32_buf,
-                               int64_t size_) {
-  for (int64_t j = 0; j < size_; ++j) {
-    f32_buf[j] = float16_t::f16_to_f32_val(f16_buf[j]);
-  }
+void float16_t::f16_to_f32_buf(
+        const uint16_t *f16_buf, float *f32_buf, int64_t size_) {
+    for (int64_t j = 0; j < size_; ++j) {
+        f32_buf[j] = float16_t::f16_to_f32_val(f16_buf[j]);
+    }
 }
 
-void float16_t::f32_to_f16(const float *f32_buf, uint16_t *f16_buf,
-                           int64_t size_) {
-  for (int64_t j = 0; j < size_; ++j) {
-    f16_buf[j] = f32_to_f16_val(f32_buf[j]);
-  }
+void float16_t::f32_to_f16(
+        const float *f32_buf, uint16_t *f16_buf, int64_t size_) {
+    for (int64_t j = 0; j < size_; ++j) {
+        f16_buf[j] = f32_to_f16_val(f32_buf[j]);
+    }
 }
 
-void float16_t::f32_to_f16(const float *f32_buf, float16_t *f16_buf,
-                           int64_t size_) {
-  for (int64_t j = 0; j < size_; ++j) {
-    f16_buf[j] = float16_t::from_bits(f32_to_f16_val(f32_buf[j]));
-  }
+void float16_t::f32_to_f16(
+        const float *f32_buf, float16_t *f16_buf, int64_t size_) {
+    for (int64_t j = 0; j < size_; ++j) {
+        f16_buf[j] = float16_t::from_bits(f32_to_f16_val(f32_buf[j]));
+    }
 }
 
 //===----------------------------------------------------------------------===//
 // SIMD vector conversions
 //===----------------------------------------------------------------------===//
 
-#if defined(ZENDNNL_HAS_AVX512FP16_MASK_LOAD_STORE_INTRINSICS) || \
-    (defined(__GNUC__) && (__GNUC__ >= 12))
+#if defined(ZENDNNL_HAS_AVX512FP16_MASK_LOAD_STORE_INTRINSICS) \
+        || (defined(__GNUC__) && (__GNUC__ >= 12))
 
-__attribute__((target("avx512f,avx512vl,avx512bw,avx512fp16")))
-__m512h float16_t::cvt_f32_to_f16_vec(__m512 lo, __m512 hi) {
-  __m256i h_lo = _mm512_cvtps_ph(lo,
-                                 _MM_FROUND_TO_NEAREST_INT | _MM_FROUND_NO_EXC);
-  __m256i h_hi = _mm512_cvtps_ph(hi,
-                                 _MM_FROUND_TO_NEAREST_INT | _MM_FROUND_NO_EXC);
-  return (__m512h)_mm512_inserti64x4(_mm512_castsi256_si512(h_lo), h_hi, 1);
+__attribute__((target("avx512f,avx512vl,avx512bw,avx512fp16"))) __m512h
+float16_t::cvt_f32_to_f16_vec(__m512 lo, __m512 hi) {
+    __m256i h_lo = _mm512_cvtps_ph(
+            lo, _MM_FROUND_TO_NEAREST_INT | _MM_FROUND_NO_EXC);
+    __m256i h_hi = _mm512_cvtps_ph(
+            hi, _MM_FROUND_TO_NEAREST_INT | _MM_FROUND_NO_EXC);
+    return (__m512h)_mm512_inserti64x4(_mm512_castsi256_si512(h_lo), h_hi, 1);
 }
 
-__attribute__((target("avx512f,avx512vl,avx512bw,avx512fp16")))
-void float16_t::cvt_f16_to_f32_vec(__m512h val, __m512 &lo, __m512 &hi) {
-  __m256i lo_half = _mm512_castsi512_si256((__m512i)val);
-  __m256i hi_half = _mm512_extracti64x4_epi64((__m512i)val, 1);
-  lo = _mm512_cvtph_ps(lo_half);
-  hi = _mm512_cvtph_ps(hi_half);
+__attribute__((target("avx512f,avx512vl,avx512bw,avx512fp16"))) void
+float16_t::cvt_f16_to_f32_vec(__m512h val, __m512 &lo, __m512 &hi) {
+    __m256i lo_half = _mm512_castsi512_si256((__m512i)val);
+    __m256i hi_half = _mm512_extracti64x4_epi64((__m512i)val, 1);
+    lo = _mm512_cvtph_ps(lo_half);
+    hi = _mm512_cvtph_ps(hi_half);
 }
 
-#endif  // ZENDNNL_HAS_AVX512FP16_MASK_LOAD_STORE_INTRINSICS || __GNUC__ >= 12
+#endif // ZENDNNL_HAS_AVX512FP16_MASK_LOAD_STORE_INTRINSICS || __GNUC__ >= 12
 
-}//namespace common
-}//namespace zendnnl
+} //namespace common
+} //namespace zendnnl

@@ -17,16 +17,16 @@
 #ifndef _LOWOHA_GROUP_MATMUL_EXAMPLE_HPP_
 #define _LOWOHA_GROUP_MATMUL_EXAMPLE_HPP_
 
-#include "zendnnl.hpp"
 #include <cstring>
 #include <iostream>
 #include <vector>
+#include "zendnnl.hpp"
 
 #ifndef OK
-  #define OK     (0)
+#define OK (0)
 #endif
 #ifndef NOT_OK
-  #define NOT_OK (1)
+#define NOT_OK (1)
 #endif
 
 namespace zendnnl {

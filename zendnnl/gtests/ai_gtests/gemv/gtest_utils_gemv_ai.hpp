@@ -22,35 +22,31 @@
 namespace ai_gtests {
 
 class GemvMaxTestCases {
- public:
-  inline static int RANDOM_STRESS = 30;
+public:
+    inline static int RANDOM_STRESS = 30;
 };
 
 void initialize_gemv_nightly_config();
 
 class GemvParameterGenerator {
- public:
-  static std::vector<MatmulParamsAI> generate_comprehensive_test_suite();
-  static std::vector<MatmulParamsAI> generate_minimal_test_suite();
-  static std::vector<MatmulParamsAI> generate_coverage_test_suite();
-  static std::vector<MatmulParamsAI> generate_category_specific_params(
-    TestCategory category);
+public:
+    static std::vector<MatmulParamsAI> generate_comprehensive_test_suite();
+    static std::vector<MatmulParamsAI> generate_minimal_test_suite();
+    static std::vector<MatmulParamsAI> generate_coverage_test_suite();
+    static std::vector<MatmulParamsAI> generate_category_specific_params(
+            TestCategory category);
 
- private:
-  static void add_kc_path_params(std::vector<MatmulParamsAI> &params);
-  static void add_looper_path_params(std::vector<MatmulParamsAI> &params);
-  static void add_random_stress_params(std::vector<MatmulParamsAI> &params);
-  static void add_boundary_params(std::vector<MatmulParamsAI> &params);
-  static void add_edge_case_params(std::vector<MatmulParamsAI> &params);
+private:
+    static void add_kc_path_params(std::vector<MatmulParamsAI> &params);
+    static void add_looper_path_params(std::vector<MatmulParamsAI> &params);
+    static void add_random_stress_params(std::vector<MatmulParamsAI> &params);
+    static void add_boundary_params(std::vector<MatmulParamsAI> &params);
+    static void add_edge_case_params(std::vector<MatmulParamsAI> &params);
 
-  static MatmulParamsAI create_gemv_param(
-    uint64_t n, uint64_t k,
-    DataTypeCombination data_types,
-    TestCategory category,
-    const PostOpConfig &post_op_config,
-    bool trans_b = false,
-    bool expect_success = true,
-    const std::string &suite_name = "");
+    static MatmulParamsAI create_gemv_param(uint64_t n, uint64_t k,
+            DataTypeCombination data_types, TestCategory category,
+            const PostOpConfig &post_op_config, bool trans_b = false,
+            bool expect_success = true, const std::string &suite_name = "");
 };
 
 } // namespace ai_gtests

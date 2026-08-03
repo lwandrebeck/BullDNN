@@ -16,12 +16,12 @@
 
 #include <cmath>
 #include <limits>
-#include <type_traits>
 #include <vector>
+#include "lowoha_operators/common/omp_thread_control.hpp"
+#include "lowoha_operators/common/operator_instrumentation.hpp"
 #include "lowoha_operators/sdpa/flash_sdpa/lowoha_flash_sdpa_utils.hpp"
 #include "lowoha_operators/sdpa/reference/lowoha_sdpa_ref_kernel.hpp"
-#include "lowoha_operators/common/operator_instrumentation.hpp"
-#include "lowoha_operators/common/omp_thread_control.hpp"
+#include <type_traits>
 
 namespace zendnnl {
 namespace lowoha {
@@ -39,8 +39,8 @@ using zendnnl::common::float16_t;
  * dimension broadcasts, and the contiguous element count when it does not.
  */
 struct mask_layout {
-  int64_t stride_b;
-  int64_t stride_h;
+    int64_t stride_b;
+    int64_t stride_h;
 };
 
 /**
@@ -67,33 +67,32 @@ struct mask_layout {
  *       1 or match the corresponding Q dim (caller's input validation should
  *       enforce this up front).
  */
-inline mask_layout compute_mask_strides(
-  const int64_t *mask_sizes, int mask_ndims,
-  int64_t seq_len_q, int64_t seq_len_kv) {
-  mask_layout layout{0, 0};
-  const int64_t inner = seq_len_q * seq_len_kv;
-  if (mask_ndims == 2) {
-    return layout;  // 2D mask broadcasts across both batch and heads.
-  }
-  // 4D: leading dim of size 1 means broadcast; otherwise the matching
-  // physical stride is mask_sizes[1] * inner (batch) or inner (head).
-  layout.stride_h = (mask_sizes[1] != 1) ? inner : 0;
-  layout.stride_b = (mask_sizes[0] != 1)
-                    ? static_cast<int64_t>(mask_sizes[1]) * inner
-                    : 0;
-  return layout;
+inline mask_layout compute_mask_strides(const int64_t *mask_sizes,
+        int mask_ndims, int64_t seq_len_q, int64_t seq_len_kv) {
+    mask_layout layout {0, 0};
+    const int64_t inner = seq_len_q * seq_len_kv;
+    if (mask_ndims == 2) {
+        return layout; // 2D mask broadcasts across both batch and heads.
+    }
+    // 4D: leading dim of size 1 means broadcast; otherwise the matching
+    // physical stride is mask_sizes[1] * inner (batch) or inner (head).
+    layout.stride_h = (mask_sizes[1] != 1) ? inner : 0;
+    layout.stride_b = (mask_sizes[0] != 1)
+            ? static_cast<int64_t>(mask_sizes[1]) * inner
+            : 0;
+    return layout;
 }
 
 /** @brief Convert any element type to float (used at load time). */
 template <typename T>
 inline float to_float(T v) {
-  return static_cast<float>(v);
+    return static_cast<float>(v);
 }
 
 /** @brief Convert float to any element type (used at store time). */
 template <typename T>
 inline T from_float(float f) {
-  return static_cast<T>(f);
+    return static_cast<T>(f);
 }
 
 /**
@@ -119,21 +118,19 @@ inline T from_float(float f) {
  */
 template <typename qkv_t>
 inline void matmul_qk(const qkv_t *q_data, const qkv_t *k_data,
-                      float *attention_scores,
-                      int64_t seq_len_q, int64_t seq_len_kv,
-                      int64_t head_dim,
-                      int64_t q_seq_stride, int64_t k_seq_stride,
-                      float scale) {
-  for (int64_t i = 0; i < seq_len_q; i++) {
-    for (int64_t j = 0; j < seq_len_kv; j++) {
-      float sum = 0.0f;
-      for (int64_t k = 0; k < head_dim; k++) {
-        sum += to_float(q_data[i * q_seq_stride + k]) *
-               to_float(k_data[j * k_seq_stride + k]);
-      }
-      attention_scores[i * seq_len_kv + j] = sum * scale;
+        float *attention_scores, int64_t seq_len_q, int64_t seq_len_kv,
+        int64_t head_dim, int64_t q_seq_stride, int64_t k_seq_stride,
+        float scale) {
+    for (int64_t i = 0; i < seq_len_q; i++) {
+        for (int64_t j = 0; j < seq_len_kv; j++) {
+            float sum = 0.0f;
+            for (int64_t k = 0; k < head_dim; k++) {
+                sum += to_float(q_data[i * q_seq_stride + k])
+                        * to_float(k_data[j * k_seq_stride + k]);
+            }
+            attention_scores[i * seq_len_kv + j] = sum * scale;
+        }
     }
-  }
 }
 
 /**
@@ -156,18 +153,18 @@ inline void matmul_qk(const qkv_t *q_data, const qkv_t *k_data,
  */
 template <typename qkv_t>
 inline void matmul_sv(const float *scores, const qkv_t *v_data, qkv_t *output,
-                      int64_t seq_len_q, int64_t seq_len_kv, int64_t head_dim,
-                      int64_t v_seq_stride, int64_t o_seq_stride) {
-  for (int64_t i = 0; i < seq_len_q; i++) {
-    for (int64_t j = 0; j < head_dim; j++) {
-      float sum = 0.0f;
-      for (int64_t k = 0; k < seq_len_kv; k++) {
-        sum += scores[i * seq_len_kv + k] *
-               to_float(v_data[k * v_seq_stride + j]);
-      }
-      output[i * o_seq_stride + j] = from_float<qkv_t>(sum);
+        int64_t seq_len_q, int64_t seq_len_kv, int64_t head_dim,
+        int64_t v_seq_stride, int64_t o_seq_stride) {
+    for (int64_t i = 0; i < seq_len_q; i++) {
+        for (int64_t j = 0; j < head_dim; j++) {
+            float sum = 0.0f;
+            for (int64_t k = 0; k < seq_len_kv; k++) {
+                sum += scores[i * seq_len_kv + k]
+                        * to_float(v_data[k * v_seq_stride + j]);
+            }
+            output[i * o_seq_stride + j] = from_float<qkv_t>(sum);
+        }
     }
-  }
 }
 
 /**
@@ -178,22 +175,23 @@ inline void matmul_sv(const float *scores, const qkv_t *v_data, qkv_t *output,
  * rows is normalised independently.
  */
 inline void softmax(float *scores, int64_t seq_len_q, int64_t seq_len_kv) {
-  for (int64_t i = 0; i < seq_len_q; i++) {
-    float max_val = scores[i * seq_len_kv];
-    for (int64_t j = 1; j < seq_len_kv; j++) {
-      if (scores[i * seq_len_kv + j] > max_val) {
-        max_val = scores[i * seq_len_kv + j];
-      }
+    for (int64_t i = 0; i < seq_len_q; i++) {
+        float max_val = scores[i * seq_len_kv];
+        for (int64_t j = 1; j < seq_len_kv; j++) {
+            if (scores[i * seq_len_kv + j] > max_val) {
+                max_val = scores[i * seq_len_kv + j];
+            }
+        }
+        float sum = 0.0f;
+        for (int64_t j = 0; j < seq_len_kv; j++) {
+            scores[i * seq_len_kv + j]
+                    = std::exp(scores[i * seq_len_kv + j] - max_val);
+            sum += scores[i * seq_len_kv + j];
+        }
+        for (int64_t j = 0; j < seq_len_kv; j++) {
+            scores[i * seq_len_kv + j] /= sum;
+        }
     }
-    float sum = 0.0f;
-    for (int64_t j = 0; j < seq_len_kv; j++) {
-      scores[i * seq_len_kv + j] = std::exp(scores[i * seq_len_kv + j] - max_val);
-      sum += scores[i * seq_len_kv + j];
-    }
-    for (int64_t j = 0; j < seq_len_kv; j++) {
-      scores[i * seq_len_kv + j] /= sum;
-    }
-  }
 }
 
 /**
@@ -203,14 +201,14 @@ inline void softmax(float *scores, int64_t seq_len_q, int64_t seq_len_kv) {
  * triangle (j <= i) is left untouched. Matches the flash-SDPA convention:
  * query position i attends to key positions [0..i].
  */
-inline void apply_causal_mask(float *attention_scores,
-                              int64_t seq_len_q, int64_t seq_len_kv) {
-  constexpr float neg_inf = -std::numeric_limits<float>::infinity();
-  for (int64_t i = 0; i < seq_len_q; i++) {
-    for (int64_t j = i + 1; j < seq_len_kv; j++) {
-      attention_scores[i * seq_len_kv + j] = neg_inf;
+inline void apply_causal_mask(
+        float *attention_scores, int64_t seq_len_q, int64_t seq_len_kv) {
+    constexpr float neg_inf = -std::numeric_limits<float>::infinity();
+    for (int64_t i = 0; i < seq_len_q; i++) {
+        for (int64_t j = i + 1; j < seq_len_kv; j++) {
+            attention_scores[i * seq_len_kv + j] = neg_inf;
+        }
     }
-  }
 }
 
 /**
@@ -236,14 +234,13 @@ inline void apply_causal_mask(float *attention_scores,
  */
 template <typename mask_t>
 inline void apply_attention_mask(float *attention_scores,
-                                 const mask_t *mask_ptr,
-                                 int64_t seq_len_q, int64_t seq_len_kv) {
-  for (int64_t i = 0; i < seq_len_q; i++) {
-    for (int64_t j = 0; j < seq_len_kv; j++) {
-      attention_scores[i * seq_len_kv + j] +=
-        to_float(mask_ptr[i * seq_len_kv + j]);
+        const mask_t *mask_ptr, int64_t seq_len_q, int64_t seq_len_kv) {
+    for (int64_t i = 0; i < seq_len_q; i++) {
+        for (int64_t j = 0; j < seq_len_kv; j++) {
+            attention_scores[i * seq_len_kv + j]
+                    += to_float(mask_ptr[i * seq_len_kv + j]);
+        }
     }
-  }
 }
 
 /**
@@ -285,35 +282,29 @@ inline void apply_attention_mask(float *attention_scores,
  */
 template <typename qkv_t, typename mask_t>
 inline void compute_sdpa_per_head(const qkv_t *q_new, const qkv_t *k_new,
-                                  const qkv_t *v_new, qkv_t *out_new,
-                                  const mask_t *mask_ptr,
-                                  int64_t seq_len_q, int64_t seq_len_kv,
-                                  int64_t head_dim,
-                                  int64_t q_seq_stride, int64_t k_seq_stride,
-                                  int64_t v_seq_stride, int64_t o_seq_stride,
-                                  float scale,
-                                  bool is_causal, bool has_mask) {
-  // FP32 score buffer keeps softmax numerically stable for low-precision QKV.
-  std::vector<float> attention_scores(
-    static_cast<size_t>(seq_len_q * seq_len_kv), 0.0f);
+        const qkv_t *v_new, qkv_t *out_new, const mask_t *mask_ptr,
+        int64_t seq_len_q, int64_t seq_len_kv, int64_t head_dim,
+        int64_t q_seq_stride, int64_t k_seq_stride, int64_t v_seq_stride,
+        int64_t o_seq_stride, float scale, bool is_causal, bool has_mask) {
+    // FP32 score buffer keeps softmax numerically stable for low-precision QKV.
+    std::vector<float> attention_scores(
+            static_cast<size_t>(seq_len_q * seq_len_kv), 0.0f);
 
-  matmul_qk<qkv_t>(q_new, k_new, attention_scores.data(),
-                   seq_len_q, seq_len_kv, head_dim,
-                   q_seq_stride, k_seq_stride, scale);
+    matmul_qk<qkv_t>(q_new, k_new, attention_scores.data(), seq_len_q,
+            seq_len_kv, head_dim, q_seq_stride, k_seq_stride, scale);
 
-  if (is_causal) {
-    apply_causal_mask(attention_scores.data(), seq_len_q, seq_len_kv);
-  }
-  if (has_mask && mask_ptr != nullptr) {
-    apply_attention_mask<mask_t>(attention_scores.data(), mask_ptr,
-                                 seq_len_q, seq_len_kv);
-  }
+    if (is_causal) {
+        apply_causal_mask(attention_scores.data(), seq_len_q, seq_len_kv);
+    }
+    if (has_mask && mask_ptr != nullptr) {
+        apply_attention_mask<mask_t>(
+                attention_scores.data(), mask_ptr, seq_len_q, seq_len_kv);
+    }
 
-  softmax(attention_scores.data(), seq_len_q, seq_len_kv);
+    softmax(attention_scores.data(), seq_len_q, seq_len_kv);
 
-  matmul_sv<qkv_t>(attention_scores.data(), v_new, out_new,
-                   seq_len_q, seq_len_kv, head_dim,
-                   v_seq_stride, o_seq_stride);
+    matmul_sv<qkv_t>(attention_scores.data(), v_new, out_new, seq_len_q,
+            seq_len_kv, head_dim, v_seq_stride, o_seq_stride);
 }
 
 // Per-(qkv_t) implementation of the reference SDPA encoder.
@@ -326,188 +317,173 @@ inline void compute_sdpa_per_head(const qkv_t *q_new, const qkv_t *k_new,
 // element type so the same body services both FP32 and BF16 masks. The
 // dispatch cost is paid once per execute() call rather than per (b, h)
 // iteration -- the parallel region is fully monomorphic.
-template<typename qkv_t>
-status_t execute_typed(
-  const void *query,
-  const void *key,
-  const void *value,
-  const void *attn_mask,
-  void *output,
-  const sdpa_params &params) {
+template <typename qkv_t>
+status_t execute_typed(const void *query, const void *key, const void *value,
+        const void *attn_mask, void *output, const sdpa_params &params) {
 
-  const bool has_mask = params.mask_ndims > 0;
-  // Mask buffer dtype is decided per-call (@c validate_flash_sdpa_inputs()
-  // restricts the supported combinations):
-  //   - FP32 QKV  -> mask must be FP32
-  //   - BF16 QKV  -> mask may be FP32 or BF16
-  //   - F16  QKV  -> mask may be FP32 or F16
-  // Softmax always runs in FP32, so each mask element is converted to float
-  // at add time inside apply_attention_mask<mask_t>.
-  void *mask_base_void = nullptr;
-  data_type_t mask_dtype = params.mask_dt;
-  mask_layout mask_layout{0, 0};
+    const bool has_mask = params.mask_ndims > 0;
+    // Mask buffer dtype is decided per-call (@c validate_flash_sdpa_inputs()
+    // restricts the supported combinations):
+    //   - FP32 QKV  -> mask must be FP32
+    //   - BF16 QKV  -> mask may be FP32 or BF16
+    //   - F16  QKV  -> mask may be FP32 or F16
+    // Softmax always runs in FP32, so each mask element is converted to float
+    // at add time inside apply_attention_mask<mask_t>.
+    void *mask_base_void = nullptr;
+    data_type_t mask_dtype = params.mask_dt;
+    mask_layout mask_layout {0, 0};
 
-  // Q is [B, H, S_q, D], K/V are [B, kv_num_heads, S_kv, D]. For self-attention
-  // S_q == S_kv; @c validate_flash_sdpa_inputs() permits S_q != S_kv to support
-  // cross-attention but enforces K.S == V.S.
-  const int64_t batch       = params.batch;
-  const int64_t num_heads   = params.num_heads;
-  const int64_t eff_kv_num_heads = (params.kv_num_heads > 0)
-                                   ? params.kv_num_heads
-                                   : params.num_heads;
-  const int64_t repeat_factor = num_heads / eff_kv_num_heads;
-  const int64_t seq_len_q   = params.seq_len;
-  const int64_t seq_len_kv  = (params.kv_seq_len > 0)
-                              ? params.kv_seq_len
-                              : params.seq_len;
-  const int64_t head_dim    = params.head_dim;
-  const bool is_causal      = params.is_causal;
-  // Match flash_sdpa: scale == 0 means use 1/sqrt(head_dim).
-  const float scale = (params.scale != 0.0)
-                      ? static_cast<float>(params.scale)
-                      : 1.0f / std::sqrt(static_cast<float>(head_dim));
+    // Q is [B, H, S_q, D], K/V are [B, kv_num_heads, S_kv, D]. For self-attention
+    // S_q == S_kv; @c validate_flash_sdpa_inputs() permits S_q != S_kv to support
+    // cross-attention but enforces K.S == V.S.
+    const int64_t batch = params.batch;
+    const int64_t num_heads = params.num_heads;
+    const int64_t eff_kv_num_heads = (params.kv_num_heads > 0)
+            ? params.kv_num_heads
+            : params.num_heads;
+    const int64_t repeat_factor = num_heads / eff_kv_num_heads;
+    const int64_t seq_len_q = params.seq_len;
+    const int64_t seq_len_kv
+            = (params.kv_seq_len > 0) ? params.kv_seq_len : params.seq_len;
+    const int64_t head_dim = params.head_dim;
+    const bool is_causal = params.is_causal;
+    // Match flash_sdpa: scale == 0 means use 1/sqrt(head_dim).
+    const float scale = (params.scale != 0.0)
+            ? static_cast<float>(params.scale)
+            : 1.0f / std::sqrt(static_cast<float>(head_dim));
 
-  if (batch <= 0 || num_heads <= 0 || seq_len_q <= 0 || seq_len_kv <= 0 ||
-      head_dim <= 0 || eff_kv_num_heads <= 0 ||
-      num_heads % eff_kv_num_heads != 0) {
+    if (batch <= 0 || num_heads <= 0 || seq_len_q <= 0 || seq_len_kv <= 0
+            || head_dim <= 0 || eff_kv_num_heads <= 0
+            || num_heads % eff_kv_num_heads != 0) {
+        return status_t::failure;
+    }
+
+    // Resolve mask layout: 2D [S_q, S_kv] or 4D [B|1, H|1, S_q, S_kv] are all
+    // supported; stride_b / stride_h are 0 for broadcast dimensions.
+    if (has_mask) {
+        mask_base_void = const_cast<void *>(attn_mask);
+        mask_layout = compute_mask_strides(
+                params.mask_sizes, params.mask_ndims, seq_len_q, seq_len_kv);
+    }
+
+    const qkv_t *q_data = static_cast<const qkv_t *>(query);
+    const qkv_t *k_data = static_cast<const qkv_t *>(key);
+    const qkv_t *v_data = static_cast<const qkv_t *>(value);
+    qkv_t *out_data = static_cast<qkv_t *>(output);
+
+    // Per-tensor BHSD strides. Tensor is logically [B, H, S, D]; the actual
+    // physical layout follows the BHSD or BSHD stride conventions above.
+    const int64_t q_sb = params.q_stride_b;
+    const int64_t q_sh = params.q_stride_h;
+    const int64_t q_ss = params.q_stride_s;
+    const int64_t k_sb = params.k_stride_b;
+    const int64_t k_sh = params.k_stride_h;
+    const int64_t k_ss = params.k_stride_s;
+    const int64_t v_sb = params.v_stride_b;
+    const int64_t v_sh = params.v_stride_h;
+    const int64_t v_ss = params.v_stride_s;
+    const int64_t o_sb = params.o_stride_b;
+    const int64_t o_sh = params.o_stride_h;
+    const int64_t o_ss = params.o_stride_s;
+
+    const int32_t num_threads = resolve_num_threads(
+            params.num_threads, thread_guard::max_threads());
+
+    auto run_per_head_loop = [&](auto mask_tag) -> status_t {
+        using mask_t = decltype(mask_tag);
+        const mask_t *mask_base = static_cast<const mask_t *>(mask_base_void);
+// Per (b, h) base pointers come from each tensor's own (batch, head)
+// strides; the inner [seq, head_dim] slab is then walked using each
+// tensor's seq stride (head_dim for BHSD, num_heads*head_dim for BSHD).
+// Per (b, h): scores [S_q, S_kv] (FP32) -> output [S_q, D] (qkv_t).
+#pragma omp parallel for collapse(2) num_threads(num_threads)
+        for (int64_t b = 0; b < batch; b++) {
+            for (int64_t h = 0; h < num_heads; h++) {
+                const int64_t kv_h = h / repeat_factor;
+                const qkv_t *q_bh = q_data + b * q_sb + h * q_sh;
+                const qkv_t *k_bh = k_data + b * k_sb + kv_h * k_sh;
+                const qkv_t *v_bh = v_data + b * v_sb + kv_h * v_sh;
+                qkv_t *o_bh = out_data + b * o_sb + h * o_sh;
+                const mask_t *mask_for_bh = has_mask
+                        ? mask_base + b * mask_layout.stride_b
+                                + h * mask_layout.stride_h
+                        : nullptr;
+                compute_sdpa_per_head<qkv_t, mask_t>(q_bh, k_bh, v_bh, o_bh,
+                        mask_for_bh, seq_len_q, seq_len_kv, head_dim, q_ss,
+                        k_ss, v_ss, o_ss, scale, is_causal, has_mask);
+            }
+        }
+        return status_t::success;
+    };
+
+    // No-mask and FP32-mask paths share the mask_t = float instantiation
+    // (mask_for_bh is nullptr in the no-mask case, so mask_t is never read).
+    if (!has_mask || mask_dtype == data_type_t::f32) {
+        return run_per_head_loop(float {});
+    }
+
+    // Reduced-precision mask is only valid when the mask dtype matches the
+    // QKV dtype (enforced by @c validate_flash_sdpa_inputs()): bf16 mask with
+    // bf16 QKV, f16 mask
+    // with f16 QKV. The `if constexpr` blocks keep each reduced-precision
+    // mask instantiation out of the QKV specialisations that don't accept it,
+    // so the compiler can prove the FP32 specialisation never reaches the
+    // unsupported-mask error path with a reduced-precision mask.
+    if constexpr (std::is_same_v<qkv_t, bfloat16_t>) {
+        if (mask_dtype == data_type_t::bf16) {
+            return run_per_head_loop(bfloat16_t {});
+        }
+    }
+    if constexpr (std::is_same_v<qkv_t, float16_t>) {
+        if (mask_dtype == data_type_t::f16) {
+            return run_per_head_loop(float16_t {});
+        }
+    }
+
+    // validate_flash_sdpa_inputs() should have rejected any other mask dtype
+    // before reaching execute(); fail closed if we somehow get here with an
+    // unsupported one.
+    apilog_error("SDPA ref kernel: unsupported mask data_type = ",
+            static_cast<int>(mask_dtype),
+            " for QKV data_type = ", static_cast<int>(params.qkv_dt));
     return status_t::failure;
-  }
-
-  // Resolve mask layout: 2D [S_q, S_kv] or 4D [B|1, H|1, S_q, S_kv] are all
-  // supported; stride_b / stride_h are 0 for broadcast dimensions.
-  if (has_mask) {
-    mask_base_void = const_cast<void *>(attn_mask);
-    mask_layout = compute_mask_strides(
-                    params.mask_sizes, params.mask_ndims,
-                    seq_len_q, seq_len_kv);
-  }
-
-  const qkv_t *q_data   = static_cast<const qkv_t *>(query);
-  const qkv_t *k_data   = static_cast<const qkv_t *>(key);
-  const qkv_t *v_data   = static_cast<const qkv_t *>(value);
-  qkv_t       *out_data = static_cast<qkv_t *>(output);
-
-  // Per-tensor BHSD strides. Tensor is logically [B, H, S, D]; the actual
-  // physical layout follows the BHSD or BSHD stride conventions above.
-  const int64_t q_sb = params.q_stride_b;
-  const int64_t q_sh = params.q_stride_h;
-  const int64_t q_ss = params.q_stride_s;
-  const int64_t k_sb = params.k_stride_b;
-  const int64_t k_sh = params.k_stride_h;
-  const int64_t k_ss = params.k_stride_s;
-  const int64_t v_sb = params.v_stride_b;
-  const int64_t v_sh = params.v_stride_h;
-  const int64_t v_ss = params.v_stride_s;
-  const int64_t o_sb = params.o_stride_b;
-  const int64_t o_sh = params.o_stride_h;
-  const int64_t o_ss = params.o_stride_s;
-
-  const int32_t num_threads = resolve_num_threads(params.num_threads,
-                              thread_guard::max_threads());
-
-  auto run_per_head_loop = [&](auto mask_tag) -> status_t {
-    using mask_t = decltype(mask_tag);
-    const mask_t *mask_base = static_cast<const mask_t *>(mask_base_void);
-    // Per (b, h) base pointers come from each tensor's own (batch, head)
-    // strides; the inner [seq, head_dim] slab is then walked using each
-    // tensor's seq stride (head_dim for BHSD, num_heads*head_dim for BSHD).
-    // Per (b, h): scores [S_q, S_kv] (FP32) -> output [S_q, D] (qkv_t).
-    #pragma omp parallel for collapse(2) num_threads(num_threads)
-    for (int64_t b = 0; b < batch; b++) {
-      for (int64_t h = 0; h < num_heads; h++) {
-        const int64_t kv_h = h / repeat_factor;
-        const qkv_t *q_bh = q_data   + b * q_sb + h * q_sh;
-        const qkv_t *k_bh = k_data   + b * k_sb + kv_h * k_sh;
-        const qkv_t *v_bh = v_data   + b * v_sb + kv_h * v_sh;
-        qkv_t       *o_bh = out_data + b * o_sb + h * o_sh;
-        const mask_t *mask_for_bh = has_mask
-        ? mask_base + b * mask_layout.stride_b
-        + h * mask_layout.stride_h
-        : nullptr;
-        compute_sdpa_per_head<qkv_t, mask_t>(
-          q_bh, k_bh, v_bh, o_bh, mask_for_bh,
-          seq_len_q, seq_len_kv, head_dim,
-          q_ss, k_ss, v_ss, o_ss,
-          scale, is_causal, has_mask);
-      }
-    }
-    return status_t::success;
-  };
-
-  // No-mask and FP32-mask paths share the mask_t = float instantiation
-  // (mask_for_bh is nullptr in the no-mask case, so mask_t is never read).
-  if (!has_mask || mask_dtype == data_type_t::f32) {
-    return run_per_head_loop(float{});
-  }
-
-  // Reduced-precision mask is only valid when the mask dtype matches the
-  // QKV dtype (enforced by @c validate_flash_sdpa_inputs()): bf16 mask with
-  // bf16 QKV, f16 mask
-  // with f16 QKV. The `if constexpr` blocks keep each reduced-precision
-  // mask instantiation out of the QKV specialisations that don't accept it,
-  // so the compiler can prove the FP32 specialisation never reaches the
-  // unsupported-mask error path with a reduced-precision mask.
-  if constexpr(std::is_same_v<qkv_t, bfloat16_t>) {
-    if (mask_dtype == data_type_t::bf16) {
-      return run_per_head_loop(bfloat16_t{});
-    }
-  }
-  if constexpr(std::is_same_v<qkv_t, float16_t>) {
-    if (mask_dtype == data_type_t::f16) {
-      return run_per_head_loop(float16_t{});
-    }
-  }
-
-  // validate_flash_sdpa_inputs() should have rejected any other mask dtype
-  // before reaching execute(); fail closed if we somehow get here with an
-  // unsupported one.
-  apilog_error("SDPA ref kernel: unsupported mask data_type = ",
-               static_cast<int>(mask_dtype),
-               " for QKV data_type = ",
-               static_cast<int>(params.qkv_dt));
-  return status_t::failure;
 }
 
+status_t reference_sdpa(const void *query, const void *key, const void *value,
+        const void *attn_mask, void *output, const sdpa_params &params) {
+    status_t status = zendnnl::common::op_instrumentation::validate([&]() {
+        return validate_flash_sdpa_inputs(
+                query, key, value, output, attn_mask, params);
+    });
+    if (status != status_t::success) { return status; }
 
-status_t reference_sdpa(
-  const void *query,
-  const void *key,
-  const void *value,
-  const void *attn_mask,
-  void *output,
-  const sdpa_params &params
-) {
-  status_t status = zendnnl::common::op_instrumentation::validate([&]() {
-    return validate_flash_sdpa_inputs(query, key, value, output, attn_mask, params);
-  });
-  if (status != status_t::success) {
-    return status;
-  }
+    // matmul_sv stores with output[i * o_seq_stride + j], i.e. implicit
+    // o_stride_d == 1. validate_flash_sdpa_inputs() enforces this for Q/K/V
+    // but only requires o_stride_d > 0 (the flash backend supports strided D).
+    if (params.o_stride_d != 1) {
+        apilog_error(
+                "SDPA ref kernel: o_stride_d must be 1 (contiguous head_dim)");
+        return status_t::failure;
+    }
 
-  // matmul_sv stores with output[i * o_seq_stride + j], i.e. implicit
-  // o_stride_d == 1. validate_flash_sdpa_inputs() enforces this for Q/K/V
-  // but only requires o_stride_d > 0 (the flash backend supports strided D).
-  if (params.o_stride_d != 1) {
-    apilog_error("SDPA ref kernel: o_stride_d must be 1 (contiguous head_dim)");
+    const auto query_dtype = params.qkv_dt;
+
+    if (query_dtype == data_type_t::f32) {
+        return execute_typed<float>(
+                query, key, value, attn_mask, output, params);
+    }
+    if (query_dtype == data_type_t::bf16) {
+        return execute_typed<bfloat16_t>(
+                query, key, value, attn_mask, output, params);
+    }
+    if (query_dtype == data_type_t::f16) {
+        return execute_typed<float16_t>(
+                query, key, value, attn_mask, output, params);
+    }
+
+    apilog_error("SDPA ref kernel: unsupported QKV data_type = ",
+            static_cast<int>(query_dtype), " (expected f32, bf16, or f16)");
     return status_t::failure;
-  }
-
-  const auto query_dtype = params.qkv_dt;
-
-  if (query_dtype == data_type_t::f32) {
-    return execute_typed<float>(query, key, value, attn_mask, output, params);
-  }
-  if (query_dtype == data_type_t::bf16) {
-    return execute_typed<bfloat16_t>(query, key, value, attn_mask, output, params);
-  }
-  if (query_dtype == data_type_t::f16) {
-    return execute_typed<float16_t>(query, key, value, attn_mask, output, params);
-  }
-
-  apilog_error("SDPA ref kernel: unsupported QKV data_type = ",
-               static_cast<int>(query_dtype),
-               " (expected f32, bf16, or f16)");
-  return status_t::failure;
 }
 
 } //namespace sdpa

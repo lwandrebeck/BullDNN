@@ -26,8 +26,8 @@ namespace zendnnl {
 namespace lowoha {
 namespace reorder {
 
-using zendnnl::memory::status_t;
 using zendnnl::memory::data_type_t;
+using zendnnl::memory::status_t;
 
 /**
  * @brief Multi-mode reorder entry point.
@@ -100,8 +100,7 @@ using zendnnl::memory::data_type_t;
  *       etc.) are documented with each mode above.
  * @note Buffers must not overlap.
  */
-status_t reorder_direct(const void *src, void *dst,
-                        reorder_params_t &params);
+status_t reorder_direct(const void *src, void *dst, reorder_params_t &params);
 
 /**
  * @brief Grouped per-token dynamic quantization for MoE/group GEMM sources.
@@ -117,15 +116,13 @@ status_t reorder_direct(const void *src, void *dst,
  * Current implementation supports symmetric per-token bf16/f32 -> s8 dynamic
  * quantization. Callers own all destination and scale buffers.
  */
-status_t group_dynamic_quant(
-    const std::vector<const void *> &src,
-    const std::vector<int> &M,
-    const std::vector<int> &K,
-    const std::vector<std::vector<int64_t>> &src_strides,
-    const std::vector<void *> &dst,
-    const std::vector<std::vector<int64_t>> &dst_strides,
-    const std::vector<void *> &scale,
-    const group_dynamic_quant_params_t &params);
+status_t group_dynamic_quant(const std::vector<const void *> &src,
+        const std::vector<int> &M, const std::vector<int> &K,
+        const std::vector<std::vector<int64_t>> &src_strides,
+        const std::vector<void *> &dst,
+        const std::vector<std::vector<int64_t>> &dst_strides,
+        const std::vector<void *> &scale,
+        const group_dynamic_quant_params_t &params);
 
 /**
  * @brief Grouped reorder — apply @ref reorder_direct to a group of
@@ -168,10 +165,8 @@ status_t group_dynamic_quant(
  * @return status_t::success when every op succeeded; otherwise the status
  *         of the first op that failed.
  */
-status_t group_reorder(
-    const std::vector<const void *> &src,
-    const std::vector<void *>       &dst,
-    std::vector<reorder_params_t>   &params);
+status_t group_reorder(const std::vector<const void *> &src,
+        const std::vector<void *> &dst, std::vector<reorder_params_t> &params);
 
 } // namespace reorder
 } // namespace lowoha

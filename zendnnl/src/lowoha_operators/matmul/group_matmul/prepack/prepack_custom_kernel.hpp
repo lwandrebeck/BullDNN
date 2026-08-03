@@ -67,11 +67,11 @@ using zendnnl::error_handling::status_t;
 //                         pack error.
 // ─────────────────────────────────────────────────────────────────────
 struct PackProbeStats {
-  int total_attempted = 0;
-  int packed_ok       = 0;
-  int cache_hits      = 0;
-  int cache_misses    = 0;
-  int skipped_invalid = 0;
+    int total_attempted = 0;
+    int packed_ok = 0;
+    int cache_hits = 0;
+    int cache_misses = 0;
+    int skipped_invalid = 0;
 };
 
 /// Pre-pack every expert's weight in `[0, total_count)` so the per-
@@ -155,23 +155,18 @@ struct PackProbeStats {
 /// pack.cpp), so a process that warms more than one for the same
 /// model pays one warm per family.
 enum class WarmDtypeFamily : uint8_t {
-  kBF16 = 0,
-  kINT8 = 1,
-  kF16  = 2,
+    kBF16 = 0,
+    kINT8 = 1,
+    kF16 = 2,
 };
 
 status_t warm_pack_all_custom_kernel_experts(
-    const std::vector<const void *> &weight,
-    const std::vector<int>          &K,
-    const std::vector<int>          &N,
-    const std::vector<int>          &ldb,
-    const std::vector<bool>         &transB,
-    const std::vector<bool>         &is_weights_const,
-    int                              total_count,
-    PackProbeStats                  &stats,
-    bool                             interleave_split_halves = false,
-    WarmDtypeFamily                  dtype_family =
-                                       WarmDtypeFamily::kBF16);
+        const std::vector<const void *> &weight, const std::vector<int> &K,
+        const std::vector<int> &N, const std::vector<int> &ldb,
+        const std::vector<bool> &transB,
+        const std::vector<bool> &is_weights_const, int total_count,
+        PackProbeStats &stats, bool interleave_split_halves = false,
+        WarmDtypeFamily dtype_family = WarmDtypeFamily::kBF16);
 
 } // namespace custom_kernel
 } // namespace group_matmul_prepack

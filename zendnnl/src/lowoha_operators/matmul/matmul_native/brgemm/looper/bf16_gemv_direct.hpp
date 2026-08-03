@@ -17,9 +17,9 @@
 #ifndef MATMUL_NATIVE_BRGEMM_LOOPER_BF16_GEMV_DIRECT_HPP
 #define MATMUL_NATIVE_BRGEMM_LOOPER_BF16_GEMV_DIRECT_HPP
 
-#include "lowoha_operators/matmul/matmul_native/common/gemm_descriptor.hpp"
-#include "lowoha_operators/matmul/matmul_native/common/cost_model.hpp"
 #include "lowoha_operators/matmul/lowoha_common.hpp"
+#include "lowoha_operators/matmul/matmul_native/common/cost_model.hpp"
+#include "lowoha_operators/matmul/matmul_native/common/gemm_descriptor.hpp"
 
 namespace zendnnl {
 namespace lowoha {
@@ -34,11 +34,9 @@ namespace native {
 /// Falls back to bf16_brgemm_execute when gates fail.
 ///
 /// Returns true if the fast path handled the operation, false to fall back.
-bool bf16_gemv_direct(
-    const GemmDescriptor &desc,
-    const UarchParams &uarch,
-    const void *src, const void *weight, void *dst,
-    const void *bias, matmul_params &params);
+bool bf16_gemv_direct(const GemmDescriptor &desc, const UarchParams &uarch,
+        const void *src, const void *weight, void *dst, const void *bias,
+        matmul_params &params);
 
 } // namespace native
 } // namespace matmul

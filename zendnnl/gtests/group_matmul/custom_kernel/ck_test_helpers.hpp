@@ -43,8 +43,8 @@ namespace ck_test {
 
 namespace ck = zendnnl::lowoha::matmul::custom_kernel;
 using moe_test_utils::bfloat16_t;
-using moe_test_utils::float16_t;
 using moe_test_utils::data_type_t;
+using moe_test_utils::float16_t;
 using zendnnl::error_handling::status_t;
 using zendnnl::lowoha::matmul::grp_matmul_gated_act_t;
 
@@ -61,14 +61,14 @@ using zendnnl::lowoha::matmul::grp_matmul_gated_act_t;
 // this macro because the dispatcher's CPUID gate is the first
 // refusal it can return.
 // ──────────────────────────────────────────────────────────────────
-#define CK_SKIP_IF_NO_BF16_ISA()                                       \
-  do {                                                                 \
-    if (!::ck_test::ck::dispatch_supported()) {                        \
-      GTEST_SKIP()                                                     \
-          << "AVX-512-BF16 not available on this host; the custom "    \
-             "kernel cannot run, so any per-tile test would refuse";   \
-    }                                                                  \
-  } while (0)
+#define CK_SKIP_IF_NO_BF16_ISA() \
+    do { \
+        if (!::ck_test::ck::dispatch_supported()) { \
+            GTEST_SKIP() \
+                    << "AVX-512-BF16 not available on this host; the custom " \
+                       "kernel cannot run, so any per-tile test would refuse"; \
+        } \
+    } while (0)
 
 // DQ-INT8 ISA gate — needed for tests that exercise the int8 variant
 // resolution through `prepare_for_call`.  The int8 microkernel uses
@@ -76,16 +76,16 @@ using zendnnl::lowoha::matmul::grp_matmul_gated_act_t;
 // AVX-512-BF16 but on broader x86 silicon is an independent feature
 // flag.  Tests that probe the int8 path call this macro instead of
 // (or in addition to) `CK_SKIP_IF_NO_BF16_ISA`.
-#define CK_SKIP_IF_NO_INT8_ISA()                                       \
-  do {                                                                 \
-    if (!::ck_test::ck::avx512vnni_available()) {                      \
-      GTEST_SKIP()                                                     \
-          << "AVX-512 VNNI not available on this host; the DQ-INT8 "   \
-             "custom kernel cannot run, so any per-tile or "           \
-             "prepare_for_call probe of the int8 variants would "      \
-             "refuse cleanly at the ISA gate";                         \
-    }                                                                  \
-  } while (0)
+#define CK_SKIP_IF_NO_INT8_ISA() \
+    do { \
+        if (!::ck_test::ck::avx512vnni_available()) { \
+            GTEST_SKIP() \
+                    << "AVX-512 VNNI not available on this host; the DQ-INT8 " \
+                       "custom kernel cannot run, so any per-tile or " \
+                       "prepare_for_call probe of the int8 variants would " \
+                       "refuse cleanly at the ISA gate"; \
+        } \
+    } while (0)
 
 // ──────────────────────────────────────────────────────────────────
 // FP16 ISA gate — needed for tests that exercise the native AVX-512-
@@ -99,16 +99,18 @@ using zendnnl::lowoha::matmul::grp_matmul_gated_act_t;
 // to) `CK_SKIP_IF_NO_BF16_ISA`.  Note `dispatch_supported()` only
 // reports the BF16 ISA, so the FP16 suite must gate on this macro
 // rather than `CK_SKIP_IF_NO_BF16_ISA()`.
-#define CK_SKIP_IF_NO_F16_ISA()                                        \
-  do {                                                                 \
-    if (!::ck_test::ck::avx512f16_available()) {                       \
-      GTEST_SKIP()                                                     \
-          << "AVX-512-FP16 not available on this host/toolchain; the " \
-             "FP16 custom kernel cannot run, so any per-tile or "      \
-             "end-to-end probe of the f16 variants would refuse and "  \
-             "fall back to AOCL DLP at the ISA gate";                  \
-    }                                                                  \
-  } while (0)
+#define CK_SKIP_IF_NO_F16_ISA() \
+    do { \
+        if (!::ck_test::ck::avx512f16_available()) { \
+            GTEST_SKIP() \
+                    << "AVX-512-FP16 not available on this host/toolchain; " \
+                       "the " \
+                       "FP16 custom kernel cannot run, so any per-tile or " \
+                       "end-to-end probe of the f16 variants would refuse " \
+                       "and " \
+                       "fall back to AOCL DLP at the ISA gate"; \
+        } \
+    } while (0)
 
 // ──────────────────────────────────────────────────────────────────
 // PrepCallCase — minimal valid inputs for `prepare_for_call`.
@@ -126,52 +128,52 @@ using zendnnl::lowoha::matmul::grp_matmul_gated_act_t;
 // vectors so test fixtures don't have to thread them through.
 // ──────────────────────────────────────────────────────────────────
 struct PrepCallCase {
-  data_type_t           src_dt        = data_type_t::bf16;
-  data_type_t           wei_dt        = data_type_t::bf16;
-  data_type_t           dst_dt        = data_type_t::bf16;
-  data_type_t           act_dt        = data_type_t::bf16;
-  data_type_t           bias_dt       = data_type_t::none;
-  grp_matmul_gated_act_t act           = grp_matmul_gated_act_t::none;
-  int                   M             = 16;
-  int                   K             = 64;
-  int                   N             = 256;        // multiple of pack_nr=32
-  bool                  is_wc         = true;
-  bool                  transA        = false;
-  bool                  transB        = false;
-  // DQ-INT8 discriminators threaded through to `prepare_for_call`.
-  // Defaults keep the BF16-only behaviour (`dynamic_quant=false`,
-  // `compute_dtype=none`) so existing tests are unaffected; int8
-  // cases set these explicitly along with `wei_dt=s8`.
-  bool                  dynamic_quant = false;
-  data_type_t           compute_dt    = data_type_t::none;
-  // Linear-form modifiers and ldb override.  Defaults are the
-  // identity (alpha=1, beta=0) and `ldb=auto` so the existing
-  // positive cases are unchanged; the new int8 refusal cells set
-  // these explicitly to probe the corresponding gates.
-  float                 alpha         = 1.0f;
-  float                 beta          = 0.0f;
-  int                   ldb_override  = -1;          // -1 → auto from K/N
-  // When >0, override num_ops to drive multi-expert refusal cases
-  // (e.g. null weight in second expert, all-M-zero with N>1).
-  int                   num_ops_override = 1;
-  // When true, the second expert (only used if num_ops_override>=2)
-  // gets a null weight pointer.  Drives the
-  // `null_weight_in_active_expert` refusal.
-  bool                  null_second_weight = false;
-  std::string           label;                       // human-readable
-  bool                  expect_success = true;
+    data_type_t src_dt = data_type_t::bf16;
+    data_type_t wei_dt = data_type_t::bf16;
+    data_type_t dst_dt = data_type_t::bf16;
+    data_type_t act_dt = data_type_t::bf16;
+    data_type_t bias_dt = data_type_t::none;
+    grp_matmul_gated_act_t act = grp_matmul_gated_act_t::none;
+    int M = 16;
+    int K = 64;
+    int N = 256; // multiple of pack_nr=32
+    bool is_wc = true;
+    bool transA = false;
+    bool transB = false;
+    // DQ-INT8 discriminators threaded through to `prepare_for_call`.
+    // Defaults keep the BF16-only behaviour (`dynamic_quant=false`,
+    // `compute_dtype=none`) so existing tests are unaffected; int8
+    // cases set these explicitly along with `wei_dt=s8`.
+    bool dynamic_quant = false;
+    data_type_t compute_dt = data_type_t::none;
+    // Linear-form modifiers and ldb override.  Defaults are the
+    // identity (alpha=1, beta=0) and `ldb=auto` so the existing
+    // positive cases are unchanged; the new int8 refusal cells set
+    // these explicitly to probe the corresponding gates.
+    float alpha = 1.0f;
+    float beta = 0.0f;
+    int ldb_override = -1; // -1 → auto from K/N
+    // When >0, override num_ops to drive multi-expert refusal cases
+    // (e.g. null weight in second expert, all-M-zero with N>1).
+    int num_ops_override = 1;
+    // When true, the second expert (only used if num_ops_override>=2)
+    // gets a null weight pointer.  Drives the
+    // `null_weight_in_active_expert` refusal.
+    bool null_second_weight = false;
+    std::string label; // human-readable
+    bool expect_success = true;
 };
 
 // Storage owned by the caller; pointers in `run_prepare` reference these.
 // Kept as a single struct so a per-test parameter doesn't need to declare
 // each vector individually.
 struct PrepCallStorage {
-  std::vector<bfloat16_t>     wei_storage;
-  std::vector<int8_t>         wei_int8_storage;
-  std::vector<float16_t>      wei_f16_storage;
-  std::vector<bfloat16_t>     bias_bf16_storage;
-  std::vector<float>          bias_f32_storage;
-  std::vector<float16_t>      bias_f16_storage;
+    std::vector<bfloat16_t> wei_storage;
+    std::vector<int8_t> wei_int8_storage;
+    std::vector<float16_t> wei_f16_storage;
+    std::vector<bfloat16_t> bias_bf16_storage;
+    std::vector<float> bias_f32_storage;
+    std::vector<float16_t> bias_f16_storage;
 };
 
 // One-shot driver for `prepare_for_call` — populates `storage` with
@@ -179,85 +181,82 @@ struct PrepCallStorage {
 // the dispatcher.  Returns the status `prepare_for_call` returned;
 // `kctx` is left at its post-call state (caller can inspect
 // `kctx.enabled` / `kctx.variant` etc.).
-inline status_t run_prepare(const PrepCallCase &c,
-                            PrepCallStorage   &storage,
-                            ck::CallContext   &kctx) {
-  // Pick the weight storage based on wei_dt — int8 cases need a
-  // K×N region of `int8_t`, every other case (including negative
-  // dtype probes) gets bf16 storage and the dispatcher refuses
-  // before reading the bytes.
-  const void *wei_ptr = nullptr;
-  if (c.wei_dt == data_type_t::s8) {
-    storage.wei_int8_storage.assign(
-        static_cast<size_t>(c.K) * c.N, static_cast<int8_t>(1));
-    wei_ptr = storage.wei_int8_storage.data();
-  } else if (c.wei_dt == data_type_t::f16) {
-    // FP16 family — the f16 pack path reads the weight as
-    // `float16_t`, so the storage element type must match (a bf16
-    // buffer reinterpreted as f16 would feed wrong bit patterns to
-    // any test that inspects packed values, e.g. the interleave
-    // bit-equality check).
-    storage.wei_f16_storage.assign(
-        static_cast<size_t>(c.K) * c.N, float16_t(0.05f));
-    wei_ptr = storage.wei_f16_storage.data();
-  } else {
-    storage.wei_storage.assign(
-        static_cast<size_t>(c.K) * c.N, bfloat16_t(0.05f));
-    wei_ptr = storage.wei_storage.data();
-  }
-
-  void *bias_ptr = nullptr;
-  if (c.bias_dt == data_type_t::bf16) {
-    storage.bias_bf16_storage.assign(c.N, bfloat16_t(0.01f));
-    bias_ptr = storage.bias_bf16_storage.data();
-  } else if (c.bias_dt == data_type_t::f32) {
-    storage.bias_f32_storage.assign(c.N, 0.01f);
-    bias_ptr = storage.bias_f32_storage.data();
-  } else if (c.bias_dt == data_type_t::f16) {
-    // f16 bias — accepted by all families (FP16 loads it directly;
-    // bf16 / DQ-INT8 widen it to fp32 via _mm512_cvtph_ps).
-    storage.bias_f16_storage.assign(c.N, float16_t(0.01f));
-    bias_ptr = storage.bias_f16_storage.data();
-  }
-
-  std::vector<bool>  transA_v;
-  std::vector<bool>  transB_v;
-  std::vector<int>   M_v;
-  std::vector<int>   N_v;
-  std::vector<int>   K_v;
-  std::vector<int>   ldb_v;
-  std::vector<float> alpha_v;
-  std::vector<float> beta_v;
-  std::vector<const void *> weight_v;
-  std::vector<bool>  is_wc_v;
-  const int auto_ldb = c.transB ? c.K : c.N;
-  const int eff_ldb  = (c.ldb_override > 0) ? c.ldb_override : auto_ldb;
-  const int num_ops  = (c.num_ops_override < 1) ? 1 : c.num_ops_override;
-  for (int i = 0; i < num_ops; ++i) {
-    transA_v.push_back(c.transA);
-    transB_v.push_back(c.transB);
-    M_v.push_back(c.M);
-    N_v.push_back(c.N);
-    K_v.push_back(c.K);
-    ldb_v.push_back(eff_ldb);
-    alpha_v.push_back(c.alpha);
-    beta_v.push_back(c.beta);
-    is_wc_v.push_back(c.is_wc);
-    if (i == 1 && c.null_second_weight) {
-      weight_v.push_back(nullptr);
+inline status_t run_prepare(const PrepCallCase &c, PrepCallStorage &storage,
+        ck::CallContext &kctx) {
+    // Pick the weight storage based on wei_dt — int8 cases need a
+    // K×N region of `int8_t`, every other case (including negative
+    // dtype probes) gets bf16 storage and the dispatcher refuses
+    // before reading the bytes.
+    const void *wei_ptr = nullptr;
+    if (c.wei_dt == data_type_t::s8) {
+        storage.wei_int8_storage.assign(
+                static_cast<size_t>(c.K) * c.N, static_cast<int8_t>(1));
+        wei_ptr = storage.wei_int8_storage.data();
+    } else if (c.wei_dt == data_type_t::f16) {
+        // FP16 family — the f16 pack path reads the weight as
+        // `float16_t`, so the storage element type must match (a bf16
+        // buffer reinterpreted as f16 would feed wrong bit patterns to
+        // any test that inspects packed values, e.g. the interleave
+        // bit-equality check).
+        storage.wei_f16_storage.assign(
+                static_cast<size_t>(c.K) * c.N, float16_t(0.05f));
+        wei_ptr = storage.wei_f16_storage.data();
     } else {
-      weight_v.push_back(wei_ptr);
+        storage.wei_storage.assign(
+                static_cast<size_t>(c.K) * c.N, bfloat16_t(0.05f));
+        wei_ptr = storage.wei_storage.data();
     }
-  }
 
-  (void)bias_ptr;  // bias buffer is per-tile; prepare_for_call only
-                   // consults bias_dtype at the dispatcher level.
+    void *bias_ptr = nullptr;
+    if (c.bias_dt == data_type_t::bf16) {
+        storage.bias_bf16_storage.assign(c.N, bfloat16_t(0.01f));
+        bias_ptr = storage.bias_bf16_storage.data();
+    } else if (c.bias_dt == data_type_t::f32) {
+        storage.bias_f32_storage.assign(c.N, 0.01f);
+        bias_ptr = storage.bias_f32_storage.data();
+    } else if (c.bias_dt == data_type_t::f16) {
+        // f16 bias — accepted by all families (FP16 loads it directly;
+        // bf16 / DQ-INT8 widen it to fp32 via _mm512_cvtph_ps).
+        storage.bias_f16_storage.assign(c.N, float16_t(0.01f));
+        bias_ptr = storage.bias_f16_storage.data();
+    }
 
-  return ck::prepare_for_call(c.act, c.src_dt, c.wei_dt, c.dst_dt,
-                              c.act_dt, c.bias_dt, transA_v, transB_v,
-                              M_v, N_v, K_v, ldb_v, alpha_v, beta_v,
-                              weight_v, is_wc_v, kctx,
-                              c.dynamic_quant, c.compute_dt);
+    std::vector<bool> transA_v;
+    std::vector<bool> transB_v;
+    std::vector<int> M_v;
+    std::vector<int> N_v;
+    std::vector<int> K_v;
+    std::vector<int> ldb_v;
+    std::vector<float> alpha_v;
+    std::vector<float> beta_v;
+    std::vector<const void *> weight_v;
+    std::vector<bool> is_wc_v;
+    const int auto_ldb = c.transB ? c.K : c.N;
+    const int eff_ldb = (c.ldb_override > 0) ? c.ldb_override : auto_ldb;
+    const int num_ops = (c.num_ops_override < 1) ? 1 : c.num_ops_override;
+    for (int i = 0; i < num_ops; ++i) {
+        transA_v.push_back(c.transA);
+        transB_v.push_back(c.transB);
+        M_v.push_back(c.M);
+        N_v.push_back(c.N);
+        K_v.push_back(c.K);
+        ldb_v.push_back(eff_ldb);
+        alpha_v.push_back(c.alpha);
+        beta_v.push_back(c.beta);
+        is_wc_v.push_back(c.is_wc);
+        if (i == 1 && c.null_second_weight) {
+            weight_v.push_back(nullptr);
+        } else {
+            weight_v.push_back(wei_ptr);
+        }
+    }
+
+    (void)bias_ptr; // bias buffer is per-tile; prepare_for_call only
+            // consults bias_dtype at the dispatcher level.
+
+    return ck::prepare_for_call(c.act, c.src_dt, c.wei_dt, c.dst_dt, c.act_dt,
+            c.bias_dt, transA_v, transB_v, M_v, N_v, K_v, ldb_v, alpha_v,
+            beta_v, weight_v, is_wc_v, kctx, c.dynamic_quant, c.compute_dt);
 }
 
 // Pretty-name a data_type_t for TestParam labels.  Must return a
@@ -266,24 +265,24 @@ inline status_t run_prepare(const PrepCallCase &c,
 // names, so any new dtype added to the enum must extend this switch
 // before it can appear in a parameterised test sweep.
 inline const char *dt_name(data_type_t dt) noexcept {
-  switch (dt) {
-    case data_type_t::none: return "none";
-    case data_type_t::f32:  return "f32";
-    case data_type_t::f16:  return "f16";
-    case data_type_t::bf16: return "bf16";
-    case data_type_t::s32:  return "s32";
-    case data_type_t::s64:  return "s64";
-    case data_type_t::s16:  return "s16";
-    case data_type_t::s8:   return "s8";
-    case data_type_t::s4:   return "s4";
-    case data_type_t::u32:  return "u32";
-    case data_type_t::u16:  return "u16";
-    case data_type_t::u8:   return "u8";
-    case data_type_t::u4:   return "u4";
-    default:                return "unk";
-  }
+    switch (dt) {
+        case data_type_t::none: return "none";
+        case data_type_t::f32: return "f32";
+        case data_type_t::f16: return "f16";
+        case data_type_t::bf16: return "bf16";
+        case data_type_t::s32: return "s32";
+        case data_type_t::s64: return "s64";
+        case data_type_t::s16: return "s16";
+        case data_type_t::s8: return "s8";
+        case data_type_t::s4: return "s4";
+        case data_type_t::u32: return "u32";
+        case data_type_t::u16: return "u16";
+        case data_type_t::u8: return "u8";
+        case data_type_t::u4: return "u4";
+        default: return "unk";
+    }
 }
 
-}  // namespace ck_test
+} // namespace ck_test
 
-#endif  // ZENDNNL_GTESTS_GROUP_MATMUL_CUSTOM_KERNEL_CK_TEST_HELPERS_HPP
+#endif // ZENDNNL_GTESTS_GROUP_MATMUL_CUSTOM_KERNEL_CK_TEST_HELPERS_HPP

@@ -19,8 +19,8 @@
 #include "zendnnl.hpp"
 
 using namespace zendnnl::interface;
-#define  OK          (0)
-#define  NOT_OK      (1)
+#define OK (0)
+#define NOT_OK (1)
 
 #include <emmintrin.h>
 
@@ -30,11 +30,7 @@ using namespace zendnnl::interface;
 namespace zendnnl {
 namespace benchdnn {
 
-enum class CacheMode {
-  COLD,
-  WARM,
-  HOT
-};
+enum class CacheMode { COLD, WARM, HOT };
 
 /**
  * @struct global_options
@@ -46,103 +42,132 @@ enum class CacheMode {
  * @var ndims Number of dimensions for tensors (e.g., 2 for standard matmul, 3 for batched matmul).
  */
 struct global_options {
-  size_t bs; /**< CLI batch size (B). 0 = unset; required for BMM matmul
+    size_t bs; /**< CLI batch size (B). 0 = unset; required for BMM matmul
                  (--ndims>2) and for SDPA. Ignored for non-batched matmul. */
-  size_t m;  /**< CLI matmul M dimension. 0 = unset; required for matmul. */
-  size_t k;  /**< CLI matmul K dimension. 0 = unset; required for matmul. */
-  std::vector<size_t> n_values; /**< Vector of output columns
+    size_t m; /**< CLI matmul M dimension. 0 = unset; required for matmul. */
+    size_t k; /**< CLI matmul K dimension. 0 = unset; required for matmul. */
+    std::vector<size_t> n_values; /**< Vector of output columns
                                for each layer (multi-layer support). */
-  bool isBiasEnabled; /**< Flag indicating if bias is enabled in the matmul operation. */
-  std::vector<zendnnl::ops::post_op_type_t> post_ops; /**< List of post operations
+    bool isBiasEnabled; /**< Flag indicating if bias is enabled in the matmul operation. */
+    std::vector<zendnnl::ops::post_op_type_t>
+            post_ops; /**< List of post operations
                                                       to apply (e.g., relu, gelu). */
-  data_type_t post_op_dt; /**< Datatype of post operation. */
-  int ndims; /**< Number of dimensions for tensors (e.g., 2 for standard matmul, 3 for batched matmul). */
-  int iters; /**< Number of iterations to run the benchmark. */
-  data_type_t sdt; /**< Datatype of input. */
-  data_type_t wdt; /**< Datatype of weights. */
-  data_type_t ddt; /**< Datatype of destination/output. */
-  std::string kernel_name; /**< Name of the kernel to use. */
-  int is_weights_const; /**< 0: weights are not constant, 1: weights are constant, -1: not set. */
-  data_type_t bias_dt; /**< Datatype of bias. */
-  bool isTransA; /**< Transpose flag for input matrix */
-  bool isTransB; /**< Transpose flag for weight matrix */
-  float alpha, beta; /**< Scaling factors for matmul operation. */
-  std::string scale_granularity; /**< Scale granularity for weight quantization. */
-  uint64_t group_size; /**< Group size for weight quantization. */
-  data_type_t scale_dt; /**< Datatype of weight scale. */
-  int warmup_iters; /**< Number of warmup iterations to run before actual benchmarking. */
-  bool perf_counters; /**< Enable per-shape HW perf counter collection (AMD Zen 4/5 PMU). */
-  std::string perf_profile_str; /**< Perf counter profile:
+    data_type_t post_op_dt; /**< Datatype of post operation. */
+    int ndims; /**< Number of dimensions for tensors (e.g., 2 for standard matmul, 3 for batched matmul). */
+    int iters; /**< Number of iterations to run the benchmark. */
+    data_type_t sdt; /**< Datatype of input. */
+    data_type_t wdt; /**< Datatype of weights. */
+    data_type_t ddt; /**< Datatype of destination/output. */
+    std::string kernel_name; /**< Name of the kernel to use. */
+    int is_weights_const; /**< 0: weights are not constant, 1: weights are constant, -1: not set. */
+    data_type_t bias_dt; /**< Datatype of bias. */
+    bool isTransA; /**< Transpose flag for input matrix */
+    bool isTransB; /**< Transpose flag for weight matrix */
+    float alpha, beta; /**< Scaling factors for matmul operation. */
+    std::string
+            scale_granularity; /**< Scale granularity for weight quantization. */
+    uint64_t group_size; /**< Group size for weight quantization. */
+    data_type_t scale_dt; /**< Datatype of weight scale. */
+    int warmup_iters; /**< Number of warmup iterations to run before actual benchmarking. */
+    bool perf_counters; /**< Enable per-shape HW perf counter collection (AMD Zen 4/5 PMU). */
+    std::string perf_profile_str; /**< Perf counter profile:
                                 "cache" (default), "tlb", "stalls". */
-  /**< Cache: cold, warm, or hot. Warm is matmul-only; main rejects warm for other --op. */
-  CacheMode cache_mode;
-  int num_weight_buffers; /**< Number of weight buffers to use. */
-  bool src_dynamic_quant; /**< Enable dynamic source quantization
+    /**< Cache: cold, warm, or hot. Warm is matmul-only; main rejects warm for other --op. */
+    CacheMode cache_mode;
+    int num_weight_buffers; /**< Number of weight buffers to use. */
+    bool src_dynamic_quant; /**< Enable dynamic source quantization
                           (matmul W8A8 or W4A8 -> s8 compute). */
-  std::string src_scale_granularity; /**< Source scale granularity:
+    std::string src_scale_granularity; /**< Source scale granularity:
                                      per-tensor | per-token | per-group. */
-  uint64_t src_group_size; /**< K-direction group size for per-group source scales. */
-  data_type_t src_scale_dt; /**< Datatype of source scale (f32 | bf16). */
+    uint64_t
+            src_group_size; /**< K-direction group size for per-group source scales. */
+    data_type_t src_scale_dt; /**< Datatype of source scale (f32 | bf16). */
 
-  // Sweep-specific options (used by --sweep).
-  bool sweep_enabled; /**< Expand model-file shapes across M and sweep dtypes. */
-  std::string m_sweep_str; /**< Colon-separated M values for --sweep (empty = default). */
-  std::string dtype_sweep_str; /**< Comma-separated sweep dtypes or "all" for --dtype_sweep. */
-  std::string cache_sweep_str; /**< Comma-separated cache modes (hot,cold,warm) for --cache_sweep; empty = no cache sweep. */
+    // Sweep-specific options (used by --sweep).
+    bool sweep_enabled; /**< Expand model-file shapes across M and sweep dtypes. */
+    std::string
+            m_sweep_str; /**< Colon-separated M values for --sweep (empty = default). */
+    std::string
+            dtype_sweep_str; /**< Comma-separated sweep dtypes or "all" for --dtype_sweep. */
+    std::string
+            cache_sweep_str; /**< Comma-separated cache modes (hot,cold,warm) for --cache_sweep; empty = no cache sweep. */
 
-  // SDPA-specific options (used by --op=sdpa).
-  // Two different conventions are used for the default-constructed values below:
-  //   * Required dimensions (num_heads, seq_len, head_dim) use 0 as an "unset"
-  //     sentinel; the CLI parser rejects values <= 0 so the SDPA driver can
-  //     detect when the user forgot to supply them.
-  //   * Every other field treats its default (0 / false / data_type_t::none /
-  //     "bhsd") as a real, semantic value -- NOT a sentinel. For example:
-  //       kv_seq_len = 0          -> self-attention (use seq_len)
-  //       mask_ndims = 0          -> no attention mask
-  //       mask_dt    = none       -> no mask dtype
-  //       is_causal  = false      -> no causal mask (a valid default)
-  //       scale      = 0.0        -> auto = 1 / sqrt(head_dim)
-  //       num_threads= 0          -> auto (use all available threads)
-  //       out_dt     = none       -> use qkv dtype
-  //       qkv_layout = "bhsd"     -> head-major BHSD memory layout
-  // See each field's docstring for the exact semantics.
-  int64_t num_heads;     /**< SDPA: number of attention heads (H). 0 = unset. */
-  int64_t seq_len;       /**< SDPA: query sequence length (S_q). 0 = unset. */
-  int64_t kv_seq_len;    /**< SDPA: key/value sequence length. 0 = use seq_len. */
-  int64_t head_dim;      /**< SDPA: per-head dimension (D). 0 = unset. */
-  int mask_ndims;        /**< SDPA: 0 (none), 2 ([S_q,S_kv]) or 4 ([B,H,S_q,S_kv]). */
-  data_type_t mask_dt;   /**< SDPA: mask data type when mask_ndims > 0. */
-  bool is_causal;        /**< SDPA: apply causal upper-triangular mask. */
-  double scale;          /**< SDPA: softmax scale; 0.0 -> auto = 1/sqrt(D). */
-  int32_t num_threads;   /**< SDPA: OpenMP thread count; 0 = auto/all available. */
-  data_type_t out_dt;    /**< SDPA: output dtype. `none` -> use qkv_dt. */
-  std::string qkv_layout; /**< SDPA: physical Q/K/V layout: "bhsd" (default) or "bshd".
+    // SDPA-specific options (used by --op=sdpa).
+    // Two different conventions are used for the default-constructed values below:
+    //   * Required dimensions (num_heads, seq_len, head_dim) use 0 as an "unset"
+    //     sentinel; the CLI parser rejects values <= 0 so the SDPA driver can
+    //     detect when the user forgot to supply them.
+    //   * Every other field treats its default (0 / false / data_type_t::none /
+    //     "bhsd") as a real, semantic value -- NOT a sentinel. For example:
+    //       kv_seq_len = 0          -> self-attention (use seq_len)
+    //       mask_ndims = 0          -> no attention mask
+    //       mask_dt    = none       -> no mask dtype
+    //       is_causal  = false      -> no causal mask (a valid default)
+    //       scale      = 0.0        -> auto = 1 / sqrt(head_dim)
+    //       num_threads= 0          -> auto (use all available threads)
+    //       out_dt     = none       -> use qkv dtype
+    //       qkv_layout = "bhsd"     -> head-major BHSD memory layout
+    // See each field's docstring for the exact semantics.
+    int64_t num_heads; /**< SDPA: number of attention heads (H). 0 = unset. */
+    int64_t seq_len; /**< SDPA: query sequence length (S_q). 0 = unset. */
+    int64_t kv_seq_len; /**< SDPA: key/value sequence length. 0 = use seq_len. */
+    int64_t head_dim; /**< SDPA: per-head dimension (D). 0 = unset. */
+    int mask_ndims; /**< SDPA: 0 (none), 2 ([S_q,S_kv]) or 4 ([B,H,S_q,S_kv]). */
+    data_type_t mask_dt; /**< SDPA: mask data type when mask_ndims > 0. */
+    bool is_causal; /**< SDPA: apply causal upper-triangular mask. */
+    double scale; /**< SDPA: softmax scale; 0.0 -> auto = 1/sqrt(D). */
+    int32_t num_threads; /**< SDPA: OpenMP thread count; 0 = auto/all available. */
+    data_type_t out_dt; /**< SDPA: output dtype. `none` -> use qkv_dt. */
+    std::string
+            qkv_layout; /**< SDPA: physical Q/K/V layout: "bhsd" (default) or "bshd".
                                Stored as a string here to keep this op-agnostic header
                                independent of SDPA-specific enums; converted to
                                `qkv_layout_t` once at config-build time. */
 
-  global_options() :
-    bs(0), m(0), k(0),
-    isBiasEnabled(false),
-    post_op_dt(data_type_t::f32),
-    ndims(2), iters(100),
-    sdt(data_type_t::f32), wdt(data_type_t::f32), ddt(data_type_t::f32),
-    is_weights_const(-1), bias_dt(data_type_t::f32),
-    isTransA(false), isTransB(false),
-    alpha(1.0f), beta(0.0f),
-    scale_granularity("none"), group_size(0), scale_dt(data_type_t::f32),
-    warmup_iters(-1),
-    perf_counters(false), perf_profile_str("cache"),
-    cache_mode(CacheMode::HOT),
-    num_weight_buffers(-1),
-    src_dynamic_quant(false), src_scale_granularity("per-tensor"),
-    src_group_size(0), src_scale_dt(data_type_t::f32),
-    sweep_enabled(false), m_sweep_str(""), dtype_sweep_str(""),
-    cache_sweep_str(""),
-    num_heads(0), seq_len(0), kv_seq_len(0), head_dim(0),
-    mask_ndims(0), mask_dt(data_type_t::none), is_causal(false),
-    scale(0.0), num_threads(0), out_dt(data_type_t::none),
-    qkv_layout("bhsd") {}
+    global_options()
+        : bs(0)
+        , m(0)
+        , k(0)
+        , isBiasEnabled(false)
+        , post_op_dt(data_type_t::f32)
+        , ndims(2)
+        , iters(100)
+        , sdt(data_type_t::f32)
+        , wdt(data_type_t::f32)
+        , ddt(data_type_t::f32)
+        , is_weights_const(-1)
+        , bias_dt(data_type_t::f32)
+        , isTransA(false)
+        , isTransB(false)
+        , alpha(1.0f)
+        , beta(0.0f)
+        , scale_granularity("none")
+        , group_size(0)
+        , scale_dt(data_type_t::f32)
+        , warmup_iters(-1)
+        , perf_counters(false)
+        , perf_profile_str("cache")
+        , cache_mode(CacheMode::HOT)
+        , num_weight_buffers(-1)
+        , src_dynamic_quant(false)
+        , src_scale_granularity("per-tensor")
+        , src_group_size(0)
+        , src_scale_dt(data_type_t::f32)
+        , sweep_enabled(false)
+        , m_sweep_str("")
+        , dtype_sweep_str("")
+        , cache_sweep_str("")
+        , num_heads(0)
+        , seq_len(0)
+        , kv_seq_len(0)
+        , head_dim(0)
+        , mask_ndims(0)
+        , mask_dt(data_type_t::none)
+        , is_causal(false)
+        , scale(0.0)
+        , num_threads(0)
+        , out_dt(data_type_t::none)
+        , qkv_layout("bhsd") {}
 };
 
 /**
@@ -154,11 +179,7 @@ struct global_options {
  * - MODEL: Input is read from a model file.
  * - COMMAND_LINE: Input is provided directly via command-line arguments.
  */
-enum class InputMode {
-  FILE,
-  MODEL,
-  COMMAND_LINE
-};
+enum class InputMode { FILE, MODEL, COMMAND_LINE };
 
 /**
  * @fn trim
@@ -268,10 +289,9 @@ std::string algoToStr(matmul_algo_t algo);
  * onednn, libxsmm, batched_sgemm, auto, dynamic_dispatch, reference.
  * Used when validating user-specified kernel names.
  */
-inline const std::vector<std::string> VALID_KERNEL_NAMES = {
-  "aocl_dlp_blocked", "onednn_blocked", "libxsmm_blocked", "aocl_dlp", "onednn", "libxsmm",
-  "batched_sgemm", "auto", "dynamic_dispatch", "reference"
-};
+inline const std::vector<std::string> VALID_KERNEL_NAMES = {"aocl_dlp_blocked",
+        "onednn_blocked", "libxsmm_blocked", "aocl_dlp", "onednn", "libxsmm",
+        "batched_sgemm", "auto", "dynamic_dispatch", "reference"};
 
 /**
  * @brief Validates that the given kernel name is supported for matmul.

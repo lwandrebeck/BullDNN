@@ -65,15 +65,15 @@
  *  need per-test re-rounding.
  */
 struct GroupQuantMatmulType {
-  uint64_t matmul_m;
-  uint64_t matmul_k;
-  uint64_t matmul_n;
-  matmul_algo_t algo = matmul_algo_t::none;
-  data_type_t source_dtype;
-  data_type_t output_dtype;
-  quant_granularity_t weight_granularity;
-  int32_t num_threads;
-  GroupQuantMatmulType(uint32_t test_index = 0, uint32_t total_tests = 1);
+    uint64_t matmul_m;
+    uint64_t matmul_k;
+    uint64_t matmul_n;
+    matmul_algo_t algo = matmul_algo_t::none;
+    data_type_t source_dtype;
+    data_type_t output_dtype;
+    quant_granularity_t weight_granularity;
+    int32_t num_threads;
+    GroupQuantMatmulType(uint32_t test_index = 0, uint32_t total_tests = 1);
 };
 
 /// Global vector populated once by `gtest_main.cpp::main()`; consumed by
@@ -117,17 +117,13 @@ void PrintTo(const GroupQuantMatmulType &value, ::std::ostream *os);
  *                    full-size weight / scale buffers.
  *  @return group_matmul_direct status
  */
-status_t group_matmul_kernel_test(
-  std::vector<tensor_t> &inputs,
-  std::vector<tensor_t> &weights,
-  std::vector<tensor_t> &biases,
-  std::vector<tensor_t> &outputs,
-  matmul_algo_t algo,
-  float alpha = 1.0f,
-  float beta = 0.0f,
-  const group_matmul_moe_postop_params *moe_postop = nullptr,
-  const grp_matmul_gated_act_params *gated_act = nullptr,
-  const std::vector<int> &pack_format_b = {},
-  const std::vector<int> &active_rows = {});
+status_t group_matmul_kernel_test(std::vector<tensor_t> &inputs,
+        std::vector<tensor_t> &weights, std::vector<tensor_t> &biases,
+        std::vector<tensor_t> &outputs, matmul_algo_t algo, float alpha = 1.0f,
+        float beta = 0.0f,
+        const group_matmul_moe_postop_params *moe_postop = nullptr,
+        const grp_matmul_gated_act_params *gated_act = nullptr,
+        const std::vector<int> &pack_format_b = {},
+        const std::vector<int> &active_rows = {});
 
 #endif // ZENDNNL_GTESTS_GROUP_MATMUL_TEST_HELPERS_HPP

@@ -35,21 +35,21 @@ using zendnnl::common::data_type_t;
  * Defines all available matmul backends.
  */
 enum class matmul_algo_t : int32_t {
-  none = -1,             /*!< No algorithm selected */
-  dynamic_dispatch = 0,  /*!< Dynamic dispatch */
-  aocl_dlp_blocked = 1,  /*!< Blocked AOCL */
-  onednn_blocked = 2,    /*!< Blocked OneDNN */
-  libxsmm_blocked = 3,   /*!< Blocked LIBXSMM */
-  aocl_dlp  = 4,         /*!< AOCL */
-  onednn = 5,            /*!< OneDNN */
-  libxsmm = 6,           /*!< LIBXSMM */
-  batched_sgemm = 7,     /*!< Batched SGEMM */
-  auto_tuner = 8,        /*!< Auto Tuner */
-  reference = 9,         /*!< Reference */
-  native_gemm = 10,          /*!< Native GEMM microkernel */
-  native_brgemm = 11,        /*!< Native BRGEMM microkernel */
-  moe_custom_kernel = 12,    /*!< group_matmul MoE custom-kernel */
-  algo_count             /*!< Algo count */
+    none = -1, /*!< No algorithm selected */
+    dynamic_dispatch = 0, /*!< Dynamic dispatch */
+    aocl_dlp_blocked = 1, /*!< Blocked AOCL */
+    onednn_blocked = 2, /*!< Blocked OneDNN */
+    libxsmm_blocked = 3, /*!< Blocked LIBXSMM */
+    aocl_dlp = 4, /*!< AOCL */
+    onednn = 5, /*!< OneDNN */
+    libxsmm = 6, /*!< LIBXSMM */
+    batched_sgemm = 7, /*!< Batched SGEMM */
+    auto_tuner = 8, /*!< Auto Tuner */
+    reference = 9, /*!< Reference */
+    native_gemm = 10, /*!< Native GEMM microkernel */
+    native_brgemm = 11, /*!< Native BRGEMM microkernel */
+    moe_custom_kernel = 12, /*!< group_matmul MoE custom-kernel */
+    algo_count /*!< Algo count */
 };
 
 /**
@@ -75,217 +75,218 @@ enum class matmul_algo_t : int32_t {
 * @sa matmul_operator_t
 */
 class matmul_config_t final : public op_config_t {
- public:
-  void set_default_config() override;
-  status_t set_user_config(json config_json) override;
-  void set_env_config() override;
+public:
+    void set_default_config() override;
+    status_t set_user_config(json config_json) override;
+    void set_env_config() override;
 
-  /** @brief Sets the accumulation type for the reference kernel.
+    /** @brief Sets the accumulation type for the reference kernel.
   *
   * This communicates which accumulation precision the reference kernel should
   * use when validating the output of a given matmul kernel.
   *
   * @param type The accumulation data type (data_type_t::f32 or data_type_t::f16).
   */
-  void set_accum_type(data_type_t type);
+    void set_accum_type(data_type_t type);
 
-  /** @brief Get the accumulation type for the reference kernel.
+    /** @brief Get the accumulation type for the reference kernel.
    *
    * @return The current accumulation data type.
    */
-  data_type_t get_accum_type();
+    data_type_t get_accum_type();
 
-  /** @brief Sets matmul algo.
+    /** @brief Sets matmul algo.
   *
   * @param algo The MatMul algorithm to set.
   */
-  void set_algo(int32_t algo);
+    void set_algo(int32_t algo);
 
-  /** @brief Get matmul algo.
+    /** @brief Get matmul algo.
    *
    * @return matmul algo.
    */
-  int32_t get_algo();
+    int32_t get_algo();
 
-  /** @brief Sets bmm algo.
+    /** @brief Sets bmm algo.
   *
   * @param algo The BMM algorithm to set.
   */
-  void set_bmm_algo(int32_t algo);
+    void set_bmm_algo(int32_t algo);
 
-  /** @brief Get bmm algo.
+    /** @brief Get bmm algo.
    *
    * @return bmm algo.
    */
-  int32_t get_bmm_algo();
+    int32_t get_bmm_algo();
 
-  /** @brief Sets matmul_weight_cache.
+    /** @brief Sets matmul_weight_cache.
   *
   * @param weight_cache The matmul_weight_cache type to set:
   *                     0 = disabled, 1 = out-of-place, 2 = allow AOCL
   *                     in-place reordering when the layout is safe.
   */
-  void set_weight_cache(int32_t weight_cache);
+    void set_weight_cache(int32_t weight_cache);
 
-  /** @brief Get matmul_weight_cache.
+    /** @brief Get matmul_weight_cache.
    *
    * @return matmul_weight_cache (0 = disabled, 1 = out-of-place,
    *         2 = in-place).
    */
-  int32_t get_weight_cache();
+    int32_t get_weight_cache();
 
-  /** @brief Set the grouped-matmul AUTO mixed-in-place mode flag.
+    /** @brief Set the grouped-matmul AUTO mixed-in-place mode flag.
    *
    * See `grp_auto_mixed_inplace` for the contract.  Set by the grouped
    * dispatcher's WEIGHT_CACHE=2 eligibility gate.
    */
-  void set_grp_auto_mixed_inplace(bool enable);
+    void set_grp_auto_mixed_inplace(bool enable);
 
-  /** @brief Get the grouped-matmul AUTO mixed-in-place mode flag. */
-  bool get_grp_auto_mixed_inplace();
+    /** @brief Get the grouped-matmul AUTO mixed-in-place mode flag. */
+    bool get_grp_auto_mixed_inplace();
 
-  /** @brief Sets on-the-fly B packing flag for Native kernels.
+    /** @brief Sets on-the-fly B packing flag for Native kernels.
   *
   * @param enable 0 = disabled (default), 1 = enabled.
   */
-  void set_otf_bpack(int32_t enable);
+    void set_otf_bpack(int32_t enable);
 
-  /** @brief Get on-the-fly B packing flag for Native kernels.
+    /** @brief Get on-the-fly B packing flag for Native kernels.
    *
    * @return 0 if disabled, 1 if enabled.
    */
-  int32_t get_otf_bpack();
+    int32_t get_otf_bpack();
 
-  /** @brief Sets zp_comp_cache enable flag.
+    /** @brief Sets zp_comp_cache enable flag.
   *
   * @param enable Whether to enable zero-point compensation caching.
   */
-  void set_zp_comp_cache(bool enable);
+    void set_zp_comp_cache(bool enable);
 
-  /** @brief Get zp_comp_cache enable flag.
+    /** @brief Get zp_comp_cache enable flag.
    *
    * @return true if ZP compensation caching is enabled.
    */
-  bool get_zp_comp_cache();
+    bool get_zp_comp_cache();
 
-  /** @brief Sets lru_cache_capacity.
+    /** @brief Sets lru_cache_capacity.
   *
   * @param capacity The LRU cache capacity to set.
   */
-  void set_lru_cache_capacity(uint32_t capacity);
+    void set_lru_cache_capacity(uint32_t capacity);
 
-  /** @brief Get lru_cache_capacity.
+    /** @brief Get lru_cache_capacity.
    *
    * @return lru_cache_capacity.
    */
-  uint32_t get_lru_cache_capacity();
+    uint32_t get_lru_cache_capacity();
 
-  /** @brief Sets mm_partitioner_enabled flag.
+    /** @brief Sets mm_partitioner_enabled flag.
   *
   * @param enabled Whether to enable MM partitioner.
   */
-  void set_mm_partitioner_enabled(bool enabled);
+    void set_mm_partitioner_enabled(bool enabled);
 
-  /** @brief Get mm_partitioner_enabled flag.
+    /** @brief Get mm_partitioner_enabled flag.
    *
    * @return true if MM partitioner is enabled.
    */
-  bool get_mm_partitioner_enabled();
+    bool get_mm_partitioner_enabled();
 
-  /** @brief Sets tile_m size.
+    /** @brief Sets tile_m size.
   *
   * @param size The tile size for M dimension.
   */
-  void set_tile_m(int32_t size);
+    void set_tile_m(int32_t size);
 
-  /** @brief Get tile_m size.
+    /** @brief Get tile_m size.
    *
    * @return tile_m size.
    */
-  int32_t get_tile_m();
+    int32_t get_tile_m();
 
-  /** @brief Sets tile_n size.
+    /** @brief Sets tile_n size.
   *
   * @param size The tile size for N dimension.
   */
-  void set_tile_n(int32_t size);
+    void set_tile_n(int32_t size);
 
-  /** @brief Get tile_n size.
+    /** @brief Get tile_n size.
    *
    * @return tile_n size.
    */
-  int32_t get_tile_n();
+    int32_t get_tile_n();
 
-  /** @brief Sets tile_k size.
+    /** @brief Sets tile_k size.
   *
   * @param size The tile size for K dimension.
   */
-  void set_tile_k(int32_t size);
+    void set_tile_k(int32_t size);
 
-  /** @brief Get tile_k size.
+    /** @brief Get tile_k size.
    *
    * @return tile_k size.
    */
-  int32_t get_tile_k();
+    int32_t get_tile_k();
 
-  /** @brief Returns the singleton instance of matmul_config_t.
+    /** @brief Returns the singleton instance of matmul_config_t.
   *
   *  This method ensures only one instance of matmul_config_t exists
   *  throughout the program lifetime.
   *
   *  @return Reference to the singleton matmul_config_t instance.
   **/
-  static matmul_config_t &instance();
+    static matmul_config_t &instance();
 
-  /** @brief Convert from string to matmul_algo.
+    /** @brief Convert from string to matmul_algo.
   *
   *  @param str_ : string contains matmul algo name.
   *  @return matmul algo for appropriate string.
   *          matmul_algo_t::algo_count if string is not
   *          appropriate.
   */
-  matmul_algo_t str_to_matmul_algo(std::string algo);
+    matmul_algo_t str_to_matmul_algo(std::string algo);
 
- private:
-  /**
+private:
+    /**
   * @brief Private constructor for singleton pattern.
   *
   * The constructor is private to prevent direct instantiation of the class.
   * Use the @c instance() method to access the single global instance.
   */
-  matmul_config_t() = default;
+    matmul_config_t() = default;
 
-  int32_t matmul_algo;         /**< Matmul runtime algorithm. */
-  int32_t bmm_algo;            /**< Batched Matmul algorithm. */
-  data_type_t matmul_accum_type; /**< Accumulation type for reference kernel. */
-  /// Matmul weight cache type (0=disabled, 1=out-of-place, 2=in-place).
-  /// Atomic because the grouped dispatcher can mutate it at runtime
-  /// (`set_weight_cache(1)` on the WEIGHT_CACHE=2 AUTO safety downgrade)
-  /// concurrently with other threads reading it via `get_weight_cache()`;
-  /// a plain int32_t there is a C++ data race.  Relaxed ordering is
-  /// sufficient — the value is an independent flag, not a release gate
-  /// for other memory.
-  std::atomic<int32_t> matmul_weight_cache{1};
-  /// Grouped-matmul AUTO "mixed in-place" mode for WEIGHT_CACHE=2.  When
-  /// set, the grouped AUTO path keeps WC=2 (instead of downgrading to 1)
-  /// and routes asymmetrically: the AOCL full-weight (prompt) reorder
-  /// mutates the weight buffer IN PLACE while every other consumer (CK
-  /// decode pack, AOCL per-tile decode) stays OUT-OF-PLACE, pre-warmed
-  /// from the raw weights by cross-warm before the mutation.  Set once by
-  /// `group_matmul_run_parallel_dispatch` when the eligibility gate holds
-  /// (AUTO + WC2 + PREPACK + CROSS_WARM + unlimited LRU capacity); read by
-  /// the CK runtime and the prepack warmers.  Atomic for the same
-  /// concurrent read/write reason as `matmul_weight_cache`.
-  std::atomic<bool> grp_auto_mixed_inplace{false};
-  int32_t matmul_otf_bpack;    /**< On-the-fly B packing for Native kernels. */
-  bool zp_comp_cache;          /**< Enable zero-point compensation caching. */
-  uint32_t lru_cache_capacity; /**< LRU cache capacity. */
-  bool mm_partitioner_enabled;      /**< Enable MM partitioner. */
-  int32_t tile_m;                   /**< Tile size for M dimension. */
-  int32_t tile_n;                   /**< Tile size for N dimension. */
+    int32_t matmul_algo; /**< Matmul runtime algorithm. */
+    int32_t bmm_algo; /**< Batched Matmul algorithm. */
+    data_type_t
+            matmul_accum_type; /**< Accumulation type for reference kernel. */
+    /// Matmul weight cache type (0=disabled, 1=out-of-place, 2=in-place).
+    /// Atomic because the grouped dispatcher can mutate it at runtime
+    /// (`set_weight_cache(1)` on the WEIGHT_CACHE=2 AUTO safety downgrade)
+    /// concurrently with other threads reading it via `get_weight_cache()`;
+    /// a plain int32_t there is a C++ data race.  Relaxed ordering is
+    /// sufficient — the value is an independent flag, not a release gate
+    /// for other memory.
+    std::atomic<int32_t> matmul_weight_cache {1};
+    /// Grouped-matmul AUTO "mixed in-place" mode for WEIGHT_CACHE=2.  When
+    /// set, the grouped AUTO path keeps WC=2 (instead of downgrading to 1)
+    /// and routes asymmetrically: the AOCL full-weight (prompt) reorder
+    /// mutates the weight buffer IN PLACE while every other consumer (CK
+    /// decode pack, AOCL per-tile decode) stays OUT-OF-PLACE, pre-warmed
+    /// from the raw weights by cross-warm before the mutation.  Set once by
+    /// `group_matmul_run_parallel_dispatch` when the eligibility gate holds
+    /// (AUTO + WC2 + PREPACK + CROSS_WARM + unlimited LRU capacity); read by
+    /// the CK runtime and the prepack warmers.  Atomic for the same
+    /// concurrent read/write reason as `matmul_weight_cache`.
+    std::atomic<bool> grp_auto_mixed_inplace {false};
+    int32_t matmul_otf_bpack; /**< On-the-fly B packing for Native kernels. */
+    bool zp_comp_cache; /**< Enable zero-point compensation caching. */
+    uint32_t lru_cache_capacity; /**< LRU cache capacity. */
+    bool mm_partitioner_enabled; /**< Enable MM partitioner. */
+    int32_t tile_m; /**< Tile size for M dimension. */
+    int32_t tile_n; /**< Tile size for N dimension. */
 };
 
-}
-}
+} // namespace ops
+} // namespace zendnnl
 
 #endif

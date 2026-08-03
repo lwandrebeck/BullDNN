@@ -13,8 +13,8 @@
  * See the License for the specific language governing permissions and
  * limitations under the License.
  *******************************************************************************/
-#ifndef  _ZENDNNL_GLOBAL_HPP_
-#define  _ZENDNNL_GLOBAL_HPP_
+#ifndef _ZENDNNL_GLOBAL_HPP_
+#define _ZENDNNL_GLOBAL_HPP_
 
 #include "common/bfloat16.hpp"
 #include "common/data_types.hpp"
@@ -26,11 +26,11 @@
  * used to trace which functions are called in debug mode.
  */
 #ifndef NDEBUG
-#define LOG_DEBUG_INFO(...)                                                  \
-   do                                                                         \
-     debuglog_verbose("[",get_relative_path(__FILE__),"], [",                 \
-                      __PRETTY_FUNCTION__,"]: ", __VA_ARGS__);                \
-   while(0);
+#define LOG_DEBUG_INFO(...) \
+    do \
+        debuglog_verbose("[", get_relative_path(__FILE__), "], [", \
+                __PRETTY_FUNCTION__, "]: ", __VA_ARGS__); \
+    while (0);
 #else
 #define LOG_DEBUG_INFO(...)
 #endif
@@ -40,14 +40,13 @@
  * Used to expand various logger functions for different log modules and
  * log levels.
  */
-#define LOGGER_MACRO(LOG_MODULE, LOG_LEVEL)                                  \
-   template<typename... Ts>                                                   \
-   static inline void LOG_MODULE##log##_##LOG_LEVEL(Ts...vargs) {             \
-   zendnnl::common::zendnnl_global_block()                                    \
-   .get_logger()                                                              \
-   .log_msg(zendnnl::error_handling::log_module_t::LOG_MODULE,                \
-            zendnnl::error_handling::log_level_t::LOG_LEVEL, vargs...);       \
-   }
+#define LOGGER_MACRO(LOG_MODULE, LOG_LEVEL) \
+    template <typename... Ts> \
+    static inline void LOG_MODULE##log##_##LOG_LEVEL(Ts... vargs) { \
+        zendnnl::common::zendnnl_global_block().get_logger().log_msg( \
+                zendnnl::error_handling::log_module_t::LOG_MODULE, \
+                zendnnl::error_handling::log_level_t::LOG_LEVEL, vargs...); \
+    }
 
 /** @def LOGGER_MACRO(LOG_MODULE, LOG_LEVEL)
  *
@@ -55,25 +54,25 @@
  * levels. These functions do not have log module name prefixed and write
  * to common log.
  */
-#define COMMON_LOGGER_MACRO(LOG_LEVEL)                                      \
-   template<typename... Ts>                                                  \
-   static inline void log##_##LOG_LEVEL(Ts...vargs) {                        \
-   zendnnl::common::zendnnl_global_block()                                   \
-     .get_logger()                                                           \
-     .log_msg(zendnnl::error_handling::log_module_t::common,                 \
-              zendnnl::error_handling::log_level_t::LOG_LEVEL, vargs...);    \
-   }
+#define COMMON_LOGGER_MACRO(LOG_LEVEL) \
+    template <typename... Ts> \
+    static inline void log##_##LOG_LEVEL(Ts... vargs) { \
+        zendnnl::common::zendnnl_global_block().get_logger().log_msg( \
+                zendnnl::error_handling::log_module_t::common, \
+                zendnnl::error_handling::log_level_t::LOG_LEVEL, vargs...); \
+    }
 
-#define LOGGER_ENABLED_MACRO(LOG_MODULE, LOG_LEVEL)                        \
-  inline bool LOG_MODULE##log##_##LOG_LEVEL##_enabled() {                  \
-    static const bool cached                                               \
-        = zendnnl::common::zendnnl_global_block()                          \
-              .get_logger()                                                \
-              .is_level_enabled(                                           \
-                  zendnnl::error_handling::log_module_t::LOG_MODULE,       \
-                  zendnnl::error_handling::log_level_t::LOG_LEVEL);        \
-    return cached;                                                         \
-  }
+#define LOGGER_ENABLED_MACRO(LOG_MODULE, LOG_LEVEL) \
+    inline bool LOG_MODULE##log##_##LOG_LEVEL##_enabled() { \
+        static const bool cached \
+                = zendnnl::common::zendnnl_global_block() \
+                          .get_logger() \
+                          .is_level_enabled(zendnnl::error_handling:: \
+                                                    log_module_t::LOG_MODULE, \
+                                  zendnnl::error_handling::log_level_t:: \
+                                          LOG_LEVEL); \
+        return cached; \
+    }
 
 namespace zendnnl {
 namespace common {
@@ -84,8 +83,8 @@ namespace common {
  * Initializes ZenDNNL by creating its persistent global block singleton
  */
 static inline void zendnnl_init() {
-  //zendnnl_global_block_t* ins = zendnnl_global_block_t::get();
-  //platform_info_t& platform_info = ins->get_platform_info();
+    //zendnnl_global_block_t* ins = zendnnl_global_block_t::get();
+    //platform_info_t& platform_info = ins->get_platform_info();
 }
 
 /** @fn zendnnl_global_block()
@@ -93,7 +92,7 @@ static inline void zendnnl_init() {
  * @return A reference to zendnnl global block singleton.
  */
 static inline zendnnl_global_block_t &zendnnl_global_block() {
-  return (*(zendnnl_global_block_t::get()));
+    return (*(zendnnl_global_block_t::get()));
 }
 
 /** @fn zendnnl_platform_info()
@@ -101,7 +100,7 @@ static inline zendnnl_global_block_t &zendnnl_global_block() {
  * @return A reference to zendnnl platform information block.
  */
 static inline platform_info_t &zendnnl_platform_info() {
-  return (zendnnl_global_block_t::get())->get_platform_info();
+    return (zendnnl_global_block_t::get())->get_platform_info();
 }
 
 /** @fn zendnnl_config_manager()
@@ -109,7 +108,7 @@ static inline platform_info_t &zendnnl_platform_info() {
  * @return A reference to zendnnl platform information block.
  */
 static inline config_manager_t &zendnnl_config_manager() {
-  return (zendnnl_global_block_t::get())->get_config_manager();
+    return (zendnnl_global_block_t::get())->get_config_manager();
 }
 
 /** @fn zendnnl_lru_cache()
@@ -117,7 +116,7 @@ static inline config_manager_t &zendnnl_config_manager() {
  * @return A reference to zendnnl global lru cache
  */
 static inline sptr_lru_cache_t &zendnnl_lru_cache() {
-  return (zendnnl_global_block_t::get())->get_lru_cache();
+    return (zendnnl_global_block_t::get())->get_lru_cache();
 }
 
 /** @fn get_relative_path
@@ -126,8 +125,8 @@ static inline sptr_lru_cache_t &zendnnl_lru_cache() {
  * @return A Relative path string
  */
 static inline const char *get_relative_path(const char *abs_path_) {
-  const char *rel = std::strstr(abs_path_, "ZenDNN/");
-  return (rel? rel : abs_path_);
+    const char *rel = std::strstr(abs_path_, "ZenDNN/");
+    return (rel ? rel : abs_path_);
 }
 
 /** @fn is_profile_enabled
@@ -135,9 +134,11 @@ static inline const char *get_relative_path(const char *abs_path_) {
  * @return A boolean indicating if profiling is enabled.
  */
 inline bool is_profile_enabled() {
-  static const bool cached
-    = zendnnl_global_block().get_config_manager().get_profiler_config().enable_profiler;
-  return cached;
+    static const bool cached = zendnnl_global_block()
+                                       .get_config_manager()
+                                       .get_profiler_config()
+                                       .enable_profiler;
+    return cached;
 }
 
 /** @fn is_global_cache_off
@@ -150,9 +151,9 @@ inline bool is_profile_enabled() {
  * @return True if all covered caches should be forced off.
  */
 inline bool is_global_cache_off() {
-  static const bool cached
-    = zendnnl_global_block().get_config_manager().is_global_cache_off();
-  return cached;
+    static const bool cached
+            = zendnnl_global_block().get_config_manager().is_global_cache_off();
+    return cached;
 }
 
 /** @fn is_postop_cache_enabled
@@ -170,12 +171,14 @@ inline bool is_global_cache_off() {
  * @return True if the post-op cache is enabled.
  */
 inline bool is_postop_cache_enabled() {
-  static const bool cached
-    = zendnnl_global_block().get_config_manager().get_postop_cache_config().enable;
-  return cached;
+    static const bool cached = zendnnl_global_block()
+                                       .get_config_manager()
+                                       .get_postop_cache_config()
+                                       .enable;
+    return cached;
 }
 
-}//common
+} // namespace common
 
 namespace error_handling {
 
@@ -237,7 +240,7 @@ LOGGER_ENABLED_MACRO(debug, warning)
 LOGGER_ENABLED_MACRO(debug, info)
 LOGGER_ENABLED_MACRO(debug, verbose)
 
-}//error_handling
+} // namespace error_handling
 
 namespace interface {
 COMMON_LOGGER_MACRO(error)
@@ -270,7 +273,7 @@ LOGGER_MACRO(test, verbose)
 // LOGGER_MACRO(debug, info)
 // LOGGER_MACRO(debug, verbose)
 
-}//interface
+} // namespace interface
 
-}//zendnnl
+} // namespace zendnnl
 #endif

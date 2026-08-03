@@ -18,8 +18,8 @@
 #define _LOWOHA_NORMALIZATION_COMMON_HPP
 
 #include <cstdint>
-#include "memory/memory_utils.hpp"
 #include "common/platform_info.hpp"
+#include "memory/memory_utils.hpp"
 
 namespace zendnnl {
 namespace lowoha {
@@ -41,9 +41,9 @@ using namespace zendnnl::common;
  */
 inline bool can_use_f16_fma_kernel() {
 #if !defined(ZENDNNL_NATIVE_F32_ACCUM)
-  return zendnnl_platform_info().get_avx512_f16_status();
+    return zendnnl_platform_info().get_avx512_f16_status();
 #else
-  return false;
+    return false;
 #endif
 }
 
@@ -68,20 +68,20 @@ inline bool can_use_f16_fma_kernel() {
  *                Formula: y = gamma * (x + residual) / sqrt(mean((x + residual)  ^2) + eps)
  */
 enum class norm_type_t : int {
-  NONE        = -1,   ///< No normalization type selected
-  LAYER_NORM  = 0,    ///< Layer Normalization
-  BATCH_NORM  = 1,    ///< Batch Normalization
-  RMS_NORM    = 2,    ///< Root Mean Square Normalization
-  FUSED_ADD_RMS_NORM = 3  ///< Fused Add and RMS Normalization
+    NONE = -1, ///< No normalization type selected
+    LAYER_NORM = 0, ///< Layer Normalization
+    BATCH_NORM = 1, ///< Batch Normalization
+    RMS_NORM = 2, ///< Root Mean Square Normalization
+    FUSED_ADD_RMS_NORM = 3 ///< Fused Add and RMS Normalization
 };
 
 /**
  * @brief Normalization algorithm / backend selection
  */
 enum class norm_algo_t : int {
-  none             = -1,  ///< No algorithm selected
-  dynamic_dispatch = 0,   ///< Dynamic dispatch - selects best available backend
-  reference        = 1    ///< Reference (scalar) implementation
+    none = -1, ///< No algorithm selected
+    dynamic_dispatch = 0, ///< Dynamic dispatch - selects best available backend
+    reference = 1 ///< Reference (scalar) implementation
 };
 
 /**
@@ -103,52 +103,52 @@ enum class norm_algo_t : int {
  * The total number of elements must equal batch * norm_size.
  */
 struct norm_params {
-  // --- Normalization variant ---
-  norm_type_t norm_type;          ///< Which normalization to apply
+    // --- Normalization variant ---
+    norm_type_t norm_type; ///< Which normalization to apply
 
-  // --- Flattened dimensions (set by caller) ---
-  uint64_t batch;                 ///< Product of all outer (non-normalized) dims
-  uint64_t norm_size;             ///< Product of all normalized (trailing) dims
-  uint64_t num_channels;          ///< Channel count (BatchNorm only)
+    // --- Flattened dimensions (set by caller) ---
+    uint64_t batch; ///< Product of all outer (non-normalized) dims
+    uint64_t norm_size; ///< Product of all normalized (trailing) dims
+    uint64_t num_channels; ///< Channel count (BatchNorm only)
 
-  // --- Normalization parameters ---
-  float epsilon;                  ///< Small constant for numerical stability (default 1e-5)
-  bool use_scale;                 ///< Whether to apply learned scale (gamma)
-  bool use_shift;                 ///< Whether to apply learned shift (beta); ignored by RMSNorm and FusedAddRMSNorm
+    // --- Normalization parameters ---
+    float epsilon; ///< Small constant for numerical stability (default 1e-5)
+    bool use_scale; ///< Whether to apply learned scale (gamma)
+    bool use_shift; ///< Whether to apply learned shift (beta); ignored by RMSNorm and FusedAddRMSNorm
 
-  // --- Data types ---
-  data_type_t src_dt;             ///< Source / input data type
-  data_type_t dst_dt;             ///< Destination / output data type
-  data_type_t gamma_dt;           ///< Gamma (scale) parameter data type
-  data_type_t beta_dt;            ///< Beta (shift) parameter data type
+    // --- Data types ---
+    data_type_t src_dt; ///< Source / input data type
+    data_type_t dst_dt; ///< Destination / output data type
+    data_type_t gamma_dt; ///< Gamma (scale) parameter data type
+    data_type_t beta_dt; ///< Beta (shift) parameter data type
 
-  // --- Backend selection ---
-  norm_algo_t algorithm;          ///< Selected algorithm / backend
+    // --- Backend selection ---
+    norm_algo_t algorithm; ///< Selected algorithm / backend
 
-  int32_t num_threads;            ///< Number of threads (0 = auto)
+    int32_t num_threads; ///< Number of threads (0 = auto)
 
-  // Communicates the FMA precision the production kernel used to the reference
-  // kernel, so gtest comparisons can bit-match. Set by the dispatch in
-  // lowoha_normalization.cpp; read by reference_kernel.cpp. Defaults to f32;
-  // the F16-FMA branches overwrite to f16 before invoking the compute path.
-  // Callers should leave this at its default.
-  data_type_t accum_type;
+    // Communicates the FMA precision the production kernel used to the reference
+    // kernel, so gtest comparisons can bit-match. Set by the dispatch in
+    // lowoha_normalization.cpp; read by reference_kernel.cpp. Defaults to f32;
+    // the F16-FMA branches overwrite to f16 before invoking the compute path.
+    // Callers should leave this at its default.
+    data_type_t accum_type;
 
-  norm_params()
-    : norm_type(norm_type_t::NONE),
-      batch(0),
-      norm_size(0),
-      num_channels(0),
-      epsilon(1e-5f),
-      use_scale(false),
-      use_shift(false),
-      src_dt(data_type_t::none),
-      dst_dt(data_type_t::none),
-      gamma_dt(data_type_t::f32),
-      beta_dt(data_type_t::f32),
-      algorithm(norm_algo_t::none),
-      num_threads(0),
-      accum_type(data_type_t::f32) {}
+    norm_params()
+        : norm_type(norm_type_t::NONE)
+        , batch(0)
+        , norm_size(0)
+        , num_channels(0)
+        , epsilon(1e-5f)
+        , use_scale(false)
+        , use_shift(false)
+        , src_dt(data_type_t::none)
+        , dst_dt(data_type_t::none)
+        , gamma_dt(data_type_t::f32)
+        , beta_dt(data_type_t::f32)
+        , algorithm(norm_algo_t::none)
+        , num_threads(0)
+        , accum_type(data_type_t::f32) {}
 };
 
 } // namespace normalization
@@ -156,4 +156,3 @@ struct norm_params {
 } // namespace zendnnl
 
 #endif // _LOWOHA_NORMALIZATION_COMMON_HPP
-

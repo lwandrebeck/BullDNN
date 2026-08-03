@@ -1,5 +1,5 @@
 /********************************************************************************
-# * Copyright (c) 2023-2025 Advanced Micro Devices, Inc. All rights reserved.
+# * Copyright (c) 2023-2026 Advanced Micro Devices, Inc. All rights reserved.
 # *
 # * Licensed under the Apache License, Version 2.0 (the "License");
 # * you may not use this file except in compliance with the License.
@@ -16,32 +16,32 @@
 #ifndef _ZENDNNL_API_MACROS_HPP_
 #define _ZENDNNL_API_MACROS_HPP_
 
-#include "common/zendnnl_object.hpp"
 #include "common/hashable_object.hpp"
 #include "common/zendnnl_global.hpp"
+#include "common/zendnnl_object.hpp"
 
-#define CHECK_AND_THROW_EXCEPTION(OBJ)                                  \
-  do {                                                                  \
-    if (OBJ.get_last_status()                                           \
-        != zendnnl::error_handling::status_t::success) {                \
-      std::string message = "Invalid object ";                          \
-      message += OBJ.get_name();                                        \
-      throw zendnnl::error_handling::exception_t(message);              \
-    }                                                                   \
-  }  while(0);                                                          \
+#define CHECK_AND_THROW_EXCEPTION(OBJ) \
+    do { \
+        if (OBJ.get_last_status() \
+                != zendnnl::error_handling::status_t::success) { \
+            std::string message = "Invalid object "; \
+            message += OBJ.get_name(); \
+            throw zendnnl::error_handling::exception_t(message); \
+        } \
+    } while (0);
 
 /** @def CHECK_AND_LOG_ERROR(object_)
  *  @brief supporting macro to check the status of an object and log error
  */
 
-#define CHECK_AND_LOG_ERROR(object_)                                    \
-  do {                                                                  \
-    if (OBJ.get_last_status()                                           \
-        != zendnnl::error_handling::status_t::success) {                \
-      std::string message = "Invalid object ";                          \
-      message += OBJ.get_name();                                        \
-      apilog_error(message);                                            \
-    }                                                                   \
-  }  while(0);                                                          \
+#define CHECK_AND_LOG_ERROR(object_) \
+    do { \
+        if (OBJ.get_last_status() \
+                != zendnnl::error_handling::status_t::success) { \
+            std::string message = "Invalid object "; \
+            message += OBJ.get_name(); \
+            apilog_error(message); \
+        } \
+    } while (0);
 
 #endif

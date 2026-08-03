@@ -19,8 +19,8 @@
 
 #include <cstdint>
 #include <string>
-#include "common/zendnnl_global.hpp"
 #include "common/logging.hpp"
+#include "common/zendnnl_global.hpp"
 #include "lowoha_operators/sdpa/lowoha_sdpa_common.hpp"
 
 namespace zendnnl {
@@ -39,13 +39,8 @@ using namespace zendnnl::common;
  * @param params       SDPA parameters
  * @return status_t::success if valid, status_t::failure otherwise
  */
-status_t validate_sdpa_inputs(
-  const void *query,
-  const void *key,
-  const void *value,
-  const void *output,
-  sdpa_params &params
-);
+status_t validate_sdpa_inputs(const void *query, const void *key,
+        const void *value, const void *output, sdpa_params &params);
 
 /**
  * @brief Calculate default scale factor (1/sqrt(head_dim))

@@ -1,5 +1,5 @@
 /********************************************************************************
-# * Copyright (c) 2025 Advanced Micro Devices, Inc. All rights reserved.
+# * Copyright (c) 2025-2026 Advanced Micro Devices, Inc. All rights reserved.
 # *
 # * Licensed under the Apache License, Version 2.0 (the "License");
 # * you may not use this file except in compliance with the License.
@@ -17,9 +17,9 @@
 #define _MATMUL_OPERATOR_HPP_
 
 #include "common/zendnnl_global.hpp"
-#include "operators/common/operator.hpp"
 #include "matmul_context.hpp"
 #include "matmul_operator_impl.hpp"
+#include "operators/common/operator.hpp"
 
 namespace zendnnl {
 namespace ops {
@@ -58,20 +58,20 @@ namespace ops {
  *   1. (mandatory) matmul_output : A MxN 2D tensor.
  *
  */
-class matmul_operator_t final : public operator_t<matmul_operator_t,
-                                                    matmul_context_t,
-                                                    matmul_impl_t> {
+class matmul_operator_t final
+    : public operator_t<matmul_operator_t, matmul_context_t, matmul_impl_t> {
 public:
-  /** @brief Self type **/
-  using self_type = matmul_operator_t;
-  /** @brief Parent type **/
-  using parent_type = operator_t<matmul_operator_t, matmul_context_t, matmul_impl_t>;
-  /** @brief context type **/
-  using context_type = parent_type::context_type;
-  /** @brief impl type **/
-  using impl_type = parent_type::impl_type;
-  /** @brief impl pointer type **/
-  using impl_sptr_type = parent_type::impl_sptr_type;
+    /** @brief Self type **/
+    using self_type = matmul_operator_t;
+    /** @brief Parent type **/
+    using parent_type
+            = operator_t<matmul_operator_t, matmul_context_t, matmul_impl_t>;
+    /** @brief context type **/
+    using context_type = parent_type::context_type;
+    /** @brief impl type **/
+    using impl_type = parent_type::impl_type;
+    /** @brief impl pointer type **/
+    using impl_sptr_type = parent_type::impl_sptr_type;
 };
 } //namespace ops
 

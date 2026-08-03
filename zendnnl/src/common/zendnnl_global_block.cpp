@@ -21,43 +21,41 @@ namespace common {
 using namespace zendnnl::error_handling;
 
 //zendnnl_global_block_t instance initialization
-std::once_flag              zendnnl_global_block_t::init_flag;
-zendnnl_global_block_t* zendnnl_global_block_t::instance = nullptr;
+std::once_flag zendnnl_global_block_t::init_flag;
+zendnnl_global_block_t *zendnnl_global_block_t::instance = nullptr;
 
 zendnnl_global_block_t::zendnnl_global_block_t()
-  :config_manager{}, platform_info{},
-   logger{}, lru_cache{} {
+    : config_manager {}, platform_info {}, logger {}, lru_cache {} {
 
-  platform_info.populate();
-  config_manager.config();
-  logger.set_config(config_manager.get_logger_config());
-  lru_cache.set_config(config_manager.get_lru_cache_config());
+    platform_info.populate();
+    config_manager.config();
+    logger.set_config(config_manager.get_logger_config());
+    lru_cache.set_config(config_manager.get_lru_cache_config());
 }
 
-zendnnl_global_block_t* zendnnl_global_block_t::get() {
-  // Thread-safe initialization
-  std::call_once(init_flag, []() {
-    instance = new zendnnl_global_block_t();
-  });
+zendnnl_global_block_t *zendnnl_global_block_t::get() {
+    // Thread-safe initialization
+    std::call_once(
+            init_flag, []() { instance = new zendnnl_global_block_t(); });
 
-  return instance;
+    return instance;
 }
 
-config_manager_t& zendnnl_global_block_t::get_config_manager() {
-  return config_manager;
+config_manager_t &zendnnl_global_block_t::get_config_manager() {
+    return config_manager;
 }
 
-platform_info_t& zendnnl_global_block_t::get_platform_info() {
-  return platform_info;
+platform_info_t &zendnnl_global_block_t::get_platform_info() {
+    return platform_info;
 }
 
-logger_t& zendnnl_global_block_t::get_logger() {
-  return logger;
+logger_t &zendnnl_global_block_t::get_logger() {
+    return logger;
 }
 
-sptr_lru_cache_t& zendnnl_global_block_t::get_lru_cache() {
-  return lru_cache;
+sptr_lru_cache_t &zendnnl_global_block_t::get_lru_cache() {
+    return lru_cache;
 }
 
-}//common
-}//zendnnl
+} // namespace common
+} // namespace zendnnl

@@ -25,12 +25,9 @@ namespace lowoha {
 namespace matmul {
 namespace native {
 
-void apply_postops_tile(
-  float *C, int ldc,
-  int m_count, int n_count,
-  int n_offset, int m_offset,
-  const float *bias,
-  const std::vector<matmul_post_op> &postops);
+void apply_postops_tile(float *C, int ldc, int m_count, int n_count,
+        int n_offset, int m_offset, const float *bias,
+        const std::vector<matmul_post_op> &postops);
 
 } // namespace native
 } // namespace matmul

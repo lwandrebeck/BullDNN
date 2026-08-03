@@ -23,7 +23,8 @@
 #include "aocl_dlp.h"
 #else
 #include <cstdint>
-using md_t = std::int64_t;  // matches aocl-dlp md_t (int64_t); previously dim_t from blis.h
+using md_t = std::
+        int64_t; // matches aocl-dlp md_t (int64_t); previously dim_t from blis.h
 #endif
 
 namespace zendnnl {
@@ -37,40 +38,40 @@ namespace ops {
  * @sa reorder_operator_t
  */
 class reorder_context_t final : public op_context_t<reorder_context_t> {
- public:
-  using parent_type = op_context_t<reorder_context_t>;
+public:
+    using parent_type = op_context_t<reorder_context_t>;
 
-  /** @brief default constructor */
-  reorder_context_t();
+    /** @brief default constructor */
+    reorder_context_t();
 
-  /** @brief set backend algo */
-  reorder_context_t &set_algo_format(std::string algo);
+    /** @brief set backend algo */
+    reorder_context_t &set_algo_format(std::string algo);
 
-  /** @brief get backend algo */
-  std::string get_algo_format() const;
+    /** @brief get backend algo */
+    std::string get_algo_format() const;
 
-  /** @brief set source data type */
-  reorder_context_t &set_source_dtype(data_type_t dtype);
+    /** @brief set source data type */
+    reorder_context_t &set_source_dtype(data_type_t dtype);
 
-  /** @brief get source data type */
-  data_type_t get_source_dtype() const;
+    /** @brief get source data type */
+    data_type_t get_source_dtype() const;
 
-  /** @brief Returns reorder context information */
-  std::string context_info() override;
+    /** @brief Returns reorder context information */
+    std::string context_info() override;
 
- protected:
-  /** @brief validate parameters */
-  status_t validate() override;
+protected:
+    /** @brief validate parameters */
+    status_t validate() override;
 
-  std::string algo_format;    /*!< Backend for reorder */
-  data_type_t source_dtype;   /*!< Source Data type for u8/s8 input*/
+    std::string algo_format; /*!< Backend for reorder */
+    data_type_t source_dtype; /*!< Source Data type for u8/s8 input*/
 };
 
 } //namespace ops
 
 namespace interface {
 using reorder_context_t = zendnnl::ops::reorder_context_t;
-} //export
+} // namespace interface
 
 } //namespace zendnnl
 #endif

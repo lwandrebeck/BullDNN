@@ -1,5 +1,5 @@
 /********************************************************************************
-# * Copyright (c) 2023-2024 Advanced Micro Devices, Inc. All rights reserved.
+# * Copyright (c) 2023-2026 Advanced Micro Devices, Inc. All rights reserved.
 # *
 # * Licensed under the Apache License, Version 2.0 (the "License");
 # * you may not use this file except in compliance with the License.
@@ -16,12 +16,12 @@
 #ifndef _HASH_UTILS_HPP_
 #define _HASH_UTILS_HPP_
 
-#include <iostream>
-#include <cstdint>
-#include <vector>
 #include <bitset>
 #include <chrono>
+#include <cstdint>
+#include <iostream>
 #include <string>
+#include <vector>
 
 namespace zendnnl {
 namespace common {
@@ -40,10 +40,9 @@ namespace common {
  * @param v    : an integer type variable.
  * @return combined hash.
  */
-template <typename T,
-          std::enable_if_t<std::is_integral_v<T>, bool> = true>
-static inline std::size_t hash_combine(std::size_t seed, const T& v) {
-  return seed ^= std::hash<T> {}(v) + 0x9e3779b9 + (seed << 6) + (seed >> 2);
+template <typename T, std::enable_if_t<std::is_integral_v<T>, bool> = true>
+static inline std::size_t hash_combine(std::size_t seed, const T &v) {
+    return seed ^= std::hash<T> {}(v) + 0x9e3779b9 + (seed << 6) + (seed >> 2);
 }
 
 /**
@@ -53,9 +52,9 @@ static inline std::size_t hash_combine(std::size_t seed, const T& v) {
  * @return combined hash.
  */
 template <typename T,
-          std::enable_if_t<std::is_floating_point_v<T>, bool> = true>
-static inline std::size_t hash_combine(std::size_t seed, const T& v) {
-  return seed ^= std::hash<T> {}(v) + 0x9e3779b9 + (seed << 6) + (seed >> 2);
+        std::enable_if_t<std::is_floating_point_v<T>, bool> = true>
+static inline std::size_t hash_combine(std::size_t seed, const T &v) {
+    return seed ^= std::hash<T> {}(v) + 0x9e3779b9 + (seed << 6) + (seed >> 2);
 }
 
 //ToDo : inroduce a check that T has hash() function.
@@ -66,10 +65,9 @@ static inline std::size_t hash_combine(std::size_t seed, const T& v) {
  * @param v    : object of a class.
  * @return combined hash.
  */
-template<typename T,
-         std::enable_if_t<std::is_class_v<T>, bool> = true>
-static inline std::size_t hash_combine(std::size_t seed, T& v) {
-  return seed ^= v.hash() + 0x9e3779b9 + (seed << 6) + (seed >> 2);
+template <typename T, std::enable_if_t<std::is_class_v<T>, bool> = true>
+static inline std::size_t hash_combine(std::size_t seed, T &v) {
+    return seed ^= v.hash() + 0x9e3779b9 + (seed << 6) + (seed >> 2);
 }
 
 /**
@@ -79,11 +77,11 @@ static inline std::size_t hash_combine(std::size_t seed, T& v) {
  * @return combined hash.
  */
 template <typename T>
-static inline std::size_t hash_combine(std::size_t seed, std::vector<T>& vec) {
-  for (auto v: vec) {
-    seed = hash_combine(seed, static_cast<uint64_t>(v));
-  }
-  return seed;
+static inline std::size_t hash_combine(std::size_t seed, std::vector<T> &vec) {
+    for (auto v : vec) {
+        seed = hash_combine(seed, static_cast<uint64_t>(v));
+    }
+    return seed;
 }
 
 // template <>
@@ -98,9 +96,10 @@ static inline std::size_t hash_combine(std::size_t seed, std::vector<T>& vec) {
  * @return combined hash.
  */
 template <typename T>
-static inline std::size_t hash_combine(std::size_t seed, T* ptr) {
-  seed = hash_combine<std::uintptr_t>(seed, reinterpret_cast<std::uintptr_t>(ptr));
-  return seed;
+static inline std::size_t hash_combine(std::size_t seed, T *ptr) {
+    seed = hash_combine<std::uintptr_t>(
+            seed, reinterpret_cast<std::uintptr_t>(ptr));
+    return seed;
 }
 
 /**
@@ -111,11 +110,11 @@ static inline std::size_t hash_combine(std::size_t seed, T* ptr) {
  * @return combined hash.
  */
 template <typename T>
-static inline std::size_t hash_combine(std::size_t seed, T* v, int size) {
-  for (int i = 0; i < size; i++) {
-    seed = hash_combine(seed, static_cast<uint64_t>(v[i]));
-  }
-  return seed;
+static inline std::size_t hash_combine(std::size_t seed, T *v, int size) {
+    for (int i = 0; i < size; i++) {
+        seed = hash_combine(seed, static_cast<uint64_t>(v[i]));
+    }
+    return seed;
 }
 
 /**
@@ -126,12 +125,12 @@ static inline std::size_t hash_combine(std::size_t seed, T* v, int size) {
  * @return combined hash.
  */
 static inline std::size_t hash_combine(std::size_t seed, std::string str) {
-  std::size_t str_hash = std::hash<std::string>{}(str);
-  seed ^= str_hash + 0x9e3779b9 + (seed << 6) + (seed >> 2);
-  return seed;
+    std::size_t str_hash = std::hash<std::string> {}(str);
+    seed ^= str_hash + 0x9e3779b9 + (seed << 6) + (seed >> 2);
+    return seed;
 }
 
-} //common
-} //zendnnl
+} // namespace common
+} // namespace zendnnl
 
 #endif

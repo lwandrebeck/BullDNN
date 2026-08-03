@@ -35,17 +35,13 @@ namespace bmm {
 /// This is a drop-in replacement for the original bmm_execute() that
 /// was inlined in lowoha_matmul.cpp + bmm_partitioner.cpp.
 void bmm_execute(const char layout, const bool transA, const bool transB,
-                 const int M, const int N, const int K, const float alpha,
-                 const void *src, const int lda,
-                 const void *weight, const int ldb,
-                 const void *bias, const float beta,
-                 void *dst, const int ldc,
-                 const bool is_weights_const,
-                 matmul_batch_params_t &batch_params,
-                 const size_t src_type_size, const size_t weight_type_size,
-                 const size_t out_type_size,
-                 const int num_threads,
-                 matmul_algo_t &kernel, matmul_params &params);
+        const int M, const int N, const int K, const float alpha,
+        const void *src, const int lda, const void *weight, const int ldb,
+        const void *bias, const float beta, void *dst, const int ldc,
+        const bool is_weights_const, matmul_batch_params_t &batch_params,
+        const size_t src_type_size, const size_t weight_type_size,
+        const size_t out_type_size, const int num_threads,
+        matmul_algo_t &kernel, matmul_params &params);
 
 } // namespace bmm
 } // namespace matmul

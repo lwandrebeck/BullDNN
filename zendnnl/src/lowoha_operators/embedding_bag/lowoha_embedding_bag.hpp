@@ -18,8 +18,8 @@
 #define _LOWOHA_EMBEDDING_BAG_HPP
 
 #include <vector>
-#include "lowoha_embag_common.hpp"
 #include "common/zendnnl_global.hpp"
+#include "lowoha_embag_common.hpp"
 
 namespace zendnnl {
 namespace lowoha {
@@ -61,13 +61,9 @@ namespace embag {
  *       table_ptr, indices_ptr, offsets_ptr, output_ptr, params);
  * @endcode
  */
-zendnnl::common::status_t embedding_bag_direct(
-  const void *table,
-  const void *indices,
-  const void *offsets,
-  const float *weights,
-  void *dst,
-  embag_params_t params);
+zendnnl::common::status_t embedding_bag_direct(const void *table,
+        const void *indices, const void *offsets, const float *weights,
+        void *dst, embag_params_t params);
 
 /**
  * @brief Simplified direct API for embedding lookup (no reduction)
@@ -83,12 +79,9 @@ zendnnl::common::status_t embedding_bag_direct(
  *
  * @return status_t::success on successful execution, status_t::failure otherwise
  */
-zendnnl::common::status_t embedding_direct(
-  const void *table,
-  const void *indices,
-  const float *weights,
-  void *dst,
-  embag_params_t params);
+zendnnl::common::status_t embedding_direct(const void *table,
+        const void *indices, const float *weights, void *dst,
+        embag_params_t params);
 
 /**
  * @brief Direct API for group embedding bag operation
@@ -123,12 +116,12 @@ zendnnl::common::status_t embedding_direct(
  * @endcode
  */
 zendnnl::common::status_t group_embedding_bag_direct(
-  const std::vector<const void*> &tables,
-  const std::vector<const void*> &indices,
-  const std::vector<const void*> &offsets,
-  const std::vector<const float*> &weights,
-  const std::vector<void*> &dsts,
-  const std::vector<embag_params_t> &params);
+        const std::vector<const void *> &tables,
+        const std::vector<const void *> &indices,
+        const std::vector<const void *> &offsets,
+        const std::vector<const float *> &weights,
+        const std::vector<void *> &dsts,
+        const std::vector<embag_params_t> &params);
 
 } // namespace embag
 } // namespace lowoha

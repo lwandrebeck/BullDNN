@@ -1,5 +1,5 @@
 /********************************************************************************
-# * Copyright (c) 2023-2024 Advanced Micro Devices, Inc. All rights reserved.
+# * Copyright (c) 2023-2026 Advanced Micro Devices, Inc. All rights reserved.
 # *
 # * Licensed under the Apache License, Version 2.0 (the "License");
 # * you may not use this file except in compliance with the License.
@@ -21,70 +21,67 @@ namespace common {
 
 using namespace zendnnl::error_handling;
 
-hash_object_t::hash_object_t():
-  hash_key{0},
-  status{status_t::bad_hash_object} {
-}
+hash_object_t::hash_object_t()
+    : hash_key {0}, status {status_t::bad_hash_object} {}
 
-hash_object_t::hash_object_t(hash_object_t&& other_) {
-  hash_key = other_.hash_key;
-  status   = other_.status;
-
-  other_.hash_key = 0;
-  other_.status   = status_t::bad_hash_object;
-}
-
-hash_object_t& hash_object_t::operator=(hash_object_t&& other_) {
-  if(hash_key != other_.hash_key) {
+hash_object_t::hash_object_t(hash_object_t &&other_) {
     hash_key = other_.hash_key;
-    status   = other_.status;
+    status = other_.status;
 
     other_.hash_key = 0;
-    other_.status   = status_t::bad_hash_object;
-  }
+    other_.status = status_t::bad_hash_object;
+}
 
-  return *this;
+hash_object_t &hash_object_t::operator=(hash_object_t &&other_) {
+    if (hash_key != other_.hash_key) {
+        hash_key = other_.hash_key;
+        status = other_.status;
+
+        other_.hash_key = 0;
+        other_.status = status_t::bad_hash_object;
+    }
+
+    return *this;
 }
 
 void hash_object_t::reset() {
-  LOG_DEBUG_INFO("Reset hash object");
-  hash_key = 0;
-  status   = status_t::bad_hash_object;
+    LOG_DEBUG_INFO("Reset hash object");
+    hash_key = 0;
+    status = status_t::bad_hash_object;
 }
 
 void hash_object_t::set_last_status(status_t status_) {
-  status = status_;
+    status = status_;
 }
 
 status_t hash_object_t::get_last_status() const {
-  return status;
+    return status;
 }
 
 std::size_t hash_object_t::get_hash() const {
-  LOG_DEBUG_INFO("Get the hash key of object");
-  return hash_key;
+    LOG_DEBUG_INFO("Get the hash key of object");
+    return hash_key;
 }
 
 bool hash_object_t::check() const {
-  LOG_DEBUG_INFO("Validate status of hash object");
-  return (status == status_t::success);
+    LOG_DEBUG_INFO("Validate status of hash object");
+    return (status == status_t::success);
 }
 
-bool hash_object_t::operator==(const hash_object_t& other_) const {
-  LOG_DEBUG_INFO("Check if hash objects are equal");
-  if (hash_key && other_.hash_key && (hash_key == other_.hash_key))
-    return true;
+bool hash_object_t::operator==(const hash_object_t &other_) const {
+    LOG_DEBUG_INFO("Check if hash objects are equal");
+    if (hash_key && other_.hash_key && (hash_key == other_.hash_key))
+        return true;
 
-  return false;
+    return false;
 }
 
-bool hash_object_t::operator!=(const hash_object_t& other_) const {
-  LOG_DEBUG_INFO("Check if hash objects are not equal");
-  if (hash_key != other_.hash_key)
-    return true;
+bool hash_object_t::operator!=(const hash_object_t &other_) const {
+    LOG_DEBUG_INFO("Check if hash objects are not equal");
+    if (hash_key != other_.hash_key) return true;
 
-  return false;
+    return false;
 }
 
-}//commom
-}//zendnnl
+} // namespace common
+} // namespace zendnnl

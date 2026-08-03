@@ -17,13 +17,13 @@
 #ifndef LOWOHA_MATMUL_UTILS_HPP
 #define LOWOHA_MATMUL_UTILS_HPP
 
-#include <numeric>
 #include <functional>
-#include <utility>
 #include <mutex>
+#include <numeric>
 #include <omp.h>
-#include "lowoha_operators/matmul/lowoha_matmul.hpp"
+#include <utility>
 #include "lowoha_operators/matmul/lowoha_common.hpp"
+#include "lowoha_operators/matmul/lowoha_matmul.hpp"
 
 namespace zendnnl {
 namespace lowoha {
@@ -36,67 +36,61 @@ namespace matmul {
 std::mutex &get_lowoha_mutex();
 
 inline int64_t divup(int64_t x, int64_t y) {
-  return (x + y - 1) / y;
+    return (x + y - 1) / y;
 }
 
 template <class F>
 inline void zendnnl_parallel_for(const int64_t begin, const int64_t end,
-                                 const int64_t grain_size, const F &f) {
+        const int64_t grain_size, const F &f) {
 
-  if (begin >= end) {
-    return;
-  }
-  std::atomic_flag err_flag = ATOMIC_FLAG_INIT;
-  std::exception_ptr eptr;
-  // choose number of tasks based on grain size and number of threads
-  int64_t num_threads = omp_in_parallel() ? 1 : omp_get_max_threads();
-  if (grain_size > 0) {
-    num_threads = std::min(num_threads, divup((end - begin), grain_size));
-  }
-
-  #pragma omp parallel num_threads(num_threads)
-  {
-    int64_t num_threads = omp_get_num_threads();
-    int64_t tid = omp_get_thread_num();
-    int64_t chunk_size = divup((end - begin), num_threads);
-    int64_t begin_tid = begin + tid * chunk_size;
-    if (begin_tid < end) {
-      try {
-        f(begin_tid, std::min(end, chunk_size + begin_tid));
-      }
-      catch (...) {
-        if (!err_flag.test_and_set()) {
-          eptr = std::current_exception();
-        }
-      }
+    if (begin >= end) { return; }
+    std::atomic_flag err_flag = ATOMIC_FLAG_INIT;
+    std::exception_ptr eptr;
+    // choose number of tasks based on grain size and number of threads
+    int64_t num_threads = omp_in_parallel() ? 1 : omp_get_max_threads();
+    if (grain_size > 0) {
+        num_threads = std::min(num_threads, divup((end - begin), grain_size));
     }
-  }
-  if (eptr) {
-    std::rethrow_exception(eptr);
-  }
+
+#pragma omp parallel num_threads(num_threads)
+    {
+        int64_t num_threads = omp_get_num_threads();
+        int64_t tid = omp_get_thread_num();
+        int64_t chunk_size = divup((end - begin), num_threads);
+        int64_t begin_tid = begin + tid * chunk_size;
+        if (begin_tid < end) {
+            try {
+                f(begin_tid, std::min(end, chunk_size + begin_tid));
+            } catch (...) {
+                if (!err_flag.test_and_set()) {
+                    eptr = std::current_exception();
+                }
+            }
+        }
+    }
+    if (eptr) { std::rethrow_exception(eptr); }
 }
 
 inline const void *get_matrix_block(const void *base, int row_start,
-                                    int col_start,
-                                    int lda, bool trans, size_t type_size) {
-  if (trans) {
-    // Accessing column-major layout when transposed
-    return static_cast<const uint8_t *>(base) + (col_start * lda + row_start) *
-           type_size;
-  }
-  else {
-    return static_cast<const uint8_t *>(base) + (row_start * lda + col_start) *
-           type_size;
-  }
+        int col_start, int lda, bool trans, size_t type_size) {
+    if (trans) {
+        // Accessing column-major layout when transposed
+        return static_cast<const uint8_t *>(base)
+                + (col_start * lda + row_start) * type_size;
+    } else {
+        return static_cast<const uint8_t *>(base)
+                + (row_start * lda + col_start) * type_size;
+    }
 }
 
-inline void *get_output_block(void *base, int row_start, int col_start,
-                              int ldc, size_t type_size) {
-  return static_cast<uint8_t *>(base) + (row_start * ldc + col_start) * type_size;
+inline void *get_output_block(
+        void *base, int row_start, int col_start, int ldc, size_t type_size) {
+    return static_cast<uint8_t *>(base)
+            + (row_start * ldc + col_start) * type_size;
 }
 
 inline int get_batch_index(int b, int batch_size) {
-  return (batch_size == 1) ? 0 : (b % batch_size);
+    return (batch_size == 1) ? 0 : (b % batch_size);
 }
 
 /**
@@ -109,7 +103,7 @@ inline int get_batch_index(int b, int batch_size) {
  * @return true if the post-op has a non-trivial batch dimension
  */
 inline bool is_3d_postop(const matmul_post_op &po) {
-  return po.dims.size() >= 3 && po.dims[0] > 1;
+    return po.dims.size() >= 3 && po.dims[0] > 1;
 }
 
 /**
@@ -135,8 +129,8 @@ size_t get_postop_batch_stride(const matmul_post_op &po);
  * @param m_start The starting row index for partitioned execution
  * @param N The number of columns in the output matrix
  */
-void apply_bmm_postop_offsets(matmul_params &params, int batch_idx,
-                              int m_start, int N);
+void apply_bmm_postop_offsets(
+        matmul_params &params, int batch_idx, int m_start, int N);
 
 /**
 * @brief Validates input parameters for matrix multiplication direct operation.
@@ -157,15 +151,12 @@ void apply_bmm_postop_offsets(matmul_params &params, int batch_idx,
 * @param is_weights_const Boolean indicating if weights are constant
 * @return status_t::success if all validations pass, status_t::failure otherwise
 */
-status_t validate_w4a8_inputs(const matmul_params &params, int M, int N,
-                              int K);
+status_t validate_w4a8_inputs(const matmul_params &params, int M, int N, int K);
 
 status_t validate_matmul_direct_inputs(const void *src, const void *weight,
-                                       const void *dst,
-                                       const int M, const int N, const int K,
-                                       const int Batch_A, const int Batch_B,
-                                       const matmul_params &params,
-                                       const bool is_weights_const);
+        const void *dst, const int M, const int N, const int K,
+        const int Batch_A, const int Batch_B, const matmul_params &params,
+        const bool is_weights_const);
 
 /**
  * @brief Detects a symmetric-quantization INT8 configuration.
@@ -182,24 +173,22 @@ status_t validate_matmul_direct_inputs(const void *src, const void *weight,
  * @return true if the config matches the sym_quant path; false otherwise.
  */
 inline bool is_sym_quant_config(const matmul_params &params) {
-  // Cheapest short-circuit first: src/wei dtype.  Non-s8 sources skip
-  // every subsequent check (the vast majority of matmul calls).
-  if (params.dtypes.src != data_type_t::s8 ||
-      params.dtypes.wei != data_type_t::s8) {
-    return false;
-  }
-  if (params.quant_params.src_zp.buff) {
-    return false;
-  }
-  if (params.dtypes.dst != data_type_t::f32 &&
-      params.dtypes.dst != data_type_t::bf16) {
-    return false;
-  }
-  size_t src_scale_nelems = 1;
-  for (auto d : params.quant_params.src_scale.dims) {
-    src_scale_nelems *= static_cast<size_t>(d);
-  }
-  return src_scale_nelems > 1;
+    // Cheapest short-circuit first: src/wei dtype.  Non-s8 sources skip
+    // every subsequent check (the vast majority of matmul calls).
+    if (params.dtypes.src != data_type_t::s8
+            || params.dtypes.wei != data_type_t::s8) {
+        return false;
+    }
+    if (params.quant_params.src_zp.buff) { return false; }
+    if (params.dtypes.dst != data_type_t::f32
+            && params.dtypes.dst != data_type_t::bf16) {
+        return false;
+    }
+    size_t src_scale_nelems = 1;
+    for (auto d : params.quant_params.src_scale.dims) {
+        src_scale_nelems *= static_cast<size_t>(d);
+    }
+    return src_scale_nelems > 1;
 }
 
 /**
@@ -214,28 +203,26 @@ inline bool is_sym_quant_config(const matmul_params &params) {
  * @return true if the config will be dynamic-quantized; false otherwise.
  */
 inline bool is_dynamic_quant_config(const matmul_params &params) {
-  // Cheapest short-circuit: the dynamic_quant flag is unset for the
-  // vast majority of matmul calls.
-  if (!params.dynamic_quant) {
-    return false;
-  }
-  // GGML packed weights are exempt from the s8 requirement: a Q4_0 weight is
-  // still s4 here and only widens to s8 AFTER this source quantization, which
-  // group_matmul_direct runs before the unpack.  Demanding s8 would skip the
-  // quant and leave a bf16 source that ggml_is_sym_quant then rejects.  Plain
-  // (unpacked) s4 stays out — that is W4A8, which reaches
-  // `reorder_quantization_wrapper` through is_w4a8_config instead and carries
-  // different source-scale shapes.
-  if (params.dtypes.wei != data_type_t::s8 &&
-      params.packing.pack_format_b != 1) {
-    return false;
-  }
-  if (params.dtypes.src != data_type_t::bf16 &&
-      params.dtypes.src != data_type_t::f32) {
-    return false;
-  }
-  return params.dtypes.compute == data_type_t::s8 ||
-         params.dtypes.compute == data_type_t::u8;
+    // Cheapest short-circuit: the dynamic_quant flag is unset for the
+    // vast majority of matmul calls.
+    if (!params.dynamic_quant) { return false; }
+    // GGML packed weights are exempt from the s8 requirement: a Q4_0 weight is
+    // still s4 here and only widens to s8 AFTER this source quantization, which
+    // group_matmul_direct runs before the unpack.  Demanding s8 would skip the
+    // quant and leave a bf16 source that ggml_is_sym_quant then rejects.  Plain
+    // (unpacked) s4 stays out — that is W4A8, which reaches
+    // `reorder_quantization_wrapper` through is_w4a8_config instead and carries
+    // different source-scale shapes.
+    if (params.dtypes.wei != data_type_t::s8
+            && params.packing.pack_format_b != 1) {
+        return false;
+    }
+    if (params.dtypes.src != data_type_t::bf16
+            && params.dtypes.src != data_type_t::f32) {
+        return false;
+    }
+    return params.dtypes.compute == data_type_t::s8
+            || params.dtypes.compute == data_type_t::u8;
 }
 
 /**
@@ -243,49 +230,35 @@ inline bool is_dynamic_quant_config(const matmul_params &params) {
  *        Entry (bf16 src) also requires src/wei scales; runtime (s8 src) does not.
  */
 inline bool is_w4a8_config(const matmul_params &params) {
-  if (!params.dynamic_quant) {
-    return false;
-  }
-  if (params.dtypes.wei != data_type_t::s4) {
-    return false;
-  }
-  if (params.dtypes.dst != data_type_t::bf16) {
-    return false;
-  }
-  if (params.dtypes.compute != data_type_t::s8) {
-    return false;
-  }
-  if (params.quant_params.wei_zp.buff || params.quant_params.src_zp.buff) {
-    return false;
-  }
-  if (params.dtypes.src == data_type_t::bf16) {
-    return !params.quant_params.src_scale.dims.empty() &&
-           params.quant_params.src_scale.dt != data_type_t::none &&
-           !params.quant_params.wei_scale.dims.empty() &&
-           params.quant_params.wei_scale.dt != data_type_t::none;
-  }
-  return params.dtypes.src == data_type_t::s8;
+    if (!params.dynamic_quant) { return false; }
+    if (params.dtypes.wei != data_type_t::s4) { return false; }
+    if (params.dtypes.dst != data_type_t::bf16) { return false; }
+    if (params.dtypes.compute != data_type_t::s8) { return false; }
+    if (params.quant_params.wei_zp.buff || params.quant_params.src_zp.buff) {
+        return false;
+    }
+    if (params.dtypes.src == data_type_t::bf16) {
+        return !params.quant_params.src_scale.dims.empty()
+                && params.quant_params.src_scale.dt != data_type_t::none
+                && !params.quant_params.wei_scale.dims.empty()
+                && params.quant_params.wei_scale.dt != data_type_t::none;
+    }
+    return params.dtypes.src == data_type_t::s8;
 }
 
 /** @brief Product of quant-param dims; 0 when dims is empty. */
 inline int64_t quant_param_num_elements(const std::vector<int64_t> &dims) {
-  if (dims.empty()) {
-    return 0;
-  }
-  return std::accumulate(dims.begin(), dims.end(), int64_t{1},
-                         std::multiplies<int64_t>());
+    if (dims.empty()) { return 0; }
+    return std::accumulate(
+            dims.begin(), dims.end(), int64_t {1}, std::multiplies<int64_t>());
 }
 
 /** @brief AOCL sym_quant requires K/G divisible and group_size % 4 == 0. */
 inline bool is_w4a8_sym_quant_group_valid(int K, int64_t num_groups) {
-  if (num_groups <= 0) {
-    return false;
-  }
-  if (static_cast<int64_t>(K) % num_groups != 0) {
-    return false;
-  }
-  const int64_t group_size = static_cast<int64_t>(K) / num_groups;
-  return group_size % 4 == 0;
+    if (num_groups <= 0) { return false; }
+    if (static_cast<int64_t>(K) % num_groups != 0) { return false; }
+    const int64_t group_size = static_cast<int64_t>(K) / num_groups;
+    return group_size % 4 == 0;
 }
 
 /**
@@ -309,7 +282,6 @@ std::string post_op_names_to_string(const matmul_params &params);
  */
 const char *kernel_to_string(matmul_algo_t kernel);
 
-
 /**
  * @brief Get post-op data types as a comma-separated string for binary_add/binary_mul.
  *
@@ -321,11 +293,11 @@ const char *kernel_to_string(matmul_algo_t kernel);
  */
 std::string post_op_data_types_to_string(const matmul_params &params);
 
-inline bool may_i_use_dlp_partition(int batch_count, int M, int N,
-                                    int num_threads, data_type_t dtype);
+inline bool may_i_use_dlp_partition(
+        int batch_count, int M, int N, int num_threads, data_type_t dtype);
 
-inline matmul_algo_t select_algo_by_heuristics_bf16_bmm(int BS, int M, int N,
-    int K, int num_threads);
+inline matmul_algo_t select_algo_by_heuristics_bf16_bmm(
+        int BS, int M, int N, int K, int num_threads);
 
 inline matmul_algo_t select_algo_by_heuristics_bf16_mm(int M, int N, int K);
 
@@ -350,8 +322,8 @@ inline matmul_algo_t select_algo_by_heuristics_bf16_mm(int M, int N, int K);
 * @return matmul_algo_t The selected kernel algorithm (e.g., AOCL DLP, OneDNN, LibXSMM)
 */
 matmul_algo_t kernel_select(matmul_params &params, int Batch_A, int Batch_B,
-                            int batch_count, int M, int N, int K, int num_threads, const void *bias,
-                            const bool is_weights_const, bool transB = false);
+        int batch_count, int M, int N, int K, int num_threads, const void *bias,
+        const bool is_weights_const, bool transB = false);
 
 /**
  * @brief Get the auto-tuner version number

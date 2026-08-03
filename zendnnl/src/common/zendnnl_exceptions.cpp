@@ -1,5 +1,5 @@
 /********************************************************************************
-# * Copyright (c) 2023-2024 Advanced Micro Devices, Inc. All rights reserved.
+# * Copyright (c) 2023-2026 Advanced Micro Devices, Inc. All rights reserved.
 # *
 # * Licensed under the Apache License, Version 2.0 (the "License");
 # * you may not use this file except in compliance with the License.
@@ -23,11 +23,10 @@ exception_t::exception_t(std::string err_msg) {
     what_msg = "\nexception: " + err_msg;
 }
 
-exception_t::exception_t(const char* err_msg):
-    exception_t{std::string(err_msg)}{
-}
+exception_t::exception_t(const char *err_msg)
+    : exception_t {std::string(err_msg)} {}
 
-exception_t::exception_t(const char* file, int line, std::string err_msg) {
+exception_t::exception_t(const char *file, int line, std::string err_msg) {
     what_msg = "\nexception at: ";
     what_msg += "[";
     what_msg += std::string(file);
@@ -37,13 +36,12 @@ exception_t::exception_t(const char* file, int line, std::string err_msg) {
     what_msg = what_msg + err_msg;
 }
 
-exception_t::exception_t(const char* file, int line, const char* err_msg):
-    exception_t{file, line, std::string(err_msg)} {
-}
+exception_t::exception_t(const char *file, int line, const char *err_msg)
+    : exception_t {file, line, std::string(err_msg)} {}
 
-const char* exception_t::what() const noexcept {
+const char *exception_t::what() const noexcept {
     return what_msg.c_str();
 }
 
-} //error_handling
-} //zendnnl
+} // namespace error_handling
+} // namespace zendnnl

@@ -1,5 +1,5 @@
 /********************************************************************************
-# * Copyright (c) 2025 Advanced Micro Devices, Inc. All rights reserved.
+# * Copyright (c) 2025-2026 Advanced Micro Devices, Inc. All rights reserved.
 # *
 # * Licensed under the Apache License, Version 2.0 (the "License");
 # * you may not use this file except in compliance with the License.
@@ -16,16 +16,16 @@
 #ifndef _BATCHMATMUL_EXAMPLE_HPP_
 #define _BATCHMATMUL_EXAMPLE_HPP_
 
-#include "zendnnl.hpp"
 #include "example_utils.hpp"
+#include "zendnnl.hpp"
 
-#define  OK          (0)
-#define  NOT_OK      (1)
+#define OK (0)
+#define NOT_OK (1)
 
-#define  BATCH_SIZE 128
-#define  BATCH_MATMUL_M 10
-#define  BATCH_MATMUL_K 5
-#define  BATCH_MATMUL_N 4
+#define BATCH_SIZE 128
+#define BATCH_MATMUL_M 10
+#define BATCH_MATMUL_K 5
+#define BATCH_MATMUL_N 4
 
 namespace zendnnl {
 namespace examples {
@@ -118,7 +118,7 @@ int batch_matmul_relu_forced_ref_kernel_example();
  */
 int batchmatmul_broadcast_example();
 
-} //examples
-} //zendnnl
+} // namespace examples
+} // namespace zendnnl
 
 #endif

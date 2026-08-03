@@ -51,8 +51,7 @@ std::vector<int64_t> compute_quant_dims(const ReorderConfig &cfg);
  * @return int OK (0) on success, NOT_OK (1) on failure.
  */
 int create_src_tensor(tensor_factory_t &tensor_factory,
-                      const ReorderConfig &cfg,
-                      tensor_t &src, bool is_lowoha);
+        const ReorderConfig &cfg, tensor_t &src, bool is_lowoha);
 
 /**
  * @brief Creates the destination tensor for the LOWOHA reorder benchmark.
@@ -65,8 +64,7 @@ int create_src_tensor(tensor_factory_t &tensor_factory,
  * @return int OK (0) on success, NOT_OK (1) on failure.
  */
 int create_dst_tensor(tensor_factory_t &tensor_factory,
-                      const ReorderConfig &cfg,
-                      tensor_t &dst);
+        const ReorderConfig &cfg, tensor_t &dst);
 
 /**
  * @brief Creates the scale tensor for the LOWOHA reorder benchmark.
@@ -80,8 +78,7 @@ int create_dst_tensor(tensor_factory_t &tensor_factory,
  * @return int OK (0) on success, NOT_OK (1) on failure.
  */
 int create_scale_tensor(tensor_factory_t &tensor_factory,
-                        const ReorderConfig &cfg,
-                        tensor_t &scale);
+        const ReorderConfig &cfg, tensor_t &scale);
 
 /**
  * @brief Creates the zero-point tensor for the LOWOHA reorder benchmark.
@@ -94,7 +91,7 @@ int create_scale_tensor(tensor_factory_t &tensor_factory,
  * @return int OK (0) on success, NOT_OK (1) on failure.
  */
 int create_zp_tensor(tensor_factory_t &tensor_factory, const ReorderConfig &cfg,
-                     tensor_t &zp);
+        tensor_t &zp);
 
 } // namespace reorder
 } // namespace benchdnn

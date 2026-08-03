@@ -33,22 +33,22 @@ using zendnnl::lowoha::reorder::reorder_algo_t;
  * to maintain backward compatibility.
  */
 struct ReorderConfig {
-  size_t rows;
-  size_t cols;
-  int iters;
-  zendnnl::common::data_type_t dt;
-  std::string kernel_name;
-  bool isInplace;
-  int warmup_iters;
+    size_t rows;
+    size_t cols;
+    int iters;
+    zendnnl::common::data_type_t dt;
+    std::string kernel_name;
+    bool isInplace;
+    int warmup_iters;
 
-  size_t batch_size = 1;
-  zendnnl::common::data_type_t src_dtype = zendnnl::common::data_type_t::f32;
-  zendnnl::common::data_type_t dst_dtype = zendnnl::common::data_type_t::f32;
-  std::string algo = "DT";
-  std::string scale_granularity = "per_tensor";
-  uint64_t group_size = 0;
-  bool dynamic_quant = false;
-  uint64_t num_threads = 0;
+    size_t batch_size = 1;
+    zendnnl::common::data_type_t src_dtype = zendnnl::common::data_type_t::f32;
+    zendnnl::common::data_type_t dst_dtype = zendnnl::common::data_type_t::f32;
+    std::string algo = "DT";
+    std::string scale_granularity = "per_tensor";
+    uint64_t group_size = 0;
+    bool dynamic_quant = false;
+    uint64_t num_threads = 0;
 };
 
 /**
@@ -71,7 +71,7 @@ std::string reorderAlgoToStr(reorder_algo_t algo);
  * @param is_lowoha If true, parse LOWOHA format; otherwise parse regular format.
  */
 void inputParser(std::ifstream &infile, std::vector<ReorderConfig> &configs,
-                 bool is_lowoha);
+        bool is_lowoha);
 
 /**
  * @brief Logs a detailed error message for a failed benchmark configuration.
@@ -90,8 +90,9 @@ void log_benchmark_failure(const ReorderConfig &cfg, bool is_lowoha);
  * @param outfile Output stream to print the table.
  * @param isLOWOHA If true, prints LOWOHA-specific columns.
  */
-void print_results(std::vector<std::pair<ReorderConfig, TimingStats>>
-                   &reorder_results, std::ostream &outfile, const bool isLOWOHA);
+void print_results(
+        std::vector<std::pair<ReorderConfig, TimingStats>> &reorder_results,
+        std::ostream &outfile, const bool isLOWOHA);
 
 /**
  * @brief Logs reorder benchmark results in CSV format.
@@ -102,8 +103,9 @@ void print_results(std::vector<std::pair<ReorderConfig, TimingStats>>
  * @param outfile Output stream to write CSV data.
  * @param isLOWOHA If true, writes LOWOHA-specific columns.
  */
-void log_results(std::vector<std::pair<ReorderConfig, TimingStats>>
-                 &reorder_results, std::ostream &outfile, const bool isLOWOHA);
+void log_results(
+        std::vector<std::pair<ReorderConfig, TimingStats>> &reorder_results,
+        std::ostream &outfile, const bool isLOWOHA);
 
 } // namespace reorder
 } // namespace benchdnn

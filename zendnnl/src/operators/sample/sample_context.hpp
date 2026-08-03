@@ -1,5 +1,5 @@
 /********************************************************************************
-# * Copyright (c) 2023-2024 Advanced Micro Devices, Inc. All rights reserved.
+# * Copyright (c) 2023-2026 Advanced Micro Devices, Inc. All rights reserved.
 # *
 # * Licensed under the Apache License, Version 2.0 (the "License");
 # * you may not use this file except in compliance with the License.
@@ -31,21 +31,21 @@ namespace ops {
  */
 class sample_context_t final : public op_context_t<sample_context_t> {
 public:
-  using parent_type = op_context_t<sample_context_t>;
+    using parent_type = op_context_t<sample_context_t>;
 
-/** @brief Returns sample context information */
-  std::string context_info() override;
+    /** @brief Returns sample context information */
+    std::string context_info() override;
 
 protected:
-  /** @brief validate parameters */
-  status_t validate() override;
+    /** @brief validate parameters */
+    status_t validate() override;
 };
 
 } //namespace ops
 
 namespace interface {
 using sample_context_t = zendnnl::ops::sample_context_t;
-} //export
+} // namespace interface
 
 } //namespace zendnnl
 #endif

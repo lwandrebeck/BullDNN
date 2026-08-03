@@ -17,12 +17,12 @@
 #ifndef _LOWOHA_CONV2D_EXAMPLE_HPP_
 #define _LOWOHA_CONV2D_EXAMPLE_HPP_
 
-#include "zendnnl.hpp"
 #include <iostream>
 #include <vector>
+#include "zendnnl.hpp"
 
-#define  OK          (0)
-#define  NOT_OK      (1)
+#define OK (0)
+#define NOT_OK (1)
 
 namespace zendnnl {
 namespace examples {
@@ -100,7 +100,7 @@ int run_lowoha_strided_conv2d_test();
  */
 int run_lowoha_dilated_conv2d_test();
 
-} // examples
-} // zendnnl
+} // namespace examples
+} // namespace zendnnl
 
 #endif

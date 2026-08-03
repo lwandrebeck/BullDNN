@@ -15,12 +15,12 @@
 # *******************************************************************************/
 
 #include "reference_kernel.hpp"
-#include "common/logging.hpp"
-#include "common/bfloat16.hpp"
-#include "lowoha_operators/common/omp_thread_control.hpp"
-#include <cmath>
 #include <algorithm>
+#include <cmath>
 #include <limits>
+#include "common/bfloat16.hpp"
+#include "common/logging.hpp"
+#include "lowoha_operators/common/omp_thread_control.hpp"
 
 namespace zendnnl {
 namespace lowoha {
@@ -28,13 +28,9 @@ namespace pooling {
 
 using namespace zendnnl::common;
 
-template<typename T>
-void max_pooling_reference_impl(
-    const T *input,
-    T *output,
-    const pool_params &params,
-    const int num_threads
-) {
+template <typename T>
+void max_pooling_reference_impl(const T *input, T *output,
+        const pool_params &params, const int num_threads) {
     const uint64_t batch = params.dims.batch;
     const uint64_t in_h = params.dims.in_height;
     const uint64_t in_w = params.dims.in_width;
@@ -48,44 +44,44 @@ void max_pooling_reference_impl(
     const int32_t pad_t = params.pad_top;
     const int32_t pad_l = params.pad_left;
 
-    // NHWC format: [batch, height, width, channels]
-    // Parallelize over batch, output height, and output width dimensions
-    #pragma omp parallel for collapse(3) num_threads(num_threads)
+// NHWC format: [batch, height, width, channels]
+// Parallelize over batch, output height, and output width dimensions
+#pragma omp parallel for collapse(3) num_threads(num_threads)
     for (uint64_t n = 0; n < batch; ++n) {
         for (uint64_t oh = 0; oh < out_h; ++oh) {
             for (uint64_t ow = 0; ow < out_w; ++ow) {
                 for (uint64_t c = 0; c < channels; ++c) {
                     float max_val = -std::numeric_limits<float>::infinity();
-                    
+
                     // Calculate input region for this pooling window
-                    int64_t h_start = static_cast<int64_t>(oh * stride_h) - pad_t;
-                    int64_t w_start = static_cast<int64_t>(ow * stride_w) - pad_l;
-                    
+                    int64_t h_start
+                            = static_cast<int64_t>(oh * stride_h) - pad_t;
+                    int64_t w_start
+                            = static_cast<int64_t>(ow * stride_w) - pad_l;
+
                     // Iterate over pooling window
                     for (uint64_t kh_idx = 0; kh_idx < kh; ++kh_idx) {
                         for (uint64_t kw_idx = 0; kw_idx < kw; ++kw_idx) {
                             int64_t ih = h_start + kh_idx;
                             int64_t iw = w_start + kw_idx;
-                            
+
                             // Check bounds
-                            if (ih >= 0 && ih < static_cast<int64_t>(in_h) &&
-                                iw >= 0 && iw < static_cast<int64_t>(in_w)) {
+                            if (ih >= 0 && ih < static_cast<int64_t>(in_h)
+                                    && iw >= 0
+                                    && iw < static_cast<int64_t>(in_w)) {
                                 // NHWC layout: index = n*H*W*C + h*W*C + w*C + c
-                                uint64_t in_idx = n * in_h * in_w * channels +
-                                                 ih * in_w * channels +
-                                                 iw * channels +
-                                                 c;
+                                uint64_t in_idx = n * in_h * in_w * channels
+                                        + ih * in_w * channels + iw * channels
+                                        + c;
                                 float val = static_cast<float>(input[in_idx]);
                                 max_val = std::max(max_val, val);
                             }
                         }
                     }
-                    
+
                     // Write output
-                    uint64_t out_idx = n * out_h * out_w * channels +
-                                      oh * out_w * channels +
-                                      ow * channels +
-                                      c;
+                    uint64_t out_idx = n * out_h * out_w * channels
+                            + oh * out_w * channels + ow * channels + c;
                     output[out_idx] = static_cast<T>(max_val);
                 }
             }
@@ -93,13 +89,9 @@ void max_pooling_reference_impl(
     }
 }
 
-template<typename T>
-void avg_pooling_reference_impl(
-    const T *input,
-    T *output,
-    const pool_params &params,
-    const int num_threads
-) {
+template <typename T>
+void avg_pooling_reference_impl(const T *input, T *output,
+        const pool_params &params, const int num_threads) {
     const uint64_t batch = params.dims.batch;
     const uint64_t in_h = params.dims.in_height;
     const uint64_t in_w = params.dims.in_width;
@@ -112,48 +104,49 @@ void avg_pooling_reference_impl(
     const uint32_t stride_w = params.stride_w;
     const int32_t pad_t = params.pad_top;
     const int32_t pad_l = params.pad_left;
-    const bool include_padding = (params.avg_mode == avg_pooling_mode_t::include_padding);
+    const bool include_padding
+            = (params.avg_mode == avg_pooling_mode_t::include_padding);
 
-    // NHWC format: [batch, height, width, channels]
-    // Parallelize over batch, output height, and output width dimensions
-    #pragma omp parallel for collapse(3) num_threads(num_threads)   
+// NHWC format: [batch, height, width, channels]
+// Parallelize over batch, output height, and output width dimensions
+#pragma omp parallel for collapse(3) num_threads(num_threads)
     for (uint64_t n = 0; n < batch; ++n) {
         for (uint64_t oh = 0; oh < out_h; ++oh) {
             for (uint64_t ow = 0; ow < out_w; ++ow) {
                 for (uint64_t c = 0; c < channels; ++c) {
                     float sum = 0.0f;
                     uint64_t valid_count = 0;
-                    
+
                     // Calculate input region for this pooling window
-                    int64_t h_start = static_cast<int64_t>(oh * stride_h) - pad_t;
-                    int64_t w_start = static_cast<int64_t>(ow * stride_w) - pad_l;
-                    
+                    int64_t h_start
+                            = static_cast<int64_t>(oh * stride_h) - pad_t;
+                    int64_t w_start
+                            = static_cast<int64_t>(ow * stride_w) - pad_l;
+
                     // Iterate over pooling window
                     for (uint64_t kh_idx = 0; kh_idx < kh; ++kh_idx) {
                         for (uint64_t kw_idx = 0; kw_idx < kw; ++kw_idx) {
                             int64_t ih = h_start + kh_idx;
                             int64_t iw = w_start + kw_idx;
-                            
+
                             // Check bounds
-                            if (ih >= 0 && ih < static_cast<int64_t>(in_h) &&
-                                iw >= 0 && iw < static_cast<int64_t>(in_w)) {
+                            if (ih >= 0 && ih < static_cast<int64_t>(in_h)
+                                    && iw >= 0
+                                    && iw < static_cast<int64_t>(in_w)) {
                                 // NHWC layout: index = n*H*W*C + h*W*C + w*C + c
-                                uint64_t in_idx = n * in_h * in_w * channels +
-                                                 ih * in_w * channels +
-                                                 iw * channels +
-                                                 c;
+                                uint64_t in_idx = n * in_h * in_w * channels
+                                        + ih * in_w * channels + iw * channels
+                                        + c;
                                 sum += static_cast<float>(input[in_idx]);
                                 valid_count++;
                             }
                         }
                     }
-                    
+
                     // Write output (average)
-                    uint64_t out_idx = n * out_h * out_w * channels +
-                                      oh * out_w * channels +
-                                      ow * channels +
-                                      c;
-                    
+                    uint64_t out_idx = n * out_h * out_w * channels
+                            + oh * out_w * channels + ow * channels + c;
+
                     // Calculate divisor based on padding mode
                     uint64_t divisor;
                     if (include_padding) {
@@ -163,8 +156,9 @@ void avg_pooling_reference_impl(
                         // Exclude padding: divide by valid element count
                         divisor = valid_count;
                     }
-                    
-                    output[out_idx] = static_cast<T>(divisor > 0 ? sum / divisor : 0.0f);
+
+                    output[out_idx] = static_cast<T>(
+                            divisor > 0 ? sum / divisor : 0.0f);
                 }
             }
         }
@@ -172,45 +166,28 @@ void avg_pooling_reference_impl(
 }
 
 status_t pooling_reference_wrapper(
-    const void *input,
-    void *output,
-    pool_params &params
-) {
-    const int32_t num_threads = resolve_num_threads(params.num_threads,
-                                                    thread_guard::max_threads());
+        const void *input, void *output, pool_params &params) {
+    const int32_t num_threads = resolve_num_threads(
+            params.num_threads, thread_guard::max_threads());
 
     if (params.dtypes.src == data_type_t::f32) {
         if (params.is_max_pooling) {
-            max_pooling_reference_impl<float>(
-                static_cast<const float*>(input),
-                static_cast<float*>(output),
-                params,
-                num_threads
-            );
+            max_pooling_reference_impl<float>(static_cast<const float *>(input),
+                    static_cast<float *>(output), params, num_threads);
         } else {
-            avg_pooling_reference_impl<float>(
-                static_cast<const float*>(input),
-                static_cast<float*>(output),
-                params,
-                num_threads
-            );
+            avg_pooling_reference_impl<float>(static_cast<const float *>(input),
+                    static_cast<float *>(output), params, num_threads);
         }
         return status_t::success;
     } else if (params.dtypes.src == data_type_t::bf16) {
         if (params.is_max_pooling) {
             max_pooling_reference_impl<bfloat16_t>(
-                static_cast<const bfloat16_t*>(input),
-                static_cast<bfloat16_t*>(output),
-                params,
-                num_threads
-            );
+                    static_cast<const bfloat16_t *>(input),
+                    static_cast<bfloat16_t *>(output), params, num_threads);
         } else {
             avg_pooling_reference_impl<bfloat16_t>(
-                static_cast<const bfloat16_t*>(input),
-                static_cast<bfloat16_t*>(output),
-                params,
-                num_threads
-            );
+                    static_cast<const bfloat16_t *>(input),
+                    static_cast<bfloat16_t *>(output), params, num_threads);
         }
         log_info("Pooling Reference: BF16 execution completed");
         return status_t::success;
@@ -223,4 +200,3 @@ status_t pooling_reference_wrapper(
 } // namespace pooling
 } // namespace lowoha
 } // namespace zendnnl
-

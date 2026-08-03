@@ -46,27 +46,28 @@ namespace ops {
  * - Output(s)
  *   1. (mandatory) sdpa_output : Output tensor.
  */
-class sdpa_encoder_operator_t final : public operator_t<sdpa_encoder_operator_t,
-                                                  sdpa_encoder_context_t,
-                                                  sdpa_encoder_impl_t> {
+class sdpa_encoder_operator_t final
+    : public operator_t<sdpa_encoder_operator_t, sdpa_encoder_context_t,
+              sdpa_encoder_impl_t> {
 public:
-  /** @brief Self type **/
-  using self_type = sdpa_encoder_operator_t;
-  /** @brief Parent type **/
-  using parent_type = operator_t<sdpa_encoder_operator_t, sdpa_encoder_context_t, sdpa_encoder_impl_t>;
-  /** @brief context type **/
-  using context_type = parent_type::context_type;
-  /** @brief impl type **/
-  using impl_type = parent_type::impl_type;
-  /** @brief impl pointer type **/
-  using impl_sptr_type = parent_type::impl_sptr_type;
+    /** @brief Self type **/
+    using self_type = sdpa_encoder_operator_t;
+    /** @brief Parent type **/
+    using parent_type = operator_t<sdpa_encoder_operator_t,
+            sdpa_encoder_context_t, sdpa_encoder_impl_t>;
+    /** @brief context type **/
+    using context_type = parent_type::context_type;
+    /** @brief impl type **/
+    using impl_type = parent_type::impl_type;
+    /** @brief impl pointer type **/
+    using impl_sptr_type = parent_type::impl_sptr_type;
 };
 
 } //namespace ops
 
 namespace interface {
 using sdpa_encoder_operator_t = zendnnl::ops::sdpa_encoder_operator_t;
-} //export
+} // namespace interface
 
 } //namespace zendnnl
 #endif

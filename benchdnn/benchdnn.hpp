@@ -17,12 +17,12 @@
 #ifndef _BENCHDNN_HPP_
 #define _BENCHDNN_HPP_
 
-#include <iostream>
-#include <fstream>
-#include <sstream>
-#include <vector>
-#include <string>
 #include <algorithm>
+#include <fstream>
+#include <iostream>
+#include <sstream>
+#include <string>
+#include <vector>
 
 #define MEASURE_INDIVIDUAL_TIMINGS 0
 
@@ -50,25 +50,25 @@ namespace benchdnn {
  */
 struct TimingStats {
 #if MEASURE_INDIVIDUAL_TIMINGS
-  double context_creation_ms = 0.0; /**< Time taken for context creation */
-  double operator_creation_ms = 0.0; /**< Time taken for operator creation */
-  double operator_execution_ms = 0.0; /**< Time taken for operator execution */
-  double other_ms = 0.0; /**< Time taken for other operations
+    double context_creation_ms = 0.0; /**< Time taken for context creation */
+    double operator_creation_ms = 0.0; /**< Time taken for operator creation */
+    double operator_execution_ms
+            = 0.0; /**< Time taken for operator execution */
+    double other_ms = 0.0; /**< Time taken for other operations
                           (e.g., buffer allocation, tensor setup) */
 #endif
-  double total_time_ms = 0.0; /**< Total time taken for the operation */
+    double total_time_ms = 0.0; /**< Total time taken for the operation */
 };
-
 
 } // namespace benchdnn
 } // namespace zendnnl
 
 // Include the main benchmarking interfaces
-#include "matmul/matmul_benchdnn.hpp"
-#include "reorder/reorder_benchdnn.hpp"
 #include "embag/embag_benchdnn.hpp"
-#include "normalization/normalization_benchdnn.hpp"
 #include "grp_matmul/grp_matmul_benchdnn.hpp"
+#include "matmul/matmul_benchdnn.hpp"
+#include "normalization/normalization_benchdnn.hpp"
+#include "reorder/reorder_benchdnn.hpp"
 #include "sdpa/sdpa_benchdnn.hpp"
 
 #endif // _BENCHDNN_HPP_

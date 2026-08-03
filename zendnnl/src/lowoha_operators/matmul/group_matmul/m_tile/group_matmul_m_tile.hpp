@@ -166,8 +166,8 @@ namespace test_api {
 //               expert gating.
 //   * any other value → undefined; tests should only use the
 //               documented set.
-inline std::atomic<int> s_grp_matmul_m_tile_hybrid_override{
-    std::numeric_limits<int>::min()};
+inline std::atomic<int> s_grp_matmul_m_tile_hybrid_override {
+        std::numeric_limits<int>::min()};
 
 // ── M-tile (ALGO 2) heuristic-constant overrides ─────────────────────
 //
@@ -188,10 +188,11 @@ inline std::atomic<int> s_grp_matmul_m_tile_hybrid_override{
 // sentinel `-1`) falls through to the cached env path.  RAII helpers
 // live in `gtests/group_matmul/moe_test_utils.hpp` so tests can flip
 // these mid-process without re-launching the process.
-inline std::atomic<int> s_grp_matmul_m_tile_slice_target_override{-1};
-inline std::atomic<int> s_grp_matmul_m_tile_hybrid_min_max_m_override{-1};
-inline std::atomic<int> s_grp_matmul_m_tile_hybrid_min_skew_override{-1};
-inline std::atomic<int> s_grp_matmul_m_tile_hybrid_lights_per_thread_override{-1};
+inline std::atomic<int> s_grp_matmul_m_tile_slice_target_override {-1};
+inline std::atomic<int> s_grp_matmul_m_tile_hybrid_min_max_m_override {-1};
+inline std::atomic<int> s_grp_matmul_m_tile_hybrid_min_skew_override {-1};
+inline std::atomic<int> s_grp_matmul_m_tile_hybrid_lights_per_thread_override {
+        -1};
 
 // ── Vertical fusion (MoE FFN W13 → gated act → W2) dispatch knob ─────
 //
@@ -226,8 +227,8 @@ inline std::atomic<int> s_grp_matmul_m_tile_hybrid_lights_per_thread_override{-1
 // at `flat_m_tile_dispatch` (see `group_matmul_m_tile.cpp`).  Grouping
 // the knob name under `M_TILE_*` keeps the env namespace flat and
 // signals scope at a glance.
-inline std::atomic<int> s_grp_matmul_m_tile_vertical_fusion_override{
-    std::numeric_limits<int>::min()};
+inline std::atomic<int> s_grp_matmul_m_tile_vertical_fusion_override {
+        std::numeric_limits<int>::min()};
 
 // ── Vertical fusion per-thread scratch budget (KB) ──────────────────
 //
@@ -272,8 +273,8 @@ inline std::atomic<int> s_grp_matmul_m_tile_vertical_fusion_override{
 // sentinel value itself is `matmul::kMTilePipelineScratchKbUnbounded`
 // (defined in the enclosing `matmul` namespace so the env getter and
 // the executor `.cpp` can both name it unqualified).
-inline std::atomic<int> s_grp_matmul_m_tile_pipeline_scratch_kb_override{
-    std::numeric_limits<int>::min()};
+inline std::atomic<int> s_grp_matmul_m_tile_pipeline_scratch_kb_override {
+        std::numeric_limits<int>::min()};
 
 // =====================================================================
 // Section H.2 — M-tile path tag capture machinery (test_api)
@@ -337,10 +338,10 @@ inline std::atomic<int> s_grp_matmul_m_tile_pipeline_scratch_kb_override{
 // stay type-safe (no magic numbers).  This file already re-includes
 // the planner header, so any TU that pulls in
 // `group_matmul_m_tile.hpp` sees the tags.
-inline std::atomic<bool> s_capture_m_tile_path{false};
-inline std::atomic<int>  s_last_m_tile_path{-1};
+inline std::atomic<bool> s_capture_m_tile_path {false};
+inline std::atomic<int> s_last_m_tile_path {-1};
 
-}  // namespace test_api
+} // namespace test_api
 
 // =====================================================================
 // Section H.3 — M-tile env getters
@@ -389,19 +390,19 @@ inline std::atomic<int>  s_last_m_tile_path{-1};
 // env-cache is a one-shot read taken at first call to keep the
 // production hot path branch-predictor-friendly.
 inline int get_grp_matmul_m_tile_hybrid() {
-  constexpr int kDefault = 0;  // AUTO
-  const int ovr = test_api::s_grp_matmul_m_tile_hybrid_override
-      .load(std::memory_order_relaxed);
-  if (ovr != std::numeric_limits<int>::min()) return ovr;
-  static const int v = []() {
-    const char *e = std::getenv("ZENDNNL_GRP_MATMUL_M_TILE_HYBRID");
-    int parsed = 0;
-    if (!parse_env_int_strict(e, parsed)) return kDefault;
-    // Accept only -1 (DISABLED) or 0 (AUTO).  Reject anything else
-    // and fall back to default.
-    return (parsed == -1 || parsed == 0) ? parsed : kDefault;
-  }();
-  return v;
+    constexpr int kDefault = 0; // AUTO
+    const int ovr = test_api::s_grp_matmul_m_tile_hybrid_override.load(
+            std::memory_order_relaxed);
+    if (ovr != std::numeric_limits<int>::min()) return ovr;
+    static const int v = []() {
+        const char *e = std::getenv("ZENDNNL_GRP_MATMUL_M_TILE_HYBRID");
+        int parsed = 0;
+        if (!parse_env_int_strict(e, parsed)) return kDefault;
+        // Accept only -1 (DISABLED) or 0 (AUTO).  Reject anything else
+        // and fall back to default.
+        return (parsed == -1 || parsed == 0) ? parsed : kDefault;
+    }();
+    return v;
 }
 
 // ── M-tile heuristic-constant tuning knobs (F8 from the ALGO 2 review) ──
@@ -452,18 +453,17 @@ inline int get_grp_matmul_m_tile_hybrid() {
 //     light-pool thread (smaller light pool, larger heavy pool);
 //     lower values give the light pool more threads.
 inline int get_grp_matmul_m_tile_slice_target() {
-  constexpr int kDefault = 16;
-  const int ovr = test_api::s_grp_matmul_m_tile_slice_target_override
-      .load(std::memory_order_relaxed);
-  if (ovr >= 1) return ovr;
-  static const int v = []() {
-    const char *e =
-        std::getenv("ZENDNNL_GRP_MATMUL_M_TILE_SLICE_TARGET");
-    int parsed = 0;
-    if (!parse_env_int_strict(e, parsed)) return kDefault;
-    return (parsed >= 1) ? parsed : kDefault;
-  }();
-  return v;
+    constexpr int kDefault = 16;
+    const int ovr = test_api::s_grp_matmul_m_tile_slice_target_override.load(
+            std::memory_order_relaxed);
+    if (ovr >= 1) return ovr;
+    static const int v = []() {
+        const char *e = std::getenv("ZENDNNL_GRP_MATMUL_M_TILE_SLICE_TARGET");
+        int parsed = 0;
+        if (!parse_env_int_strict(e, parsed)) return kDefault;
+        return (parsed >= 1) ? parsed : kDefault;
+    }();
+    return v;
 }
 
 // ── ALGO 2 (M-tile) regime classifier ──────────────────────────────────
@@ -488,70 +488,72 @@ inline int get_grp_matmul_m_tile_slice_target() {
 //   * kMTile       — everything else (multi-tier or single-tier M-tile).
 enum class m_tile_regime { kMTile, kWideN, kManyExperts };
 
-inline m_tile_regime classify_m_tile_regime(const std::vector<int> &M,
-                                            int num_threads) {
-  const int kSliceTarget = get_grp_matmul_m_tile_slice_target();
-  int active_ops = 0;
-  int max_M = 0;
-  int64_t total_need = 0;
-  for (int m : M) {
-    if (m <= 0) continue;
-    ++active_ops;
-    if (m > max_M) max_M = m;
-    total_need += std::min<int64_t>(
-        m, std::max<int64_t>(
-               1, (static_cast<int64_t>(m) + kSliceTarget - 1) / kSliceTarget));
-  }
-  if (active_ops > num_threads) return m_tile_regime::kManyExperts;
-  if (max_M > 1 && total_need * 2 <= static_cast<int64_t>(num_threads))
-    return m_tile_regime::kWideN;
-  return m_tile_regime::kMTile;
+inline m_tile_regime classify_m_tile_regime(
+        const std::vector<int> &M, int num_threads) {
+    const int kSliceTarget = get_grp_matmul_m_tile_slice_target();
+    int active_ops = 0;
+    int max_M = 0;
+    int64_t total_need = 0;
+    for (int m : M) {
+        if (m <= 0) continue;
+        ++active_ops;
+        if (m > max_M) max_M = m;
+        total_need += std::min<int64_t>(m,
+                std::max<int64_t>(1,
+                        (static_cast<int64_t>(m) + kSliceTarget - 1)
+                                / kSliceTarget));
+    }
+    if (active_ops > num_threads) return m_tile_regime::kManyExperts;
+    if (max_M > 1 && total_need * 2 <= static_cast<int64_t>(num_threads))
+        return m_tile_regime::kWideN;
+    return m_tile_regime::kMTile;
 }
 
 inline int get_grp_matmul_m_tile_hybrid_min_max_m() {
-  constexpr int kDefault = 256;
-  const int ovr = test_api::s_grp_matmul_m_tile_hybrid_min_max_m_override
-      .load(std::memory_order_relaxed);
-  if (ovr >= 1) return ovr;
-  static const int v = []() {
-    const char *e =
-        std::getenv("ZENDNNL_GRP_MATMUL_M_TILE_HYBRID_MIN_MAX_M");
-    int parsed = 0;
-    if (!parse_env_int_strict(e, parsed)) return kDefault;
-    return (parsed >= 1) ? parsed : kDefault;
-  }();
-  return v;
+    constexpr int kDefault = 256;
+    const int ovr
+            = test_api::s_grp_matmul_m_tile_hybrid_min_max_m_override.load(
+                    std::memory_order_relaxed);
+    if (ovr >= 1) return ovr;
+    static const int v = []() {
+        const char *e
+                = std::getenv("ZENDNNL_GRP_MATMUL_M_TILE_HYBRID_MIN_MAX_M");
+        int parsed = 0;
+        if (!parse_env_int_strict(e, parsed)) return kDefault;
+        return (parsed >= 1) ? parsed : kDefault;
+    }();
+    return v;
 }
 
 inline int get_grp_matmul_m_tile_hybrid_min_skew() {
-  constexpr int kDefault = 4;
-  const int ovr = test_api::s_grp_matmul_m_tile_hybrid_min_skew_override
-      .load(std::memory_order_relaxed);
-  if (ovr >= 1) return ovr;
-  static const int v = []() {
-    const char *e =
-        std::getenv("ZENDNNL_GRP_MATMUL_M_TILE_HYBRID_MIN_SKEW");
-    int parsed = 0;
-    if (!parse_env_int_strict(e, parsed)) return kDefault;
-    return (parsed >= 1) ? parsed : kDefault;
-  }();
-  return v;
+    constexpr int kDefault = 4;
+    const int ovr = test_api::s_grp_matmul_m_tile_hybrid_min_skew_override.load(
+            std::memory_order_relaxed);
+    if (ovr >= 1) return ovr;
+    static const int v = []() {
+        const char *e
+                = std::getenv("ZENDNNL_GRP_MATMUL_M_TILE_HYBRID_MIN_SKEW");
+        int parsed = 0;
+        if (!parse_env_int_strict(e, parsed)) return kDefault;
+        return (parsed >= 1) ? parsed : kDefault;
+    }();
+    return v;
 }
 
 inline int get_grp_matmul_m_tile_hybrid_lights_per_thread() {
-  constexpr int kDefault = 8;
-  const int ovr =
-      test_api::s_grp_matmul_m_tile_hybrid_lights_per_thread_override
-          .load(std::memory_order_relaxed);
-  if (ovr >= 1) return ovr;
-  static const int v = []() {
-    const char *e = std::getenv(
-        "ZENDNNL_GRP_MATMUL_M_TILE_HYBRID_LIGHTS_PER_THREAD");
-    int parsed = 0;
-    if (!parse_env_int_strict(e, parsed)) return kDefault;
-    return (parsed >= 1) ? parsed : kDefault;
-  }();
-  return v;
+    constexpr int kDefault = 8;
+    const int ovr
+            = test_api::s_grp_matmul_m_tile_hybrid_lights_per_thread_override
+                      .load(std::memory_order_relaxed);
+    if (ovr >= 1) return ovr;
+    static const int v = []() {
+        const char *e = std::getenv(
+                "ZENDNNL_GRP_MATMUL_M_TILE_HYBRID_LIGHTS_PER_THREAD");
+        int parsed = 0;
+        if (!parse_env_int_strict(e, parsed)) return kDefault;
+        return (parsed >= 1) ? parsed : kDefault;
+    }();
+    return v;
 }
 
 // ZENDNNL_GRP_MATMUL_M_TILE_VERTICAL_FUSION = { -1, 0, 1 } — cached,
@@ -571,18 +573,18 @@ inline int get_grp_matmul_m_tile_hybrid_lights_per_thread() {
 // `=1` is reserved for testing the FORCED engagement against the
 // planner's AUTO heuristic.
 inline int get_grp_matmul_m_tile_vertical_fusion() {
-  constexpr int kDefault = -1;  // DISABLED
-  const int ovr = test_api::s_grp_matmul_m_tile_vertical_fusion_override
-      .load(std::memory_order_relaxed);
-  if (ovr != std::numeric_limits<int>::min()) return ovr;
-  static const int v = []() {
-    const char *e = std::getenv(
-        "ZENDNNL_GRP_MATMUL_M_TILE_VERTICAL_FUSION");
-    int parsed = 0;
-    if (!parse_env_int_strict(e, parsed)) return kDefault;
-    return (parsed >= -1 && parsed <= 1) ? parsed : kDefault;
-  }();
-  return v;
+    constexpr int kDefault = -1; // DISABLED
+    const int ovr = test_api::s_grp_matmul_m_tile_vertical_fusion_override.load(
+            std::memory_order_relaxed);
+    if (ovr != std::numeric_limits<int>::min()) return ovr;
+    static const int v = []() {
+        const char *e
+                = std::getenv("ZENDNNL_GRP_MATMUL_M_TILE_VERTICAL_FUSION");
+        int parsed = 0;
+        if (!parse_env_int_strict(e, parsed)) return kDefault;
+        return (parsed >= -1 && parsed <= 1) ? parsed : kDefault;
+    }();
+    return v;
 }
 
 // ZENDNNL_GRP_MATMUL_M_TILE_PIPELINE_SCRATCH_KB = { -1, 1..N } —
@@ -606,21 +608,23 @@ inline int get_grp_matmul_m_tile_vertical_fusion() {
 // Strict env parsing — only exactly `"-1"` or a positive integer is
 // honoured; everything else uses the default.
 inline int get_grp_matmul_m_tile_pipeline_scratch_kb() {
-  constexpr int kDefault = 512;
-  const int ovr = test_api::s_grp_matmul_m_tile_pipeline_scratch_kb_override
-      .load(std::memory_order_relaxed);
-  if (ovr != std::numeric_limits<int>::min())
-    return (ovr >= 1 || ovr == kMTilePipelineScratchKbUnbounded)
-        ? ovr : kDefault;
-  static const int v = []() {
-    const char *e = std::getenv(
-        "ZENDNNL_GRP_MATMUL_M_TILE_PIPELINE_SCRATCH_KB");
-    int parsed = 0;
-    if (!parse_env_int_strict(e, parsed)) return kDefault;
-    return (parsed >= 1 || parsed == kMTilePipelineScratchKbUnbounded)
-        ? parsed : kDefault;
-  }();
-  return v;
+    constexpr int kDefault = 512;
+    const int ovr
+            = test_api::s_grp_matmul_m_tile_pipeline_scratch_kb_override.load(
+                    std::memory_order_relaxed);
+    if (ovr != std::numeric_limits<int>::min())
+        return (ovr >= 1 || ovr == kMTilePipelineScratchKbUnbounded) ? ovr
+                                                                     : kDefault;
+    static const int v = []() {
+        const char *e
+                = std::getenv("ZENDNNL_GRP_MATMUL_M_TILE_PIPELINE_SCRATCH_KB");
+        int parsed = 0;
+        if (!parse_env_int_strict(e, parsed)) return kDefault;
+        return (parsed >= 1 || parsed == kMTilePipelineScratchKbUnbounded)
+                ? parsed
+                : kDefault;
+    }();
+    return v;
 }
 
 // =====================================================================
@@ -645,20 +649,18 @@ inline int get_grp_matmul_m_tile_pipeline_scratch_kb() {
 /// empty call, `num_threads <= 0`, or no active expert — nothing executed;
 /// maps to `exec_algo=0`) — so the post-exec `[GRP_MATMUL.CALL]` line and
 /// benchdnn/profiler output reveal the real path (mirrors `flat_n_tile`).
-void flat_m_tile(
-  const std::vector<char> &layout,
-  const std::vector<bool> &transA, const std::vector<bool> &transB,
-  const std::vector<int> &M, const std::vector<int> &N,
-  const std::vector<int> &K, const std::vector<float> &alpha,
-  const std::vector<const void *> &src, const std::vector<int> &lda,
-  const std::vector<const void *> &weight, const std::vector<int> &ldb,
-  const std::vector<const void *> &bias, const std::vector<float> &beta,
-  const std::vector<void *> &dst, const std::vector<int> &ldc,
-  grp_matmul_gated_act_t fused_act, data_type_t act_dtype,
-  const std::vector<bool> &is_weights_const,
-  std::vector<matmul_params> &params,
-  int num_threads,
-  const char **gemm_mode_out = nullptr);
+void flat_m_tile(const std::vector<char> &layout,
+        const std::vector<bool> &transA, const std::vector<bool> &transB,
+        const std::vector<int> &M, const std::vector<int> &N,
+        const std::vector<int> &K, const std::vector<float> &alpha,
+        const std::vector<const void *> &src, const std::vector<int> &lda,
+        const std::vector<const void *> &weight, const std::vector<int> &ldb,
+        const std::vector<const void *> &bias, const std::vector<float> &beta,
+        const std::vector<void *> &dst, const std::vector<int> &ldc,
+        grp_matmul_gated_act_t fused_act, data_type_t act_dtype,
+        const std::vector<bool> &is_weights_const,
+        std::vector<matmul_params> &params, int num_threads,
+        const char **gemm_mode_out = nullptr);
 
 /// ALGO 2 — vertical-fusion pipeline (W13 → gated act → W2) at
 /// M-tile slice granularity.  Tri-regime: BF16 end-to-end, WOQ-INT4
@@ -675,37 +677,27 @@ void flat_m_tile(
 /// DQ-INT8 regime — pre-OMP source-quant hoist failure) — in
 /// which case dst_w2 and dst_w13 are guaranteed to be untouched
 /// and the caller MUST run the legacy two-pass.
-bool flat_m_tile_pipeline_bf16(
-  const std::vector<char> &layout,
-  const std::vector<bool> &transA,
-  const std::vector<bool> &transA_w2,
-  const std::vector<bool> &transB,
-  const std::vector<int> &M,
-  const std::vector<int> &N_w13,
-  const std::vector<int> &K_in,
-  const std::vector<float> &alpha_w13,
-  const std::vector<const void *> &src, const std::vector<int> &lda,
-  const std::vector<const void *> &weight_w13,
-  const std::vector<int> &ldb_w13,
-  const std::vector<const void *> &bias_w13,
-  const std::vector<float> &beta_w13,
-  const std::vector<void *> &dst_w13,
-  const std::vector<int> &ldc_w13,
-  bool dst_w13_is_caller_alloc,
-  const std::vector<int> &N_w2,
-  const std::vector<int> &K_w2,
-  const std::vector<float> &alpha_w2,
-  const std::vector<const void *> &weight_w2,
-  const std::vector<int> &ldb_w2,
-  const std::vector<const void *> &bias_w2,
-  const std::vector<float> &beta_w2,
-  const std::vector<void *> &dst_w2,
-  const std::vector<int> &ldc_w2,
-  grp_matmul_gated_act_t fused_act, data_type_t act_dtype,
-  const std::vector<bool> &is_weights_const,
-  std::vector<matmul_params> &params_w13,
-  std::vector<matmul_params> &params_w2,
-  int num_threads);
+bool flat_m_tile_pipeline_bf16(const std::vector<char> &layout,
+        const std::vector<bool> &transA, const std::vector<bool> &transA_w2,
+        const std::vector<bool> &transB, const std::vector<int> &M,
+        const std::vector<int> &N_w13, const std::vector<int> &K_in,
+        const std::vector<float> &alpha_w13,
+        const std::vector<const void *> &src, const std::vector<int> &lda,
+        const std::vector<const void *> &weight_w13,
+        const std::vector<int> &ldb_w13,
+        const std::vector<const void *> &bias_w13,
+        const std::vector<float> &beta_w13, const std::vector<void *> &dst_w13,
+        const std::vector<int> &ldc_w13, bool dst_w13_is_caller_alloc,
+        const std::vector<int> &N_w2, const std::vector<int> &K_w2,
+        const std::vector<float> &alpha_w2,
+        const std::vector<const void *> &weight_w2,
+        const std::vector<int> &ldb_w2,
+        const std::vector<const void *> &bias_w2,
+        const std::vector<float> &beta_w2, const std::vector<void *> &dst_w2,
+        const std::vector<int> &ldc_w2, grp_matmul_gated_act_t fused_act,
+        data_type_t act_dtype, const std::vector<bool> &is_weights_const,
+        std::vector<matmul_params> &params_w13,
+        std::vector<matmul_params> &params_w2, int num_threads);
 
 /// Eligibility-gated wrapper around `flat_m_tile_pipeline_bf16`.
 ///
@@ -753,37 +745,27 @@ bool flat_m_tile_pipeline_bf16(
 /// When this returns `false`, NO writes have been made to either
 /// `dst_w13` or `dst_w2`, so the caller can safely fall through to a
 /// legacy two-pass dispatch over the same buffers.
-bool try_flat_m_tile_pipeline_bf16(
-  const std::vector<char> &layout,
-  const std::vector<bool> &transA,
-  const std::vector<bool> &transA_w2,
-  const std::vector<bool> &transB,
-  const std::vector<int> &M,
-  const std::vector<int> &N_w13,
-  const std::vector<int> &K_in,
-  const std::vector<float> &alpha_w13,
-  const std::vector<const void *> &src, const std::vector<int> &lda,
-  const std::vector<const void *> &weight_w13,
-  const std::vector<int> &ldb_w13,
-  const std::vector<const void *> &bias_w13,
-  const std::vector<float> &beta_w13,
-  const std::vector<void *> &dst_w13,
-  const std::vector<int> &ldc_w13,
-  bool dst_w13_is_caller_alloc,
-  const std::vector<int> &N_w2,
-  const std::vector<int> &K_w2,
-  const std::vector<float> &alpha_w2,
-  const std::vector<const void *> &weight_w2,
-  const std::vector<int> &ldb_w2,
-  const std::vector<const void *> &bias_w2,
-  const std::vector<float> &beta_w2,
-  const std::vector<void *> &dst_w2,
-  const std::vector<int> &ldc_w2,
-  grp_matmul_gated_act_t fused_act, data_type_t act_dtype,
-  const std::vector<bool> &is_weights_const,
-  std::vector<matmul_params> &params_w13,
-  std::vector<matmul_params> &params_w2,
-  int num_threads);
+bool try_flat_m_tile_pipeline_bf16(const std::vector<char> &layout,
+        const std::vector<bool> &transA, const std::vector<bool> &transA_w2,
+        const std::vector<bool> &transB, const std::vector<int> &M,
+        const std::vector<int> &N_w13, const std::vector<int> &K_in,
+        const std::vector<float> &alpha_w13,
+        const std::vector<const void *> &src, const std::vector<int> &lda,
+        const std::vector<const void *> &weight_w13,
+        const std::vector<int> &ldb_w13,
+        const std::vector<const void *> &bias_w13,
+        const std::vector<float> &beta_w13, const std::vector<void *> &dst_w13,
+        const std::vector<int> &ldc_w13, bool dst_w13_is_caller_alloc,
+        const std::vector<int> &N_w2, const std::vector<int> &K_w2,
+        const std::vector<float> &alpha_w2,
+        const std::vector<const void *> &weight_w2,
+        const std::vector<int> &ldb_w2,
+        const std::vector<const void *> &bias_w2,
+        const std::vector<float> &beta_w2, const std::vector<void *> &dst_w2,
+        const std::vector<int> &ldc_w2, grp_matmul_gated_act_t fused_act,
+        data_type_t act_dtype, const std::vector<bool> &is_weights_const,
+        std::vector<matmul_params> &params_w13,
+        std::vector<matmul_params> &params_w2, int num_threads);
 
 // =====================================================================
 // Section H.5 — M-tile shared eligibility predicate
@@ -830,127 +812,128 @@ bool try_flat_m_tile_pipeline_bf16(
 // N-tile safety (ALGO 3 + custom kernel can consume a prepacked
 // weight); the M-tile path (ALGO 2) always calls with the default
 // false because it has no prepacked-weight consumption path.
-inline bool check_m_tile_safe(
-    const std::vector<char> &layout,
-    const std::vector<int> &M,
-    const std::vector<matmul_params> &params,
-    int num_ops,
-    bool allow_prepacked_b = false) {
-  // Dtype-uniformity reference = the FIRST ACTIVE expert, not params[0].
-  // The grouped / per-expert fallback DQ pre-pass rewrites ONLY active
-  // experts to s8 (inactive M==0 experts keep their pre-quant bf16/f32
-  // dtype), so a leading inactive expert at index 0 would otherwise become
-  // a bf16 reference that every active s8 expert mismatches — falsely
-  // flipping m_tile_safe to false and vetoing ALGO 2/3 on the common MoE
-  // decode case.  Fall back to 0 when all experts are inactive (no
-  // compute, so the result is irrelevant).
-  int ref = 0;
-  for (int i = 0; i < num_ops; ++i) { if (M[i] > 0) { ref = i; break; } }
+inline bool check_m_tile_safe(const std::vector<char> &layout,
+        const std::vector<int> &M, const std::vector<matmul_params> &params,
+        int num_ops, bool allow_prepacked_b = false) {
+    // Dtype-uniformity reference = the FIRST ACTIVE expert, not params[0].
+    // The grouped / per-expert fallback DQ pre-pass rewrites ONLY active
+    // experts to s8 (inactive M==0 experts keep their pre-quant bf16/f32
+    // dtype), so a leading inactive expert at index 0 would otherwise become
+    // a bf16 reference that every active s8 expert mismatches — falsely
+    // flipping m_tile_safe to false and vetoing ALGO 2/3 on the common MoE
+    // decode case.  Fall back to 0 when all experts are inactive (no
+    // compute, so the result is irrelevant).
+    int ref = 0;
+    for (int i = 0; i < num_ops; ++i) {
+        if (M[i] > 0) {
+            ref = i;
+            break;
+        }
+    }
 
-  // Iterate the active range only — the framework may pad params[]
-  // (and layout[]) past `num_ops` for prepack-extras tail metadata
-  // that the matmul-processing loop never reaches.  See doc-block
-  // on `params[i].active_matmul` / `total_matmul` for the contract.
-  for (int i = 0; i < num_ops; ++i) {
-    // Inactive experts (M==0) do no compute and carry no rewritten quant
-    // metadata; skip them so they cannot veto the whole call.
-    if (M[i] == 0) continue;
-    if (layout[i] != 'r' && layout[i] != 'R') return false;
-    if (params[i].dtypes.src  != params[ref].dtypes.src)  return false;
-    if (params[i].dtypes.wei  != params[ref].dtypes.wei)  return false;
-    if (params[i].dtypes.dst  != params[ref].dtypes.dst)  return false;
-    if (params[i].dtypes.bias != params[ref].dtypes.bias) return false;
-    if (params[i].mem_format_a != 'n') return false;
-    // A reordered ('r') AOCL sym-quant s8 weight (mem_format_b=='r'; the
-    // GGML-origin flag pack_format_b may still be set) is M-tile-safe when it
-    // pairs with a row-local per-group {M[i],G} SOURCE scale.  M-tiling
-    // partitions only the SOURCE rows, so the whole pre-reordered weight +
-    // {G,N} wei_scale is consumed exactly as ALGO 1 (full-N) consumes it:
-    // `offset_quant_by_row` slices the {M,G} src scale to the per-thread
-    // {slice_M,G} view, and `execute_expert_slice` routes through
-    // `matmul_execute` (NOT `matmul_direct`), so the weight is never
-    // re-unpacked.  Two regimes reach here with such a weight:
-    //
-    //   (1) Fused-MoE vertical fusion — `dynamic_quant == true`; the source
-    //       is reordered per-thread (hoisted) inside the slice executor, so
-    //       the {M,G} src_scale arrives with `buff == nullptr`.
-    //
-    //   (2) Non-fused GGML / per-group — the grouped DQ pre-pass already
-    //       quantized the source to s8 and CLEARED `dynamic_quant`, leaving a
-    //       materialized {M,G} scale (`buff != nullptr`).  Functionally
-    //       identical to ALGO 1's per-expert call, just sliced over M, so
-    //       there is no reason to demote it to ALGO 1.
-    //
-    // Separately, `allow_prepacked_b` (set only by the N-tile safety probe)
-    // accepts a caller-prepacked custom-kernel VNNI 'r' weight that ALGO 3
-    // can consume directly.  'r' alone is ambiguous (it also marks
-    // AOCL-DLP-blocked and GGML unpack+reorder outputs, whose physical
-    // layout the CK kernel cannot read), so the carve-out ALSO requires
-    // lowoha_algo==moe_custom_kernel — matching the CK-VNNI classifier in
-    // flat_n_tile and the CK-only-or-fail guard.  (The N-tile path itself
-    // still re-validates the reordered-weight case in `check_n_tile_extra`,
-    // which column-slices the weight.)  Everything else still requires
-    // plain row-major ('n') + unpacked (pack_format_b == 0).
-    const bool reordered_pergroup_dyn_s8 =
-        params[i].dtypes.wei == data_type_t::s8
-        && params[i].dynamic_quant
-        && params[i].mem_format_b == 'r'
-        && params[i].quant_params.src_scale.dims.size() == 2
-        && params[i].quant_params.src_scale.dims[1] > 1;
-    const bool reordered_pergroup_static_s8 =
-        params[i].dtypes.wei == data_type_t::s8
-        && !params[i].dynamic_quant
-        && params[i].mem_format_b == 'r'
-        && params[i].quant_params.src_scale.buff != nullptr
-        && params[i].quant_params.src_scale.dims.size() == 2
-        && params[i].quant_params.src_scale.dims[0]
-               == static_cast<int64_t>(M[i])
-        && params[i].quant_params.src_scale.dims[1] > 1;
-    const bool reordered_pergroup_s8 =
-        reordered_pergroup_dyn_s8 || reordered_pergroup_static_s8;
-    const bool prepacked_b_ok =
-        allow_prepacked_b && params[i].mem_format_b == 'r'
-        && params[i].lowoha_algo
-               == zendnnl::ops::matmul_algo_t::moe_custom_kernel;
-    if (params[i].mem_format_b != 'n'
-        && !reordered_pergroup_s8 && !prepacked_b_ok) {
-      return false;
+    // Iterate the active range only — the framework may pad params[]
+    // (and layout[]) past `num_ops` for prepack-extras tail metadata
+    // that the matmul-processing loop never reaches.  See doc-block
+    // on `params[i].active_matmul` / `total_matmul` for the contract.
+    for (int i = 0; i < num_ops; ++i) {
+        // Inactive experts (M==0) do no compute and carry no rewritten quant
+        // metadata; skip them so they cannot veto the whole call.
+        if (M[i] == 0) continue;
+        if (layout[i] != 'r' && layout[i] != 'R') return false;
+        if (params[i].dtypes.src != params[ref].dtypes.src) return false;
+        if (params[i].dtypes.wei != params[ref].dtypes.wei) return false;
+        if (params[i].dtypes.dst != params[ref].dtypes.dst) return false;
+        if (params[i].dtypes.bias != params[ref].dtypes.bias) return false;
+        if (params[i].mem_format_a != 'n') return false;
+        // A reordered ('r') AOCL sym-quant s8 weight (mem_format_b=='r'; the
+        // GGML-origin flag pack_format_b may still be set) is M-tile-safe when it
+        // pairs with a row-local per-group {M[i],G} SOURCE scale.  M-tiling
+        // partitions only the SOURCE rows, so the whole pre-reordered weight +
+        // {G,N} wei_scale is consumed exactly as ALGO 1 (full-N) consumes it:
+        // `offset_quant_by_row` slices the {M,G} src scale to the per-thread
+        // {slice_M,G} view, and `execute_expert_slice` routes through
+        // `matmul_execute` (NOT `matmul_direct`), so the weight is never
+        // re-unpacked.  Two regimes reach here with such a weight:
+        //
+        //   (1) Fused-MoE vertical fusion — `dynamic_quant == true`; the source
+        //       is reordered per-thread (hoisted) inside the slice executor, so
+        //       the {M,G} src_scale arrives with `buff == nullptr`.
+        //
+        //   (2) Non-fused GGML / per-group — the grouped DQ pre-pass already
+        //       quantized the source to s8 and CLEARED `dynamic_quant`, leaving a
+        //       materialized {M,G} scale (`buff != nullptr`).  Functionally
+        //       identical to ALGO 1's per-expert call, just sliced over M, so
+        //       there is no reason to demote it to ALGO 1.
+        //
+        // Separately, `allow_prepacked_b` (set only by the N-tile safety probe)
+        // accepts a caller-prepacked custom-kernel VNNI 'r' weight that ALGO 3
+        // can consume directly.  'r' alone is ambiguous (it also marks
+        // AOCL-DLP-blocked and GGML unpack+reorder outputs, whose physical
+        // layout the CK kernel cannot read), so the carve-out ALSO requires
+        // lowoha_algo==moe_custom_kernel — matching the CK-VNNI classifier in
+        // flat_n_tile and the CK-only-or-fail guard.  (The N-tile path itself
+        // still re-validates the reordered-weight case in `check_n_tile_extra`,
+        // which column-slices the weight.)  Everything else still requires
+        // plain row-major ('n') + unpacked (pack_format_b == 0).
+        const bool reordered_pergroup_dyn_s8
+                = params[i].dtypes.wei == data_type_t::s8
+                && params[i].dynamic_quant && params[i].mem_format_b == 'r'
+                && params[i].quant_params.src_scale.dims.size() == 2
+                && params[i].quant_params.src_scale.dims[1] > 1;
+        const bool reordered_pergroup_static_s8
+                = params[i].dtypes.wei == data_type_t::s8
+                && !params[i].dynamic_quant && params[i].mem_format_b == 'r'
+                && params[i].quant_params.src_scale.buff != nullptr
+                && params[i].quant_params.src_scale.dims.size() == 2
+                && params[i].quant_params.src_scale.dims[0]
+                        == static_cast<int64_t>(M[i])
+                && params[i].quant_params.src_scale.dims[1] > 1;
+        const bool reordered_pergroup_s8
+                = reordered_pergroup_dyn_s8 || reordered_pergroup_static_s8;
+        const bool prepacked_b_ok = allow_prepacked_b
+                && params[i].mem_format_b == 'r'
+                && params[i].lowoha_algo
+                        == zendnnl::ops::matmul_algo_t::moe_custom_kernel;
+        if (params[i].mem_format_b != 'n' && !reordered_pergroup_s8
+                && !prepacked_b_ok) {
+            return false;
+        }
+        if (params[i].packing.pack_format_b != 0 && !reordered_pergroup_s8) {
+            return false;
+        }
+        if (params[i].dynamic_quant) {
+            const auto &sd = params[i].quant_params.src_scale.dims;
+            if (sd.empty() || sd[0] != static_cast<int64_t>(M[i])) return false;
+            const auto &zd = params[i].quant_params.src_zp.dims;
+            if (!zd.empty() && zd[0] != static_cast<int64_t>(M[i]))
+                return false;
+        }
+        // Grouped pre-quantized per-group source (s8 src + {M, G>1} scale,
+        // dynamic_quant already cleared by the grouped pre-pass) IS accepted:
+        // `offset_quant_by_row` slices the materialized {M, G} scale to the
+        // per-thread {slice_M, G} view (M-tile, full N), and the N-tile path
+        // repacks the {G, N} weight scale to {G, n_tile} per column tile, so
+        // both tile executors drive the AOCL sym-quant per-group GEMM directly.
+        // (A reordered 'r' weight, e.g. an unpacked GGML weight, is ACCEPTED by
+        // M-tile here via `reordered_pergroup_static_s8` above — M-tile consumes
+        // the whole weight per expert, so the non-fused GGML path runs ALGO 2
+        // instead of demoting to ALGO 1.  N-tile still rejects it: its
+        // `check_n_tile_extra` column-slices the weight, which the 'r' reorder
+        // does not permit, so GGML on N-tile takes the full-N ALGO 1 path.)  This
+        // stays off the per-token-only custom INT8 microkernel: M-tile never
+        // invokes it, and flat_n_tile forces per-group onto its AOCL do_tile path.
+        for (const auto &po : params[i].postop_) {
+            if (po.po_type == post_op_type_t::softmax
+                    || po.po_type == post_op_type_t::pooling) {
+                return false;
+            }
+        }
     }
-    if (params[i].packing.pack_format_b != 0 && !reordered_pergroup_s8) {
-      return false;
-    }
-    if (params[i].dynamic_quant) {
-      const auto &sd = params[i].quant_params.src_scale.dims;
-      if (sd.empty() || sd[0] != static_cast<int64_t>(M[i])) return false;
-      const auto &zd = params[i].quant_params.src_zp.dims;
-      if (!zd.empty() && zd[0] != static_cast<int64_t>(M[i])) return false;
-    }
-    // Grouped pre-quantized per-group source (s8 src + {M, G>1} scale,
-    // dynamic_quant already cleared by the grouped pre-pass) IS accepted:
-    // `offset_quant_by_row` slices the materialized {M, G} scale to the
-    // per-thread {slice_M, G} view (M-tile, full N), and the N-tile path
-    // repacks the {G, N} weight scale to {G, n_tile} per column tile, so
-    // both tile executors drive the AOCL sym-quant per-group GEMM directly.
-    // (A reordered 'r' weight, e.g. an unpacked GGML weight, is ACCEPTED by
-    // M-tile here via `reordered_pergroup_static_s8` above — M-tile consumes
-    // the whole weight per expert, so the non-fused GGML path runs ALGO 2
-    // instead of demoting to ALGO 1.  N-tile still rejects it: its
-    // `check_n_tile_extra` column-slices the weight, which the 'r' reorder
-    // does not permit, so GGML on N-tile takes the full-N ALGO 1 path.)  This
-    // stays off the per-token-only custom INT8 microkernel: M-tile never
-    // invokes it, and flat_n_tile forces per-group onto its AOCL do_tile path.
-    for (const auto &po : params[i].postop_) {
-      if (po.po_type == post_op_type_t::softmax
-          || po.po_type == post_op_type_t::pooling) {
-        return false;
-      }
-    }
-  }
-  return true;
+    return true;
 }
 
-}  // namespace matmul
-}  // namespace lowoha
-}  // namespace zendnnl
+} // namespace matmul
+} // namespace lowoha
+} // namespace zendnnl
 
-#endif  // ZENDNNL_GROUP_MATMUL_M_TILE_HPP
+#endif // ZENDNNL_GROUP_MATMUL_M_TILE_HPP

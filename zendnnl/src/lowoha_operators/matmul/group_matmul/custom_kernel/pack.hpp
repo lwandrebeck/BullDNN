@@ -189,15 +189,10 @@ inline constexpr int kNRMax = 64;
 /// to the out-of-place cache on a size mismatch (e.g. odd K), so it is
 /// always safe to request.  Ignored unless the cache is active
 /// (`!disable_cache`).
-status_t get_or_pack_weight_bf16(
-    const bfloat16_t *weight,
-    int K, int N, int ldb, int pack_nr,
-    bool transB,
-    bool interleave_split_halves,
-    const bfloat16_t **out_packed,
-    bool *was_hit_out = nullptr,
-    bool disable_cache = false,
-    bool in_place = false);
+status_t get_or_pack_weight_bf16(const bfloat16_t *weight, int K, int N,
+        int ldb, int pack_nr, bool transB, bool interleave_split_halves,
+        const bfloat16_t **out_packed, bool *was_hit_out = nullptr,
+        bool disable_cache = false, bool in_place = false);
 
 /// Free a packed-weight buffer returned by
 /// `get_or_pack_weight_bf16(..., disable_cache=true)`.  Safe with
@@ -271,14 +266,10 @@ void free_owned_packed_weight(const bfloat16_t *packed);
 /// the dispatcher therefore transparently falls through to the
 /// out-of-place cache for f16 — behaviourally correct, just without
 /// the one-buffer saving the bf16 even-K in-place path gets.
-status_t get_or_pack_weight_f16(
-    const float16_t *weight,
-    int K, int N, int ldb, int pack_nr,
-    bool transB,
-    bool interleave_split_halves,
-    const float16_t **out_packed,
-    bool *was_hit_out = nullptr,
-    bool disable_cache = false);
+status_t get_or_pack_weight_f16(const float16_t *weight, int K, int N, int ldb,
+        int pack_nr, bool transB, bool interleave_split_halves,
+        const float16_t **out_packed, bool *was_hit_out = nullptr,
+        bool disable_cache = false);
 
 /// Free a packed-weight buffer returned by
 /// `get_or_pack_weight_f16(..., disable_cache=true)`.  Safe with
@@ -341,14 +332,10 @@ void free_owned_packed_weight_f16(const float16_t *packed);
 /// bf16 sibling: when true, allocate a fresh aligned buffer per
 /// call, skip the LRU singleton, and let the caller free via
 /// `free_owned_packed_weight_int8()`.
-status_t get_or_pack_weight_int8(
-    const int8_t *weight,
-    int K, int N, int ldb, int pack_nr,
-    bool transB,
-    bool interleave_split_halves,
-    const int8_t **out_packed,
-    bool *was_hit_out = nullptr,
-    bool disable_cache = false);
+status_t get_or_pack_weight_int8(const int8_t *weight, int K, int N, int ldb,
+        int pack_nr, bool transB, bool interleave_split_halves,
+        const int8_t **out_packed, bool *was_hit_out = nullptr,
+        bool disable_cache = false);
 
 /// Free a packed-weight buffer returned by
 /// `get_or_pack_weight_int8(..., disable_cache=true)`.  Safe with
@@ -382,22 +369,15 @@ size_t packed_weight_size_int8(int K, int N, int pack_nr);
 /// Same `(weight, K, N, ldb, pack_nr, transB, interleave_split_halves)`
 /// contract as `get_or_pack_weight_bf16`, but no allocation and no
 /// caching — `dst` is caller-owned.  Returns failure on bad args.
-status_t prepack_weight_into_bf16(
-    const bfloat16_t *weight,
-    int K, int N, int ldb, int pack_nr,
-    bool transB,
-    bool interleave_split_halves,
-    void *dst);
+status_t prepack_weight_into_bf16(const bfloat16_t *weight, int K, int N,
+        int ldb, int pack_nr, bool transB, bool interleave_split_halves,
+        void *dst);
 
 /// DQ-INT8 sibling of `prepack_weight_into_bf16`.  Writes the
 /// VNNI-quad weight slab + per-column int32 compensation row into
 /// `dst`.  Returns failure on bad args.
-status_t prepack_weight_into_int8(
-    const int8_t *weight,
-    int K, int N, int ldb, int pack_nr,
-    bool transB,
-    bool interleave_split_halves,
-    void *dst);
+status_t prepack_weight_into_int8(const int8_t *weight, int K, int N, int ldb,
+        int pack_nr, bool transB, bool interleave_split_halves, void *dst);
 
 /// FP16 sibling of `packed_weight_size_bf16`.  The FP16 pack is the
 /// plain `[O/pack_nr][K][pack_nr]` slab (native AVX-512-FP16 FMA
@@ -410,12 +390,8 @@ size_t packed_weight_size_f16(int K, int N, int pack_nr);
 /// FP16 sibling of `prepack_weight_into_bf16`.  Writes the plain
 /// `[O/pack_nr][K][pack_nr]` FP16 slab into `dst` (no VNNI doubling /
 /// compensation row).  Returns failure on bad args.
-status_t prepack_weight_into_f16(
-    const float16_t *weight,
-    int K, int N, int ldb, int pack_nr,
-    bool transB,
-    bool interleave_split_halves,
-    void *dst);
+status_t prepack_weight_into_f16(const float16_t *weight, int K, int N, int ldb,
+        int pack_nr, bool transB, bool interleave_split_halves, void *dst);
 
 /// Release every cached packed BF16 weight and reset the cache to
 /// empty.  Intended for weight-rotating deployments (dynamic

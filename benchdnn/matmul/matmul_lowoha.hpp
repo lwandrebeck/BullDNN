@@ -18,10 +18,10 @@
 
 #include "benchdnn.hpp"
 
-using zendnnl::lowoha::matmul::matmul_data_types;
-using zendnnl::lowoha::matmul::matmul_params;
 using zendnnl::lowoha::matmul::matmul_batch_params_t;
+using zendnnl::lowoha::matmul::matmul_data_types;
 using zendnnl::lowoha::matmul::matmul_direct;
+using zendnnl::lowoha::matmul::matmul_params;
 
 namespace zendnnl {
 namespace benchdnn {
@@ -40,9 +40,9 @@ namespace matmul {
  * @return int Returns OK (0) on success, NOT_OK (1) on failure.
  */
 int matmul_lowoha_benchdnn(std::vector<MatmulConfig> configs,
-                           std::vector<std::pair<MatmulConfig, std::vector<TimingStats>>> &matmul_results,
-                           const global_options &options,
-                           size_t cache_size);
+        std::vector<std::pair<MatmulConfig, std::vector<TimingStats>>>
+                &matmul_results,
+        const global_options &options, size_t cache_size);
 
 /**
  * @brief Sets Weight-Only Quantization (WOQ) parameters in matmul_params from the weight tensor.
@@ -61,7 +61,7 @@ void set_woq_params(matmul_params &params, const tensor_t &weight_tensor);
  * @param output_tensor Destination/output tensor.
  */
 void set_int8_params(matmul_params &params, const tensor_t &input_tensor,
-                     const tensor_t &weight_tensor, const tensor_t &output_tensor);
+        const tensor_t &weight_tensor, const tensor_t &output_tensor);
 
 /**
  * @brief Configures dynamic source quantization (W8A8 or W4A8, symmetric).
@@ -75,8 +75,7 @@ void set_int8_params(matmul_params &params, const tensor_t &input_tensor,
  * @param weight_tensor Weight tensor (s8 or s4) carrying the wei-scale tensor.
  */
 void set_dyn_quant_src_params(matmul_params &params,
-                              const tensor_t &input_tensor,
-                              const tensor_t &weight_tensor);
+        const tensor_t &input_tensor, const tensor_t &weight_tensor);
 
 } // namespace matmul
 } // namespace benchdnn

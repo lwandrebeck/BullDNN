@@ -31,22 +31,26 @@ namespace bmm {
 // Analogous to GemmDescriptor for the GEMM planner: purely declarative,
 // no data pointers.
 struct BmmConfig {
-  int M;
-  int N;
-  int K;
-  int batch_count;
-  int num_threads;
-  matmul_algo_t kernel;
-  size_t src_batch_stride_bytes;
-  size_t weight_batch_stride_bytes;
-  size_t dst_batch_stride_bytes;
+    int M;
+    int N;
+    int K;
+    int batch_count;
+    int num_threads;
+    matmul_algo_t kernel;
+    size_t src_batch_stride_bytes;
+    size_t weight_batch_stride_bytes;
+    size_t dst_batch_stride_bytes;
 
-  BmmConfig()
-    : M(0), N(0), K(0), batch_count(1), num_threads(1),
-      kernel(matmul_algo_t::none),
-      src_batch_stride_bytes(0),
-      weight_batch_stride_bytes(0),
-      dst_batch_stride_bytes(0) {}
+    BmmConfig()
+        : M(0)
+        , N(0)
+        , K(0)
+        , batch_count(1)
+        , num_threads(1)
+        , kernel(matmul_algo_t::none)
+        , src_batch_stride_bytes(0)
+        , weight_batch_stride_bytes(0)
+        , dst_batch_stride_bytes(0) {}
 };
 
 // Output of the BMM planner — blocking and parallelization strategy.
@@ -54,10 +58,10 @@ struct BmmConfig {
 // Analogous to BlockPlan / BrgemmPlan: the looper consumes this to
 // set up its parallel region and tile iteration bounds.
 struct BmmPlan {
-  int M_block;
-  bool use_zendnnl_parallel;
+    int M_block;
+    bool use_zendnnl_parallel;
 
-  BmmPlan() : M_block(0), use_zendnnl_parallel(false) {}
+    BmmPlan() : M_block(0), use_zendnnl_parallel(false) {}
 };
 
 // Calculate the optimal M-dimension block size for parallel partitioning.

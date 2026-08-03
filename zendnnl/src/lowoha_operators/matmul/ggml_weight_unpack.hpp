@@ -39,8 +39,8 @@ namespace matmul {
  * @param K               number of columns (must be divisible by 32)
  * @return buffer size in bytes, or -1 on invalid parameters
  */
-int64_t ggml_unpack_weight_buffer_size(int ggml_type, bool use_bf16_scales,
-                                       int64_t N, int64_t K);
+int64_t ggml_unpack_weight_buffer_size(
+        int ggml_type, bool use_bf16_scales, int64_t N, int64_t K);
 
 /**
  * @brief Unpack GGML quantised weights into a flat weight region + a flat
@@ -61,9 +61,8 @@ int64_t ggml_unpack_weight_buffer_size(int ggml_type, bool use_bf16_scales,
  * @return 0 on success, -1 on error.
  */
 int ggml_unpack_weight_buffer(const void *weight_data, int ggml_type,
-                              bool use_bf16_scales, int64_t N, int64_t K,
-                              int8_t **wei_ptr, void **scl_ptr,
-                              void *unpack_buffer = nullptr);
+        bool use_bf16_scales, int64_t N, int64_t K, int8_t **wei_ptr,
+        void **scl_ptr, void *unpack_buffer = nullptr);
 
 /**
  * @brief Returns true when @p params is configured for sym-quant per-group
@@ -88,8 +87,7 @@ bool ggml_is_sym_quant(const matmul_params &params);
  * Designed to be invoked through op_instrumentation::validate(...).
  */
 status_t validate_ggml_packed_inputs(const matmul_params &params,
-                                     bool is_weights_const,
-                                     int Batch_B, bool transB);
+        bool is_weights_const, int Batch_B, bool transB);
 
 /**
  * @brief Unpack GGML packed weights out of place, reorder them for AOCL
@@ -148,9 +146,7 @@ status_t validate_ggml_packed_inputs(const matmul_params &params,
  * @return status_t::success on success, status_t::failure on error
  */
 status_t unpack_ggml_weights_and_cache(const void *&weight, int N, int K,
-                                      int ldb, char trans,
-                                      matmul_params &params,
-                                      bool skip_reorder = false);
+        int ldb, char trans, matmul_params &params, bool skip_reorder = false);
 
 /** Clear cached GGML unpacked/reordered weight buffers. */
 void clear_ggml_weight_unpack_cache();

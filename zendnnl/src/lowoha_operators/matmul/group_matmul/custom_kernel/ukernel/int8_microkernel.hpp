@@ -99,9 +99,9 @@
 
 #include <cstdint>
 
-#include "common/bfloat16.hpp"
 #include "../pack.hpp"
-#include "bf16_microkernel.hpp"  // ActKind, BiasKind, kMaxMR, max_mr_for_nv
+#include "bf16_microkernel.hpp" // ActKind, BiasKind, kMaxMR, max_mr_for_nv
+#include "common/bfloat16.hpp"
 
 namespace zendnnl {
 namespace lowoha {
@@ -125,8 +125,8 @@ namespace custom_kernel {
 ///                  also undone in the epilogue from the
 ///                  compensation row.
 enum class IntCompute : uint8_t {
-  kS8_Sym = 0,
-  kU8_Asym = 1,
+    kS8_Sym = 0,
+    kU8_Asym = 1,
 };
 
 /// Dtype of the per-row `src_scale` and per-channel `wei_scale` the
@@ -139,8 +139,8 @@ enum class IntCompute : uint8_t {
 /// AOCL otherwise), and the silu/gelu interleave pre-pass emits f32 for
 /// both, so the two scales always share one dtype at the kernel.
 enum class ScaleKind : uint8_t {
-  kF32  = 0,
-  kBf16 = 1,
+    kF32 = 0,
+    kBf16 = 1,
 };
 
 // `kVNNIInt8Quad` (= 4) is declared once in pack.hpp alongside
@@ -199,17 +199,11 @@ bool avx512vnni_available();
 ///     prepack.cpp).  The WEIGHT pack zero-pads its trailing K-quad
 ///     INDEPENDENTLY, so the packed-weight 4-byte load is always safe;
 ///     it is only the src side that requires the alignment.
-using int8_ukernel_fn_t = void (*)(
-    const uint8_t      *A, int lda,
-    const int8_t       *Bpacked,
-    const void         *src_scale,
-    const int32_t      *src_zp,
-    const void         *wei_scale,
-    ScaleKind           scale_kind,
-    const void         *bias, BiasKind bias_kind,
-    void               *Cout, int ldc,
-    void               *Cout_tight, int ldc_tight,
-    int                 K);
+using int8_ukernel_fn_t = void (*)(const uint8_t *A, int lda,
+        const int8_t *Bpacked, const void *src_scale, const int32_t *src_zp,
+        const void *wei_scale, ScaleKind scale_kind, const void *bias,
+        BiasKind bias_kind, void *Cout, int ldc, void *Cout_tight,
+        int ldc_tight, int K);
 
 /// Runtime selector — returns the function pointer for the
 /// requested `(MR ∈ 1..max_mr_for_nv(NV), NV ∈ {2, 4}, Compute,
@@ -222,14 +216,12 @@ using int8_ukernel_fn_t = void (*)(
 /// `Act = none` — gated activations are BF16-dst only and the
 /// selector returns `nullptr` for any (gated, kF32) tuple, mirroring
 /// `select_ukernel` on the bf16 side.
-int8_ukernel_fn_t select_int8_ukernel(int MR, int NV,
-                                      IntCompute compute,
-                                      ActKind    act,
-                                      DstDt      dst_dt);
+int8_ukernel_fn_t select_int8_ukernel(
+        int MR, int NV, IntCompute compute, ActKind act, DstDt dst_dt);
 
-}  // namespace custom_kernel
-}  // namespace matmul
-}  // namespace lowoha
-}  // namespace zendnnl
+} // namespace custom_kernel
+} // namespace matmul
+} // namespace lowoha
+} // namespace zendnnl
 
-#endif  // ZENDNNL_GROUP_MATMUL_CUSTOM_KERNEL_UKERNEL_INT8_MICROKERNEL_HPP
+#endif // ZENDNNL_GROUP_MATMUL_CUSTOM_KERNEL_UKERNEL_INT8_MICROKERNEL_HPP

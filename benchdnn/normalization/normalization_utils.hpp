@@ -20,8 +20,8 @@
 
 #define NORM_REQUIRED_FIELD_COUNT 8
 
-using zendnnl::lowoha::normalization::norm_type_t;
 using zendnnl::lowoha::normalization::norm_algo_t;
+using zendnnl::lowoha::normalization::norm_type_t;
 
 namespace zendnnl {
 namespace benchdnn {
@@ -61,25 +61,25 @@ namespace normalization {
  *                Requires src_dt == dst_dt.
  */
 struct NormalizationConfig {
-  std::string norm_type;
-  std::vector<uint64_t> shape;    ///< Full N-D shape from user input
-  int norm_ndims;                 ///< Number of trailing dims to normalize
-  uint64_t batch;
-  uint64_t norm_size;
-  uint64_t num_channels;
-  uint64_t total_elements;
-  zendnnl::common::data_type_t src_dt;
-  zendnnl::common::data_type_t dst_dt;
-  zendnnl::common::data_type_t gamma_dt;
-  zendnnl::common::data_type_t beta_dt;
-  float epsilon;
-  bool use_scale;
-  bool use_shift;
-  std::string algorithm;
-  int iters;
-  int warmup_iters;
-  int num_threads;
-  bool isInplace;
+    std::string norm_type;
+    std::vector<uint64_t> shape; ///< Full N-D shape from user input
+    int norm_ndims; ///< Number of trailing dims to normalize
+    uint64_t batch;
+    uint64_t norm_size;
+    uint64_t num_channels;
+    uint64_t total_elements;
+    zendnnl::common::data_type_t src_dt;
+    zendnnl::common::data_type_t dst_dt;
+    zendnnl::common::data_type_t gamma_dt;
+    zendnnl::common::data_type_t beta_dt;
+    float epsilon;
+    bool use_scale;
+    bool use_shift;
+    std::string algorithm;
+    int iters;
+    int warmup_iters;
+    int num_threads;
+    bool isInplace;
 };
 
 /**
@@ -126,8 +126,8 @@ norm_algo_t strToLowohaAlgo(const std::string &algo);
  * @param infile Reference to an open std::ifstream containing the input configurations.
  * @param configs Reference to a vector of NormalizationConfig to be populated.
  */
-void inputParser(std::ifstream &infile,
-                 std::vector<NormalizationConfig> &configs);
+void inputParser(
+        std::ifstream &infile, std::vector<NormalizationConfig> &configs);
 
 /**
  * @brief Logs a detailed error message for a failed benchmark configuration.
@@ -143,7 +143,8 @@ void log_benchmark_failure(const NormalizationConfig &cfg);
  * @param outfile Output stream to print the table (e.g., std::cout or file stream).
  */
 void print_results(std::vector<std::pair<NormalizationConfig, TimingStats>>
-                   &normalization_results, std::ostream &outfile);
+                           &normalization_results,
+        std::ostream &outfile);
 
 /**
  * @brief Logs the normalization benchmark results in CSV format to the given output stream.
@@ -152,7 +153,8 @@ void print_results(std::vector<std::pair<NormalizationConfig, TimingStats>>
  * @param outfile Output stream to write the CSV data (e.g., file stream).
  */
 void log_results(std::vector<std::pair<NormalizationConfig, TimingStats>>
-                 &normalization_results, std::ostream &outfile);
+                         &normalization_results,
+        std::ostream &outfile);
 
 } // namespace normalization
 } // namespace benchdnn

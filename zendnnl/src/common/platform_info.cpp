@@ -18,7 +18,7 @@
 
 #include <cstdint>
 #ifdef __x86_64__
-  #include <cpuid.h>
+#include <cpuid.h>
 #endif
 
 namespace zendnnl {
@@ -27,76 +27,80 @@ namespace common {
 using namespace Au;
 
 platform_info_t::platform_info_t()
-  : is_avx2{false}, is_avx512f{false},
-    is_avx512bw{false}, is_avx512vl{false},
-    is_avx512_f16_native{false},
-    isa_version{0},
-    cpu_family{0}, cpu_model{0}, cpu_vendor{}, cpu_uarch{0} {
-}
+    : is_avx2 {false}
+    , is_avx512f {false}
+    , is_avx512bw {false}
+    , is_avx512vl {false}
+    , is_avx512_f16_native {false}
+    , isa_version {0}
+    , cpu_family {0}
+    , cpu_model {0}
+    , cpu_vendor {}
+    , cpu_uarch {0} {}
 
 status_t platform_info_t::populate() {
-  X86Cpu cpu{0};
+    X86Cpu cpu {0};
 
-  auto v_info     = cpu.getVendorInfo();
-  cpu_vendor      = static_cast<uint32_t>(v_info.m_mfg);
-  cpu_family      = static_cast<uint32_t>(v_info.m_family);
-  cpu_model       = v_info.m_model;
-  cpu_uarch       = static_cast<uint32_t>(v_info.m_uarch);
-  is_avx2         = cpu.hasFlag(ECpuidFlag::avx2);
-  is_avx512f      = cpu.hasFlag(ECpuidFlag::avx512f);
-  is_avx512bw     = cpu.hasFlag(ECpuidFlag::avx512bw);
-  is_avx512vl     = cpu.hasFlag(ECpuidFlag::avx512vl);
-  detect_f16_isa();
+    auto v_info = cpu.getVendorInfo();
+    cpu_vendor = static_cast<uint32_t>(v_info.m_mfg);
+    cpu_family = static_cast<uint32_t>(v_info.m_family);
+    cpu_model = v_info.m_model;
+    cpu_uarch = static_cast<uint32_t>(v_info.m_uarch);
+    is_avx2 = cpu.hasFlag(ECpuidFlag::avx2);
+    is_avx512f = cpu.hasFlag(ECpuidFlag::avx512f);
+    is_avx512bw = cpu.hasFlag(ECpuidFlag::avx512bw);
+    is_avx512vl = cpu.hasFlag(ECpuidFlag::avx512vl);
+    detect_f16_isa();
 
-  return status_t::success;
+    return status_t::success;
 }
 
 void platform_info_t::detect_f16_isa() {
 #ifdef __x86_64__
-  uint32_t eax = 0, ebx = 0, ecx = 0, edx = 0;
+    uint32_t eax = 0, ebx = 0, ecx = 0, edx = 0;
 
-  // AVX512-FP16 (CPUID leaf 7, subleaf 0, EDX bit 23)
-  // Full FP16 arithmetic (FMA, add, mul, div, etc.)
-  __cpuid_count(7, 0, eax, ebx, ecx, edx);
-  is_avx512_f16_native = (edx >> 23) & 1;
+    // AVX512-FP16 (CPUID leaf 7, subleaf 0, EDX bit 23)
+    // Full FP16 arithmetic (FMA, add, mul, div, etc.)
+    __cpuid_count(7, 0, eax, ebx, ecx, edx);
+    is_avx512_f16_native = (edx >> 23) & 1;
 #endif
 }
 
 bool platform_info_t::get_avx2_status() const {
-  return is_avx2;
+    return is_avx2;
 }
 
 bool platform_info_t::get_avx512f_status() const {
-  return is_avx512f;
+    return is_avx512f;
 }
 
 bool platform_info_t::get_avx512_f16_status() const {
-  return is_avx512_f16_native;
+    return is_avx512_f16_native;
 }
 
 bool platform_info_t::get_avx512_bw_vl_status() const {
-  return is_avx512bw && is_avx512vl;
+    return is_avx512bw && is_avx512vl;
 }
 
 uint32_t platform_info_t::get_isa_version() const {
-  return isa_version;
+    return isa_version;
 }
 
 uint32_t platform_info_t::get_cpu_family() const {
-  return cpu_family;
+    return cpu_family;
 }
 
 uint32_t platform_info_t::get_cpu_model() const {
-  return cpu_model;
+    return cpu_model;
 }
 
 uint32_t platform_info_t::get_cpu_vendor() const {
-  return cpu_vendor;
+    return cpu_vendor;
 }
 
 uint32_t platform_info_t::get_cpu_uarch() const {
-  return cpu_uarch;
+    return cpu_uarch;
 }
 
-}//common
-}//zendnnl
+} // namespace common
+} // namespace zendnnl

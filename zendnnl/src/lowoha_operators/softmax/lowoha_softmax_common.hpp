@@ -30,10 +30,10 @@ using namespace zendnnl::common;
  * @brief Softmax algorithm type
  */
 enum class softmax_algo_t {
-    none = -1,             /*!< No algorithm selected */
-    dynamic_dispatch = 0,  /*!< Dynamic dispatch - Not implemented */
-    onednn = 1,            /*!< OneDNN backend */
-    reference = 2          /*!< Reference implementation */
+    none = -1, /*!< No algorithm selected */
+    dynamic_dispatch = 0, /*!< Dynamic dispatch - Not implemented */
+    onednn = 1, /*!< OneDNN backend */
+    reference = 2 /*!< Reference implementation */
 };
 
 /**
@@ -49,32 +49,35 @@ constexpr int SOFTMAX_MAX_NDIMS = 5;
  * data types, and algorithm selection.
  */
 struct softmax_params {
-    uint64_t batch;                 ///< Batch size (outer dimensions product)
-    uint64_t axis_dim;              ///< Dimension size along softmax axis
-    int axis;                       ///< Axis along which to compute softmax (-1 for last axis)
-    bool log_softmax;               ///< If true, compute log(softmax(x)) instead of softmax(x)
-    bool softmin;                   ///< If true, compute softmax(-x). Combines with log_softmax.
-    data_type_t src_dt;             ///< Source/input data type
-    data_type_t dst_dt;             ///< Destination/output data type
-    softmax_algo_t algorithm;       ///< Selected algorithm
+    uint64_t batch; ///< Batch size (outer dimensions product)
+    uint64_t axis_dim; ///< Dimension size along softmax axis
+    int axis; ///< Axis along which to compute softmax (-1 for last axis)
+    bool log_softmax; ///< If true, compute log(softmax(x)) instead of softmax(x)
+    bool softmin; ///< If true, compute softmax(-x). Combines with log_softmax.
+    data_type_t src_dt; ///< Source/input data type
+    data_type_t dst_dt; ///< Destination/output data type
+    softmax_algo_t algorithm; ///< Selected algorithm
     //num_threads is int32_t to match the type used by OpenMP APIs
-    int32_t num_threads;            ///< Number of threads (0 = auto)
+    int32_t num_threads; ///< Number of threads (0 = auto)
 
     // Original tensor shape information (for OneDNN backend)
-    uint64_t shape[SOFTMAX_MAX_NDIMS];  ///< Original tensor dimensions
-    int ndims;                          ///< Number of dimensions in original tensor
+    uint64_t shape[SOFTMAX_MAX_NDIMS]; ///< Original tensor dimensions
+    int ndims; ///< Number of dimensions in original tensor
 
     /**
      * @brief Default constructor
      */
-    softmax_params() : batch(1), axis_dim(0),
-                       axis(-1),
-                       log_softmax(false),
-                       softmin(false),
-                       src_dt(data_type_t::none),
-                       dst_dt(data_type_t::none),
-                       algorithm(softmax_algo_t::none),
-                       num_threads(0), ndims(0) {
+    softmax_params()
+        : batch(1)
+        , axis_dim(0)
+        , axis(-1)
+        , log_softmax(false)
+        , softmin(false)
+        , src_dt(data_type_t::none)
+        , dst_dt(data_type_t::none)
+        , algorithm(softmax_algo_t::none)
+        , num_threads(0)
+        , ndims(0) {
         for (int i = 0; i < SOFTMAX_MAX_NDIMS; ++i) {
             shape[i] = 0;
         }

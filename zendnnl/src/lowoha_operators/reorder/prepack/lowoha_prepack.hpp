@@ -27,8 +27,8 @@ namespace zendnnl {
 namespace lowoha {
 namespace reorder {
 
-using zendnnl::memory::status_t;
 using zendnnl::memory::data_type_t;
+using zendnnl::memory::status_t;
 using zendnnl::ops::matmul_algo_t;
 
 // Forward declaration: the public prepack API
@@ -89,25 +89,25 @@ struct reorder_params_t;
  *       else K / (scale_nelems / M)).
  */
 struct prepack_params_t {
-  matmul_algo_t     algo;             ///< Target prepack layout:
-  ///< @c matmul_algo_t::aocl_dlp_blocked   — AOCL DLP blocked weight; OR
-  ///< @c matmul_algo_t::moe_custom_kernel  — group_matmul custom-kernel VNNI
-  data_type_t       wei_dtype;        ///< Weight data type
-  data_type_t       src_dtype;        ///< Source (matmul A) data type
-  int64_t           K;                ///< Weight rows
-  int64_t           N;                ///< Weight cols
-  int64_t           ldb;              ///< Physical leading dimension
-  bool              transposed;       ///< true => 't', false => 'n'
-  int               sym_group_size;   ///< AOCL: >0 selects s8 sym-quant variant
-  ///< @brief CK pack width (32 or 64). 0 => auto via plan_pack_nr(K,N).
-  ///< Used only when @c algo == matmul_algo_t::moe_custom_kernel.
-  int               pack_nr;
-  ///< @brief CK split-halves interleave (silu_and_mul / gelu_and_mul
-  ///< re-interleave [gate|up] -> [g0,u0,...]; requires even N).
-  ///< Used only when @c algo == matmul_algo_t::moe_custom_kernel.
-  bool              interleave_split_halves;
+    matmul_algo_t algo; ///< Target prepack layout:
+    ///< @c matmul_algo_t::aocl_dlp_blocked   — AOCL DLP blocked weight; OR
+    ///< @c matmul_algo_t::moe_custom_kernel  — group_matmul custom-kernel VNNI
+    data_type_t wei_dtype; ///< Weight data type
+    data_type_t src_dtype; ///< Source (matmul A) data type
+    int64_t K; ///< Weight rows
+    int64_t N; ///< Weight cols
+    int64_t ldb; ///< Physical leading dimension
+    bool transposed; ///< true => 't', false => 'n'
+    int sym_group_size; ///< AOCL: >0 selects s8 sym-quant variant
+    ///< @brief CK pack width (32 or 64). 0 => auto via plan_pack_nr(K,N).
+    ///< Used only when @c algo == matmul_algo_t::moe_custom_kernel.
+    int pack_nr;
+    ///< @brief CK split-halves interleave (silu_and_mul / gelu_and_mul
+    ///< re-interleave [gate|up] -> [g0,u0,...]; requires even N).
+    ///< Used only when @c algo == matmul_algo_t::moe_custom_kernel.
+    bool interleave_split_halves;
 
-  /**
+    /**
    * @brief Last prepacked-buffer size (in bytes) computed by
    *        @c weight_prepack_size.
    *
@@ -119,18 +119,20 @@ struct prepack_params_t {
    * @c mutable so the field can be updated through a
    * @c const reorder_params_t& reference.
    */
-  mutable size_t    cached_size;
+    mutable size_t cached_size;
 
-  prepack_params_t()
-    : algo(matmul_algo_t::none),
-      wei_dtype(data_type_t::none),
-      src_dtype(data_type_t::none),
-      K(0), N(0), ldb(0),
-      transposed(false),
-      sym_group_size(0),
-      pack_nr(0),
-      interleave_split_halves(false),
-      cached_size(0) {}
+    prepack_params_t()
+        : algo(matmul_algo_t::none)
+        , wei_dtype(data_type_t::none)
+        , src_dtype(data_type_t::none)
+        , K(0)
+        , N(0)
+        , ldb(0)
+        , transposed(false)
+        , sym_group_size(0)
+        , pack_nr(0)
+        , interleave_split_halves(false)
+        , cached_size(0) {}
 };
 
 // =====================================================================
@@ -229,9 +231,8 @@ size_t weight_prepack_size(const reorder_params_t &params);
  *         @c status_t::unimplemented for unsupported algos / dtypes;
  *         @c status_t::failure on validation errors.
  */
-status_t weight_prepack_into(const void *weights,
-                             const reorder_params_t &params,
-                             void *dst);
+status_t weight_prepack_into(
+        const void *weights, const reorder_params_t &params, void *dst);
 
 } // namespace reorder
 } // namespace lowoha

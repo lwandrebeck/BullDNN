@@ -31,16 +31,10 @@ namespace native {
 /// fall back to an alternative kernel (e.g., DLP blocked).
 /// Shape-aware heuristics may return false for shapes where the Native kernel
 /// is known to be slower than the fallback.
-bool native_matmul_execute(
-  matmul_algo_t kernel,
-  char layout, bool transA, bool transB,
-  int M, int N, int K, float alpha,
-  const void *src, int lda,
-  const void *weight, int ldb,
-  const void *bias, float beta,
-  void *dst, int ldc,
-  bool is_weights_const, int num_threads,
-  matmul_params &params);
+bool native_matmul_execute(matmul_algo_t kernel, char layout, bool transA,
+        bool transB, int M, int N, int K, float alpha, const void *src, int lda,
+        const void *weight, int ldb, const void *bias, float beta, void *dst,
+        int ldc, bool is_weights_const, int num_threads, matmul_params &params);
 
 /// Best-algo selector for BF16 M≤8 (GEMV/decode) shapes.
 /// Returns the optimal algo (native_brgemm or aocl_dlp_blocked) based
@@ -53,8 +47,8 @@ bool native_matmul_execute(
 ///                      (narrow kernel can't engage; BKC pad waste
 ///                      makes it lose to DLP).
 ///   * other M=1      → shape-based DLP gates for small-N high-K.
-matmul_algo_t bf16_gemv_best_algo(int M, int N, int K, int num_threads,
-                                  bool transB);
+matmul_algo_t bf16_gemv_best_algo(
+        int M, int N, int K, int num_threads, bool transB);
 
 } // namespace native
 } // namespace matmul

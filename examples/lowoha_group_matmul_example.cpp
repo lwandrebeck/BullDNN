@@ -35,40 +35,40 @@ namespace zendnnl {
 namespace examples {
 
 using namespace zendnnl::lowoha::matmul;
-using zendnnl::interface::testlog_info;
-using zendnnl::interface::testlog_error;
 using zendnnl::error_handling::exception_t;
+using zendnnl::interface::testlog_error;
+using zendnnl::interface::testlog_info;
 
 // Helper: fill a float buffer with a simple pattern.
 static void fill_f32(std::vector<float> &buf, float val) {
-  for (auto &x : buf) {
-    x = val;
-  }
+    for (auto &x : buf) {
+        x = val;
+    }
 }
 
 // Helper: convert float to BF16 with round-to-nearest-even.
 static uint16_t f32_to_bf16(float v) {
-  uint32_t bits;
-  std::memcpy(&bits, &v, sizeof(bits));
-  uint32_t lsb = (bits >> 16) & 1;
-  bits += 0x7FFFu + lsb;
-  return static_cast<uint16_t>(bits >> 16);
+    uint32_t bits;
+    std::memcpy(&bits, &v, sizeof(bits));
+    uint32_t lsb = (bits >> 16) & 1;
+    bits += 0x7FFFu + lsb;
+    return static_cast<uint16_t>(bits >> 16);
 }
 
 // Helper: convert BF16 to float.
 static float bf16_to_f32(uint16_t v) {
-  uint32_t bits = static_cast<uint32_t>(v) << 16;
-  float f;
-  std::memcpy(&f, &bits, sizeof(f));
-  return f;
+    uint32_t bits = static_cast<uint32_t>(v) << 16;
+    float f;
+    std::memcpy(&f, &bits, sizeof(f));
+    return f;
 }
 
 // Helper: fill a BF16 buffer with a constant value.
 static void fill_bf16(std::vector<uint16_t> &buf, float val) {
-  uint16_t bval = f32_to_bf16(val);
-  for (auto &x : buf) {
-    x = bval;
-  }
+    uint16_t bval = f32_to_bf16(val);
+    for (auto &x : buf) {
+        x = bval;
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -76,71 +76,71 @@ static void fill_bf16(std::vector<uint16_t> &buf, float val) {
 // ---------------------------------------------------------------------------
 
 int group_matmul_fp32_example() {
-  testlog_info("** group_matmul FP32 example: 3 parallel GEMMs");
+    testlog_info("** group_matmul FP32 example: 3 parallel GEMMs");
 
-  try {
-    const int NUM_OPS = 3;
-    std::vector<int> Ms = {16, 32, 8};
-    std::vector<int> Ns = {64, 32, 128};
-    std::vector<int> Ks = {32, 64, 16};
+    try {
+        const int NUM_OPS = 3;
+        std::vector<int> Ms = {16, 32, 8};
+        std::vector<int> Ns = {64, 32, 128};
+        std::vector<int> Ks = {32, 64, 16};
 
-    std::vector<std::vector<float>> src(NUM_OPS), wei(NUM_OPS), dst(NUM_OPS);
-    for (int i = 0; i < NUM_OPS; ++i) {
-      src[i].resize(Ms[i] * Ks[i]);
-      wei[i].resize(Ks[i] * Ns[i]);
-      dst[i].resize(Ms[i] * Ns[i], 0.f);
-      fill_f32(src[i], 1.f);
-      fill_f32(wei[i], 1.f);
-    }
-
-    std::vector<char> layouts(NUM_OPS, 'r');
-    std::vector<bool> transAs(NUM_OPS, false), transBs(NUM_OPS, false);
-    std::vector<float> alphas(NUM_OPS, 1.f), betas(NUM_OPS, 0.f);
-    std::vector<bool> wconst(NUM_OPS, false);
-    std::vector<int> ldas = Ks, ldbs = Ns, ldcs = Ns;
-
-    std::vector<const void *> sp(NUM_OPS), wp(NUM_OPS);
-    std::vector<const void *> bp(NUM_OPS, nullptr);
-    std::vector<void *> dp(NUM_OPS);
-    for (int i = 0; i < NUM_OPS; ++i) {
-      sp[i] = src[i].data();
-      wp[i] = wei[i].data();
-      dp[i] = dst[i].data();
-    }
-
-    std::vector<matmul_params> params(NUM_OPS);
-    for (int i = 0; i < NUM_OPS; ++i) {
-      params[i].dtypes.src = data_type_t::f32;
-      params[i].dtypes.wei = data_type_t::f32;
-      params[i].dtypes.dst = data_type_t::f32;
-    }
-
-    status_t st = group_matmul_direct(
-                    layouts, transAs, transBs, Ms, Ns, Ks, alphas,
-                    sp, ldas, wp, ldbs, bp, betas, dp, ldcs, wconst, params, nullptr);
-
-    if (st != status_t::success) {
-      testlog_error("FP32 group_matmul failed");
-      return NOT_OK;
-    }
-
-    // Verify: C = 1*1*K = K for each element.
-    for (int i = 0; i < NUM_OPS; ++i) {
-      float expected = static_cast<float>(Ks[i]);
-      for (int j = 0; j < Ms[i] * Ns[i]; ++j) {
-        if (std::abs(dst[i][j] - expected) > 1e-3f) {
-          testlog_error("FP32 verify failed: op=", i, " idx=", j);
-          return NOT_OK;
+        std::vector<std::vector<float>> src(NUM_OPS), wei(NUM_OPS),
+                dst(NUM_OPS);
+        for (int i = 0; i < NUM_OPS; ++i) {
+            src[i].resize(Ms[i] * Ks[i]);
+            wei[i].resize(Ks[i] * Ns[i]);
+            dst[i].resize(Ms[i] * Ns[i], 0.f);
+            fill_f32(src[i], 1.f);
+            fill_f32(wei[i], 1.f);
         }
-      }
+
+        std::vector<char> layouts(NUM_OPS, 'r');
+        std::vector<bool> transAs(NUM_OPS, false), transBs(NUM_OPS, false);
+        std::vector<float> alphas(NUM_OPS, 1.f), betas(NUM_OPS, 0.f);
+        std::vector<bool> wconst(NUM_OPS, false);
+        std::vector<int> ldas = Ks, ldbs = Ns, ldcs = Ns;
+
+        std::vector<const void *> sp(NUM_OPS), wp(NUM_OPS);
+        std::vector<const void *> bp(NUM_OPS, nullptr);
+        std::vector<void *> dp(NUM_OPS);
+        for (int i = 0; i < NUM_OPS; ++i) {
+            sp[i] = src[i].data();
+            wp[i] = wei[i].data();
+            dp[i] = dst[i].data();
+        }
+
+        std::vector<matmul_params> params(NUM_OPS);
+        for (int i = 0; i < NUM_OPS; ++i) {
+            params[i].dtypes.src = data_type_t::f32;
+            params[i].dtypes.wei = data_type_t::f32;
+            params[i].dtypes.dst = data_type_t::f32;
+        }
+
+        status_t st = group_matmul_direct(layouts, transAs, transBs, Ms, Ns, Ks,
+                alphas, sp, ldas, wp, ldbs, bp, betas, dp, ldcs, wconst, params,
+                nullptr);
+
+        if (st != status_t::success) {
+            testlog_error("FP32 group_matmul failed");
+            return NOT_OK;
+        }
+
+        // Verify: C = 1*1*K = K for each element.
+        for (int i = 0; i < NUM_OPS; ++i) {
+            float expected = static_cast<float>(Ks[i]);
+            for (int j = 0; j < Ms[i] * Ns[i]; ++j) {
+                if (std::abs(dst[i][j] - expected) > 1e-3f) {
+                    testlog_error("FP32 verify failed: op=", i, " idx=", j);
+                    return NOT_OK;
+                }
+            }
+        }
+        testlog_info("FP32 group_matmul verified OK.");
+    } catch (const exception_t &ex) {
+        std::cout << ex.what() << std::endl;
+        return NOT_OK;
     }
-    testlog_info("FP32 group_matmul verified OK.");
-  }
-  catch (const exception_t &ex) {
-    std::cout << ex.what() << std::endl;
-    return NOT_OK;
-  }
-  return OK;
+    return OK;
 }
 
 // ---------------------------------------------------------------------------
@@ -148,73 +148,73 @@ int group_matmul_fp32_example() {
 // ---------------------------------------------------------------------------
 
 int group_matmul_bf16_example() {
-  testlog_info("** group_matmul BF16 example: 3 parallel GEMMs");
+    testlog_info("** group_matmul BF16 example: 3 parallel GEMMs");
 
-  try {
-    const int NUM_OPS = 3;
-    std::vector<int> Ms = {16, 32, 8};
-    std::vector<int> Ns = {64, 32, 128};
-    std::vector<int> Ks = {32, 64, 16};
+    try {
+        const int NUM_OPS = 3;
+        std::vector<int> Ms = {16, 32, 8};
+        std::vector<int> Ns = {64, 32, 128};
+        std::vector<int> Ks = {32, 64, 16};
 
-    std::vector<std::vector<uint16_t>> src(NUM_OPS), wei(NUM_OPS), dst(NUM_OPS);
-    for (int i = 0; i < NUM_OPS; ++i) {
-      src[i].resize(Ms[i] * Ks[i]);
-      wei[i].resize(Ks[i] * Ns[i]);
-      dst[i].resize(Ms[i] * Ns[i], 0);
-      fill_bf16(src[i], 1.f);
-      fill_bf16(wei[i], 1.f);
-    }
-
-    std::vector<char> layouts(NUM_OPS, 'r');
-    std::vector<bool> transAs(NUM_OPS, false), transBs(NUM_OPS, false);
-    std::vector<float> alphas(NUM_OPS, 1.f), betas(NUM_OPS, 0.f);
-    std::vector<bool> wconst(NUM_OPS, true);
-    std::vector<int> ldas = Ks, ldbs = Ns, ldcs = Ns;
-
-    std::vector<const void *> sp(NUM_OPS), wp(NUM_OPS);
-    std::vector<const void *> bp(NUM_OPS, nullptr);
-    std::vector<void *> dp(NUM_OPS);
-    for (int i = 0; i < NUM_OPS; ++i) {
-      sp[i] = src[i].data();
-      wp[i] = wei[i].data();
-      dp[i] = dst[i].data();
-    }
-
-    std::vector<matmul_params> params(NUM_OPS);
-    for (int i = 0; i < NUM_OPS; ++i) {
-      params[i].dtypes.src = data_type_t::bf16;
-      params[i].dtypes.wei = data_type_t::bf16;
-      params[i].dtypes.dst = data_type_t::bf16;
-    }
-
-    status_t st = group_matmul_direct(
-                    layouts, transAs, transBs, Ms, Ns, Ks, alphas,
-                    sp, ldas, wp, ldbs, bp, betas, dp, ldcs, wconst, params, nullptr);
-
-    if (st != status_t::success) {
-      testlog_error("BF16 group_matmul failed");
-      return NOT_OK;
-    }
-
-    // Verify: each element ≈ K (BF16 precision).
-    for (int i = 0; i < NUM_OPS; ++i) {
-      float expected = static_cast<float>(Ks[i]);
-      for (int j = 0; j < Ms[i] * Ns[i]; ++j) {
-        float got = bf16_to_f32(dst[i][j]);
-        if (std::abs(got - expected) > expected * 0.05f) {
-          testlog_error("BF16 verify failed: op=", i, " idx=", j,
-                        " expected=", expected, " got=", got);
-          return NOT_OK;
+        std::vector<std::vector<uint16_t>> src(NUM_OPS), wei(NUM_OPS),
+                dst(NUM_OPS);
+        for (int i = 0; i < NUM_OPS; ++i) {
+            src[i].resize(Ms[i] * Ks[i]);
+            wei[i].resize(Ks[i] * Ns[i]);
+            dst[i].resize(Ms[i] * Ns[i], 0);
+            fill_bf16(src[i], 1.f);
+            fill_bf16(wei[i], 1.f);
         }
-      }
+
+        std::vector<char> layouts(NUM_OPS, 'r');
+        std::vector<bool> transAs(NUM_OPS, false), transBs(NUM_OPS, false);
+        std::vector<float> alphas(NUM_OPS, 1.f), betas(NUM_OPS, 0.f);
+        std::vector<bool> wconst(NUM_OPS, true);
+        std::vector<int> ldas = Ks, ldbs = Ns, ldcs = Ns;
+
+        std::vector<const void *> sp(NUM_OPS), wp(NUM_OPS);
+        std::vector<const void *> bp(NUM_OPS, nullptr);
+        std::vector<void *> dp(NUM_OPS);
+        for (int i = 0; i < NUM_OPS; ++i) {
+            sp[i] = src[i].data();
+            wp[i] = wei[i].data();
+            dp[i] = dst[i].data();
+        }
+
+        std::vector<matmul_params> params(NUM_OPS);
+        for (int i = 0; i < NUM_OPS; ++i) {
+            params[i].dtypes.src = data_type_t::bf16;
+            params[i].dtypes.wei = data_type_t::bf16;
+            params[i].dtypes.dst = data_type_t::bf16;
+        }
+
+        status_t st = group_matmul_direct(layouts, transAs, transBs, Ms, Ns, Ks,
+                alphas, sp, ldas, wp, ldbs, bp, betas, dp, ldcs, wconst, params,
+                nullptr);
+
+        if (st != status_t::success) {
+            testlog_error("BF16 group_matmul failed");
+            return NOT_OK;
+        }
+
+        // Verify: each element ≈ K (BF16 precision).
+        for (int i = 0; i < NUM_OPS; ++i) {
+            float expected = static_cast<float>(Ks[i]);
+            for (int j = 0; j < Ms[i] * Ns[i]; ++j) {
+                float got = bf16_to_f32(dst[i][j]);
+                if (std::abs(got - expected) > expected * 0.05f) {
+                    testlog_error("BF16 verify failed: op=", i, " idx=", j,
+                            " expected=", expected, " got=", got);
+                    return NOT_OK;
+                }
+            }
+        }
+        testlog_info("BF16 group_matmul verified OK.");
+    } catch (const exception_t &ex) {
+        std::cout << ex.what() << std::endl;
+        return NOT_OK;
     }
-    testlog_info("BF16 group_matmul verified OK.");
-  }
-  catch (const exception_t &ex) {
-    std::cout << ex.what() << std::endl;
-    return NOT_OK;
-  }
-  return OK;
+    return OK;
 }
 
 // ---------------------------------------------------------------------------
@@ -222,134 +222,134 @@ int group_matmul_bf16_example() {
 // ---------------------------------------------------------------------------
 
 int group_matmul_moe_postop_example() {
-  testlog_info("** group_matmul MoE post-op example: 4 experts, topk=2, 8 tokens");
+    testlog_info(
+            "** group_matmul MoE post-op example: 4 experts, topk=2, 8 tokens");
 
-  try {
-    // MoE configuration.
-    const int NUM_EXPERTS = 4;
-    const int TOPK = 2;
-    const int NUM_TOKENS = 8;
-    const int K = 32;
-    const int N = 64;
+    try {
+        // MoE configuration.
+        const int NUM_EXPERTS = 4;
+        const int TOPK = 2;
+        const int NUM_TOKENS = 8;
+        const int K = 32;
+        const int N = 64;
 
-    // Each expert processes all tokens (uniform routing for simplicity).
-    // In production, M per expert varies based on router decisions.
-    const int M_PER_EXPERT = NUM_TOKENS;
+        // Each expert processes all tokens (uniform routing for simplicity).
+        // In production, M per expert varies based on router decisions.
+        const int M_PER_EXPERT = NUM_TOKENS;
 
-    std::vector<int> Ms(NUM_EXPERTS, M_PER_EXPERT);
-    std::vector<int> Ns(NUM_EXPERTS, N);
-    std::vector<int> Ks(NUM_EXPERTS, K);
+        std::vector<int> Ms(NUM_EXPERTS, M_PER_EXPERT);
+        std::vector<int> Ns(NUM_EXPERTS, N);
+        std::vector<int> Ks(NUM_EXPERTS, K);
 
-    // Allocate expert src/weight/dst buffers (BF16).
-    std::vector<std::vector<uint16_t>> src(NUM_EXPERTS), wei(NUM_EXPERTS);
-    std::vector<std::vector<uint16_t>> dst_expert(NUM_EXPERTS);
-    for (int i = 0; i < NUM_EXPERTS; ++i) {
-      src[i].resize(M_PER_EXPERT * K);
-      wei[i].resize(K * N);
-      dst_expert[i].resize(M_PER_EXPERT * N, 0);
-      fill_bf16(src[i], 1.f);
-      // Each expert has weight = (i+1) so outputs are distinguishable.
-      fill_bf16(wei[i], static_cast<float>(i + 1));
-    }
-
-    // group_matmul API vectors.
-    std::vector<char> layouts(NUM_EXPERTS, 'r');
-    std::vector<bool> transAs(NUM_EXPERTS, false), transBs(NUM_EXPERTS, false);
-    std::vector<float> alphas(NUM_EXPERTS, 1.f), betas(NUM_EXPERTS, 0.f);
-    std::vector<bool> wconst(NUM_EXPERTS, true);
-    std::vector<int> ldas = Ks, ldbs = Ns, ldcs = Ns;
-
-    std::vector<const void *> sp(NUM_EXPERTS), wp(NUM_EXPERTS);
-    std::vector<const void *> bp(NUM_EXPERTS, nullptr);
-    std::vector<void *> dp(NUM_EXPERTS);
-    for (int i = 0; i < NUM_EXPERTS; ++i) {
-      sp[i] = src[i].data();
-      wp[i] = wei[i].data();
-      dp[i] = dst_expert[i].data();
-    }
-
-    std::vector<matmul_params> params(NUM_EXPERTS);
-    for (int i = 0; i < NUM_EXPERTS; ++i) {
-      params[i].dtypes.src = data_type_t::bf16;
-      params[i].dtypes.wei = data_type_t::bf16;
-      params[i].dtypes.dst = data_type_t::bf16;
-    }
-
-    // ── Build the MoE post-op ──
-    // Simulate routing: token t goes to experts (t % NUM_EXPERTS) and
-    // ((t+1) % NUM_EXPERTS), with equal weights 0.5.
-
-    // row_ptrs: flat array of size num_tokens * topk.
-    // row_ptrs[t * topk + k] = pointer to the row in expert dst buffer
-    // that contributes to token t's k-th expert slot.
-    std::vector<const void *> row_ptrs(NUM_TOKENS * TOPK);
-    std::vector<float> topk_weights(NUM_TOKENS * TOPK, 0.5f);
-
-    for (int t = 0; t < NUM_TOKENS; ++t) {
-      int expert_0 = t % NUM_EXPERTS;
-      int expert_1 = (t + 1) % NUM_EXPERTS;
-      // Each expert has M_PER_EXPERT rows. Token t maps to row t.
-      row_ptrs[t * TOPK + 0] = static_cast<const uint16_t *>(dp[expert_0])
-                               + static_cast<size_t>(t) * N;
-      row_ptrs[t * TOPK + 1] = static_cast<const uint16_t *>(dp[expert_1])
-                               + static_cast<size_t>(t) * N;
-    }
-
-    // MoE output buffer: [num_tokens, N] in BF16.
-    std::vector<uint16_t> moe_output(NUM_TOKENS * N, 0);
-
-    // Fill the post-op struct.
-    group_matmul_moe_postop_params moe;
-    moe.num_tokens = NUM_TOKENS;
-    moe.topk = TOPK;
-    moe.output = moe_output.data();
-    moe.ldc_output = N;
-    moe.topk_weights = topk_weights.data();
-    moe.skip_weighted = false;
-    moe.row_ptrs = row_ptrs.data();
-
-    // Execute: expert GEMMs + fused MoE weighted-reduce.
-    status_t st = group_matmul_direct(
-                    layouts, transAs, transBs, Ms, Ns, Ks, alphas,
-                    sp, ldas, wp, ldbs, bp, betas, dp, ldcs, wconst, params, &moe);
-
-    if (st != status_t::success) {
-      testlog_error("MoE group_matmul failed");
-      return NOT_OK;
-    }
-
-    // Verify MoE output.
-    // Expert i output: each element = 1.0 * (i+1) * K = K*(i+1).
-    // Token t routes to experts (t%4) and ((t+1)%4) with weight 0.5 each.
-    // Expected: 0.5 * K * (expert_0+1) + 0.5 * K * (expert_1+1)
-    bool ok = true;
-    for (int t = 0; t < NUM_TOKENS && ok; ++t) {
-      int e0 = t % NUM_EXPERTS;
-      int e1 = (t + 1) % NUM_EXPERTS;
-      float expected = 0.5f * K * (e0 + 1) + 0.5f * K * (e1 + 1);
-      for (int d = 0; d < N && ok; ++d) {
-        float got = bf16_to_f32(moe_output[t * N + d]);
-        if (std::abs(got - expected) > expected * 0.1f) {
-          testlog_error("MoE verify failed: t=", t, " d=", d,
-                        " expected=", expected, " got=", got);
-          ok = false;
+        // Allocate expert src/weight/dst buffers (BF16).
+        std::vector<std::vector<uint16_t>> src(NUM_EXPERTS), wei(NUM_EXPERTS);
+        std::vector<std::vector<uint16_t>> dst_expert(NUM_EXPERTS);
+        for (int i = 0; i < NUM_EXPERTS; ++i) {
+            src[i].resize(M_PER_EXPERT * K);
+            wei[i].resize(K * N);
+            dst_expert[i].resize(M_PER_EXPERT * N, 0);
+            fill_bf16(src[i], 1.f);
+            // Each expert has weight = (i+1) so outputs are distinguishable.
+            fill_bf16(wei[i], static_cast<float>(i + 1));
         }
-      }
-    }
 
-    if (ok) {
-      testlog_info("MoE post-op verified OK. Tokens reduced from ",
-                   NUM_EXPERTS, " experts with topk=", TOPK);
+        // group_matmul API vectors.
+        std::vector<char> layouts(NUM_EXPERTS, 'r');
+        std::vector<bool> transAs(NUM_EXPERTS, false),
+                transBs(NUM_EXPERTS, false);
+        std::vector<float> alphas(NUM_EXPERTS, 1.f), betas(NUM_EXPERTS, 0.f);
+        std::vector<bool> wconst(NUM_EXPERTS, true);
+        std::vector<int> ldas = Ks, ldbs = Ns, ldcs = Ns;
+
+        std::vector<const void *> sp(NUM_EXPERTS), wp(NUM_EXPERTS);
+        std::vector<const void *> bp(NUM_EXPERTS, nullptr);
+        std::vector<void *> dp(NUM_EXPERTS);
+        for (int i = 0; i < NUM_EXPERTS; ++i) {
+            sp[i] = src[i].data();
+            wp[i] = wei[i].data();
+            dp[i] = dst_expert[i].data();
+        }
+
+        std::vector<matmul_params> params(NUM_EXPERTS);
+        for (int i = 0; i < NUM_EXPERTS; ++i) {
+            params[i].dtypes.src = data_type_t::bf16;
+            params[i].dtypes.wei = data_type_t::bf16;
+            params[i].dtypes.dst = data_type_t::bf16;
+        }
+
+        // ── Build the MoE post-op ──
+        // Simulate routing: token t goes to experts (t % NUM_EXPERTS) and
+        // ((t+1) % NUM_EXPERTS), with equal weights 0.5.
+
+        // row_ptrs: flat array of size num_tokens * topk.
+        // row_ptrs[t * topk + k] = pointer to the row in expert dst buffer
+        // that contributes to token t's k-th expert slot.
+        std::vector<const void *> row_ptrs(NUM_TOKENS * TOPK);
+        std::vector<float> topk_weights(NUM_TOKENS * TOPK, 0.5f);
+
+        for (int t = 0; t < NUM_TOKENS; ++t) {
+            int expert_0 = t % NUM_EXPERTS;
+            int expert_1 = (t + 1) % NUM_EXPERTS;
+            // Each expert has M_PER_EXPERT rows. Token t maps to row t.
+            row_ptrs[t * TOPK + 0] = static_cast<const uint16_t *>(dp[expert_0])
+                    + static_cast<size_t>(t) * N;
+            row_ptrs[t * TOPK + 1] = static_cast<const uint16_t *>(dp[expert_1])
+                    + static_cast<size_t>(t) * N;
+        }
+
+        // MoE output buffer: [num_tokens, N] in BF16.
+        std::vector<uint16_t> moe_output(NUM_TOKENS * N, 0);
+
+        // Fill the post-op struct.
+        group_matmul_moe_postop_params moe;
+        moe.num_tokens = NUM_TOKENS;
+        moe.topk = TOPK;
+        moe.output = moe_output.data();
+        moe.ldc_output = N;
+        moe.topk_weights = topk_weights.data();
+        moe.skip_weighted = false;
+        moe.row_ptrs = row_ptrs.data();
+
+        // Execute: expert GEMMs + fused MoE weighted-reduce.
+        status_t st = group_matmul_direct(layouts, transAs, transBs, Ms, Ns, Ks,
+                alphas, sp, ldas, wp, ldbs, bp, betas, dp, ldcs, wconst, params,
+                &moe);
+
+        if (st != status_t::success) {
+            testlog_error("MoE group_matmul failed");
+            return NOT_OK;
+        }
+
+        // Verify MoE output.
+        // Expert i output: each element = 1.0 * (i+1) * K = K*(i+1).
+        // Token t routes to experts (t%4) and ((t+1)%4) with weight 0.5 each.
+        // Expected: 0.5 * K * (expert_0+1) + 0.5 * K * (expert_1+1)
+        bool ok = true;
+        for (int t = 0; t < NUM_TOKENS && ok; ++t) {
+            int e0 = t % NUM_EXPERTS;
+            int e1 = (t + 1) % NUM_EXPERTS;
+            float expected = 0.5f * K * (e0 + 1) + 0.5f * K * (e1 + 1);
+            for (int d = 0; d < N && ok; ++d) {
+                float got = bf16_to_f32(moe_output[t * N + d]);
+                if (std::abs(got - expected) > expected * 0.1f) {
+                    testlog_error("MoE verify failed: t=", t, " d=", d,
+                            " expected=", expected, " got=", got);
+                    ok = false;
+                }
+            }
+        }
+
+        if (ok) {
+            testlog_info("MoE post-op verified OK. Tokens reduced from ",
+                    NUM_EXPERTS, " experts with topk=", TOPK);
+        } else {
+            return NOT_OK;
+        }
+    } catch (const exception_t &ex) {
+        std::cout << ex.what() << std::endl;
+        return NOT_OK;
     }
-    else {
-      return NOT_OK;
-    }
-  }
-  catch (const exception_t &ex) {
-    std::cout << ex.what() << std::endl;
-    return NOT_OK;
-  }
-  return OK;
+    return OK;
 }
 
 // ---------------------------------------------------------------------------
@@ -357,96 +357,96 @@ int group_matmul_moe_postop_example() {
 // ---------------------------------------------------------------------------
 
 int group_matmul_gated_act_example() {
-  testlog_info("** group_matmul gated activation example: "
-               "4 experts, silu_and_mul, dim=32");
+    testlog_info(
+            "** group_matmul gated activation example: "
+            "4 experts, silu_and_mul, dim=32");
 
-  try {
-    const int NUM_EXPERTS = 4;
-    const int M_PER_EXPERT = 8;
-    const int K = 64;
-    const int DIM = 32;
-    const int N = 2 * DIM;  // fused gate+up projection
+    try {
+        const int NUM_EXPERTS = 4;
+        const int M_PER_EXPERT = 8;
+        const int K = 64;
+        const int DIM = 32;
+        const int N = 2 * DIM; // fused gate+up projection
 
-    std::vector<int> Ms(NUM_EXPERTS, M_PER_EXPERT);
-    std::vector<int> Ns(NUM_EXPERTS, N);
-    std::vector<int> Ks(NUM_EXPERTS, K);
+        std::vector<int> Ms(NUM_EXPERTS, M_PER_EXPERT);
+        std::vector<int> Ns(NUM_EXPERTS, N);
+        std::vector<int> Ks(NUM_EXPERTS, K);
 
-    std::vector<std::vector<float>> src(NUM_EXPERTS), wei(NUM_EXPERTS),
-        dst_buf(NUM_EXPERTS);
-    for (int i = 0; i < NUM_EXPERTS; ++i) {
-      src[i].resize(M_PER_EXPERT * K);
-      wei[i].resize(K * N);
-      dst_buf[i].resize(M_PER_EXPERT * N, 0.f);
-      fill_f32(src[i], 0.1f);
-      fill_f32(wei[i], 0.01f);
-    }
-
-    std::vector<char> layouts(NUM_EXPERTS, 'r');
-    std::vector<bool> transAs(NUM_EXPERTS, false), transBs(NUM_EXPERTS, false);
-    std::vector<float> alphas(NUM_EXPERTS, 1.f), betas(NUM_EXPERTS, 0.f);
-    std::vector<bool> wconst(NUM_EXPERTS, false);
-    std::vector<int> ldas = Ks, ldbs = Ns, ldcs = Ns;
-
-    std::vector<const void *> sp(NUM_EXPERTS), wp(NUM_EXPERTS);
-    std::vector<const void *> bp(NUM_EXPERTS, nullptr);
-    std::vector<void *> dp(NUM_EXPERTS);
-    for (int i = 0; i < NUM_EXPERTS; ++i) {
-      sp[i] = src[i].data();
-      wp[i] = wei[i].data();
-      dp[i] = dst_buf[i].data();
-    }
-
-    std::vector<matmul_params> params(NUM_EXPERTS);
-    for (int i = 0; i < NUM_EXPERTS; ++i) {
-      params[i].dtypes.src = data_type_t::f32;
-      params[i].dtypes.wei = data_type_t::f32;
-      params[i].dtypes.dst = data_type_t::f32;
-    }
-
-    // Set up gated activation: silu_and_mul.
-    // After GEMM, dst[:, 0:DIM] = silu(gate) * up
-    // where gate = dst[:, 0:DIM] and up = dst[:, DIM:2*DIM].
-    grp_matmul_gated_act_params act;
-    act.act = grp_matmul_gated_act_t::silu_and_mul;
-
-    status_t st = group_matmul_direct(
-                    layouts, transAs, transBs, Ms, Ns, Ks, alphas,
-                    sp, ldas, wp, ldbs, bp, betas, dp, ldcs, wconst, params,
-                    nullptr, &act);
-
-    if (st != status_t::success) {
-      testlog_error("Gated activation group_matmul failed");
-      return NOT_OK;
-    }
-
-    // Verify: activated values should be finite (no NaN/Inf).
-    bool ok = true;
-    for (int i = 0; i < NUM_EXPERTS && ok; ++i) {
-      for (int m = 0; m < M_PER_EXPERT && ok; ++m) {
-        for (int d = 0; d < DIM && ok; ++d) {
-          float val = dst_buf[i][m * N + d];
-          if (std::isnan(val) || std::isinf(val)) {
-            testlog_error("Gated act verify failed: NaN/Inf at expert=", i,
-                          " m=", m, " d=", d);
-            ok = false;
-          }
+        std::vector<std::vector<float>> src(NUM_EXPERTS), wei(NUM_EXPERTS),
+                dst_buf(NUM_EXPERTS);
+        for (int i = 0; i < NUM_EXPERTS; ++i) {
+            src[i].resize(M_PER_EXPERT * K);
+            wei[i].resize(K * N);
+            dst_buf[i].resize(M_PER_EXPERT * N, 0.f);
+            fill_f32(src[i], 0.1f);
+            fill_f32(wei[i], 0.01f);
         }
-      }
-    }
 
-    if (ok) {
-      testlog_info("Gated activation (silu_and_mul) verified OK. ",
-                   NUM_EXPERTS, " experts, dim=", DIM);
+        std::vector<char> layouts(NUM_EXPERTS, 'r');
+        std::vector<bool> transAs(NUM_EXPERTS, false),
+                transBs(NUM_EXPERTS, false);
+        std::vector<float> alphas(NUM_EXPERTS, 1.f), betas(NUM_EXPERTS, 0.f);
+        std::vector<bool> wconst(NUM_EXPERTS, false);
+        std::vector<int> ldas = Ks, ldbs = Ns, ldcs = Ns;
+
+        std::vector<const void *> sp(NUM_EXPERTS), wp(NUM_EXPERTS);
+        std::vector<const void *> bp(NUM_EXPERTS, nullptr);
+        std::vector<void *> dp(NUM_EXPERTS);
+        for (int i = 0; i < NUM_EXPERTS; ++i) {
+            sp[i] = src[i].data();
+            wp[i] = wei[i].data();
+            dp[i] = dst_buf[i].data();
+        }
+
+        std::vector<matmul_params> params(NUM_EXPERTS);
+        for (int i = 0; i < NUM_EXPERTS; ++i) {
+            params[i].dtypes.src = data_type_t::f32;
+            params[i].dtypes.wei = data_type_t::f32;
+            params[i].dtypes.dst = data_type_t::f32;
+        }
+
+        // Set up gated activation: silu_and_mul.
+        // After GEMM, dst[:, 0:DIM] = silu(gate) * up
+        // where gate = dst[:, 0:DIM] and up = dst[:, DIM:2*DIM].
+        grp_matmul_gated_act_params act;
+        act.act = grp_matmul_gated_act_t::silu_and_mul;
+
+        status_t st = group_matmul_direct(layouts, transAs, transBs, Ms, Ns, Ks,
+                alphas, sp, ldas, wp, ldbs, bp, betas, dp, ldcs, wconst, params,
+                nullptr, &act);
+
+        if (st != status_t::success) {
+            testlog_error("Gated activation group_matmul failed");
+            return NOT_OK;
+        }
+
+        // Verify: activated values should be finite (no NaN/Inf).
+        bool ok = true;
+        for (int i = 0; i < NUM_EXPERTS && ok; ++i) {
+            for (int m = 0; m < M_PER_EXPERT && ok; ++m) {
+                for (int d = 0; d < DIM && ok; ++d) {
+                    float val = dst_buf[i][m * N + d];
+                    if (std::isnan(val) || std::isinf(val)) {
+                        testlog_error(
+                                "Gated act verify failed: NaN/Inf at expert=",
+                                i, " m=", m, " d=", d);
+                        ok = false;
+                    }
+                }
+            }
+        }
+
+        if (ok) {
+            testlog_info("Gated activation (silu_and_mul) verified OK. ",
+                    NUM_EXPERTS, " experts, dim=", DIM);
+        } else {
+            return NOT_OK;
+        }
+    } catch (const exception_t &ex) {
+        std::cout << ex.what() << std::endl;
+        return NOT_OK;
     }
-    else {
-      return NOT_OK;
-    }
-  }
-  catch (const exception_t &ex) {
-    std::cout << ex.what() << std::endl;
-    return NOT_OK;
-  }
-  return OK;
+    return OK;
 }
 
 // ---------------------------------------------------------------------------
@@ -454,120 +454,120 @@ int group_matmul_gated_act_example() {
 // ---------------------------------------------------------------------------
 
 int group_matmul_fused_moe_example() {
-  testlog_info("** group_matmul fused MoE example: "
-               "4 experts, silu, dim=32, hidden=64");
+    testlog_info(
+            "** group_matmul fused MoE example: "
+            "4 experts, silu, dim=32, hidden=64");
 
-  try {
-    const int NUM_EXPERTS = 4;
-    const int M_PER_EXPERT = 8;
-    const int HIDDEN = 64;   // hidden_size = K for gate+up, N_down for down
-    const int DIM = 32;      // intermediate dim
-    const int N_GATE_UP = 2 * DIM;  // fused gate+up output
-    const int K = HIDDEN;
+    try {
+        const int NUM_EXPERTS = 4;
+        const int M_PER_EXPERT = 8;
+        const int HIDDEN = 64; // hidden_size = K for gate+up, N_down for down
+        const int DIM = 32; // intermediate dim
+        const int N_GATE_UP = 2 * DIM; // fused gate+up output
+        const int K = HIDDEN;
 
-    std::vector<int> Ms(NUM_EXPERTS, M_PER_EXPERT);
-    std::vector<int> Ns(NUM_EXPERTS, N_GATE_UP);
-    std::vector<int> Ks(NUM_EXPERTS, K);
+        std::vector<int> Ms(NUM_EXPERTS, M_PER_EXPERT);
+        std::vector<int> Ns(NUM_EXPERTS, N_GATE_UP);
+        std::vector<int> Ks(NUM_EXPERTS, K);
 
-    // Op1 buffers: src[M,K] × W_gate_up[K,2*DIM] → dst[M,2*DIM]
-    std::vector<std::vector<float>> src(NUM_EXPERTS), wei_gu(NUM_EXPERTS),
-        dst_gu(NUM_EXPERTS);
-    for (int i = 0; i < NUM_EXPERTS; ++i) {
-      src[i].resize(M_PER_EXPERT * K);
-      wei_gu[i].resize(K * N_GATE_UP);
-      dst_gu[i].resize(M_PER_EXPERT * N_GATE_UP, 0.f);
-      fill_f32(src[i], 0.1f);
-      fill_f32(wei_gu[i], 0.01f);
-    }
-
-    // Op2 buffers: activated[M,DIM] × W_down[DIM,HIDDEN] → dst_down[M,HIDDEN]
-    std::vector<std::vector<float>> wei_down(NUM_EXPERTS),
-        dst_down(NUM_EXPERTS);
-    for (int i = 0; i < NUM_EXPERTS; ++i) {
-      wei_down[i].resize(DIM * HIDDEN);
-      dst_down[i].resize(M_PER_EXPERT * HIDDEN, 0.f);
-      fill_f32(wei_down[i], 0.02f);
-    }
-
-    // Build API vectors for Op1
-    std::vector<char> layouts(NUM_EXPERTS, 'r');
-    std::vector<bool> transAs(NUM_EXPERTS, false), transBs(NUM_EXPERTS, false);
-    std::vector<float> alphas(NUM_EXPERTS, 1.f), betas(NUM_EXPERTS, 0.f);
-    std::vector<bool> wconst(NUM_EXPERTS, false);
-    std::vector<int> ldas = Ks, ldbs = Ns, ldcs = Ns;
-
-    std::vector<const void *> sp(NUM_EXPERTS), wp(NUM_EXPERTS);
-    std::vector<const void *> bp(NUM_EXPERTS, nullptr);
-    std::vector<void *> dp(NUM_EXPERTS);
-    for (int i = 0; i < NUM_EXPERTS; ++i) {
-      sp[i] = src[i].data();
-      wp[i] = wei_gu[i].data();
-      dp[i] = dst_gu[i].data();
-    }
-
-    std::vector<matmul_params> params(NUM_EXPERTS);
-    for (int i = 0; i < NUM_EXPERTS; ++i) {
-      params[i].dtypes.src = data_type_t::f32;
-      params[i].dtypes.wei = data_type_t::f32;
-      params[i].dtypes.dst = data_type_t::f32;
-    }
-
-    // Gated activation
-    grp_matmul_gated_act_params act;
-    act.act = grp_matmul_gated_act_t::silu_and_mul;
-
-    // Fused down_proj
-    grp_matmul_fused_moe_params fused;
-    fused.N_down.resize(NUM_EXPERTS, HIDDEN);
-    fused.ldb_down.resize(NUM_EXPERTS, HIDDEN);
-    fused.bias_down.resize(NUM_EXPERTS, nullptr);
-    fused.ldc_down.resize(NUM_EXPERTS, HIDDEN);
-    fused.down_weight.resize(NUM_EXPERTS);
-    fused.dst_down.resize(NUM_EXPERTS);
-    for (int i = 0; i < NUM_EXPERTS; ++i) {
-      fused.down_weight[i] = wei_down[i].data();
-      fused.dst_down[i] = dst_down[i].data();
-    }
-
-    // Single call: Op1 → silu(gate)*up → Op2
-    status_t st = group_matmul_direct(
-                    layouts, transAs, transBs, Ms, Ns, Ks, alphas,
-                    sp, ldas, wp, ldbs, bp, betas, dp, ldcs, wconst, params,
-                    nullptr, &act, &fused);
-
-    if (st != status_t::success) {
-      testlog_error("Fused MoE group_matmul failed");
-      return NOT_OK;
-    }
-
-    // Verify: down_proj output values should be finite.
-    bool ok = true;
-    for (int i = 0; i < NUM_EXPERTS && ok; ++i) {
-      for (int m = 0; m < M_PER_EXPERT && ok; ++m) {
-        for (int d = 0; d < HIDDEN && ok; ++d) {
-          float val = dst_down[i][m * HIDDEN + d];
-          if (std::isnan(val) || std::isinf(val)) {
-            testlog_error("Fused MoE verify failed: NaN/Inf at expert=", i,
-                          " m=", m, " d=", d);
-            ok = false;
-          }
+        // Op1 buffers: src[M,K] × W_gate_up[K,2*DIM] → dst[M,2*DIM]
+        std::vector<std::vector<float>> src(NUM_EXPERTS), wei_gu(NUM_EXPERTS),
+                dst_gu(NUM_EXPERTS);
+        for (int i = 0; i < NUM_EXPERTS; ++i) {
+            src[i].resize(M_PER_EXPERT * K);
+            wei_gu[i].resize(K * N_GATE_UP);
+            dst_gu[i].resize(M_PER_EXPERT * N_GATE_UP, 0.f);
+            fill_f32(src[i], 0.1f);
+            fill_f32(wei_gu[i], 0.01f);
         }
-      }
-    }
 
-    if (ok) {
-      testlog_info("Fused MoE (gate+up → silu → down_proj) verified OK. ",
-                   NUM_EXPERTS, " experts, dim=", DIM, " hidden=", HIDDEN);
+        // Op2 buffers: activated[M,DIM] × W_down[DIM,HIDDEN] → dst_down[M,HIDDEN]
+        std::vector<std::vector<float>> wei_down(NUM_EXPERTS),
+                dst_down(NUM_EXPERTS);
+        for (int i = 0; i < NUM_EXPERTS; ++i) {
+            wei_down[i].resize(DIM * HIDDEN);
+            dst_down[i].resize(M_PER_EXPERT * HIDDEN, 0.f);
+            fill_f32(wei_down[i], 0.02f);
+        }
+
+        // Build API vectors for Op1
+        std::vector<char> layouts(NUM_EXPERTS, 'r');
+        std::vector<bool> transAs(NUM_EXPERTS, false),
+                transBs(NUM_EXPERTS, false);
+        std::vector<float> alphas(NUM_EXPERTS, 1.f), betas(NUM_EXPERTS, 0.f);
+        std::vector<bool> wconst(NUM_EXPERTS, false);
+        std::vector<int> ldas = Ks, ldbs = Ns, ldcs = Ns;
+
+        std::vector<const void *> sp(NUM_EXPERTS), wp(NUM_EXPERTS);
+        std::vector<const void *> bp(NUM_EXPERTS, nullptr);
+        std::vector<void *> dp(NUM_EXPERTS);
+        for (int i = 0; i < NUM_EXPERTS; ++i) {
+            sp[i] = src[i].data();
+            wp[i] = wei_gu[i].data();
+            dp[i] = dst_gu[i].data();
+        }
+
+        std::vector<matmul_params> params(NUM_EXPERTS);
+        for (int i = 0; i < NUM_EXPERTS; ++i) {
+            params[i].dtypes.src = data_type_t::f32;
+            params[i].dtypes.wei = data_type_t::f32;
+            params[i].dtypes.dst = data_type_t::f32;
+        }
+
+        // Gated activation
+        grp_matmul_gated_act_params act;
+        act.act = grp_matmul_gated_act_t::silu_and_mul;
+
+        // Fused down_proj
+        grp_matmul_fused_moe_params fused;
+        fused.N_down.resize(NUM_EXPERTS, HIDDEN);
+        fused.ldb_down.resize(NUM_EXPERTS, HIDDEN);
+        fused.bias_down.resize(NUM_EXPERTS, nullptr);
+        fused.ldc_down.resize(NUM_EXPERTS, HIDDEN);
+        fused.down_weight.resize(NUM_EXPERTS);
+        fused.dst_down.resize(NUM_EXPERTS);
+        for (int i = 0; i < NUM_EXPERTS; ++i) {
+            fused.down_weight[i] = wei_down[i].data();
+            fused.dst_down[i] = dst_down[i].data();
+        }
+
+        // Single call: Op1 → silu(gate)*up → Op2
+        status_t st = group_matmul_direct(layouts, transAs, transBs, Ms, Ns, Ks,
+                alphas, sp, ldas, wp, ldbs, bp, betas, dp, ldcs, wconst, params,
+                nullptr, &act, &fused);
+
+        if (st != status_t::success) {
+            testlog_error("Fused MoE group_matmul failed");
+            return NOT_OK;
+        }
+
+        // Verify: down_proj output values should be finite.
+        bool ok = true;
+        for (int i = 0; i < NUM_EXPERTS && ok; ++i) {
+            for (int m = 0; m < M_PER_EXPERT && ok; ++m) {
+                for (int d = 0; d < HIDDEN && ok; ++d) {
+                    float val = dst_down[i][m * HIDDEN + d];
+                    if (std::isnan(val) || std::isinf(val)) {
+                        testlog_error(
+                                "Fused MoE verify failed: NaN/Inf at expert=",
+                                i, " m=", m, " d=", d);
+                        ok = false;
+                    }
+                }
+            }
+        }
+
+        if (ok) {
+            testlog_info("Fused MoE (gate+up → silu → down_proj) verified OK. ",
+                    NUM_EXPERTS, " experts, dim=", DIM, " hidden=", HIDDEN);
+        } else {
+            return NOT_OK;
+        }
+    } catch (const exception_t &ex) {
+        std::cout << ex.what() << std::endl;
+        return NOT_OK;
     }
-    else {
-      return NOT_OK;
-    }
-  }
-  catch (const exception_t &ex) {
-    std::cout << ex.what() << std::endl;
-    return NOT_OK;
-  }
-  return OK;
+    return OK;
 }
 
 // ---------------------------------------------------------------------------
@@ -583,122 +583,124 @@ int group_matmul_fused_moe_example() {
 // hidden = K = N_down here that is naturally satisfied.
 
 int group_matmul_fused_moe_internal_alloc_example() {
-  testlog_info("** group_matmul fused MoE example (internal-alloc + "
-               "src-reuse): 4 experts, silu, dim=32, hidden=64");
+    testlog_info(
+            "** group_matmul fused MoE example (internal-alloc + "
+            "src-reuse): 4 experts, silu, dim=32, hidden=64");
 
-  try {
-    const int NUM_EXPERTS  = 4;
-    const int M_PER_EXPERT = 8;
-    const int HIDDEN       = 64;          // K = N_down = hidden_size
-    const int DIM          = 32;          // intermediate dim
-    const int N_GATE_UP    = 2 * DIM;     // fused gate+up output cols
-    const int K            = HIDDEN;
+    try {
+        const int NUM_EXPERTS = 4;
+        const int M_PER_EXPERT = 8;
+        const int HIDDEN = 64; // K = N_down = hidden_size
+        const int DIM = 32; // intermediate dim
+        const int N_GATE_UP = 2 * DIM; // fused gate+up output cols
+        const int K = HIDDEN;
 
-    std::vector<int> Ms(NUM_EXPERTS, M_PER_EXPERT);
-    std::vector<int> Ns(NUM_EXPERTS, N_GATE_UP);
-    std::vector<int> Ks(NUM_EXPERTS, K);
+        std::vector<int> Ms(NUM_EXPERTS, M_PER_EXPERT);
+        std::vector<int> Ns(NUM_EXPERTS, N_GATE_UP);
+        std::vector<int> Ks(NUM_EXPERTS, K);
 
-    // src is BOTH the input buffer for Op1 AND the destination buffer
-    // that Op2 will write into in place.  Sized [M, K].
-    std::vector<std::vector<float>> src(NUM_EXPERTS), wei_gu(NUM_EXPERTS),
-        wei_down(NUM_EXPERTS);
-    for (int i = 0; i < NUM_EXPERTS; ++i) {
-      src[i].resize(M_PER_EXPERT * K);
-      wei_gu[i].resize(K * N_GATE_UP);
-      wei_down[i].resize(DIM * HIDDEN);
-      fill_f32(src[i],     0.1f);
-      fill_f32(wei_gu[i],  0.01f);
-      fill_f32(wei_down[i], 0.02f);
-    }
-
-    // Op1 / per-call vectors.
-    std::vector<char> layouts(NUM_EXPERTS, 'r');
-    std::vector<bool> transAs(NUM_EXPERTS, false), transBs(NUM_EXPERTS, false);
-    std::vector<float> alphas(NUM_EXPERTS, 1.f), betas(NUM_EXPERTS, 0.f);
-    std::vector<bool>  wconst(NUM_EXPERTS, false);
-    std::vector<int>   ldas = Ks, ldbs = Ns;
-
-    std::vector<const void *> sp(NUM_EXPERTS), wp(NUM_EXPERTS);
-    std::vector<const void *> bp(NUM_EXPERTS, nullptr);
-    for (int i = 0; i < NUM_EXPERTS; ++i) {
-      sp[i] = src[i].data();
-      wp[i] = wei_gu[i].data();
-    }
-
-    // Internal-alloc signal: dst[] all nullptr, ldc[] zeros
-    // (ignored), fused.dst_down / fused.ldc_down empty.
-    std::vector<void *> dp(NUM_EXPERTS, nullptr);
-    std::vector<int>    ldcs(NUM_EXPERTS, 0);
-
-    std::vector<matmul_params> params(NUM_EXPERTS);
-    for (int i = 0; i < NUM_EXPERTS; ++i) {
-      params[i].dtypes.src = data_type_t::f32;
-      params[i].dtypes.wei = data_type_t::f32;
-      params[i].dtypes.dst = data_type_t::f32;
-    }
-
-    grp_matmul_gated_act_params act;
-    act.act = grp_matmul_gated_act_t::silu_and_mul;
-
-    grp_matmul_fused_moe_params fused;
-    fused.N_down.resize(NUM_EXPERTS, HIDDEN);
-    fused.ldb_down.resize(NUM_EXPERTS, HIDDEN);
-    fused.bias_down.resize(NUM_EXPERTS, nullptr);
-    fused.down_weight.resize(NUM_EXPERTS);
-    for (int i = 0; i < NUM_EXPERTS; ++i) {
-      fused.down_weight[i] = wei_down[i].data();
-    }
-    // dst_down and ldc_down INTENTIONALLY left empty — this is the
-    // signal that engages internal-alloc + src-reuse mode.
-
-    status_t st = group_matmul_direct(
-                    layouts, transAs, transBs, Ms, Ns, Ks, alphas,
-                    sp, ldas, wp, ldbs, bp, betas, dp, ldcs, wconst, params,
-                    nullptr, &act, &fused);
-
-    if (st != status_t::success) {
-      testlog_error("Internal-alloc fused MoE group_matmul failed");
-      return NOT_OK;
-    }
-
-    // Op2 output now lives in src[i] with row stride lda[i] = K.
-    // Each row holds N_down = HIDDEN columns of Op2 output.
-    bool ok = true;
-    for (int i = 0; i < NUM_EXPERTS && ok; ++i) {
-      for (int m = 0; m < M_PER_EXPERT && ok; ++m) {
-        for (int d = 0; d < HIDDEN && ok; ++d) {
-          const float val = src[i][m * K + d];
-          if (std::isnan(val) || std::isinf(val)) {
-            testlog_error("Internal-alloc fused MoE verify failed: "
-                          "NaN/Inf at expert=", i, " m=", m, " d=", d);
-            ok = false;
-          }
+        // src is BOTH the input buffer for Op1 AND the destination buffer
+        // that Op2 will write into in place.  Sized [M, K].
+        std::vector<std::vector<float>> src(NUM_EXPERTS), wei_gu(NUM_EXPERTS),
+                wei_down(NUM_EXPERTS);
+        for (int i = 0; i < NUM_EXPERTS; ++i) {
+            src[i].resize(M_PER_EXPERT * K);
+            wei_gu[i].resize(K * N_GATE_UP);
+            wei_down[i].resize(DIM * HIDDEN);
+            fill_f32(src[i], 0.1f);
+            fill_f32(wei_gu[i], 0.01f);
+            fill_f32(wei_down[i], 0.02f);
         }
-      }
-    }
 
-    if (ok) {
-      testlog_info("Fused MoE internal-alloc (Op2 → src in place) "
-                   "verified OK. ", NUM_EXPERTS,
-                   " experts, dim=", DIM, " hidden=", HIDDEN);
+        // Op1 / per-call vectors.
+        std::vector<char> layouts(NUM_EXPERTS, 'r');
+        std::vector<bool> transAs(NUM_EXPERTS, false),
+                transBs(NUM_EXPERTS, false);
+        std::vector<float> alphas(NUM_EXPERTS, 1.f), betas(NUM_EXPERTS, 0.f);
+        std::vector<bool> wconst(NUM_EXPERTS, false);
+        std::vector<int> ldas = Ks, ldbs = Ns;
+
+        std::vector<const void *> sp(NUM_EXPERTS), wp(NUM_EXPERTS);
+        std::vector<const void *> bp(NUM_EXPERTS, nullptr);
+        for (int i = 0; i < NUM_EXPERTS; ++i) {
+            sp[i] = src[i].data();
+            wp[i] = wei_gu[i].data();
+        }
+
+        // Internal-alloc signal: dst[] all nullptr, ldc[] zeros
+        // (ignored), fused.dst_down / fused.ldc_down empty.
+        std::vector<void *> dp(NUM_EXPERTS, nullptr);
+        std::vector<int> ldcs(NUM_EXPERTS, 0);
+
+        std::vector<matmul_params> params(NUM_EXPERTS);
+        for (int i = 0; i < NUM_EXPERTS; ++i) {
+            params[i].dtypes.src = data_type_t::f32;
+            params[i].dtypes.wei = data_type_t::f32;
+            params[i].dtypes.dst = data_type_t::f32;
+        }
+
+        grp_matmul_gated_act_params act;
+        act.act = grp_matmul_gated_act_t::silu_and_mul;
+
+        grp_matmul_fused_moe_params fused;
+        fused.N_down.resize(NUM_EXPERTS, HIDDEN);
+        fused.ldb_down.resize(NUM_EXPERTS, HIDDEN);
+        fused.bias_down.resize(NUM_EXPERTS, nullptr);
+        fused.down_weight.resize(NUM_EXPERTS);
+        for (int i = 0; i < NUM_EXPERTS; ++i) {
+            fused.down_weight[i] = wei_down[i].data();
+        }
+        // dst_down and ldc_down INTENTIONALLY left empty — this is the
+        // signal that engages internal-alloc + src-reuse mode.
+
+        status_t st = group_matmul_direct(layouts, transAs, transBs, Ms, Ns, Ks,
+                alphas, sp, ldas, wp, ldbs, bp, betas, dp, ldcs, wconst, params,
+                nullptr, &act, &fused);
+
+        if (st != status_t::success) {
+            testlog_error("Internal-alloc fused MoE group_matmul failed");
+            return NOT_OK;
+        }
+
+        // Op2 output now lives in src[i] with row stride lda[i] = K.
+        // Each row holds N_down = HIDDEN columns of Op2 output.
+        bool ok = true;
+        for (int i = 0; i < NUM_EXPERTS && ok; ++i) {
+            for (int m = 0; m < M_PER_EXPERT && ok; ++m) {
+                for (int d = 0; d < HIDDEN && ok; ++d) {
+                    const float val = src[i][m * K + d];
+                    if (std::isnan(val) || std::isinf(val)) {
+                        testlog_error(
+                                "Internal-alloc fused MoE verify failed: "
+                                "NaN/Inf at expert=",
+                                i, " m=", m, " d=", d);
+                        ok = false;
+                    }
+                }
+            }
+        }
+
+        if (ok) {
+            testlog_info(
+                    "Fused MoE internal-alloc (Op2 → src in place) "
+                    "verified OK. ",
+                    NUM_EXPERTS, " experts, dim=", DIM, " hidden=", HIDDEN);
+        } else {
+            return NOT_OK;
+        }
+    } catch (const exception_t &ex) {
+        std::cout << ex.what() << std::endl;
+        return NOT_OK;
     }
-    else {
-      return NOT_OK;
-    }
-  }
-  catch (const exception_t &ex) {
-    std::cout << ex.what() << std::endl;
-    return NOT_OK;
-  }
-  return OK;
+    return OK;
 }
 
 namespace {
 
 static void fill_packed_s4(std::vector<int8_t> &packed, int8_t nibble) {
-  const int8_t nib = static_cast<int8_t>(nibble & 0x0F);
-  const int8_t byte_val = static_cast<int8_t>(nib | (nib << 4));
-  std::fill(packed.begin(), packed.end(), byte_val);
+    const int8_t nib = static_cast<int8_t>(nibble & 0x0F);
+    const int8_t byte_val = static_cast<int8_t>(nib | (nib << 4));
+    std::fill(packed.begin(), packed.end(), byte_val);
 }
 
 } // namespace
@@ -711,203 +713,209 @@ static void fill_packed_s4(std::vector<int8_t> &packed, int8_t nibble) {
 // ---------------------------------------------------------------------------
 
 int group_matmul_moe_w4a8_example() {
-  testlog_info("** group_matmul fused MoE W4A8 Qwen3-style: "
-               "8 experts, silu_and_mul, K=2048, N=1536, N_down=2048, "
-               "dynamic INT8, internal-alloc, moe_postop topk=8");
+    testlog_info(
+            "** group_matmul fused MoE W4A8 Qwen3-style: "
+            "8 experts, silu_and_mul, K=2048, N=1536, N_down=2048, "
+            "dynamic INT8, internal-alloc, moe_postop topk=8");
 
-  try {
-    constexpr int NUM_EXPERTS   = 8;
-    constexpr int M_PER_EXPERT  = 128;
-    constexpr int TOPK          = 8;
-    constexpr int TOKENS        = (NUM_EXPERTS * M_PER_EXPERT) / TOPK;
+    try {
+        constexpr int NUM_EXPERTS = 8;
+        constexpr int M_PER_EXPERT = 128;
+        constexpr int TOPK = 8;
+        constexpr int TOKENS = (NUM_EXPERTS * M_PER_EXPERT) / TOPK;
 
-    constexpr int K             = 2048;
-    constexpr int N_GATE_UP     = 1536;
-    constexpr int DIM           = N_GATE_UP / 2;
-    constexpr int N_DOWN        = 2048;
-    constexpr int GROUP_SIZE    = 32;
-    constexpr int NUM_GROUPS_W1 = K / GROUP_SIZE;
-    constexpr int NUM_GROUPS_W2 = DIM / GROUP_SIZE;
+        constexpr int K = 2048;
+        constexpr int N_GATE_UP = 1536;
+        constexpr int DIM = N_GATE_UP / 2;
+        constexpr int N_DOWN = 2048;
+        constexpr int GROUP_SIZE = 32;
+        constexpr int NUM_GROUPS_W1 = K / GROUP_SIZE;
+        constexpr int NUM_GROUPS_W2 = DIM / GROUP_SIZE;
 
-    std::vector<int> Ms(NUM_EXPERTS, M_PER_EXPERT);
-    std::vector<int> Ns(NUM_EXPERTS, N_GATE_UP);
-    std::vector<int> Ks(NUM_EXPERTS, K);
+        std::vector<int> Ms(NUM_EXPERTS, M_PER_EXPERT);
+        std::vector<int> Ns(NUM_EXPERTS, N_GATE_UP);
+        std::vector<int> Ks(NUM_EXPERTS, K);
 
-    // Op1 src: bf16 activations [M, K]
-    std::vector<std::vector<uint16_t>> src_buf(NUM_EXPERTS);
-    // Op1 weight: s4 packed gate+up [N_GATE_UP, K] (transB=T → stored as [N,K])
-    std::vector<std::vector<int8_t>> wei_gu_packed(NUM_EXPERTS);
-    // Op1 weight scale: per-group {NUM_GROUPS, N_GATE_UP}
-    std::vector<std::vector<uint16_t>> wei_gu_scale(NUM_EXPERTS);
-    // Per-token src scale {M, 1}
-    std::vector<std::vector<uint16_t>> src_scale_buf(NUM_EXPERTS);
+        // Op1 src: bf16 activations [M, K]
+        std::vector<std::vector<uint16_t>> src_buf(NUM_EXPERTS);
+        // Op1 weight: s4 packed gate+up [N_GATE_UP, K] (transB=T → stored as [N,K])
+        std::vector<std::vector<int8_t>> wei_gu_packed(NUM_EXPERTS);
+        // Op1 weight scale: per-group {NUM_GROUPS, N_GATE_UP}
+        std::vector<std::vector<uint16_t>> wei_gu_scale(NUM_EXPERTS);
+        // Per-token src scale {M, 1}
+        std::vector<std::vector<uint16_t>> src_scale_buf(NUM_EXPERTS);
 
-    // Op2 weight: s4 packed down [N_DOWN, DIM] (transB=T)
-    std::vector<std::vector<int8_t>> wei_down_packed(NUM_EXPERTS);
-    // Op2 weight scale: per-group {NUM_GROUPS_W2, N_DOWN}
-    std::vector<std::vector<uint16_t>> wei_down_scale(NUM_EXPERTS);
+        // Op2 weight: s4 packed down [N_DOWN, DIM] (transB=T)
+        std::vector<std::vector<int8_t>> wei_down_packed(NUM_EXPERTS);
+        // Op2 weight scale: per-group {NUM_GROUPS_W2, N_DOWN}
+        std::vector<std::vector<uint16_t>> wei_down_scale(NUM_EXPERTS);
 
-    for (int i = 0; i < NUM_EXPERTS; ++i) {
-      src_buf[i].resize(static_cast<size_t>(M_PER_EXPERT * K));
-      fill_bf16(src_buf[i], 0.5f);
+        for (int i = 0; i < NUM_EXPERTS; ++i) {
+            src_buf[i].resize(static_cast<size_t>(M_PER_EXPERT * K));
+            fill_bf16(src_buf[i], 0.5f);
 
-      wei_gu_packed[i].resize(static_cast<size_t>((N_GATE_UP * K + 1) / 2));
-      fill_packed_s4(wei_gu_packed[i], static_cast<int8_t>(1));
+            wei_gu_packed[i].resize(
+                    static_cast<size_t>((N_GATE_UP * K + 1) / 2));
+            fill_packed_s4(wei_gu_packed[i], static_cast<int8_t>(1));
 
-      wei_gu_scale[i].resize(static_cast<size_t>(NUM_GROUPS_W1 * N_GATE_UP));
-      for (size_t s = 0; s < wei_gu_scale[i].size(); ++s) {
-        wei_gu_scale[i][s] = f32_to_bf16(1.0f);
-      }
+            wei_gu_scale[i].resize(
+                    static_cast<size_t>(NUM_GROUPS_W1 * N_GATE_UP));
+            for (size_t s = 0; s < wei_gu_scale[i].size(); ++s) {
+                wei_gu_scale[i][s] = f32_to_bf16(1.0f);
+            }
 
-      src_scale_buf[i].resize(static_cast<size_t>(M_PER_EXPERT));
-      for (int m = 0; m < M_PER_EXPERT; ++m) {
-        src_scale_buf[i][static_cast<size_t>(m)] = f32_to_bf16(0.02f);
-      }
+            src_scale_buf[i].resize(static_cast<size_t>(M_PER_EXPERT));
+            for (int m = 0; m < M_PER_EXPERT; ++m) {
+                src_scale_buf[i][static_cast<size_t>(m)] = f32_to_bf16(0.02f);
+            }
 
-      wei_down_packed[i].resize(static_cast<size_t>((N_DOWN * DIM + 1) / 2));
-      fill_packed_s4(wei_down_packed[i], static_cast<int8_t>(1));
+            wei_down_packed[i].resize(
+                    static_cast<size_t>((N_DOWN * DIM + 1) / 2));
+            fill_packed_s4(wei_down_packed[i], static_cast<int8_t>(1));
 
-      wei_down_scale[i].resize(static_cast<size_t>(NUM_GROUPS_W2 * N_DOWN));
-      for (size_t s = 0; s < wei_down_scale[i].size(); ++s) {
-        wei_down_scale[i][s] = f32_to_bf16(1.0f);
-      }
-    }
-
-    // Op1 API vectors — transB=T so weight is [N, K]
-    std::vector<char> layouts(NUM_EXPERTS, 'r');
-    std::vector<bool> transAs(NUM_EXPERTS, false);
-    std::vector<bool> transBs(NUM_EXPERTS, true);
-    std::vector<float> alphas(NUM_EXPERTS, 1.f), betas(NUM_EXPERTS, 0.f);
-    std::vector<bool> wconst(NUM_EXPERTS, true);
-    std::vector<int> ldas(NUM_EXPERTS, K);
-    std::vector<int> ldbs(NUM_EXPERTS, K);
-
-    std::vector<const void *> sp(NUM_EXPERTS), wp(NUM_EXPERTS);
-    std::vector<const void *> bp(NUM_EXPERTS, nullptr);
-    for (int i = 0; i < NUM_EXPERTS; ++i) {
-      sp[i] = src_buf[i].data();
-      wp[i] = wei_gu_packed[i].data();
-    }
-
-    // Internal-alloc: dst all nullptr, ldc zeros
-    std::vector<void *> dp(NUM_EXPERTS, nullptr);
-    std::vector<int> ldcs(NUM_EXPERTS, 0);
-
-    // matmul_params: W4A8 dynamic quant
-    std::vector<matmul_params> params(NUM_EXPERTS);
-    for (int i = 0; i < NUM_EXPERTS; ++i) {
-      params[i].dtypes.src = data_type_t::bf16;
-      params[i].dtypes.wei = data_type_t::s4;
-      params[i].dtypes.dst = data_type_t::bf16;
-      params[i].dtypes.compute = data_type_t::s8;
-      params[i].dynamic_quant = true;
-
-      params[i].quant_params.src_scale.buff = src_scale_buf[i].data();
-      params[i].quant_params.src_scale.dt = data_type_t::bf16;
-      params[i].quant_params.src_scale.dims = {M_PER_EXPERT, 1};
-
-      params[i].quant_params.wei_scale.buff = wei_gu_scale[i].data();
-      params[i].quant_params.wei_scale.dt = data_type_t::bf16;
-      params[i].quant_params.wei_scale.dims = {NUM_GROUPS_W1, N_GATE_UP};
-    }
-
-    // Gated activation: silu_and_mul
-    grp_matmul_gated_act_params act;
-    act.act = grp_matmul_gated_act_t::silu_and_mul;
-
-    // Fused MoE params (Op2 = down_proj)
-    grp_matmul_fused_moe_params fused;
-    fused.N_down.resize(NUM_EXPERTS, N_DOWN);
-    fused.ldb_down.resize(NUM_EXPERTS, DIM);
-    fused.bias_down.resize(NUM_EXPERTS, nullptr);
-    fused.down_weight.resize(NUM_EXPERTS);
-    fused.down_scale.resize(NUM_EXPERTS);
-    for (int i = 0; i < NUM_EXPERTS; ++i) {
-      fused.down_weight[i] = wei_down_packed[i].data();
-      grp_matmul_fused_moe_params::down_weight_quant_t ds;
-      ds.buff = wei_down_scale[i].data();
-      ds.dt   = data_type_t::bf16;
-      ds.dims = {NUM_GROUPS_W2, N_DOWN};
-      fused.down_scale[i] = ds;
-    }
-    // dst_down / ldc_down left empty → internal-alloc + src-reuse
-
-    // MoE post-op: weighted reduce over experts.
-    // In internal-alloc + src-reuse mode, Op2 writes its output back into
-    // the caller's src buffers (first N_DOWN cols of each row).  We build
-    // row_ptrs pointing into src_buf to mirror the vLLM/Zentorch scatter.
-    //
-    // Routing: uniform — each token t is routed to TOPK consecutive experts
-    // (t's slot k → expert (k % NUM_EXPERTS), row = (t*TOPK + k) / TOPK
-    // within that expert's buffer).  This is simplified; in production the
-    // router produces variable-length per-expert M vectors.
-    group_matmul_moe_postop_params postop;
-    postop.num_tokens = TOKENS;
-    postop.topk = TOPK;
-    postop.ldc_output = N_DOWN;
-    std::vector<uint16_t> reduce_dst(static_cast<size_t>(TOKENS * N_DOWN), 0);
-    postop.output = reduce_dst.data();
-    std::vector<float> router_weights(static_cast<size_t>(TOKENS * TOPK),
-                                      1.0f / static_cast<float>(TOPK));
-    postop.topk_weights = router_weights.data();
-    postop.skip_weighted = false;
-
-    // Build row_ptrs: for uniform routing where each expert holds M_PER_EXPERT
-    // rows and token t's k-th slot maps to expert k, row t in that expert.
-    // row_ptrs[t * TOPK + k] → src_buf[expert_k] + row_in_expert * lda (= K).
-    // Op2 output is written to the first N_DOWN elements of each src row.
-    std::vector<const void *> row_ptrs_vec(static_cast<size_t>(TOKENS * TOPK));
-    for (int t = 0; t < TOKENS; ++t) {
-      for (int k = 0; k < TOPK; ++k) {
-        const int expert = k % NUM_EXPERTS;
-        const int row_in_expert = t;
-        row_ptrs_vec[static_cast<size_t>(t * TOPK + k)] =
-          src_buf[expert].data()
-          + static_cast<size_t>(row_in_expert) * K;
-      }
-    }
-    postop.row_ptrs = row_ptrs_vec.data();
-
-    testlog_info("Calling fused MoE W4A8 (Qwen3 style)...");
-    status_t st = group_matmul_direct(
-                    layouts, transAs, transBs, Ms, Ns, Ks, alphas,
-                    sp, ldas, wp, ldbs, bp, betas, dp, ldcs, wconst, params,
-                    &postop, &act, &fused);
-
-    if (st != status_t::success) {
-      testlog_error("Fused MoE W4A8 Qwen3-style failed");
-      return NOT_OK;
-    }
-
-    bool ok = true;
-    for (int t = 0; t < TOKENS && ok; ++t) {
-      for (int d = 0; d < N_DOWN && ok; ++d) {
-        const uint16_t raw =
-          reduce_dst[static_cast<size_t>(t * N_DOWN + d)];
-        const float val = bf16_to_f32(raw);
-        if (std::isnan(val) || std::isinf(val)) {
-          testlog_error("Fused MoE W4A8 Qwen3 verify failed: NaN/Inf at "
-                        "token=", t, " d=", d);
-          ok = false;
+            wei_down_scale[i].resize(
+                    static_cast<size_t>(NUM_GROUPS_W2 * N_DOWN));
+            for (size_t s = 0; s < wei_down_scale[i].size(); ++s) {
+                wei_down_scale[i][s] = f32_to_bf16(1.0f);
+            }
         }
-      }
-    }
 
-    if (ok) {
-      testlog_info("Fused MoE W4A8 Qwen3-style verified OK (",
-                   NUM_EXPERTS, " experts, M=", M_PER_EXPERT,
-                   " K=", K, " N=", N_GATE_UP, " N_down=", N_DOWN,
-                   " tokens=", TOKENS, " topk=", TOPK, ")");
+        // Op1 API vectors — transB=T so weight is [N, K]
+        std::vector<char> layouts(NUM_EXPERTS, 'r');
+        std::vector<bool> transAs(NUM_EXPERTS, false);
+        std::vector<bool> transBs(NUM_EXPERTS, true);
+        std::vector<float> alphas(NUM_EXPERTS, 1.f), betas(NUM_EXPERTS, 0.f);
+        std::vector<bool> wconst(NUM_EXPERTS, true);
+        std::vector<int> ldas(NUM_EXPERTS, K);
+        std::vector<int> ldbs(NUM_EXPERTS, K);
+
+        std::vector<const void *> sp(NUM_EXPERTS), wp(NUM_EXPERTS);
+        std::vector<const void *> bp(NUM_EXPERTS, nullptr);
+        for (int i = 0; i < NUM_EXPERTS; ++i) {
+            sp[i] = src_buf[i].data();
+            wp[i] = wei_gu_packed[i].data();
+        }
+
+        // Internal-alloc: dst all nullptr, ldc zeros
+        std::vector<void *> dp(NUM_EXPERTS, nullptr);
+        std::vector<int> ldcs(NUM_EXPERTS, 0);
+
+        // matmul_params: W4A8 dynamic quant
+        std::vector<matmul_params> params(NUM_EXPERTS);
+        for (int i = 0; i < NUM_EXPERTS; ++i) {
+            params[i].dtypes.src = data_type_t::bf16;
+            params[i].dtypes.wei = data_type_t::s4;
+            params[i].dtypes.dst = data_type_t::bf16;
+            params[i].dtypes.compute = data_type_t::s8;
+            params[i].dynamic_quant = true;
+
+            params[i].quant_params.src_scale.buff = src_scale_buf[i].data();
+            params[i].quant_params.src_scale.dt = data_type_t::bf16;
+            params[i].quant_params.src_scale.dims = {M_PER_EXPERT, 1};
+
+            params[i].quant_params.wei_scale.buff = wei_gu_scale[i].data();
+            params[i].quant_params.wei_scale.dt = data_type_t::bf16;
+            params[i].quant_params.wei_scale.dims = {NUM_GROUPS_W1, N_GATE_UP};
+        }
+
+        // Gated activation: silu_and_mul
+        grp_matmul_gated_act_params act;
+        act.act = grp_matmul_gated_act_t::silu_and_mul;
+
+        // Fused MoE params (Op2 = down_proj)
+        grp_matmul_fused_moe_params fused;
+        fused.N_down.resize(NUM_EXPERTS, N_DOWN);
+        fused.ldb_down.resize(NUM_EXPERTS, DIM);
+        fused.bias_down.resize(NUM_EXPERTS, nullptr);
+        fused.down_weight.resize(NUM_EXPERTS);
+        fused.down_scale.resize(NUM_EXPERTS);
+        for (int i = 0; i < NUM_EXPERTS; ++i) {
+            fused.down_weight[i] = wei_down_packed[i].data();
+            grp_matmul_fused_moe_params::down_weight_quant_t ds;
+            ds.buff = wei_down_scale[i].data();
+            ds.dt = data_type_t::bf16;
+            ds.dims = {NUM_GROUPS_W2, N_DOWN};
+            fused.down_scale[i] = ds;
+        }
+        // dst_down / ldc_down left empty → internal-alloc + src-reuse
+
+        // MoE post-op: weighted reduce over experts.
+        // In internal-alloc + src-reuse mode, Op2 writes its output back into
+        // the caller's src buffers (first N_DOWN cols of each row).  We build
+        // row_ptrs pointing into src_buf to mirror the vLLM/Zentorch scatter.
+        //
+        // Routing: uniform — each token t is routed to TOPK consecutive experts
+        // (t's slot k → expert (k % NUM_EXPERTS), row = (t*TOPK + k) / TOPK
+        // within that expert's buffer).  This is simplified; in production the
+        // router produces variable-length per-expert M vectors.
+        group_matmul_moe_postop_params postop;
+        postop.num_tokens = TOKENS;
+        postop.topk = TOPK;
+        postop.ldc_output = N_DOWN;
+        std::vector<uint16_t> reduce_dst(
+                static_cast<size_t>(TOKENS * N_DOWN), 0);
+        postop.output = reduce_dst.data();
+        std::vector<float> router_weights(static_cast<size_t>(TOKENS * TOPK),
+                1.0f / static_cast<float>(TOPK));
+        postop.topk_weights = router_weights.data();
+        postop.skip_weighted = false;
+
+        // Build row_ptrs: for uniform routing where each expert holds M_PER_EXPERT
+        // rows and token t's k-th slot maps to expert k, row t in that expert.
+        // row_ptrs[t * TOPK + k] → src_buf[expert_k] + row_in_expert * lda (= K).
+        // Op2 output is written to the first N_DOWN elements of each src row.
+        std::vector<const void *> row_ptrs_vec(
+                static_cast<size_t>(TOKENS * TOPK));
+        for (int t = 0; t < TOKENS; ++t) {
+            for (int k = 0; k < TOPK; ++k) {
+                const int expert = k % NUM_EXPERTS;
+                const int row_in_expert = t;
+                row_ptrs_vec[static_cast<size_t>(t * TOPK + k)]
+                        = src_buf[expert].data()
+                        + static_cast<size_t>(row_in_expert) * K;
+            }
+        }
+        postop.row_ptrs = row_ptrs_vec.data();
+
+        testlog_info("Calling fused MoE W4A8 (Qwen3 style)...");
+        status_t st = group_matmul_direct(layouts, transAs, transBs, Ms, Ns, Ks,
+                alphas, sp, ldas, wp, ldbs, bp, betas, dp, ldcs, wconst, params,
+                &postop, &act, &fused);
+
+        if (st != status_t::success) {
+            testlog_error("Fused MoE W4A8 Qwen3-style failed");
+            return NOT_OK;
+        }
+
+        bool ok = true;
+        for (int t = 0; t < TOKENS && ok; ++t) {
+            for (int d = 0; d < N_DOWN && ok; ++d) {
+                const uint16_t raw
+                        = reduce_dst[static_cast<size_t>(t * N_DOWN + d)];
+                const float val = bf16_to_f32(raw);
+                if (std::isnan(val) || std::isinf(val)) {
+                    testlog_error(
+                            "Fused MoE W4A8 Qwen3 verify failed: NaN/Inf at "
+                            "token=",
+                            t, " d=", d);
+                    ok = false;
+                }
+            }
+        }
+
+        if (ok) {
+            testlog_info("Fused MoE W4A8 Qwen3-style verified OK (",
+                    NUM_EXPERTS, " experts, M=", M_PER_EXPERT, " K=", K,
+                    " N=", N_GATE_UP, " N_down=", N_DOWN, " tokens=", TOKENS,
+                    " topk=", TOPK, ")");
+        } else {
+            return NOT_OK;
+        }
+    } catch (const exception_t &ex) {
+        std::cout << ex.what() << std::endl;
+        return NOT_OK;
     }
-    else {
-      return NOT_OK;
-    }
-  }
-  catch (const exception_t &ex) {
-    std::cout << ex.what() << std::endl;
-    return NOT_OK;
-  }
-  return OK;
+    return OK;
 }
 
 } // namespace examples

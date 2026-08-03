@@ -1,5 +1,5 @@
 /********************************************************************************
-# * Copyright (c) 2025 Advanced Micro Devices, Inc. All rights reserved.
+# * Copyright (c) 2025-2026 Advanced Micro Devices, Inc. All rights reserved.
 # *
 # * Licensed under the Apache License, Version 2.0 (the "License");
 # * you may not use this file except in compliance with the License.
@@ -16,11 +16,11 @@
 #ifndef _COMPARE_EXAMPLE_HPP_
 #define _COMPARE_EXAMPLE_HPP_
 
-#include "zendnnl.hpp"
 #include "example_utils.hpp"
+#include "zendnnl.hpp"
 
-#define  OK          (0)
-#define  NOT_OK      (1)
+#define OK (0)
+#define NOT_OK (1)
 
 namespace zendnnl {
 namespace examples {
@@ -33,7 +33,7 @@ namespace examples {
  *  This example demonstrates compare operator creation and execution of
  *  its reference kernel.
  */
-int compare_operator_execute(tensor_t& a, tensor_t& b);
+int compare_operator_execute(tensor_t &a, tensor_t &b);
 
 /** @fn compare_op_example
  *  @brief Demonstrates compare operator on two input tensors.
@@ -49,7 +49,7 @@ int compare_op_example();
  */
 int compare_ref_and_aocl_matmul_kernel_example();
 
-} //examples
-} //zendnnl
+} // namespace examples
+} // namespace zendnnl
 
 #endif

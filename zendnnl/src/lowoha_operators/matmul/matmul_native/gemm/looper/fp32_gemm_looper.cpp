@@ -21,55 +21,52 @@
 //
 
 #include "lowoha_operators/matmul/matmul_native/gemm/looper/fp32_gemm_looper.hpp"
-#include "lowoha_operators/matmul/matmul_native/gemm/planner/gemm_planner.hpp"
-#include "lowoha_operators/matmul/matmul_native/gemm/kernel/fp32/fp32_gemm_ukernel.hpp"
-#include "lowoha_operators/matmul/matmul_native/common/kernel_cache.hpp"
-#include "lowoha_operators/matmul/matmul_native/common/avx512_math.hpp"
-#include "lowoha_operators/matmul/matmul_native/common/postop.hpp"
-#include "lowoha_operators/matmul/matmul_native/common/fp32_packing.hpp"
-#include "operators/matmul/matmul_config.hpp"
 #include "common/zendnnl_global.hpp"
+#include "lowoha_operators/matmul/matmul_native/common/avx512_math.hpp"
+#include "lowoha_operators/matmul/matmul_native/common/fp32_packing.hpp"
+#include "lowoha_operators/matmul/matmul_native/common/kernel_cache.hpp"
+#include "lowoha_operators/matmul/matmul_native/common/postop.hpp"
+#include "lowoha_operators/matmul/matmul_native/gemm/kernel/fp32/fp32_gemm_ukernel.hpp"
+#include "lowoha_operators/matmul/matmul_native/gemm/planner/gemm_planner.hpp"
+#include "operators/matmul/matmul_config.hpp"
 
-#include <omp.h>
+#include <algorithm>
 #include <cstdlib>
 #include <cstring>
-#include <algorithm>
 #include <immintrin.h>
+#include <omp.h>
 
 namespace zendnnl {
 namespace lowoha {
 namespace matmul {
 namespace native {
 
-
 using namespace zendnnl::error_handling;
 using zendnnl::ops::matmul_config_t;
 using zendnnl::ops::post_op_type_t;
 
-__attribute__((target("avx512f")))
-static void scale_tile(float *C, int ldc, int m_count, int n_count, float alpha) {
+__attribute__((target("avx512f"))) static void scale_tile(
+        float *C, int ldc, int m_count, int n_count, float alpha) {
     __m512 av = _mm512_set1_ps(alpha);
     for (int m = 0; m < m_count; ++m) {
         float *row = C + m * ldc;
         int n = 0;
         for (; n + 15 < n_count; n += 16)
-            _mm512_storeu_ps(row + n, _mm512_mul_ps(_mm512_loadu_ps(row + n), av));
+            _mm512_storeu_ps(
+                    row + n, _mm512_mul_ps(_mm512_loadu_ps(row + n), av));
         for (; n < n_count; ++n)
             row[n] *= alpha;
     }
 }
 
-static void native_thread_loop(
-    const GemmDescriptor &desc,
-    const BlockPlan &plan,
-    const UarchParams &uarch,
-    const void *src, const void *weight, void *dst,
-    const void *bias, matmul_params &params,
-    const PrepackedWeight *prepacked_b) {
+static void native_thread_loop(const GemmDescriptor &desc,
+        const BlockPlan &plan, const UarchParams &uarch, const void *src,
+        const void *weight, void *dst, const void *bias, matmul_params &params,
+        const PrepackedWeight *prepacked_b) {
 
     const float *A = static_cast<const float *>(src);
     const float *B = static_cast<const float *>(weight);
-    float *C       = static_cast<float *>(dst);
+    float *C = static_cast<float *>(dst);
     const float *bias_f = static_cast<const float *>(bias);
 
     const int M = desc.M, N = desc.N, K = desc.K;
@@ -78,8 +75,9 @@ static void native_thread_loop(
     const float alpha = desc.alpha;
     // When alpha != 1 and beta != 0, pass beta/alpha to the microkernel.
     // After scale_tile: alpha*(A*B + (beta/alpha)*C_old) = alpha*A*B + beta*C_old.
-    const float beta  = (desc.alpha != 1.0f && desc.beta != 0.0f)
-                        ? (desc.beta / desc.alpha) : desc.beta;
+    const float beta = (desc.alpha != 1.0f && desc.beta != 0.0f)
+            ? (desc.beta / desc.alpha)
+            : desc.beta;
     const int MB = plan.MB, NB = plan.NB, KB = plan.KB;
     const int MR = plan.MR, NR = plan.NR;
     const int num_threads = plan.num_threads;
@@ -93,18 +91,30 @@ static void native_thread_loop(
         auto pt = params.postop_[i].po_type;
         if (pt == post_op_type_t::relu) {
             if (params.postop_[i].alpha == 0.0f) {
-                fused_op = fused_postop_t::relu; fused_idx = i; break;
+                fused_op = fused_postop_t::relu;
+                fused_idx = i;
+                break;
             }
         } else if (pt == post_op_type_t::gelu_tanh) {
-            fused_op = fused_postop_t::gelu_tanh; fused_idx = i; break;
+            fused_op = fused_postop_t::gelu_tanh;
+            fused_idx = i;
+            break;
         } else if (pt == post_op_type_t::gelu_erf) {
-            fused_op = fused_postop_t::gelu_erf; fused_idx = i; break;
+            fused_op = fused_postop_t::gelu_erf;
+            fused_idx = i;
+            break;
         } else if (pt == post_op_type_t::sigmoid) {
-            fused_op = fused_postop_t::sigmoid; fused_idx = i; break;
+            fused_op = fused_postop_t::sigmoid;
+            fused_idx = i;
+            break;
         } else if (pt == post_op_type_t::tanh) {
-            fused_op = fused_postop_t::tanh_op; fused_idx = i; break;
+            fused_op = fused_postop_t::tanh_op;
+            fused_idx = i;
+            break;
         } else if (pt == post_op_type_t::swish) {
-            fused_op = fused_postop_t::swish; fused_idx = i; break;
+            fused_op = fused_postop_t::swish;
+            fused_idx = i;
+            break;
         }
     }
 
@@ -118,8 +128,8 @@ static void native_thread_loop(
     // Pack controls (read once from singleton, cached across calls).
     // Auto-enable A packing when row stride exceeds L1 stride prefetcher
     // limit (~4KB on Zen4/5). For lda=3584 FP32: 14KB stride → pack.
-    const bool do_pack_a = transA
-                           || (lda * static_cast<int>(sizeof(float)) > 4096);
+    const bool do_pack_a
+            = transA || (lda * static_cast<int>(sizeof(float)) > 4096);
 
     ukernel_fn_t hot_ukernel = use_avx512 ? select_ukernel(MR, NR) : nullptr;
 
@@ -148,7 +158,7 @@ static void native_thread_loop(
                     const float *a_base;
                     if (use_packed_a) {
                         pack_a_block(A, pa_buf, ic, pc, M, K, lda, transA,
-                                     mb_act, kb_act, MR);
+                                mb_act, kb_act, MR);
                         a_base = pa_buf;
                     } else {
                         a_base = A + ic * lda + pc;
@@ -171,12 +181,14 @@ static void native_thread_loop(
                             int panel_idx = col / NR_PACK;
                             int in_panel_off = col % NR_PACK;
                             if (in_panel_off + nr_act <= NR_PACK) {
-                                pb_tile = prepacked_b->get_panel(pc, panel_idx) + in_panel_off;
+                                pb_tile = prepacked_b->get_panel(pc, panel_idx)
+                                        + in_panel_off;
                                 pb_stride = NR_PACK;
                             } else {
                                 panel_crossing = true;
                                 nr_part1 = NR_PACK - in_panel_off;
-                                pb_tile = prepacked_b->get_panel(pc, panel_idx) + in_panel_off;
+                                pb_tile = prepacked_b->get_panel(pc, panel_idx)
+                                        + in_panel_off;
                                 pb_stride = NR_PACK;
                             }
                         } else {
@@ -187,10 +199,13 @@ static void native_thread_loop(
                         // Fuse bias/binary/activation only when alpha==1 (epilogue order is correct).
                         // When alpha!=1, bias/binary/activation must come AFTER scale_tile.
                         const bool can_fuse = (alpha == 1.0f);
-                        const float *tile_bias =
-                            (has_bias && is_last_k && can_fuse) ? (bias_f + jc + jr) : nullptr;
-                        const fused_postop_t tile_fop =
-                            (is_last_k && can_fuse) ? fused_op : fused_postop_t::none;
+                        const float *tile_bias
+                                = (has_bias && is_last_k && can_fuse)
+                                ? (bias_f + jc + jr)
+                                : nullptr;
+                        const fused_postop_t tile_fop = (is_last_k && can_fuse)
+                                ? fused_op
+                                : fused_postop_t::none;
 
                         for (int ip = 0; ip < m_panels; ++ip) {
                             const int ir = ip * MR;
@@ -209,17 +224,19 @@ static void native_thread_loop(
 
                             if (!panel_crossing) {
                                 if (hot_ukernel && full_nr && mr_act == MR) {
-                                    hot_ukernel(pa, pa_stride, pb_tile, pb_stride,
-                                                Ct, ldc, kb_act, tile_beta,
-                                                tile_bias, tile_fop);
+                                    hot_ukernel(pa, pa_stride, pb_tile,
+                                            pb_stride, Ct, ldc, kb_act,
+                                            tile_beta, tile_bias, tile_fop);
                                 } else if (use_avx512) {
-                                    avx512_tail_kernel(pa, pa_stride, pb_tile, pb_stride,
-                                                       Ct, ldc, kb_act, mr_act, nr_act,
-                                                       tile_beta, tile_bias, tile_fop);
+                                    avx512_tail_kernel(pa, pa_stride, pb_tile,
+                                            pb_stride, Ct, ldc, kb_act, mr_act,
+                                            nr_act, tile_beta, tile_bias,
+                                            tile_fop);
                                 } else {
-                                    scalar_microkernel(pa, pa_stride, pb_tile, pb_stride,
-                                                       Ct, ldc, kb_act, mr_act, nr_act,
-                                                       tile_beta, tile_bias, tile_fop);
+                                    scalar_microkernel(pa, pa_stride, pb_tile,
+                                            pb_stride, Ct, ldc, kb_act, mr_act,
+                                            nr_act, tile_beta, tile_bias,
+                                            tile_fop);
                                 }
                             } else {
                                 int nr_part2 = nr_act - nr_part1;
@@ -228,18 +245,23 @@ static void native_thread_loop(
                                 int col = jc + jr;
                                 int pidx = col / NR_PACK;
 
-                                const float *pb1 = prepacked_b->get_panel(pc, pidx) + (col % NR_PACK);
-                                const float *pb2 = prepacked_b->get_panel(pc, pidx + 1);
+                                const float *pb1
+                                        = prepacked_b->get_panel(pc, pidx)
+                                        + (col % NR_PACK);
+                                const float *pb2
+                                        = prepacked_b->get_panel(pc, pidx + 1);
 
                                 const float *bias1 = tile_bias;
                                 avx512_tail_kernel(pa, pa_stride, pb1, NR_PACK,
-                                                   Ct, ldc, kb_act, mr_act, nr_part1,
-                                                   tile_beta, bias1, tile_fop);
+                                        Ct, ldc, kb_act, mr_act, nr_part1,
+                                        tile_beta, bias1, tile_fop);
 
-                                const float *bias2 = tile_bias ? (tile_bias + nr_part1) : nullptr;
+                                const float *bias2 = tile_bias
+                                        ? (tile_bias + nr_part1)
+                                        : nullptr;
                                 avx512_tail_kernel(pa, pa_stride, pb2, NR_PACK,
-                                                   Ct + nr_part1, ldc, kb_act, mr_act, nr_part2,
-                                                   tile_beta, bias2, tile_fop);
+                                        Ct + nr_part1, ldc, kb_act, mr_act,
+                                        nr_part2, tile_beta, bias2, tile_fop);
                             }
                         }
                     }
@@ -251,15 +273,16 @@ static void native_thread_loop(
                             scale_tile(Ctile, ldc, mb_act, nb_act, alpha);
                             if (has_bias)
                                 apply_postops_tile(Ctile, ldc, mb_act, nb_act,
-                                                   jc, ic, bias_f, {});
-                            if (fused_op != fused_postop_t::none && fused_idx >= 0)
+                                        jc, ic, bias_f, {});
+                            if (fused_op != fused_postop_t::none
+                                    && fused_idx >= 0)
                                 apply_postops_tile(Ctile, ldc, mb_act, nb_act,
-                                                   jc, ic, nullptr,
-                                                   {params.postop_[fused_idx]});
+                                        jc, ic, nullptr,
+                                        {params.postop_[fused_idx]});
                         }
                         if (has_remaining_postops) {
-                            apply_postops_tile(Ctile, ldc, mb_act, nb_act,
-                                               jc, ic, nullptr, remaining_postops);
+                            apply_postops_tile(Ctile, ldc, mb_act, nb_act, jc,
+                                    ic, nullptr, remaining_postops);
                         }
                     }
                 } // ic
@@ -273,8 +296,8 @@ static void native_thread_loop(
         static thread_local size_t s_pa_cap = 0;
         if (do_pack_a && s_pa_cap < pa_elems) {
             std::free(s_pa);
-            s_pa = static_cast<float *>(
-                std::aligned_alloc(64, ((pa_elems * 4 + 63) & ~size_t(63))));
+            s_pa = static_cast<float *>(std::aligned_alloc(
+                    64, ((pa_elems * 4 + 63) & ~size_t(63))));
             s_pa_cap = s_pa ? pa_elems : 0;
         }
         run_loop((do_pack_a && s_pa) ? s_pa : nullptr);
@@ -288,16 +311,16 @@ static void native_thread_loop(
         const int active_threads = std::min(num_threads, total_2d_tiles);
 
         const bool skip_pack_a = do_pack_a
-            && (static_cast<size_t>(M) * K * sizeof(float)
-                <= static_cast<size_t>(uarch.l2_bytes));
+                && (static_cast<size_t>(M) * K * sizeof(float)
+                        <= static_cast<size_t>(uarch.l2_bytes));
         const bool actual_pack_a = do_pack_a && !skip_pack_a;
 
-        #pragma omp parallel num_threads(active_threads)
+#pragma omp parallel num_threads(active_threads)
         {
             static thread_local float *tl_pa = nullptr;
             static thread_local size_t tl_pa_cap = 0;
 
-            #pragma omp for schedule(static)
+#pragma omp for schedule(static)
             for (int tile_idx = 0; tile_idx < total_2d_tiles; ++tile_idx) {
                 const int ic_idx = tile_idx / jc_tiles;
                 const int jc_idx = tile_idx % jc_tiles;
@@ -316,16 +339,17 @@ static void native_thread_loop(
                     int a_stride_base;
                     if (actual_pack_a) {
                         size_t need = static_cast<size_t>(
-                            ((mb_act + MR - 1) / MR) * MR) * kb_act;
+                                              ((mb_act + MR - 1) / MR) * MR)
+                                * kb_act;
                         if (tl_pa_cap < need) {
                             std::free(tl_pa);
                             tl_pa = static_cast<float *>(std::aligned_alloc(
-                                64, ((need * 4 + 63) & ~size_t(63))));
+                                    64, ((need * 4 + 63) & ~size_t(63))));
                             tl_pa_cap = tl_pa ? need : 0;
                         }
                         if (tl_pa) {
                             pack_a_block(A, tl_pa, ic, pc, M, K, lda, transA,
-                                         mb_act, kb_act, MR);
+                                    mb_act, kb_act, MR);
                             a_base = tl_pa;
                             a_stride_base = kb_act;
                         } else {
@@ -351,12 +375,14 @@ static void native_thread_loop(
                             int panel_idx = col / NR_PACK;
                             int in_panel_off = col % NR_PACK;
                             if (in_panel_off + nr_act <= NR_PACK) {
-                                pb_tile = prepacked_b->get_panel(pc, panel_idx) + in_panel_off;
+                                pb_tile = prepacked_b->get_panel(pc, panel_idx)
+                                        + in_panel_off;
                                 pb_stride = NR_PACK;
                             } else {
                                 panel_crossing = true;
                                 nr_part1 = NR_PACK - in_panel_off;
-                                pb_tile = prepacked_b->get_panel(pc, panel_idx) + in_panel_off;
+                                pb_tile = prepacked_b->get_panel(pc, panel_idx)
+                                        + in_panel_off;
                                 pb_stride = NR_PACK;
                             }
                         } else {
@@ -365,10 +391,13 @@ static void native_thread_loop(
                         }
 
                         const bool can_fuse = (alpha == 1.0f);
-                        const float *tile_bias =
-                            (has_bias && is_last_k && can_fuse) ? (bias_f + jc + jr) : nullptr;
-                        const fused_postop_t tile_fop =
-                            (is_last_k && can_fuse) ? fused_op : fused_postop_t::none;
+                        const float *tile_bias
+                                = (has_bias && is_last_k && can_fuse)
+                                ? (bias_f + jc + jr)
+                                : nullptr;
+                        const fused_postop_t tile_fop = (is_last_k && can_fuse)
+                                ? fused_op
+                                : fused_postop_t::none;
 
                         for (int ip = 0; ip < m_panels; ++ip) {
                             const int ir = ip * MR;
@@ -387,34 +416,41 @@ static void native_thread_loop(
 
                             if (!panel_crossing) {
                                 if (hot_ukernel && full_nr && mr_act == MR) {
-                                    hot_ukernel(pa, pa_stride, pb_tile, pb_stride,
-                                                Ct, ldc, kb_act, tile_beta,
-                                                tile_bias, tile_fop);
+                                    hot_ukernel(pa, pa_stride, pb_tile,
+                                            pb_stride, Ct, ldc, kb_act,
+                                            tile_beta, tile_bias, tile_fop);
                                 } else if (use_avx512) {
-                                    avx512_tail_kernel(pa, pa_stride, pb_tile, pb_stride,
-                                                       Ct, ldc, kb_act, mr_act, nr_act,
-                                                       tile_beta, tile_bias, tile_fop);
+                                    avx512_tail_kernel(pa, pa_stride, pb_tile,
+                                            pb_stride, Ct, ldc, kb_act, mr_act,
+                                            nr_act, tile_beta, tile_bias,
+                                            tile_fop);
                                 } else {
-                                    scalar_microkernel(pa, pa_stride, pb_tile, pb_stride,
-                                                       Ct, ldc, kb_act, mr_act, nr_act,
-                                                       tile_beta, tile_bias, tile_fop);
+                                    scalar_microkernel(pa, pa_stride, pb_tile,
+                                            pb_stride, Ct, ldc, kb_act, mr_act,
+                                            nr_act, tile_beta, tile_bias,
+                                            tile_fop);
                                 }
                             } else {
                                 int nr_part2 = nr_act - nr_part1;
                                 int col = jc + jr;
                                 int pidx = col / NR_PACK;
 
-                                const float *pb1 = prepacked_b->get_panel(pc, pidx) + (col % NR_PACK);
-                                const float *pb2 = prepacked_b->get_panel(pc, pidx + 1);
+                                const float *pb1
+                                        = prepacked_b->get_panel(pc, pidx)
+                                        + (col % NR_PACK);
+                                const float *pb2
+                                        = prepacked_b->get_panel(pc, pidx + 1);
 
                                 avx512_tail_kernel(pa, pa_stride, pb1, NR_PACK,
-                                                   Ct, ldc, kb_act, mr_act, nr_part1,
-                                                   tile_beta, tile_bias, tile_fop);
+                                        Ct, ldc, kb_act, mr_act, nr_part1,
+                                        tile_beta, tile_bias, tile_fop);
 
-                                const float *bias2 = tile_bias ? (tile_bias + nr_part1) : nullptr;
+                                const float *bias2 = tile_bias
+                                        ? (tile_bias + nr_part1)
+                                        : nullptr;
                                 avx512_tail_kernel(pa, pa_stride, pb2, NR_PACK,
-                                                   Ct + nr_part1, ldc, kb_act, mr_act, nr_part2,
-                                                   tile_beta, bias2, tile_fop);
+                                        Ct + nr_part1, ldc, kb_act, mr_act,
+                                        nr_part2, tile_beta, bias2, tile_fop);
                             }
                         }
                     }
@@ -425,15 +461,16 @@ static void native_thread_loop(
                             scale_tile(Ctile, ldc, mb_act, nb_act, alpha);
                             if (has_bias)
                                 apply_postops_tile(Ctile, ldc, mb_act, nb_act,
-                                                   jc, ic, bias_f, {});
-                            if (fused_op != fused_postop_t::none && fused_idx >= 0)
+                                        jc, ic, bias_f, {});
+                            if (fused_op != fused_postop_t::none
+                                    && fused_idx >= 0)
                                 apply_postops_tile(Ctile, ldc, mb_act, nb_act,
-                                                   jc, ic, nullptr,
-                                                   {params.postop_[fused_idx]});
+                                        jc, ic, nullptr,
+                                        {params.postop_[fused_idx]});
                         }
                         if (has_remaining_postops) {
-                            apply_postops_tile(Ctile, ldc, mb_act, nb_act,
-                                               jc, ic, nullptr, remaining_postops);
+                            apply_postops_tile(Ctile, ldc, mb_act, nb_act, jc,
+                                    ic, nullptr, remaining_postops);
                         }
                     }
                 } // K-loop (BRGEMM)
@@ -445,11 +482,9 @@ static void native_thread_loop(
 // ============================================================================
 // FP32 GEMM entry point (restructured: Planner + Looper + Kernel)
 // ============================================================================
-void gemm_execute(
-    const GemmDescriptor &desc,
-    const UarchParams &uarch,
-    const void *src, const void *weight, void *dst,
-    const void *bias, matmul_params &params) {
+void gemm_execute(const GemmDescriptor &desc, const UarchParams &uarch,
+        const void *src, const void *weight, void *dst, const void *bias,
+        matmul_params &params) {
 
     const int K = desc.K, N = desc.N;
     const bool transB = desc.transB;
@@ -459,15 +494,15 @@ void gemm_execute(
     FP32GemmPlan fp = plan_fp32_gemm(desc, uarch, params);
 
     // Weight caching
-    static int32_t s_weight_cache =
-        matmul_config_t::instance().get_weight_cache();
+    static int32_t s_weight_cache
+            = matmul_config_t::instance().get_weight_cache();
     const PrepackedWeight *prepacked_b = nullptr;
     const bool can_cache = is_weights_const && (s_weight_cache != 0);
 
     if (can_cache) {
-        PrepackedWeightKey bk{weight, K, N, desc.ldb, transB};
+        PrepackedWeightKey bk {weight, K, N, desc.ldb, transB};
         prepacked_b = PrepackedWeightCache::instance().get_or_prepack(
-            bk, static_cast<const float *>(weight));
+                bk, static_cast<const float *>(weight));
     } else if (transB || (desc.num_threads > 1 && desc.ldb > NR_PACK)) {
         static thread_local float *s_tb = nullptr;
         static thread_local size_t s_tb_cap = 0;
@@ -479,7 +514,7 @@ void gemm_execute(
         if (s_tb_cap < total) {
             std::free(s_tb);
             s_tb = static_cast<float *>(std::aligned_alloc(
-                64, ((total * sizeof(float) + 63) & ~size_t(63))));
+                    64, ((total * sizeof(float) + 63) & ~size_t(63))));
             s_tb_cap = total;
         }
 
@@ -512,10 +547,9 @@ void gemm_execute(
     }
 
     // Layer 2: Looper
-    native_thread_loop(desc, fp.plan, uarch, src, weight, dst, bias, params,
-                   prepacked_b);
+    native_thread_loop(
+            desc, fp.plan, uarch, src, weight, dst, bias, params, prepacked_b);
 }
-
 
 } // namespace native
 } // namespace matmul

@@ -17,12 +17,12 @@
 #ifndef _LOWOHA_CONV_ONEDNN_KERNEL_HPP
 #define _LOWOHA_CONV_ONEDNN_KERNEL_HPP
 
-#include "lowoha_conv_utils.hpp"
 #include "lowoha_conv_common.hpp"
+#include "lowoha_conv_utils.hpp"
 
 #if ZENDNNL_DEPENDS_ONEDNN
+#include "conv_cache_key.hpp" // For Key_conv
 #include "dnnl.hpp"
-#include "conv_cache_key.hpp"  // For Key_conv
 using namespace dnnl;
 #endif
 
@@ -52,13 +52,9 @@ namespace conv {
  *
  * @return true on success, false on failure
  */
-bool reorderAndCacheWeights(
-    const Key_conv& key,
-    dnnl::memory& src_weights_mem,
-    dnnl::memory& dst_weights_mem,
-    const dnnl::engine& eng,
-    const bool is_weights_const
-);
+bool reorderAndCacheWeights(const Key_conv &key, dnnl::memory &src_weights_mem,
+        dnnl::memory &dst_weights_mem, const dnnl::engine &eng,
+        const bool is_weights_const);
 
 /**
  * @brief Wrapper function for OneDNN-based Conv
@@ -81,14 +77,9 @@ bool reorderAndCacheWeights(
  *
  * @return status_t::success on successful execution, status_t::failure otherwise
  */
-status_t conv_onednn_wrapper(
-    const void *input,
-    const void *filter,
-    const void *bias,
-    void *output,
-    const bool is_weights_const,
-    conv_params &params
-);
+status_t conv_onednn_wrapper(const void *input, const void *filter,
+        const void *bias, void *output, const bool is_weights_const,
+        conv_params &params);
 
 #endif // ZENDNNL_DEPENDS_ONEDNN
 

@@ -21,8 +21,8 @@
 #include <cstring>
 #include <vector>
 
-#include "lowoha_operators/matmul/lowoha_common.hpp"
 #include "lowoha_operators/matmul/group_matmul/group_matmul_direct.hpp"
+#include "lowoha_operators/matmul/lowoha_common.hpp"
 #include "operators/matmul/matmul_context.hpp"
 
 namespace zendnnl {
@@ -32,20 +32,13 @@ namespace matmul {
 /**
  * @brief Entry function for different backends supported by ZenDNNL
  */
-void matmul_kernel_wrapper(char layout, char transA, char transB,
-                           int M, int N, int K,
-                           float alpha,
-                           const void *A, int lda,
-                           const void *B, int ldb,
-                           float beta,
-                           void *C, int ldc,
-                           matmul_data_types &dtypes,
-                           zendnnl::ops::matmul_algo_t &kernel,
-                           char mem_format_a, char mem_format_b,
-                           matmul_params &lowoha_param, matmul_batch_params_t &batch_params,
-                           const void *bias, bool is_weights_const,
-                           int num_threads);
-
+void matmul_kernel_wrapper(char layout, char transA, char transB, int M, int N,
+        int K, float alpha, const void *A, int lda, const void *B, int ldb,
+        float beta, void *C, int ldc, matmul_data_types &dtypes,
+        zendnnl::ops::matmul_algo_t &kernel, char mem_format_a,
+        char mem_format_b, matmul_params &lowoha_param,
+        matmul_batch_params_t &batch_params, const void *bias,
+        bool is_weights_const, int num_threads);
 
 /**
  * @brief Execute single Matrix Multiplication (Matmul) for batch_count == 1
@@ -57,13 +50,13 @@ void matmul_kernel_wrapper(char layout, char transA, char transB,
  * - Standard matmul kernel execution
  */
 void matmul_execute(const char layout, const bool transA, const bool transB,
-                    const int M, const int N, const int K, const float alpha,
-                    const void *src, const int lda, const void *weight, const int ldb,
-                    const void *bias, const float beta, void *dst, const int ldc,
-                    const bool is_weights_const, const size_t src_type_size,
-                    const size_t out_type_size, const int num_threads, matmul_algo_t &kernel,
-                    matmul_params &params, matmul_batch_params_t &batch_params,
-                    unsigned int auto_version);
+        const int M, const int N, const int K, const float alpha,
+        const void *src, const int lda, const void *weight, const int ldb,
+        const void *bias, const float beta, void *dst, const int ldc,
+        const bool is_weights_const, const size_t src_type_size,
+        const size_t out_type_size, const int num_threads,
+        matmul_algo_t &kernel, matmul_params &params,
+        matmul_batch_params_t &batch_params, unsigned int auto_version);
 
 /**
  * @brief Execute matrix multiplication with automatic kernel selection and optimization
@@ -102,10 +95,11 @@ void matmul_execute(const char layout, const bool transA, const bool transB,
  */
 
 status_t matmul_direct(const char layout, const bool transA, const bool transB,
-                       const int M, const int N, const int K, const float alpha, const void *src,
-                       const int lda, const void *weight, const int ldb, const void *bias,
-                       const float beta, void *dst, const int ldc, const bool is_weights_const,
-                       const matmul_batch_params_t &batch_params, const matmul_params &params);
+        const int M, const int N, const int K, const float alpha,
+        const void *src, const int lda, const void *weight, const int ldb,
+        const void *bias, const float beta, void *dst, const int ldc,
+        const bool is_weights_const, const matmul_batch_params_t &batch_params,
+        const matmul_params &params);
 
 /**
  * @brief Execute group matmul operations (e.g. MoE experts)
@@ -202,29 +196,21 @@ status_t matmul_direct(const char layout, const bool transA, const bool transB,
  * @return status_t::success if all operations succeed, status_t::failure if any operation fails
  */
 status_t group_matmul_direct(const std::vector<char> &layout,
-                             const std::vector<bool> &transA,
-                             const std::vector<bool> &transB,
-                             const std::vector<int> &M,
-                             const std::vector<int> &N,
-                             const std::vector<int> &K,
-                             const std::vector<float> &alpha,
-                             const std::vector<const void *> &src,
-                             const std::vector<int> &lda,
-                             const std::vector<const void *> &weight,
-                             const std::vector<int> &ldb,
-                             const std::vector<const void *> &bias,
-                             const std::vector<float> &beta,
-                             const std::vector<void *> &dst,
-                             const std::vector<int> &ldc,
-                             const std::vector<bool> &is_weights_const,
-                             const std::vector<matmul_params> &params,
-                             const group_matmul_moe_postop_params *moe_postop = nullptr,
-                             const grp_matmul_gated_act_params *gated_act = nullptr,
-                             const grp_matmul_fused_moe_params *fused_moe = nullptr);
+        const std::vector<bool> &transA, const std::vector<bool> &transB,
+        const std::vector<int> &M, const std::vector<int> &N,
+        const std::vector<int> &K, const std::vector<float> &alpha,
+        const std::vector<const void *> &src, const std::vector<int> &lda,
+        const std::vector<const void *> &weight, const std::vector<int> &ldb,
+        const std::vector<const void *> &bias, const std::vector<float> &beta,
+        const std::vector<void *> &dst, const std::vector<int> &ldc,
+        const std::vector<bool> &is_weights_const,
+        const std::vector<matmul_params> &params,
+        const group_matmul_moe_postop_params *moe_postop = nullptr,
+        const grp_matmul_gated_act_params *gated_act = nullptr,
+        const grp_matmul_fused_moe_params *fused_moe = nullptr);
 
 } // namespace matmul
 } // namespace lowoha
 } // namespace zendnnl
 
 #endif
-

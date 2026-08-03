@@ -16,23 +16,23 @@
 #ifndef _LOGGING_HPP_
 #define _LOGGING_HPP_
 
-#include <iostream>
-#include <fstream>
-#include <sstream>
-#include <cstdarg>
-#include <chrono>
-#include <string>
-#include <cstring>
-#include <cstdint>
-#include <cstdio>
-#include <iomanip>
-#include <mutex>
-#include <vector>
 #include <algorithm>
 #include <cassert>
+#include <chrono>
+#include <cstdarg>
+#include <cstdint>
+#include <cstdio>
+#include <cstring>
+#include <fstream>
+#include <iomanip>
+#include <iostream>
+#include <mutex>
+#include <sstream>
+#include <string>
+#include <vector>
 
-#include "common/zendnnl_exceptions.hpp"
 #include "common/config_params.hpp"
+#include "common/zendnnl_exceptions.hpp"
 
 namespace zendnnl {
 namespace error_handling {
@@ -60,112 +60,113 @@ namespace cn = std::chrono;
  *  @endverbatim
  */
 class logger_t {
- public:
-  /** @brief default constructor */
-  logger_t();
+public:
+    /** @brief default constructor */
+    logger_t();
 
-  /** @brief Set log module level
+    /** @brief Set log module level
    * @param module_ : log module
    * @param level_  : log level to setup.
    * @return A reference to self.
    */
-  logger_t &set_log_level(log_module_t module_, log_level_t level_);
+    logger_t &set_log_level(log_module_t module_, log_level_t level_);
 
-  /** @brief Get log module level
+    /** @brief Get log module level
    * @param module_ : log module
    * @param level_  : log level to setup.
    * @return A reference to self.
    */
-  log_level_t get_log_level(log_module_t module_);
+    log_level_t get_log_level(log_module_t module_);
 
-  /** @brief O(1) log level check via flat array (no std::map lookup).
+    /** @brief O(1) log level check via flat array (no std::map lookup).
    * @param module_ : log module
    * @param level_  : log level to check against.
    * @return true if the module's configured level >= the requested level.
    */
-  inline bool is_level_enabled(log_module_t module_, log_level_t level_) const {
-    assert(static_cast<size_t>(module_) < num_modules);
-    return level_cache_[static_cast<size_t>(module_)] >= level_;
-  }
+    inline bool is_level_enabled(
+            log_module_t module_, log_level_t level_) const {
+        assert(static_cast<size_t>(module_) < num_modules);
+        return level_cache_[static_cast<size_t>(module_)] >= level_;
+    }
 
-  /** @brief Set log file
+    /** @brief Set log file
    * @param log_file_ : log file name.
    * @return A reference to self.
    */
-  logger_t &set_log_file(std::string log_file_);
+    logger_t &set_log_file(std::string log_file_);
 
-  /** @brief Get log file
+    /** @brief Get log file
    * @return log file name
    */
-  std::string get_log_file();
+    std::string get_log_file();
 
-  /** @brief Set logger configuration
+    /** @brief Set logger configuration
    *
    *  Sets logger configuration as received by config manager.
    * @param config_logger_ : config received by config manager.
    * @return A reference to self.
    */
-  logger_t &set_config(const config_logger_t &config_logger_);
+    logger_t &set_config(const config_logger_t &config_logger_);
 
-  /** @brief log a message
+    /** @brief log a message
    * @param log_module_ : log module the message should go
    * @param log_level_  : level of the message.
    * @param msg_args_   : variable message arguments forming message.
    */
-  template<typename MSG_T, typename... MSG_TS>
-  void log_msg(log_module_t log_module_, log_level_t log_level_,
-               MSG_T msg_arg0_, MSG_TS... msg_args_);
+    template <typename MSG_T, typename... MSG_TS>
+    void log_msg(log_module_t log_module_, log_level_t log_level_,
+            MSG_T msg_arg0_, MSG_TS... msg_args_);
 
- private:
-  /** @brief recursive function to log a message */
-  template<typename MSG_T, typename... MSG_TS>
-  void log_msg_r(log_module_t log_module_, log_level_t log_level_,
-                 std::string &message_, MSG_T msg_arg0_, MSG_TS... msg_args_);
+private:
+    /** @brief recursive function to log a message */
+    template <typename MSG_T, typename... MSG_TS>
+    void log_msg_r(log_module_t log_module_, log_level_t log_level_,
+            std::string &message_, MSG_T msg_arg0_, MSG_TS... msg_args_);
 
-  /** @brief recursive terminating function to log a message */
-  void log_msg_r(log_module_t log_module_, log_level_t log_level_,
-                 std::string &message_);
+    /** @brief recursive terminating function to log a message */
+    void log_msg_r(log_module_t log_module_, log_level_t log_level_,
+            std::string &message_);
 
- private:
-  std::string                   log_file;         /*!< Log file name */
-  std::ofstream                 log_ofstream;     /*!< Log file stream */
-  cn::steady_clock::time_point
-  log_start_time;   /*!< Logger creation time stamp */
-  bool
-  log_cout_flag;    /*!< Write to a log file or cout */
-  std::mutex                    log_mutex;        /*!< Mutex for thread safety */
+private:
+    std::string log_file; /*!< Log file name */
+    std::ofstream log_ofstream; /*!< Log file stream */
+    cn::steady_clock::time_point
+            log_start_time; /*!< Logger creation time stamp */
+    bool log_cout_flag; /*!< Write to a log file or cout */
+    std::mutex log_mutex; /*!< Mutex for thread safety */
 
-  static constexpr size_t num_modules
-    = static_cast<size_t>(log_module_t::log_module_count);
-  log_level_t level_cache_[num_modules] = {};     /*!< Flat array for O(1) log level lookups */
+    static constexpr size_t num_modules
+            = static_cast<size_t>(log_module_t::log_module_count);
+    log_level_t level_cache_[num_modules]
+            = {}; /*!< Flat array for O(1) log level lookups */
 };
 
-template<typename MSG_T, typename... MSG_TS>
+template <typename MSG_T, typename... MSG_TS>
 void logger_t::log_msg(log_module_t log_module_, log_level_t log_level_,
-                       MSG_T msg_arg0_, MSG_TS... msg_args_) {
+        MSG_T msg_arg0_, MSG_TS... msg_args_) {
 
-  if (is_level_enabled(log_module_, log_level_)) {
-    std::lock_guard<std::mutex> lk{log_mutex};
+    if (is_level_enabled(log_module_, log_level_)) {
+        std::lock_guard<std::mutex> lk {log_mutex};
 
+        std::stringstream stream;
+        stream << msg_arg0_;
+        std::string message = stream.str();
+
+        log_msg_r(log_module_, log_level_, message, msg_args_...);
+    }
+}
+
+template <typename MSG_T, typename... MSG_TS>
+void logger_t::log_msg_r(log_module_t log_module_, log_level_t log_level_,
+        std::string &message_, MSG_T msg_arg0_, MSG_TS... msg_args_) {
     std::stringstream stream;
     stream << msg_arg0_;
-    std::string message = stream.str();
+    message_ += stream.str();
 
-    log_msg_r(log_module_, log_level_, message, msg_args_...);
-  }
+    log_msg_r(log_module_, log_level_, message_, msg_args_...);
 }
 
-template<typename MSG_T, typename... MSG_TS>
-void logger_t::log_msg_r(log_module_t log_module_, log_level_t log_level_,
-                         std::string &message_, MSG_T msg_arg0_, MSG_TS... msg_args_) {
-  std::stringstream stream;
-  stream << msg_arg0_;
-  message_ += stream.str();
-
-  log_msg_r(log_module_, log_level_, message_, msg_args_...);
-}
-
-}//error_handling
-}//zendnnl
+} // namespace error_handling
+} // namespace zendnnl
 
 #endif

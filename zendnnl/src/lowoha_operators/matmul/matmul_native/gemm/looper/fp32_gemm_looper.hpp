@@ -17,9 +17,9 @@
 #ifndef MATMUL_NATIVE_LOOPER_FP32_GEMM_LOOPER_HPP
 #define MATMUL_NATIVE_LOOPER_FP32_GEMM_LOOPER_HPP
 
-#include "lowoha_operators/matmul/matmul_native/common/gemm_descriptor.hpp"
-#include "lowoha_operators/matmul/matmul_native/common/cost_model.hpp"
 #include "lowoha_operators/matmul/lowoha_common.hpp"
+#include "lowoha_operators/matmul/matmul_native/common/cost_model.hpp"
+#include "lowoha_operators/matmul/matmul_native/common/gemm_descriptor.hpp"
 
 namespace zendnnl {
 namespace lowoha {
@@ -27,12 +27,9 @@ namespace matmul {
 namespace native {
 
 /// FP32 GEMM entry point (restructured).
-void gemm_execute(
-    const GemmDescriptor &desc,
-    const UarchParams &uarch,
-    const void *src, const void *weight, void *dst,
-    const void *bias, matmul_params &params);
-
+void gemm_execute(const GemmDescriptor &desc, const UarchParams &uarch,
+        const void *src, const void *weight, void *dst, const void *bias,
+        matmul_params &params);
 
 } // namespace native
 } // namespace matmul

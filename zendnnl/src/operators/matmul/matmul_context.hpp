@@ -16,9 +16,9 @@
 #ifndef _MATMUL_CONTEXT_HPP_
 #define _MATMUL_CONTEXT_HPP_
 
-#include <vector>
 #include <memory>
 #include <optional>
+#include <vector>
 
 #include "common/zendnnl_global.hpp"
 #include "operators/common/operator_context.hpp"
@@ -40,63 +40,63 @@ using namespace zendnnl::memory;
  * @sa matmul_operator_t
  */
 class matmul_context_t final : public op_context_t<matmul_context_t> {
- public:
-  /** @brief parent type */
-  using parent_type = op_context_t<matmul_context_t>;
+public:
+    /** @brief parent type */
+    using parent_type = op_context_t<matmul_context_t>;
 
-  /** @brief constructor */
-  matmul_context_t();
+    /** @brief constructor */
+    matmul_context_t();
 
-  /** TODO: Add a interface to support different backends */
-  /** @brief get post op pointer */
+    /** TODO: Add a interface to support different backends */
+    /** @brief get post op pointer */
 #if ZENDNNL_DEPENDS_AOCLDLP
-  dlp_metadata_t *get_aocl_dlp_post_op_ptr_unsafe() const;
+    dlp_metadata_t *get_aocl_dlp_post_op_ptr_unsafe() const;
 
-  /** @brief get reordered weights pointer */
-  void *get_aocl_dlp_reordered_weights_ptr_unsafe() const;
+    /** @brief get reordered weights pointer */
+    void *get_aocl_dlp_reordered_weights_ptr_unsafe() const;
 #endif
 
-  /** @brief Set parameter alpha value.*/
-  matmul_context_t &set_alpha(float alpha_);
+    /** @brief Set parameter alpha value.*/
+    matmul_context_t &set_alpha(float alpha_);
 
-  /** @brief Get parameter alpha value.*/
-  float get_alpha() const;
+    /** @brief Get parameter alpha value.*/
+    float get_alpha() const;
 
-  /** @brief Set parameter beta value.*/
-  matmul_context_t &set_beta(float beta_);
+    /** @brief Set parameter beta value.*/
+    matmul_context_t &set_beta(float beta_);
 
-  /** @brief Get parameter beta value.*/
-  float get_beta() const;
+    /** @brief Get parameter beta value.*/
+    float get_beta() const;
 
-  /** @brief preprocess */
-  status_t preprocess() override;
+    /** @brief preprocess */
+    status_t preprocess() override;
 
-  /** @brief Generate object hash including matmul-specific parameters. */
-  std::size_t hash() override;
+    /** @brief Generate object hash including matmul-specific parameters. */
+    std::size_t hash() override;
 
- protected:
-  /** @brief validate parameters */
-  status_t validate() override;
+protected:
+    /** @brief validate parameters */
+    status_t validate() override;
 
-  /** @brief Returns matmul context information */
-  std::string context_info() override;
+    /** @brief Returns matmul context information */
+    std::string context_info() override;
 
 #if ZENDNNL_DEPENDS_AOCLDLP
-  std::shared_ptr<aocl_dlp_utils_t> aocl_dlp_utils_ptr; /**< aocl dlp utils */
+    std::shared_ptr<aocl_dlp_utils_t> aocl_dlp_utils_ptr; /**< aocl dlp utils */
 #endif
-  friend class matmul_operator_t;
-  friend class matmul_impl_t;
+    friend class matmul_operator_t;
+    friend class matmul_impl_t;
 
- private:
-  float _alpha; /**< alpha parameter */
-  float _beta;  /**< beta parameter */
+private:
+    float _alpha; /**< alpha parameter */
+    float _beta; /**< beta parameter */
 };
 
 } //namespace ops
 
 namespace interface {
 using matmul_context_t = zendnnl::ops::matmul_context_t;
-} //interface
+} // namespace interface
 
 } //namespace zendnnl
 #endif

@@ -1,5 +1,5 @@
 /********************************************************************************
-# * Copyright (c) 2023-2024 Advanced Micro Devices, Inc. All rights reserved.
+# * Copyright (c) 2023-2026 Advanced Micro Devices, Inc. All rights reserved.
 # *
 # * Licensed under the Apache License, Version 2.0 (the "License");
 # * you may not use this file except in compliance with the License.
@@ -20,19 +20,17 @@ namespace zendnnl {
 namespace ops {
 
 status_t sample_context_t::validate() {
-  if (parent_type::validate() != status_t::success)
-    return status_t::failure;
+    if (parent_type::validate() != status_t::success) return status_t::failure;
 
-  if (!get_param("sample_param"))
-    return status_t::failure;
+    if (!get_param("sample_param")) return status_t::failure;
 
-  return status_t::success;
+    return status_t::success;
 }
 
 std::string sample_context_t::context_info() {
-  std::stringstream ss;
-  ss << "Sample context create";
-  return ss.str();
+    std::stringstream ss;
+    ss << "Sample context create";
+    return ss.str();
 }
 
 } //namespace ops

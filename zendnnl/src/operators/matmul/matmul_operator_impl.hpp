@@ -17,9 +17,9 @@
 #define _MATMUL_OPERATOR_IMPL_HPP_
 
 #include "common/zendnnl_global.hpp"
-#include "operators/common/operator_impl.hpp"
 #include "matmul_config.hpp"
 #include "matmul_context.hpp"
+#include "operators/common/operator_impl.hpp"
 
 namespace zendnnl {
 namespace ops {
@@ -59,73 +59,73 @@ namespace ops {
  *
  */
 class matmul_impl_t final : public operator_impl_t<matmul_context_t> {
- public:
-  /** @brief Self type **/
-  using self_type = matmul_impl_t;
-  /** @brief Parent type **/
-  using parent_type = operator_impl_t<matmul_context_t>;
-  /** @brief context type **/
-  using context_type = parent_type::context_type;
-  /** @brief kernel type **/
-  using   kernel_type =  parent_type::kernel_type;
-  /** @brief Shared pointer to kernels */
-  using   kernel_sptr_type =  parent_type::kernel_sptr_type;
-  /** @brief A map type from strings to tensors */
-  using   tensor_map_type = parent_type::tensor_map_type;
-  /** @brief Kernel handle type */
-  using   create_kernel_handle_type  = parent_type::create_kernel_handle_type;
+public:
+    /** @brief Self type **/
+    using self_type = matmul_impl_t;
+    /** @brief Parent type **/
+    using parent_type = operator_impl_t<matmul_context_t>;
+    /** @brief context type **/
+    using context_type = parent_type::context_type;
+    /** @brief kernel type **/
+    using kernel_type = parent_type::kernel_type;
+    /** @brief Shared pointer to kernels */
+    using kernel_sptr_type = parent_type::kernel_sptr_type;
+    /** @brief A map type from strings to tensors */
+    using tensor_map_type = parent_type::tensor_map_type;
+    /** @brief Kernel handle type */
+    using create_kernel_handle_type = parent_type::create_kernel_handle_type;
 
- protected:
-  /** @brief Validate input/output
+protected:
+    /** @brief Validate input/output
    *
    * Validates if all mandatory inputs and outputs are given.
    * @return @c status_t::success if successful.
    */
-  status_t validate() override;
+    status_t validate() override;
 
-  /** @brief Validate forced kernel
+    /** @brief Validate forced kernel
    *
    * Validates if forced kernel is valid.
    * @return @c status_t::success if successful.
    */
-  status_t validate_forced_kernel() override;
+    status_t validate_forced_kernel() override;
 
-  /** @brief Select kernel based on input data type.
+    /** @brief Select kernel based on input data type.
    * @return @c status_t::success if successful.
    */
-  status_t kernel_factory() override;
+    status_t kernel_factory() override;
 
-  /** @brief Print operator create information
+    /** @brief Print operator create information
    * @return @c std::string
    */
-  std::string op_create_info() override;
+    std::string op_create_info() override;
 
-  /** @brief Print operator execute information
+    /** @brief Print operator execute information
    * @return @c std::string
    */
-  std::string op_execute_info() override;
+    std::string op_execute_info() override;
 
-  /** @brief Preprocess operator
+    /** @brief Preprocess operator
    * @return @c status_t::success if successful.
    */
-  status_t preprocess();
+    status_t preprocess();
 
-  /** @brief Update matmul kernel
+    /** @brief Update matmul kernel
    * @return @c status_t::success if successful.
    */
-  status_t update_matmul_kernel();
+    status_t update_matmul_kernel();
 
-  /** @brief Validate buffer post-op
+    /** @brief Validate buffer post-op
    * @return @c status_t::success if successful.
    */
-  status_t validate_buffer_post_op(std::vector<uint64_t> &output_size,
-                                   std::vector<post_op_t> &po,
-                                   std::map<std::string,tensor_t> &inputs);
- private:
-  bool is_bmm = false;
+    status_t validate_buffer_post_op(std::vector<uint64_t> &output_size,
+            std::vector<post_op_t> &po,
+            std::map<std::string, tensor_t> &inputs);
+
+private:
+    bool is_bmm = false;
 };
 
 } //namespace ops
 } //namespace zendnnl
 #endif
-

@@ -21,12 +21,8 @@ namespace zendnnl {
 namespace lowoha {
 namespace conv {
 
-status_t validate_conv_inputs(
-    const void *input,
-    const void *filter,
-    const void *output,
-    conv_params &params
-) {
+status_t validate_conv_inputs(const void *input, const void *filter,
+        const void *output, conv_params &params) {
     const conv_dims_t &dims = params.dims;
     // Check for null pointers
     if (!input || !filter || !output) {
@@ -35,14 +31,14 @@ status_t validate_conv_inputs(
     }
 
     // Validate dimensions are non-zero
-    if (dims.batch == 0 || dims.in_height == 0 ||
-        dims.in_width == 0 || dims.in_channels == 0) {
+    if (dims.batch == 0 || dims.in_height == 0 || dims.in_width == 0
+            || dims.in_channels == 0) {
         log_error("Conv validation failed: input dimensions contain zero");
         return status_t::failure;
     }
 
-    if (dims.filter_height == 0 || dims.filter_width == 0 ||
-        dims.out_channels == 0) {
+    if (dims.filter_height == 0 || dims.filter_width == 0
+            || dims.out_channels == 0) {
         log_error("Conv validation failed: filter dimensions contain zero");
         return status_t::failure;
     }
@@ -62,28 +58,31 @@ status_t validate_conv_inputs(
     // Validate output dimensions match expected values
     // Formula: output_size = floor((input_size + pad_before + pad_after - effective_filter_size) / stride) + 1
     // where effective_filter_size = dilation * (filter_size - 1) + 1
-    uint64_t effective_filter_height = params.dilation_h * (dims.filter_height - 1) + 1;
-    uint64_t effective_filter_width = params.dilation_w * (dims.filter_width - 1) + 1;
+    uint64_t effective_filter_height
+            = params.dilation_h * (dims.filter_height - 1) + 1;
+    uint64_t effective_filter_width
+            = params.dilation_w * (dims.filter_width - 1) + 1;
 
-    uint64_t expected_out_height = (dims.in_height + params.pad_top + params.pad_bottom -
-                                    effective_filter_height + params.stride_h) /
-                                   params.stride_h;
-    uint64_t expected_out_width = (dims.in_width + params.pad_left + params.pad_right -
-                                   effective_filter_width + params.stride_w) /
-                                  params.stride_w;
+    uint64_t expected_out_height
+            = (dims.in_height + params.pad_top + params.pad_bottom
+                      - effective_filter_height + params.stride_h)
+            / params.stride_h;
+    uint64_t expected_out_width
+            = (dims.in_width + params.pad_left + params.pad_right
+                      - effective_filter_width + params.stride_w)
+            / params.stride_w;
 
-    if (dims.out_height != expected_out_height ||
-        dims.out_width != expected_out_width) {
+    if (dims.out_height != expected_out_height
+            || dims.out_width != expected_out_width) {
         log_error("Conv validation failed: output dimensions mismatch. ",
-                  "Expected: [", expected_out_height, ", ",
-                  expected_out_width, "], Got: [", dims.out_height, ", ",
-                  dims.out_width, "]. ",
-                  "Input: [", dims.in_height, ", ", dims.in_width, "], ",
-                  "Filter: [", dims.filter_height, ", ", dims.filter_width, "], ",
-                  "Stride: [", params.stride_h, ", ", params.stride_w, "], ",
-                  "Padding: [", params.pad_top, ", ", params.pad_bottom, ", ",
-                  params.pad_left, ", ", params.pad_right, "], ",
-                  "Dilation: [", params.dilation_h, ", ", params.dilation_w, "]");
+                "Expected: [", expected_out_height, ", ", expected_out_width,
+                "], Got: [", dims.out_height, ", ", dims.out_width, "]. ",
+                "Input: [", dims.in_height, ", ", dims.in_width, "], ",
+                "Filter: [", dims.filter_height, ", ", dims.filter_width, "], ",
+                "Stride: [", params.stride_h, ", ", params.stride_w, "], ",
+                "Padding: [", params.pad_top, ", ", params.pad_bottom, ", ",
+                params.pad_left, ", ", params.pad_right, "], ", "Dilation: [",
+                params.dilation_h, ", ", params.dilation_w, "]");
         return status_t::failure;
     }
 
@@ -102,7 +101,9 @@ status_t validate_depthwise_params(conv_params &params) {
 
     // Validate depth_multiplier
     if (dw.depth_multiplier == 0) {
-        log_error("DepthwiseConv validation failed: depth_multiplier cannot be zero");
+        log_error(
+                "DepthwiseConv validation failed: depth_multiplier cannot be "
+                "zero");
         return status_t::failure;
     }
 
@@ -114,21 +115,27 @@ status_t validate_depthwise_params(conv_params &params) {
     uint64_t expected_out_channels = dims.in_channels * dw.depth_multiplier;
 
     if (dw.groups != expected_groups) {
-        log_error("DepthwiseConv validation failed: groups must equal in_channels. ",
-                  "Expected groups: ", expected_groups, ", Got: ", dw.groups);
+        log_error(
+                "DepthwiseConv validation failed: groups must equal "
+                "in_channels. ",
+                "Expected groups: ", expected_groups, ", Got: ", dw.groups);
         return status_t::failure;
     }
 
     if (dims.out_channels != expected_out_channels) {
-        log_error("DepthwiseConv validation failed: out_channels must equal in_channels * depth_multiplier. ",
-                  "Expected out_channels: ", expected_out_channels, ", Got: ", dims.out_channels,
-                  " (in_channels=", dims.in_channels, ", depth_multiplier=", dw.depth_multiplier, ")");
+        log_error(
+                "DepthwiseConv validation failed: out_channels must equal "
+                "in_channels * depth_multiplier. ",
+                "Expected out_channels: ", expected_out_channels,
+                ", Got: ", dims.out_channels,
+                " (in_channels=", dims.in_channels,
+                ", depth_multiplier=", dw.depth_multiplier, ")");
         return status_t::failure;
     }
 
-    log_info("DepthwiseConv validation successful: in_channels=", dims.in_channels,
-             ", depth_multiplier=", dw.depth_multiplier, ", out_channels=", dims.out_channels,
-             ", groups=", dw.groups);
+    log_info("DepthwiseConv validation successful: in_channels=",
+            dims.in_channels, ", depth_multiplier=", dw.depth_multiplier,
+            ", out_channels=", dims.out_channels, ", groups=", dw.groups);
     return status_t::success;
 }
 

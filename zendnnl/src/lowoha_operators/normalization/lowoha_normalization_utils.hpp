@@ -19,8 +19,8 @@
 
 #include <cstdint>
 #include <string>
-#include "common/zendnnl_global.hpp"
 #include "common/logging.hpp"
+#include "common/zendnnl_global.hpp"
 #include "lowoha_operators/normalization/lowoha_normalization_common.hpp"
 
 namespace zendnnl {
@@ -53,16 +53,10 @@ using namespace zendnnl::common;
  * @param params        Normalization parameters
  * @return status_t::success if valid, status_t::failure otherwise
  */
-status_t validate_normalization_inputs(
-  const void *input,
-  const void *output,
-  const void *gamma,
-  const void *beta,
-  const void *running_mean,
-  const void *running_var,
-  const void *residual,
-  const norm_params &params
-);
+status_t validate_normalization_inputs(const void *input, const void *output,
+        const void *gamma, const void *beta, const void *running_mean,
+        const void *running_var, const void *residual,
+        const norm_params &params);
 
 /**
  * @brief Convert norm_type_t to a string
@@ -77,4 +71,3 @@ std::string norm_type_to_str(norm_type_t type);
 } // namespace zendnnl
 
 #endif // _LOWOHA_NORMALIZATION_UTILS_HPP
-

@@ -17,13 +17,13 @@
 #ifndef _LOWOHA_COMMON_HPP
 #define _LOWOHA_COMMON_HPP
 
+#include <algorithm>
+#include <cstdint>
+#include "lowoha_operators/matmul/lru_cache/lru_cache.hpp"
+#include "lowoha_operators/matmul/lru_cache/zendnnl_key.hpp"
 #include "memory/memory_utils.hpp"
 #include "operators/common/post_op.hpp"
 #include "operators/matmul/matmul_config.hpp"
-#include "lowoha_operators/matmul/lru_cache/zendnnl_key.hpp"
-#include "lowoha_operators/matmul/lru_cache/lru_cache.hpp"
-#include <algorithm>
-#include <cstdint>
 
 namespace zendnnl {
 namespace lowoha {
@@ -36,37 +36,43 @@ using namespace zendnnl::ops;
  * @brief Structure to hold data types for matrix multiplication operands
  */
 struct matmul_data_types {
-  data_type_t src = data_type_t::none;     ///< Source matrix data type
-  data_type_t wei = data_type_t::none;     ///< Weight matrix data type
-  data_type_t dst = data_type_t::none;     ///< Destination matrix data type
-  data_type_t bias = data_type_t::none;    ///< Bias vector data type
-  data_type_t compute = data_type_t::none; ///< Computation data type
+    data_type_t src = data_type_t::none; ///< Source matrix data type
+    data_type_t wei = data_type_t::none; ///< Weight matrix data type
+    data_type_t dst = data_type_t::none; ///< Destination matrix data type
+    data_type_t bias = data_type_t::none; ///< Bias vector data type
+    data_type_t compute = data_type_t::none; ///< Computation data type
 };
 
 /**
  * @brief Structure for post-operation parameters
  */
 struct matmul_post_op {
-  zendnnl::ops::post_op_type_t po_type;    ///< Type of post-operation
-  void *buff;                              ///< Buffer for binary operations
-  data_type_t dtype;                       ///< Data type of the buffer
-  std::vector<int64_t> dims;               ///< Dimensions of the buffer
-  float alpha;                             ///< Alpha parameter for operations
-  float beta;                              ///< Beta parameter for operations
-  int leading_dim;                         ///< Leading dimension for the buffer
+    zendnnl::ops::post_op_type_t po_type; ///< Type of post-operation
+    void *buff; ///< Buffer for binary operations
+    data_type_t dtype; ///< Data type of the buffer
+    std::vector<int64_t> dims; ///< Dimensions of the buffer
+    float alpha; ///< Alpha parameter for operations
+    float beta; ///< Beta parameter for operations
+    int leading_dim; ///< Leading dimension for the buffer
 
-  /**
+    /**
    * @brief Default constructor for matmul_post_op
    */
-  matmul_post_op() : po_type(zendnnl::ops::post_op_type_t::none), buff(nullptr),
-    dtype(data_type_t::none), dims(), alpha(0.0f), beta(0.0f), leading_dim(-1) {}
+    matmul_post_op()
+        : po_type(zendnnl::ops::post_op_type_t::none)
+        , buff(nullptr)
+        , dtype(data_type_t::none)
+        , dims()
+        , alpha(0.0f)
+        , beta(0.0f)
+        , leading_dim(-1) {}
 };
 
 /**
  * @brief Structure for quantization parameters (scales and zero-points)
  */
 struct matmul_quantization_params_t {
-  /**
+    /**
    * @brief Individual quantization parameter (scale or zero-point)
    *
    * Dimensions determine quantization granularity for weight matrix [K, N]:
@@ -74,29 +80,29 @@ struct matmul_quantization_params_t {
    *   - Per-channel: dims = {1, N}        → one scale per output channel
    *   - Per-group:   dims = {G, N}        → G groups along K, where G = K/group_size
    */
-  struct matmul_quant_t {
-    const void *buff;              ///< Pointer to quantization data buffer
-    data_type_t dt;                ///< Data type of the buffer
-    std::vector<int64_t> dims;     ///< Dimensions of the quantization tensor
+    struct matmul_quant_t {
+        const void *buff; ///< Pointer to quantization data buffer
+        data_type_t dt; ///< Data type of the buffer
+        std::vector<int64_t> dims; ///< Dimensions of the quantization tensor
 
-    /**
+        /**
      * @brief Default constructor for matmul_quant_t
      */
-    matmul_quant_t() : buff(nullptr), dt(data_type_t::none), dims() {}
-  };
+        matmul_quant_t() : buff(nullptr), dt(data_type_t::none), dims() {}
+    };
 
-  matmul_quant_t src_scale;  ///< Source tensor scale
-  matmul_quant_t wei_scale;  ///< Weight tensor scale
-  matmul_quant_t dst_scale;  ///< Destination tensor scale
-  matmul_quant_t src_zp;     ///< Source tensor zero-point
-  matmul_quant_t wei_zp;     ///< Weight tensor zero-point
-  matmul_quant_t dst_zp;     ///< Destination tensor zero-point
+    matmul_quant_t src_scale; ///< Source tensor scale
+    matmul_quant_t wei_scale; ///< Weight tensor scale
+    matmul_quant_t dst_scale; ///< Destination tensor scale
+    matmul_quant_t src_zp; ///< Source tensor zero-point
+    matmul_quant_t wei_zp; ///< Weight tensor zero-point
+    matmul_quant_t dst_zp; ///< Destination tensor zero-point
 
-  /**
+    /**
    * @brief Default constructor for quantization parameters
    */
-  matmul_quantization_params_t() : src_scale(), wei_scale(), dst_scale(),
-    src_zp(), wei_zp(), dst_zp() {}
+    matmul_quantization_params_t()
+        : src_scale(), wei_scale(), dst_scale(), src_zp(), wei_zp(), dst_zp() {}
 };
 
 /**
@@ -108,22 +114,26 @@ struct matmul_quantization_params_t {
  * byte offset between consecutive batches in memory.
  */
 struct matmul_batch_params_t {
-  int Batch_A = 1;              /**< Batch size for source tensor. */
-  int Batch_B = 1;              /**< Batch size for weight tensor. */
-  size_t batch_stride_src =
-    -1;  /**< Byte stride between batches for source tensor (-1 means calculate from dimensions). */
-  size_t batch_stride_wei =
-    -1;  /**< Byte stride between batches for weight tensor (-1 means calculate from dimensions). */
-  size_t batch_stride_dst =
-    -1;  /**< Byte stride between batches for destination tensor (-1 means calculate from dimensions). */
+    int Batch_A = 1; /**< Batch size for source tensor. */
+    int Batch_B = 1; /**< Batch size for weight tensor. */
+    size_t batch_stride_src
+            = -1; /**< Byte stride between batches for source tensor (-1 means calculate from dimensions). */
+    size_t batch_stride_wei
+            = -1; /**< Byte stride between batches for weight tensor (-1 means calculate from dimensions). */
+    size_t batch_stride_dst
+            = -1; /**< Byte stride between batches for destination tensor (-1 means calculate from dimensions). */
 
-  /**
+    /**
    * @brief Default constructor for `matmul_batch_params_t`.
    *
    * Initializes Batch_A and Batch_B to 1, and all strides to -1.
    */
-  matmul_batch_params_t() : Batch_A(1), Batch_B(1), batch_stride_src(-1),
-    batch_stride_wei(-1), batch_stride_dst(-1) {}
+    matmul_batch_params_t()
+        : Batch_A(1)
+        , Batch_B(1)
+        , batch_stride_src(-1)
+        , batch_stride_wei(-1)
+        , batch_stride_dst(-1) {}
 };
 
 /**
@@ -140,106 +150,118 @@ struct matmul_batch_params_t {
  * (block_q4_0x8) repack is not supported.
  */
 struct pack_format {
-  int pack_format_b;  ///< 0 = unpacked (default), 1 = GGML packed weights
+    int pack_format_b; ///< 0 = unpacked (default), 1 = GGML packed weights
 
-  pack_format() : pack_format_b(0) {}
+    pack_format() : pack_format_b(0) {}
 };
 
 /**
  * @brief Main parameter structure for LOWOHA matrix multiplication
  */
 struct matmul_params {
-  matmul_data_types dtypes;                    ///< Data types for operands
-  std::vector<matmul_post_op> postop_;         ///< Post-operation chain
-  matmul_quantization_params_t quant_params;   ///< Quantization parameters
-  char mem_format_a;                           ///< Memory format for matrix A
-  ///< Memory format for matrix B.
-  ///< - 'n' (default): standard row-major weights; matmul backend
-  ///<                   runs its own reorder/blocking step.
-  ///< - 'r' : weights are already reordered by a prior
-  ///<         @c reorder_direct() prepack call; the matmul backend skips
-  ///<         its internal weight-reorder / cache-blocking step and uses
-  ///<         the buffer as-is.  The PHYSICAL layout of an 'r' buffer is
-  ///<         NOT implied by 'r' alone — it is selected by @c lowoha_algo,
-  ///<         which MUST match the algo the prepack targeted:
-  ///<           * @c lowoha_algo == matmul_algo_t::aocl_dlp_blocked
-  ///<               AOCL DLP blocked layout (single-op / group ALGO 1
-  ///<               AOCL DLP path).
-  ///<           * @c lowoha_algo == matmul_algo_t::moe_custom_kernel
-  ///<               group_matmul custom-kernel VNNI layout, consumed
-  ///<               directly by the ALGO 3 (N-tile) custom kernel.  This
-  ///<               weight is CK-only: a call that cannot route to the
-  ///<               custom kernel fails rather than mis-reading it.
-  ///<         The prepack must also have used matching
-  ///<         K / N / ldb / dtypes / transposed / sym_group_size --
-  ///<         a mismatch (including a wrong @c lowoha_algo) produces
-  ///<         silently wrong results.
-  char mem_format_b;
-  matmul_algo_t lowoha_algo;                   ///< Selected algorithm
-  //num_threads is int32_t to match the type used by OpenMP APIs
-  int32_t num_threads;                        ///< Number of threads
-  std::string plugin_op;                       ///< Plugin op name
-  bool dynamic_quant;                          ///< Enable dynamic quantization of source
-  pack_format packing;                         ///< Weight packing format for matrix B
+    matmul_data_types dtypes; ///< Data types for operands
+    std::vector<matmul_post_op> postop_; ///< Post-operation chain
+    matmul_quantization_params_t quant_params; ///< Quantization parameters
+    char mem_format_a; ///< Memory format for matrix A
+    ///< Memory format for matrix B.
+    ///< - 'n' (default): standard row-major weights; matmul backend
+    ///<                   runs its own reorder/blocking step.
+    ///< - 'r' : weights are already reordered by a prior
+    ///<         @c reorder_direct() prepack call; the matmul backend skips
+    ///<         its internal weight-reorder / cache-blocking step and uses
+    ///<         the buffer as-is.  The PHYSICAL layout of an 'r' buffer is
+    ///<         NOT implied by 'r' alone — it is selected by @c lowoha_algo,
+    ///<         which MUST match the algo the prepack targeted:
+    ///<           * @c lowoha_algo == matmul_algo_t::aocl_dlp_blocked
+    ///<               AOCL DLP blocked layout (single-op / group ALGO 1
+    ///<               AOCL DLP path).
+    ///<           * @c lowoha_algo == matmul_algo_t::moe_custom_kernel
+    ///<               group_matmul custom-kernel VNNI layout, consumed
+    ///<               directly by the ALGO 3 (N-tile) custom kernel.  This
+    ///<               weight is CK-only: a call that cannot route to the
+    ///<               custom kernel fails rather than mis-reading it.
+    ///<         The prepack must also have used matching
+    ///<         K / N / ldb / dtypes / transposed / sym_group_size --
+    ///<         a mismatch (including a wrong @c lowoha_algo) produces
+    ///<         silently wrong results.
+    char mem_format_b;
+    matmul_algo_t lowoha_algo; ///< Selected algorithm
+    //num_threads is int32_t to match the type used by OpenMP APIs
+    int32_t num_threads; ///< Number of threads
+    std::string plugin_op; ///< Plugin op name
+    bool dynamic_quant; ///< Enable dynamic quantization of source
+    pack_format packing; ///< Weight packing format for matrix B
 
-  // ── group_matmul prepack-extras contract (read from params[0] only) ──
-  //
-  // Optional hint used by `group_matmul_direct` to enable ahead-of-time
-  // weight prepack for an MoE-style "all-weights, some-firing" call.
-  // When non-zero, the caller passes weight buffers for `total_matmul`
-  // experts but only the first `active_matmul` are computed in this
-  // call.  The library:
-  //
-  //   1. Validates the contract.  Three rules apply in opt-in mode
-  //      (`active_matmul > 0`):
-  //        a) `active_matmul <= total_matmul` (when `total_matmul > 0`).
-  //        b) Every per-expert vector accepted by the dispatcher
-  //           (`weight`, `K`, `N`, `ldb`, `transB`, `is_weights_const`,
-  //           plus the input-side `alpha`, `bias`, `beta`, `ldc`,
-  //           `params`, etc.) must be `>= active_matmul`.
-  //        c) When `total_matmul > active_matmul` (prepack-extras
-  //           tail present), the SIX weight-side metadata vectors
-  //           that the prepack module iterates over
-  //           (`weight`, `K`, `N`, `ldb`, `transB`,
-  //           `is_weights_const`) must additionally be
-  //           `>= total_matmul`.  This tighter requirement prevents
-  //           silent prepack truncation — without it, an undersized
-  //           `weight.size()` (etc.) would let the warmer's
-  //           `bound = std::min({total_matmul, weight.size(),
-  //           K.size(), ...})` clamp the warm to a shorter length,
-  //           leaving tail experts un-warmed.  All other vectors
-  //           still need only `>= active_matmul` (compact or padded
-  //           — both are legitimate).
-  //   2. Computes only the first `active_matmul` GEMMs.
-  //   3. Pre-warms the inner-kernel weight cache for ALL `total_matmul`
-  //      experts ahead of time, so any expert firing on a future call
-  //      hits a warm cache and avoids the on-the-fly reorder spike.
-  //
-  // The caller fills `params[0].active_matmul` and `params[0].total_matmul`
-  // exactly — the dispatcher reads them from the first entry only and
-  // ignores the same fields on `params[1..N]`.  Leave both at the
-  // default `0` for the legacy "every supplied weight fires" contract:
-  // the library then derives `num_ops = M.size()` and requires every
-  // weight-side vector to be exactly `num_ops` long.
-  //
-  // The eager prepack is gated by the `ZENDNNL_GRP_MATMUL_PREPACK`
-  // environment variable (default ON).  See
-  // `docs/operator/low_overhead_operator/lowoha_group_matmul_operator.md` for the full
-  // contract and worked example.
-  uint32_t total_matmul;                       ///< Total expert weight slots present in the call (>= active_matmul).
-  uint32_t active_matmul;                      ///< Count of firing experts (the leading prefix of all weight-side vectors).
+    // ── group_matmul prepack-extras contract (read from params[0] only) ──
+    //
+    // Optional hint used by `group_matmul_direct` to enable ahead-of-time
+    // weight prepack for an MoE-style "all-weights, some-firing" call.
+    // When non-zero, the caller passes weight buffers for `total_matmul`
+    // experts but only the first `active_matmul` are computed in this
+    // call.  The library:
+    //
+    //   1. Validates the contract.  Three rules apply in opt-in mode
+    //      (`active_matmul > 0`):
+    //        a) `active_matmul <= total_matmul` (when `total_matmul > 0`).
+    //        b) Every per-expert vector accepted by the dispatcher
+    //           (`weight`, `K`, `N`, `ldb`, `transB`, `is_weights_const`,
+    //           plus the input-side `alpha`, `bias`, `beta`, `ldc`,
+    //           `params`, etc.) must be `>= active_matmul`.
+    //        c) When `total_matmul > active_matmul` (prepack-extras
+    //           tail present), the SIX weight-side metadata vectors
+    //           that the prepack module iterates over
+    //           (`weight`, `K`, `N`, `ldb`, `transB`,
+    //           `is_weights_const`) must additionally be
+    //           `>= total_matmul`.  This tighter requirement prevents
+    //           silent prepack truncation — without it, an undersized
+    //           `weight.size()` (etc.) would let the warmer's
+    //           `bound = std::min({total_matmul, weight.size(),
+    //           K.size(), ...})` clamp the warm to a shorter length,
+    //           leaving tail experts un-warmed.  All other vectors
+    //           still need only `>= active_matmul` (compact or padded
+    //           — both are legitimate).
+    //   2. Computes only the first `active_matmul` GEMMs.
+    //   3. Pre-warms the inner-kernel weight cache for ALL `total_matmul`
+    //      experts ahead of time, so any expert firing on a future call
+    //      hits a warm cache and avoids the on-the-fly reorder spike.
+    //
+    // The caller fills `params[0].active_matmul` and `params[0].total_matmul`
+    // exactly — the dispatcher reads them from the first entry only and
+    // ignores the same fields on `params[1..N]`.  Leave both at the
+    // default `0` for the legacy "every supplied weight fires" contract:
+    // the library then derives `num_ops = M.size()` and requires every
+    // weight-side vector to be exactly `num_ops` long.
+    //
+    // The eager prepack is gated by the `ZENDNNL_GRP_MATMUL_PREPACK`
+    // environment variable (default ON).  See
+    // `docs/operator/low_overhead_operator/lowoha_group_matmul_operator.md` for the full
+    // contract and worked example.
+    uint32_t
+            total_matmul; ///< Total expert weight slots present in the call (>= active_matmul).
+    uint32_t
+            active_matmul; ///< Count of firing experts (the leading prefix of all weight-side vectors).
 
-  // Per-call cap on weight-cache mode: 0 = disabled, 1 = out-of-place,
-  // 2 = allow in-place when the process-wide setting also permits it.
-  int32_t weight_cache_type;
+    // Per-call cap on weight-cache mode: 0 = disabled, 1 = out-of-place,
+    // 2 = allow in-place when the process-wide setting also permits it.
+    int32_t weight_cache_type;
 
-  /**
+    /**
    * @brief Default constructor for matmul_params
    */
-  matmul_params() : dtypes(), postop_(), quant_params(), mem_format_a('n'),
-    mem_format_b('n'), lowoha_algo(matmul_algo_t::none), num_threads(0),
-    plugin_op(""), dynamic_quant(false), packing(), total_matmul(0), active_matmul(0),
-    weight_cache_type(2) {}
+    matmul_params()
+        : dtypes()
+        , postop_()
+        , quant_params()
+        , mem_format_a('n')
+        , mem_format_b('n')
+        , lowoha_algo(matmul_algo_t::none)
+        , num_threads(0)
+        , plugin_op("")
+        , dynamic_quant(false)
+        , packing()
+        , total_matmul(0)
+        , active_matmul(0)
+        , weight_cache_type(2) {}
 };
 
 /**
@@ -253,9 +275,9 @@ struct matmul_params {
  * atomic load, negligible against the reorder/GEMM work that follows.
  */
 static inline int32_t effective_weight_cache_type(int32_t weight_cache_type) {
-  const int32_t env_cache_type =
-    zendnnl::ops::matmul_config_t::instance().get_weight_cache();
-  return std::min(env_cache_type, weight_cache_type);
+    const int32_t env_cache_type
+            = zendnnl::ops::matmul_config_t::instance().get_weight_cache();
+    return std::min(env_cache_type, weight_cache_type);
 }
 
 // ── Grouped-matmul weight-cache policy helpers ──────────────────────
@@ -274,8 +296,8 @@ static inline int32_t effective_weight_cache_type(int32_t weight_cache_type) {
  * PREPACK + CROSS_WARM + unlimited LRU capacity all hold.
  */
 static inline bool is_grp_auto_mixed_inplace_active() {
-  auto &cfg = zendnnl::ops::matmul_config_t::instance();
-  return cfg.get_weight_cache() == 2 && cfg.get_grp_auto_mixed_inplace();
+    auto &cfg = zendnnl::ops::matmul_config_t::instance();
+    return cfg.get_weight_cache() == 2 && cfg.get_grp_auto_mixed_inplace();
 }
 
 /**
@@ -289,10 +311,10 @@ static inline bool is_grp_auto_mixed_inplace_active() {
  * or does a lazy first-call in-place pack.
  */
 static inline bool should_warm_weight_cache(int32_t weight_cache_type) {
-  return weight_cache_type == 1 ||
-         (weight_cache_type == 2 &&
-          zendnnl::ops::matmul_config_t::instance()
-              .get_grp_auto_mixed_inplace());
+    return weight_cache_type == 1
+            || (weight_cache_type == 2
+                    && zendnnl::ops::matmul_config_t::instance()
+                               .get_grp_auto_mixed_inplace());
 }
 
 /**
@@ -302,10 +324,11 @@ static inline bool should_warm_weight_cache(int32_t weight_cache_type) {
  *        Callers must have already checked `should_warm_weight_cache()`.
  */
 static inline int32_t warm_wct_for_full_weight_bf16(int32_t weight_cache_type) {
-  return (weight_cache_type == 2 &&
-          zendnnl::ops::matmul_config_t::instance()
-              .get_grp_auto_mixed_inplace())
-             ? 2 : 1;
+    return (weight_cache_type == 2
+                   && zendnnl::ops::matmul_config_t::instance()
+                              .get_grp_auto_mixed_inplace())
+            ? 2
+            : 1;
 }
 
 } // namespace matmul

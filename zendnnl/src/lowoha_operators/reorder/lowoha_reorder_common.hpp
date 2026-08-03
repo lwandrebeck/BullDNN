@@ -19,12 +19,12 @@
 
 #define LOWOHA_REORDER_GRAIN_SIZE 1024
 
-#include "memory/memory_utils.hpp"
-#include "common/zendnnl_global.hpp"
-#include "lowoha_operators/reorder/prepack/lowoha_prepack.hpp"
-#include <vector>
 #include <cstdint>
 #include <cstdlib>
+#include <vector>
+#include "common/zendnnl_global.hpp"
+#include "lowoha_operators/reorder/prepack/lowoha_prepack.hpp"
+#include "memory/memory_utils.hpp"
 
 namespace zendnnl {
 namespace lowoha {
@@ -36,11 +36,11 @@ using namespace zendnnl::memory;
  * @brief Supported reorder algorithms
  */
 enum class reorder_algo_t : int {
-  none = -1,          ///< No specific algorithm
-  DT = 0,             ///< Decision tree based algorithm selection
-  native = 1,         ///< Native vectorized implementation (AVX512)
-  reference = 2,      ///< Reference scalar implementation
-  algo_count          ///< Number of algorithms (must be last)
+    none = -1, ///< No specific algorithm
+    DT = 0, ///< Decision tree based algorithm selection
+    native = 1, ///< Native vectorized implementation (AVX512)
+    reference = 2, ///< Reference scalar implementation
+    algo_count ///< Number of algorithms (must be last)
 };
 
 /**
@@ -89,32 +89,33 @@ enum class reorder_algo_t : int {
  *   - If dst is nullptr, only computes scale/zp without performing quantization
  */
 struct reorder_quant_params_t {
-  /**
+    /**
    * @brief Individual quantization parameter (scale or zero-point)
    *
    * Supports different data types and quantization granularities.
    * For static quantization: user provides pre-computed values (read).
    * For dynamic quantization: user provides buffer to be filled (write).
    */
-  struct quant_t {
-    void *buff;                    ///< Pointer to quantization data buffer (read for static, write for dynamic)
-    data_type_t
-    dt;                ///< Data type of the buffer (f32, bf16, or f16 for scale; s32 for zp)
-    std::vector<int64_t> dims;     ///< Dimensions matching tensor dimensionality
+    struct quant_t {
+        void *buff; ///< Pointer to quantization data buffer (read for static, write for dynamic)
+        data_type_t
+                dt; ///< Data type of the buffer (f32, bf16, or f16 for scale; s32 for zp)
+        std::vector<int64_t>
+                dims; ///< Dimensions matching tensor dimensionality
 
-    /**
+        /**
      * @brief Default constructor
      */
-    quant_t() : buff(nullptr), dt(data_type_t::none), dims() {}
-  };
+        quant_t() : buff(nullptr), dt(data_type_t::none), dims() {}
+    };
 
-  quant_t scale;                              ///< Scale factor (f32, bf16, or f16; bf16/f16 converted to f32 on read)
-  quant_t zero_point;                         ///< Zero point offset (currently s32 only)
+    quant_t scale; ///< Scale factor (f32, bf16, or f16; bf16/f16 converted to f32 on read)
+    quant_t zero_point; ///< Zero point offset (currently s32 only)
 
-  /**
+    /**
    * @brief Default constructor
    */
-  reorder_quant_params_t() : scale(), zero_point() {}
+    reorder_quant_params_t() : scale(), zero_point() {}
 };
 
 /**
@@ -144,24 +145,23 @@ struct reorder_quant_params_t {
  *       The destination is always written in contiguous format.
  */
 struct reorder_params_t {
-  data_type_t src_dtype;                  ///< Source data type
-  data_type_t dst_dtype;                  ///< Destination data type
-  reorder_quant_params_t quant_params;    ///< Quantization parameters
-  reorder_algo_t algo;                    ///< Selected algorithm
-  //num_threads is int32_t to match the type used by OpenMP APIs
-  int32_t num_threads;                    ///< Number of threads (0 = auto)
-  std::vector<int64_t>
-  src_shape;         ///< Source shape: [nelems] or [M, N] or [batch, M, N]
-  std::vector<int64_t>
-  dst_shape;         ///< Destination shape: must match src_shape
-  std::vector<int64_t>
-  src_strides;       ///< Source strides for non-contiguous memory access
-  std::vector<int64_t>
-  dst_strides;       ///< Destination strides (reserved for future, not currently supported)
-  bool dynamic_quant;                     ///< Enable dynamic quantization (compute scale/zp from source data)
-  bool is_prepack;                        ///< True when this call is a weight-prepack request.
+    data_type_t src_dtype; ///< Source data type
+    data_type_t dst_dtype; ///< Destination data type
+    reorder_quant_params_t quant_params; ///< Quantization parameters
+    reorder_algo_t algo; ///< Selected algorithm
+    //num_threads is int32_t to match the type used by OpenMP APIs
+    int32_t num_threads; ///< Number of threads (0 = auto)
+    std::vector<int64_t>
+            src_shape; ///< Source shape: [nelems] or [M, N] or [batch, M, N]
+    std::vector<int64_t> dst_shape; ///< Destination shape: must match src_shape
+    std::vector<int64_t>
+            src_strides; ///< Source strides for non-contiguous memory access
+    std::vector<int64_t>
+            dst_strides; ///< Destination strides (reserved for future, not currently supported)
+    bool dynamic_quant; ///< Enable dynamic quantization (compute scale/zp from source data)
+    bool is_prepack; ///< True when this call is a weight-prepack request.
 
-  /**
+    /**
    * @brief Weight-prepack request piggy-backed on reorder_direct.
    *
    * When @c is_prepack is true, @ref reorder_direct dispatches to the
@@ -181,150 +181,123 @@ struct reorder_params_t {
    * Note: the same @c rp is reused for both calls — there is no need
    * to keep a separate prepack_params_t variable around.
    */
-  prepack_params_t prepack;
+    prepack_params_t prepack;
 
-  /**
+    /**
    * @brief Default constructor
    */
-  reorder_params_t()
-    : src_dtype(data_type_t::none), dst_dtype(data_type_t::none),
-      quant_params(), algo(reorder_algo_t::DT), num_threads(0),
-      src_shape(), dst_shape(), src_strides(), dst_strides(),
-      dynamic_quant(false), is_prepack(false), prepack() {}
+    reorder_params_t()
+        : src_dtype(data_type_t::none)
+        , dst_dtype(data_type_t::none)
+        , quant_params()
+        , algo(reorder_algo_t::DT)
+        , num_threads(0)
+        , src_shape()
+        , dst_shape()
+        , src_strides()
+        , dst_strides()
+        , dynamic_quant(false)
+        , is_prepack(false)
+        , prepack() {}
 
-  /**
+    /**
    * @brief Check if this is a 1D shape
    */
-  bool is_1d() const {
-    return src_shape.size() == 1;
-  }
+    bool is_1d() const { return src_shape.size() == 1; }
 
-  /**
+    /**
    * @brief Check if this is a 2D shape
    */
-  bool is_2d() const {
-    return src_shape.size() == 2;
-  }
+    bool is_2d() const { return src_shape.size() == 2; }
 
-  /**
+    /**
    * @brief Check if this is a 3D shape (batched)
    */
-  bool is_3d() const {
-    return src_shape.size() == 3;
-  }
+    bool is_3d() const { return src_shape.size() == 3; }
 
-  /**
+    /**
    * @brief Check if shape is provided and valid
    */
-  bool is_shaped() const {
-    if (src_shape.empty()) {
-      return false;
+    bool is_shaped() const {
+        if (src_shape.empty()) { return false; }
+        for (auto dim : src_shape) {
+            if (dim <= 0) { return false; }
+        }
+        return true;
     }
-    for (auto dim : src_shape) {
-      if (dim <= 0) {
-        return false;
-      }
-    }
-    return true;
-  }
 
-  /**
+    /**
    * @brief Check if src_shape and dst_shape match
    * @return true if shapes are identical, false otherwise
    */
-  bool shapes_match() const {
-    return src_shape == dst_shape;
-  }
+    bool shapes_match() const { return src_shape == dst_shape; }
 
-  /**
+    /**
    * @brief Get total number of elements
    */
-  int64_t nelems() const {
-    if (src_shape.empty()) {
-      return 0;
+    int64_t nelems() const {
+        if (src_shape.empty()) { return 0; }
+        int64_t n = 1;
+        for (auto dim : src_shape) {
+            n *= dim;
+        }
+        return n;
     }
-    int64_t n = 1;
-    for (auto dim : src_shape) {
-      n *= dim;
-    }
-    return n;
-  }
 
-  /**
+    /**
    * @brief Get batch dimension (1 for 1D/2D)
    */
-  int64_t batch() const {
-    return is_3d() ? src_shape[0] : 1;
-  }
+    int64_t batch() const { return is_3d() ? src_shape[0] : 1; }
 
-  /**
+    /**
    * @brief Get M dimension (rows)
    */
-  int64_t M() const {
-    if (is_1d()) {
-      return src_shape[0];
+    int64_t M() const {
+        if (is_1d()) { return src_shape[0]; }
+        if (is_2d()) { return src_shape[0]; }
+        if (is_3d()) { return src_shape[1]; }
+        return 0;
     }
-    if (is_2d()) {
-      return src_shape[0];
-    }
-    if (is_3d()) {
-      return src_shape[1];
-    }
-    return 0;
-  }
 
-  /**
+    /**
    * @brief Get N dimension (columns)
    */
-  int64_t N() const {
-    if (is_1d()) {
-      return 1;
+    int64_t N() const {
+        if (is_1d()) { return 1; }
+        if (is_2d()) { return src_shape[1]; }
+        if (is_3d()) { return src_shape[2]; }
+        return 0;
     }
-    if (is_2d()) {
-      return src_shape[1];
-    }
-    if (is_3d()) {
-      return src_shape[2];
-    }
-    return 0;
-  }
 
-  /**
+    /**
    * @brief Check if source strides are specified
    */
-  bool has_src_strides() const {
-    return !src_strides.empty();
-  }
+    bool has_src_strides() const { return !src_strides.empty(); }
 
-  /**
+    /**
    * @brief Check if destination strides are specified (reserved for future)
    */
-  bool has_dst_strides() const {
-    return !dst_strides.empty();
-  }
+    bool has_dst_strides() const { return !dst_strides.empty(); }
 
-  /**
+    /**
    * @brief Check if source memory layout is contiguous
    */
-  bool is_src_contiguous() const {
-    if (!has_src_strides() || !is_shaped()) {
-      return true;  // No strides or no shape means contiguous
-    }
+    bool is_src_contiguous() const {
+        if (!has_src_strides() || !is_shaped()) {
+            return true; // No strides or no shape means contiguous
+        }
 
-    // Check if strides match contiguous layout
-    if (src_strides.size() == 1) {
-      return src_strides[0] == 1;
+        // Check if strides match contiguous layout
+        if (src_strides.size() == 1) {
+            return src_strides[0] == 1;
+        } else if (src_strides.size() == 2 && is_2d()) {
+            return src_strides[0] == N() && src_strides[1] == 1;
+        } else if (src_strides.size() == 3 && is_3d()) {
+            return src_strides[0] == (M() * N()) && src_strides[1] == N()
+                    && src_strides[2] == 1;
+        }
+        return false;
     }
-    else if (src_strides.size() == 2 && is_2d()) {
-      return src_strides[0] == N() && src_strides[1] == 1;
-    }
-    else if (src_strides.size() == 3 && is_3d()) {
-      return src_strides[0] == (M() * N()) &&
-             src_strides[1] == N() &&
-             src_strides[2] == 1;
-    }
-    return false;
-  }
 };
 
 /**
@@ -348,15 +321,18 @@ struct reorder_params_t {
  *            across experts.
  */
 struct group_dynamic_quant_params_t {
-  data_type_t src_dtype;
-  data_type_t dst_dtype;
-  data_type_t scale_dtype;
-  int32_t num_threads;
-  int32_t num_groups;
+    data_type_t src_dtype;
+    data_type_t dst_dtype;
+    data_type_t scale_dtype;
+    int32_t num_threads;
+    int32_t num_groups;
 
-  group_dynamic_quant_params_t()
-      : src_dtype(data_type_t::none), dst_dtype(data_type_t::none),
-        scale_dtype(data_type_t::f32), num_threads(0), num_groups(0) {}
+    group_dynamic_quant_params_t()
+        : src_dtype(data_type_t::none)
+        , dst_dtype(data_type_t::none)
+        , scale_dtype(data_type_t::f32)
+        , num_threads(0)
+        , num_groups(0) {}
 };
 
 /**
@@ -371,17 +347,15 @@ struct group_dynamic_quant_params_t {
  * @return algorithm override value (0-4)
  */
 inline int32_t get_dynamic_quant_algo_override() {
-  static const int32_t val = []() -> int32_t {
-    const char *env = std::getenv("ZENDNNL_DYNAMIC_QUANT_ALGO");
-    if (env) {
-      int32_t v = std::atoi(env);
-      if (v >= 1 && v <= 4) {
-        return v;
-      }
-    }
-    return 0;
-  }();
-  return val;
+    static const int32_t val = []() -> int32_t {
+        const char *env = std::getenv("ZENDNNL_DYNAMIC_QUANT_ALGO");
+        if (env) {
+            int32_t v = std::atoi(env);
+            if (v >= 1 && v <= 4) { return v; }
+        }
+        return 0;
+    }();
+    return val;
 }
 
 /**
@@ -417,9 +391,9 @@ inline int32_t get_dynamic_quant_algo_override() {
  */
 inline bool can_use_f16_fma_kernel() {
 #if !defined(ZENDNNL_NATIVE_F32_ACCUM) && defined(__GNUC__) && (__GNUC__ >= 12)
-  return zendnnl::common::zendnnl_platform_info().get_avx512_f16_status();
+    return zendnnl::common::zendnnl_platform_info().get_avx512_f16_status();
 #else
-  return false;
+    return false;
 #endif
 }
 

@@ -39,14 +39,13 @@ namespace conv {
  *
  * @return status_t::success or status_t::failure
  */
-status_t conv_direct(
-    const void *input,           // [N, H, W, C]
-    const void *filter,          // [KH, KW, C_in, C_out]
-    const void *bias,            // [C_out] or nullptr
-    void *output,                // [N, H_out, W_out, C_out]
-    const bool is_weights_const, // Enable weight caching for constant filters
-    conv_params &params
-);
+status_t conv_direct(const void *input, // [N, H, W, C]
+        const void *filter, // [KH, KW, C_in, C_out]
+        const void *bias, // [C_out] or nullptr
+        void *output, // [N, H_out, W_out, C_out]
+        const bool
+                is_weights_const, // Enable weight caching for constant filters
+        conv_params &params);
 
 /**
  * @brief Kernel dispatcher - selects appropriate backend
@@ -59,14 +58,9 @@ status_t conv_direct(
  * @param params           Convolution parameters
  * @return status_t::success or status_t::failure
  */
-status_t conv_kernel_wrapper(
-    const void *input,
-    const void *filter,
-    const void *bias,
-    void *output,
-    const bool is_weights_const,
-    conv_params &params
-);
+status_t conv_kernel_wrapper(const void *input, const void *filter,
+        const void *bias, void *output, const bool is_weights_const,
+        conv_params &params);
 
 } // namespace conv
 } // namespace lowoha

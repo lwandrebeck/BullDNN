@@ -17,9 +17,9 @@
 #ifndef _LIBXSMM_KERNEL_HPP
 #define _LIBXSMM_KERNEL_HPP
 
-#include "lowoha_operators/matmul/lowoha_common.hpp"
-#include "lowoha_operators/matmul/backends/libxsmm/libxsmm_utils.hpp"
 #include <cstring>
+#include "lowoha_operators/matmul/backends/libxsmm/libxsmm_utils.hpp"
+#include "lowoha_operators/matmul/lowoha_common.hpp"
 
 namespace zendnnl {
 namespace lowoha {
@@ -29,68 +29,63 @@ namespace matmul {
 /**
  * @brief Template function for LibXSMM GEMM dispatch and execution
  */
-template<typename TA, typename TB, typename TC>
+template <typename TA, typename TB, typename TC>
 int libxsmm_gemm(const TA *A, const TB *B, TC *C, int M, int N, int K,
-                 float beta, int lda, int ldb, int ldc,
-                 char transA, char transB, libxsmm_datatype a_type, libxsmm_datatype b_type,
-                 libxsmm_datatype c_type, libxsmm_datatype comp_type,
-                 const matmul_params &lowoha_param, const void *bias,
-                 const data_type_t &bias_type) {
-  libxsmm_bitfield l_flags = 0;
-  if (transA == 'T' || transA == 't') {
-    l_flags |= LIBXSMM_GEMM_FLAG_TRANS_B;
-  }
-  if (transB == 'T' || transB == 't') {
-    l_flags |= LIBXSMM_GEMM_FLAG_TRANS_A;
-  }
-  if (beta == 0.0f) {
-    l_flags |= LIBXSMM_GEMM_FLAG_BETA_0;
-  }
-
-  libxsmm_gemm_shape shape{};
-  shape.m   = N;
-  shape.n   = M;
-  shape.k   = K;
-  shape.lda = ldb;
-  shape.ldb = lda;
-  shape.ldc = ldc;
-  shape.a_in_type = a_type;
-  shape.b_in_type = b_type;
-  shape.out_type  = c_type;
-  shape.comp_type = comp_type;
-
-  libxsmm_gemm_batch_reduce_config brcfg{};
-  brcfg.br_type = LIBXSMM_GEMM_BATCH_REDUCE_NONE;
-
-  libxsmm_gemmfunction kernel =
-    libxsmm_dispatch_brgemm(shape, l_flags, 0, brcfg);
-
-  if (!kernel) {
-    return 0;
-  }
-
-  libxsmm_gemm_param p{};
-  p.a.primary = const_cast<TB *>(B);
-  p.b.primary = const_cast<TA *>(A);
-  p.c.primary = C;
-
-  kernel(&p);
-
-  if (bias != nullptr) {
-    if (bias_type == data_type_t::f32) {
-      libxsmm_bias<TC, float>(M, N, ldc, C, bias);
+        float beta, int lda, int ldb, int ldc, char transA, char transB,
+        libxsmm_datatype a_type, libxsmm_datatype b_type,
+        libxsmm_datatype c_type, libxsmm_datatype comp_type,
+        const matmul_params &lowoha_param, const void *bias,
+        const data_type_t &bias_type) {
+    libxsmm_bitfield l_flags = 0;
+    if (transA == 'T' || transA == 't') {
+        l_flags |= LIBXSMM_GEMM_FLAG_TRANS_B;
     }
-    else if (bias_type == data_type_t::bf16) {
-      libxsmm_bias<TC, libxsmm_bfloat16>(M, N, ldc, C, bias);
+    if (transB == 'T' || transB == 't') {
+        l_flags |= LIBXSMM_GEMM_FLAG_TRANS_A;
     }
-  }
+    if (beta == 0.0f) { l_flags |= LIBXSMM_GEMM_FLAG_BETA_0; }
 
-  if (lowoha_param.postop_.size() > 0) {
-    for (const auto &postop : lowoha_param.postop_) {
-      libxsmm_postop<TC>(M, N, ldc, C, postop);
+    libxsmm_gemm_shape shape {};
+    shape.m = N;
+    shape.n = M;
+    shape.k = K;
+    shape.lda = ldb;
+    shape.ldb = lda;
+    shape.ldc = ldc;
+    shape.a_in_type = a_type;
+    shape.b_in_type = b_type;
+    shape.out_type = c_type;
+    shape.comp_type = comp_type;
+
+    libxsmm_gemm_batch_reduce_config brcfg {};
+    brcfg.br_type = LIBXSMM_GEMM_BATCH_REDUCE_NONE;
+
+    libxsmm_gemmfunction kernel
+            = libxsmm_dispatch_brgemm(shape, l_flags, 0, brcfg);
+
+    if (!kernel) { return 0; }
+
+    libxsmm_gemm_param p {};
+    p.a.primary = const_cast<TB *>(B);
+    p.b.primary = const_cast<TA *>(A);
+    p.c.primary = C;
+
+    kernel(&p);
+
+    if (bias != nullptr) {
+        if (bias_type == data_type_t::f32) {
+            libxsmm_bias<TC, float>(M, N, ldc, C, bias);
+        } else if (bias_type == data_type_t::bf16) {
+            libxsmm_bias<TC, libxsmm_bfloat16>(M, N, ldc, C, bias);
+        }
     }
-  }
-  return 1;
+
+    if (lowoha_param.postop_.size() > 0) {
+        for (const auto &postop : lowoha_param.postop_) {
+            libxsmm_postop<TC>(M, N, ldc, C, postop);
+        }
+    }
+    return 1;
 }
 
 /**
@@ -104,33 +99,32 @@ int libxsmm_gemm(const TA *A, const TB *B, TC *C, int M, int N, int K,
  * tail_ker: kernels with K = k_block_rem   (K-tail),        count = 1
  */
 struct PreDispatchedBrgemm {
-  libxsmm_gemmfunction main_ker[2][2] = {};
-  libxsmm_gemmfunction tail_ker[2][2] = {};
-  int m_sizes[2] = {};
-  int n_sizes[2] = {};
+    libxsmm_gemmfunction main_ker[2][2] = {};
+    libxsmm_gemmfunction tail_ker[2][2] = {};
+    int m_sizes[2] = {};
+    int n_sizes[2] = {};
 };
 
 /**
  * @brief Resolve libxsmm data types from matmul_data_types.
  */
-static inline void resolve_xsmm_types(
-  const matmul_data_types &dtypes,
-  libxsmm_datatype &a_dt, libxsmm_datatype &b_dt, libxsmm_datatype &c_dt) {
-  if (dtypes.src == data_type_t::f32 && dtypes.dst == data_type_t::f32) {
-    a_dt = LIBXSMM_DATATYPE_F32;
-    b_dt = LIBXSMM_DATATYPE_F32;
-    c_dt = LIBXSMM_DATATYPE_F32;
-  }
-  else if (dtypes.src == data_type_t::bf16 && dtypes.dst == data_type_t::f32) {
-    a_dt = LIBXSMM_DATATYPE_BF16;
-    b_dt = LIBXSMM_DATATYPE_BF16;
-    c_dt = LIBXSMM_DATATYPE_F32;
-  }
-  else {
-    a_dt = LIBXSMM_DATATYPE_BF16;
-    b_dt = LIBXSMM_DATATYPE_BF16;
-    c_dt = LIBXSMM_DATATYPE_BF16;
-  }
+static inline void resolve_xsmm_types(const matmul_data_types &dtypes,
+        libxsmm_datatype &a_dt, libxsmm_datatype &b_dt,
+        libxsmm_datatype &c_dt) {
+    if (dtypes.src == data_type_t::f32 && dtypes.dst == data_type_t::f32) {
+        a_dt = LIBXSMM_DATATYPE_F32;
+        b_dt = LIBXSMM_DATATYPE_F32;
+        c_dt = LIBXSMM_DATATYPE_F32;
+    } else if (dtypes.src == data_type_t::bf16
+            && dtypes.dst == data_type_t::f32) {
+        a_dt = LIBXSMM_DATATYPE_BF16;
+        b_dt = LIBXSMM_DATATYPE_BF16;
+        c_dt = LIBXSMM_DATATYPE_F32;
+    } else {
+        a_dt = LIBXSMM_DATATYPE_BF16;
+        b_dt = LIBXSMM_DATATYPE_BF16;
+        c_dt = LIBXSMM_DATATYPE_BF16;
+    }
 }
 
 /**
@@ -144,46 +138,42 @@ static inline void resolve_xsmm_types(
  *
  * @param vnni  If true, sets LIBXSMM_GEMM_FLAG_VNNI_A (blocked BF16 weight)
  */
-static inline libxsmm_gemmfunction dispatch_brgemm(
-  char transA, char transB,
-  int M, int N, int K, int count,
-  int lda, int ldb, int ldc,
-  unsigned long long stride_a, unsigned long long stride_b,
-  const matmul_data_types &dtypes, bool vnni = false) {
+static inline libxsmm_gemmfunction dispatch_brgemm(char transA, char transB,
+        int M, int N, int K, int count, int lda, int ldb, int ldc,
+        unsigned long long stride_a, unsigned long long stride_b,
+        const matmul_data_types &dtypes, bool vnni = false) {
 
-  libxsmm_bitfield l_flags = 0;
-  if (transA == 'T' || transA == 't') {
-    l_flags |= LIBXSMM_GEMM_FLAG_TRANS_B;
-  }
-  if (transB == 'T' || transB == 't') {
-    l_flags |= LIBXSMM_GEMM_FLAG_TRANS_A;
-  }
-  if (vnni) {
-    l_flags |= LIBXSMM_GEMM_FLAG_VNNI_A;
-  }
+    libxsmm_bitfield l_flags = 0;
+    if (transA == 'T' || transA == 't') {
+        l_flags |= LIBXSMM_GEMM_FLAG_TRANS_B;
+    }
+    if (transB == 'T' || transB == 't') {
+        l_flags |= LIBXSMM_GEMM_FLAG_TRANS_A;
+    }
+    if (vnni) { l_flags |= LIBXSMM_GEMM_FLAG_VNNI_A; }
 
-  libxsmm_datatype a_dt, b_dt, c_dt;
-  resolve_xsmm_types(dtypes, a_dt, b_dt, c_dt);
+    libxsmm_datatype a_dt, b_dt, c_dt;
+    resolve_xsmm_types(dtypes, a_dt, b_dt, c_dt);
 
-  libxsmm_gemm_shape shape{};
-  shape.m   = N;
-  shape.n   = M;
-  shape.k   = K;
-  shape.lda = ldb;
-  shape.ldb = lda;
-  shape.ldc = ldc;
-  shape.a_in_type  = b_dt;
-  shape.b_in_type  = a_dt;
-  shape.out_type   = c_dt;
-  shape.comp_type  = LIBXSMM_DATATYPE_F32;
+    libxsmm_gemm_shape shape {};
+    shape.m = N;
+    shape.n = M;
+    shape.k = K;
+    shape.lda = ldb;
+    shape.ldb = lda;
+    shape.ldc = ldc;
+    shape.a_in_type = b_dt;
+    shape.b_in_type = a_dt;
+    shape.out_type = c_dt;
+    shape.comp_type = LIBXSMM_DATATYPE_F32;
 
-  libxsmm_gemm_batch_reduce_config brcfg{};
-  brcfg.br_type          = LIBXSMM_GEMM_BATCH_REDUCE_STRIDE;
-  brcfg.br_unroll_hint   = count;
-  brcfg.br_stride_a_hint = stride_b;
-  brcfg.br_stride_b_hint = stride_a;
+    libxsmm_gemm_batch_reduce_config brcfg {};
+    brcfg.br_type = LIBXSMM_GEMM_BATCH_REDUCE_STRIDE;
+    brcfg.br_unroll_hint = count;
+    brcfg.br_stride_a_hint = stride_b;
+    brcfg.br_stride_b_hint = stride_a;
 
-  return libxsmm_dispatch_brgemm(shape, l_flags, /*prefetch_flags=*/0, brcfg);
+    return libxsmm_dispatch_brgemm(shape, l_flags, /*prefetch_flags=*/0, brcfg);
 }
 
 /**
@@ -198,23 +188,21 @@ static inline libxsmm_gemmfunction dispatch_brgemm(
  * @param C       Pointer to the output tile (already initialized)
  * @param count   Number of K-panels to batch-reduce
  */
-static inline void run_brgemm(
-  libxsmm_gemmfunction kernel,
-  const void *A_base, const void *B_base, void *C,
-  unsigned long long count) {
+static inline void run_brgemm(libxsmm_gemmfunction kernel, const void *A_base,
+        const void *B_base, void *C, unsigned long long count) {
 
-  if (!kernel) {
-    log_error("Failed to dispatch LibXSMM BRGEMM kernel");
-    return;
-  }
+    if (!kernel) {
+        log_error("Failed to dispatch LibXSMM BRGEMM kernel");
+        return;
+    }
 
-  libxsmm_gemm_param p{};
-  p.a.primary  = const_cast<void *>(B_base);
-  p.b.primary  = const_cast<void *>(A_base);
-  p.c.primary  = C;
-  p.op.tertiary = &count;
+    libxsmm_gemm_param p {};
+    p.a.primary = const_cast<void *>(B_base);
+    p.b.primary = const_cast<void *>(A_base);
+    p.c.primary = C;
+    p.op.tertiary = &count;
 
-  kernel(&p);
+    kernel(&p);
 }
 
 /**
@@ -232,46 +220,39 @@ static inline void run_brgemm(
  *
  * @param vnni  If true, sets LIBXSMM_GEMM_FLAG_VNNI_A (blocked BF16 weight)
  */
-static inline PreDispatchedBrgemm predispatch_brgemm_kernels(
-  char transA, char transB,
-  int m_block_size, int m_block_rem,
-  int n_block_size, int n_block_rem,
-  int k_block_size, int k_block_rem,
-  int num_k_blocks, int k_blocks_per_reduce,
-  int lda, int ldb, int ldc,
-  unsigned long long stride_a, unsigned long long stride_b,
-  const matmul_data_types &dtypes, bool vnni = false) {
+static inline PreDispatchedBrgemm predispatch_brgemm_kernels(char transA,
+        char transB, int m_block_size, int m_block_rem, int n_block_size,
+        int n_block_rem, int k_block_size, int k_block_rem, int num_k_blocks,
+        int k_blocks_per_reduce, int lda, int ldb, int ldc,
+        unsigned long long stride_a, unsigned long long stride_b,
+        const matmul_data_types &dtypes, bool vnni = false) {
 
-  PreDispatchedBrgemm pd;
-  pd.m_sizes[0] = m_block_size;
-  pd.m_sizes[1] = m_block_rem;
-  pd.n_sizes[0] = n_block_size;
-  pd.n_sizes[1] = n_block_rem;
+    PreDispatchedBrgemm pd;
+    pd.m_sizes[0] = m_block_size;
+    pd.m_sizes[1] = m_block_rem;
+    pd.n_sizes[0] = n_block_size;
+    pd.n_sizes[1] = n_block_rem;
 
-  for (int mi = 0; mi < 2; ++mi) {
-    if (pd.m_sizes[mi] <= 0) {
-      continue;
+    for (int mi = 0; mi < 2; ++mi) {
+        if (pd.m_sizes[mi] <= 0) { continue; }
+        for (int ni = 0; ni < 2; ++ni) {
+            if (pd.n_sizes[ni] <= 0) { continue; }
+            int m = pd.m_sizes[mi];
+            int n = pd.n_sizes[ni];
+
+            if (num_k_blocks > 0 && k_block_size > 0) {
+                pd.main_ker[mi][ni] = dispatch_brgemm(transA, transB, m, n,
+                        k_block_size, k_blocks_per_reduce, lda, ldb, ldc,
+                        stride_a, stride_b, dtypes, vnni);
+            }
+            if (k_block_rem > 0) {
+                pd.tail_ker[mi][ni] = dispatch_brgemm(transA, transB, m, n,
+                        k_block_rem, 1, lda, ldb, ldc, stride_a, stride_b,
+                        dtypes, vnni);
+            }
+        }
     }
-    for (int ni = 0; ni < 2; ++ni) {
-      if (pd.n_sizes[ni] <= 0) {
-        continue;
-      }
-      int m = pd.m_sizes[mi];
-      int n = pd.n_sizes[ni];
-
-      if (num_k_blocks > 0 && k_block_size > 0) {
-        pd.main_ker[mi][ni] = dispatch_brgemm(
-                                transA, transB, m, n, k_block_size, k_blocks_per_reduce,
-                                lda, ldb, ldc, stride_a, stride_b, dtypes, vnni);
-      }
-      if (k_block_rem > 0) {
-        pd.tail_ker[mi][ni] = dispatch_brgemm(
-                                transA, transB, m, n, k_block_rem, 1,
-                                lda, ldb, ldc, stride_a, stride_b, dtypes, vnni);
-      }
-    }
-  }
-  return pd;
+    return pd;
 }
 
 /**
@@ -282,89 +263,85 @@ static inline PreDispatchedBrgemm predispatch_brgemm_kernels(
  *
  * After this call the tile is ready for beta=1.0 BRGEMM accumulation (C += A*B).
  */
-static inline void init_output_tile(
-  void *C_tile, const void *bias,
-  int m_len, int n_len, int ldc,
-  const matmul_data_types &dtypes, float beta = 0.0f) {
+static inline void init_output_tile(void *C_tile, const void *bias, int m_len,
+        int n_len, int ldc, const matmul_data_types &dtypes,
+        float beta = 0.0f) {
 
-  if (beta == 0.0f) {
-    size_t elem_size = (dtypes.dst == data_type_t::f32) ? sizeof(float)
-                       : sizeof(libxsmm_bfloat16);
-    uint8_t *C = static_cast<uint8_t *>(C_tile);
-    size_t row_bytes = static_cast<size_t>(n_len) * elem_size;
+    if (beta == 0.0f) {
+        size_t elem_size = (dtypes.dst == data_type_t::f32)
+                ? sizeof(float)
+                : sizeof(libxsmm_bfloat16);
+        uint8_t *C = static_cast<uint8_t *>(C_tile);
+        size_t row_bytes = static_cast<size_t>(n_len) * elem_size;
 
-    if (n_len == ldc) {
-      std::memset(C, 0, static_cast<size_t>(m_len) * row_bytes);
+        if (n_len == ldc) {
+            std::memset(C, 0, static_cast<size_t>(m_len) * row_bytes);
+        } else {
+            size_t stride = static_cast<size_t>(ldc) * elem_size;
+            for (int i = 0; i < m_len; ++i) {
+                std::memset(C + i * stride, 0, row_bytes);
+            }
+        }
     }
-    else {
-      size_t stride = static_cast<size_t>(ldc) * elem_size;
-      for (int i = 0; i < m_len; ++i) {
-        std::memset(C + i * stride, 0, row_bytes);
-      }
-    }
-  }
 
-  if (bias) {
-    if (dtypes.dst == data_type_t::f32) {
-      if (dtypes.bias == data_type_t::f32) {
-        libxsmm_bias<float, float>(m_len, n_len, ldc, C_tile, bias);
-      }
-      else if (dtypes.bias == data_type_t::bf16) {
-        libxsmm_bias<float, libxsmm_bfloat16>(m_len, n_len, ldc, C_tile, bias);
-      }
+    if (bias) {
+        if (dtypes.dst == data_type_t::f32) {
+            if (dtypes.bias == data_type_t::f32) {
+                libxsmm_bias<float, float>(m_len, n_len, ldc, C_tile, bias);
+            } else if (dtypes.bias == data_type_t::bf16) {
+                libxsmm_bias<float, libxsmm_bfloat16>(
+                        m_len, n_len, ldc, C_tile, bias);
+            }
+        } else {
+            if (dtypes.bias == data_type_t::bf16)
+                libxsmm_bias<libxsmm_bfloat16, libxsmm_bfloat16>(
+                        m_len, n_len, ldc, C_tile, bias);
+            else if (dtypes.bias == data_type_t::f32) {
+                libxsmm_bias<libxsmm_bfloat16, float>(
+                        m_len, n_len, ldc, C_tile, bias);
+            }
+        }
     }
-    else {
-      if (dtypes.bias == data_type_t::bf16)
-        libxsmm_bias<libxsmm_bfloat16, libxsmm_bfloat16>(m_len, n_len, ldc,
-            C_tile, bias);
-      else if (dtypes.bias == data_type_t::f32) {
-        libxsmm_bias<libxsmm_bfloat16, float>(m_len, n_len, ldc, C_tile, bias);
-      }
-    }
-  }
 }
 
 /**
  * @brief Run LibXSMM GEMM with automatic type dispatch
  */
 static inline int run_libxsmm_std(char transA, char transB, int M, int N, int K,
-                                  float beta, int lda, int ldb, int ldc,
-                                  const void *A, const void *B, void *C,
-                                  const matmul_data_types &dtypes, const matmul_params &lowoha_para,
-                                  const void *bias) {
-  int kernel_status = 0;
-  if (dtypes.src == data_type_t::f32 && dtypes.dst == data_type_t::f32) {
-    log_info("Using libxsmm GEMM f32->f32 kernel");
-    kernel_status = libxsmm_gemm<float,float,float>(
-                      static_cast<const float *>(A),
-                      static_cast<const float *>(B),
-                      static_cast<float *>(C),
-                      M,N,K, beta, lda,ldb,ldc, transA,transB,
-                      LIBXSMM_DATATYPE_F32,LIBXSMM_DATATYPE_F32,
-                      LIBXSMM_DATATYPE_F32,LIBXSMM_DATATYPE_F32, lowoha_para, bias, dtypes.bias);
-  }
-  else if (dtypes.src == data_type_t::bf16 && dtypes.dst == data_type_t::f32) {
-    log_info("Using libxsmm GEMM bf16->f32 kernel");
-    kernel_status = libxsmm_gemm<libxsmm_bfloat16,libxsmm_bfloat16,float>(
-                      reinterpret_cast<const libxsmm_bfloat16 *>(A),
-                      reinterpret_cast<const libxsmm_bfloat16 *>(B),
-                      static_cast<float *>(C),
-                      M,N,K, beta, lda,ldb,ldc, transA,transB,
-                      LIBXSMM_DATATYPE_BF16,LIBXSMM_DATATYPE_BF16,
-                      LIBXSMM_DATATYPE_F32,LIBXSMM_DATATYPE_F32, lowoha_para, bias, dtypes.bias);
-  }
-  else if (dtypes.src == data_type_t::bf16 && dtypes.dst == data_type_t::bf16) {
-    log_info("Using libxsmm GEMM bf16->bf16 kernel");
-    kernel_status =
-      libxsmm_gemm<libxsmm_bfloat16,libxsmm_bfloat16,libxsmm_bfloat16>(
-        reinterpret_cast<const libxsmm_bfloat16 *>(A),
-        reinterpret_cast<const libxsmm_bfloat16 *>(B),
-        reinterpret_cast<libxsmm_bfloat16 *>(C),
-        M,N,K, beta, lda,ldb,ldc, transA,transB,
-        LIBXSMM_DATATYPE_BF16,LIBXSMM_DATATYPE_BF16,
-        LIBXSMM_DATATYPE_BF16,LIBXSMM_DATATYPE_F32, lowoha_para, bias, dtypes.bias);
-  }
-  return kernel_status;
+        float beta, int lda, int ldb, int ldc, const void *A, const void *B,
+        void *C, const matmul_data_types &dtypes,
+        const matmul_params &lowoha_para, const void *bias) {
+    int kernel_status = 0;
+    if (dtypes.src == data_type_t::f32 && dtypes.dst == data_type_t::f32) {
+        log_info("Using libxsmm GEMM f32->f32 kernel");
+        kernel_status = libxsmm_gemm<float, float, float>(
+                static_cast<const float *>(A), static_cast<const float *>(B),
+                static_cast<float *>(C), M, N, K, beta, lda, ldb, ldc, transA,
+                transB, LIBXSMM_DATATYPE_F32, LIBXSMM_DATATYPE_F32,
+                LIBXSMM_DATATYPE_F32, LIBXSMM_DATATYPE_F32, lowoha_para, bias,
+                dtypes.bias);
+    } else if (dtypes.src == data_type_t::bf16
+            && dtypes.dst == data_type_t::f32) {
+        log_info("Using libxsmm GEMM bf16->f32 kernel");
+        kernel_status = libxsmm_gemm<libxsmm_bfloat16, libxsmm_bfloat16, float>(
+                reinterpret_cast<const libxsmm_bfloat16 *>(A),
+                reinterpret_cast<const libxsmm_bfloat16 *>(B),
+                static_cast<float *>(C), M, N, K, beta, lda, ldb, ldc, transA,
+                transB, LIBXSMM_DATATYPE_BF16, LIBXSMM_DATATYPE_BF16,
+                LIBXSMM_DATATYPE_F32, LIBXSMM_DATATYPE_F32, lowoha_para, bias,
+                dtypes.bias);
+    } else if (dtypes.src == data_type_t::bf16
+            && dtypes.dst == data_type_t::bf16) {
+        log_info("Using libxsmm GEMM bf16->bf16 kernel");
+        kernel_status = libxsmm_gemm<libxsmm_bfloat16, libxsmm_bfloat16,
+                libxsmm_bfloat16>(reinterpret_cast<const libxsmm_bfloat16 *>(A),
+                reinterpret_cast<const libxsmm_bfloat16 *>(B),
+                reinterpret_cast<libxsmm_bfloat16 *>(C), M, N, K, beta, lda,
+                ldb, ldc, transA, transB, LIBXSMM_DATATYPE_BF16,
+                LIBXSMM_DATATYPE_BF16, LIBXSMM_DATATYPE_BF16,
+                LIBXSMM_DATATYPE_F32, lowoha_para, bias, dtypes.bias);
+    }
+    return kernel_status;
 }
 #endif
 } // namespace matmul

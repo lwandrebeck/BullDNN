@@ -97,16 +97,9 @@ namespace normalization {
  *         handled via F16C convert in the FP32 kernel),
  *         or status_t::failure otherwise.
  */
-status_t normalization_direct(
-  const void *input,
-  void *output,
-  const void *gamma,
-  const void *beta,
-  const void *running_mean,
-  const void *running_var,
-  void       *residual,
-  norm_params &params
-);
+status_t normalization_direct(const void *input, void *output,
+        const void *gamma, const void *beta, const void *running_mean,
+        const void *running_var, void *residual, norm_params &params);
 
 /**
  * @brief Kernel dispatcher – selects and invokes the appropriate backend
@@ -125,20 +118,12 @@ status_t normalization_direct(
  * @return status_t::success, status_t::failure, or status_t::unimplemented
  *         (consumed internally to fall through to the FP32 AVX-512 kernel).
  */
-status_t normalization_kernel_wrapper(
-  const void *input,
-  void *output,
-  const void *gamma,
-  const void *beta,
-  const void *running_mean,
-  const void *running_var,
-  void       *residual,
-  norm_params &params
-);
+status_t normalization_kernel_wrapper(const void *input, void *output,
+        const void *gamma, const void *beta, const void *running_mean,
+        const void *running_var, void *residual, norm_params &params);
 
 } // namespace normalization
 } // namespace lowoha
 } // namespace zendnnl
 
 #endif // _LOWOHA_NORMALIZATION_HPP
-

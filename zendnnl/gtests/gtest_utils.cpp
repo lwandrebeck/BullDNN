@@ -15,370 +15,370 @@
 # *******************************************************************************/
 
 #include "gtest_utils.hpp"
-#include "memory/memory_utils.hpp"
 #include "lowoha_operators/matmul/backends/aocl/aocl_kernel.hpp"
+#include "memory/memory_utils.hpp"
 #if ZENDNNL_DEPENDS_AOCLDLP
-  #include "lowoha_operators/matmul/backends/aocl/aocl_postop.hpp"
+#include "lowoha_operators/matmul/backends/aocl/aocl_postop.hpp"
 #endif
-#include "lowoha_operators/matmul/backends/onednn/onednn_kernel.hpp"
-#include "lowoha_operators/matmul/matmul_native/common/kernel_cache.hpp"
-#include "lowoha_operators/matmul/group_matmul/custom_kernel/pack.hpp"
-#include "lowoha_operators/matmul/group_matmul/prepack/prepack.hpp"
-#include "lowoha_operators/matmul/ggml_weight_unpack.hpp"
 #include <atomic>
 #include <cctype>
-#include <cstring>
 #include <cmath>
+#include <cstring>
 #include <stdexcept>
+#include "lowoha_operators/matmul/backends/onednn/onednn_kernel.hpp"
+#include "lowoha_operators/matmul/ggml_weight_unpack.hpp"
+#include "lowoha_operators/matmul/group_matmul/custom_kernel/pack.hpp"
+#include "lowoha_operators/matmul/group_matmul/prepack/prepack.hpp"
+#include "lowoha_operators/matmul/matmul_native/common/kernel_cache.hpp"
 
 namespace {
 
 struct block_q8_0 {
-  uint16_t d;
-  int8_t qs[32];
+    uint16_t d;
+    int8_t qs[32];
 };
 
 struct block_q4_0 {
-  uint16_t d;
-  uint8_t qs[16];
+    uint16_t d;
+    uint8_t qs[16];
 };
 
 inline uint32_t gtest_fp32_to_bits(float f) {
-  uint32_t bits;
-  std::memcpy(&bits, &f, sizeof(f));
-  return bits;
+    uint32_t bits;
+    std::memcpy(&bits, &f, sizeof(f));
+    return bits;
 }
 
 inline float gtest_fp32_from_bits(uint32_t bits) {
-  float f;
-  std::memcpy(&f, &bits, sizeof(bits));
-  return f;
+    float f;
+    std::memcpy(&f, &bits, sizeof(bits));
+    return f;
 }
 
 uint16_t gtest_fp32_to_fp16(float f) {
-  const float scale_to_inf  = gtest_fp32_from_bits(UINT32_C(0x77800000));
-  const float scale_to_zero = gtest_fp32_from_bits(UINT32_C(0x08800000));
-  float base = (std::fabs(f) * scale_to_inf) * scale_to_zero;
+    const float scale_to_inf = gtest_fp32_from_bits(UINT32_C(0x77800000));
+    const float scale_to_zero = gtest_fp32_from_bits(UINT32_C(0x08800000));
+    float base = (std::fabs(f) * scale_to_inf) * scale_to_zero;
 
-  const uint32_t w      = gtest_fp32_to_bits(f);
-  const uint32_t shl1_w = w + w;
-  const uint32_t sign   = w & UINT32_C(0x80000000);
-  uint32_t bias = shl1_w & UINT32_C(0xFF000000);
-  if (bias < UINT32_C(0x71000000)) {
-    bias = UINT32_C(0x71000000);
-  }
+    const uint32_t w = gtest_fp32_to_bits(f);
+    const uint32_t shl1_w = w + w;
+    const uint32_t sign = w & UINT32_C(0x80000000);
+    uint32_t bias = shl1_w & UINT32_C(0xFF000000);
+    if (bias < UINT32_C(0x71000000)) { bias = UINT32_C(0x71000000); }
 
-  base = gtest_fp32_from_bits((bias >> 1) + UINT32_C(0x07800000)) + base;
-  const uint32_t bits          = gtest_fp32_to_bits(base);
-  const uint32_t exp_bits      = (bits >> 13) & UINT32_C(0x00007C00);
-  const uint32_t mantissa_bits = bits & UINT32_C(0x00000FFF);
-  const uint32_t nonsign       = exp_bits + mantissa_bits;
-  return static_cast<uint16_t>(
-           (sign >> 16) | (shl1_w > UINT32_C(0xFF000000) ? UINT16_C(0x7E00) : nonsign));
+    base = gtest_fp32_from_bits((bias >> 1) + UINT32_C(0x07800000)) + base;
+    const uint32_t bits = gtest_fp32_to_bits(base);
+    const uint32_t exp_bits = (bits >> 13) & UINT32_C(0x00007C00);
+    const uint32_t mantissa_bits = bits & UINT32_C(0x00000FFF);
+    const uint32_t nonsign = exp_bits + mantissa_bits;
+    return static_cast<uint16_t>((sign >> 16)
+            | (shl1_w > UINT32_C(0xFF000000) ? UINT16_C(0x7E00) : nonsign));
 }
 
 } // anonymous namespace
 
 void clear_matmul_test_caches() {
-  zendnnl::lowoha::matmul::clear_aocl_matmul_weight_caches();
-  // Each gtest case is a fresh "model" with new weight buffers, so the
-  // per-thread post-op metadata cache (keyed by weight_ptr) holds stale
-  // entries that point to freed test memory. Drop them between cases.
+    zendnnl::lowoha::matmul::clear_aocl_matmul_weight_caches();
+    // Each gtest case is a fresh "model" with new weight buffers, so the
+    // per-thread post-op metadata cache (keyed by weight_ptr) holds stale
+    // entries that point to freed test memory. Drop them between cases.
 #if ZENDNNL_DEPENDS_AOCLDLP
-  zendnnl::lowoha::matmul::clear_aocl_postop_metadata_cache();
+    zendnnl::lowoha::matmul::clear_aocl_postop_metadata_cache();
 #endif
 #if ZENDNNL_DEPENDS_ONEDNN
-  zendnnl::lowoha::matmul::clear_onednn_matmul_weight_cache();
+    zendnnl::lowoha::matmul::clear_onednn_matmul_weight_cache();
 #endif
-  using namespace zendnnl::lowoha::matmul::native;
-  clear_all_weight_caches();
+    using namespace zendnnl::lowoha::matmul::native;
+    clear_all_weight_caches();
 }
 
 void reset_grp_matmul_caches() {
-  // Order matters: drop the CK arena (which owns its own packed
-  // buffers) and the fingerprint short-circuit FIRST so any later
-  // `clear_matmul_test_caches()` won't be observed as "already
-  // warmed" by the prepack module on the next test.  The AOCL/oneDNN/
-  // native LRUs are pointer-keyed and process-wide; clearing them
-  // here is what unblocks heap-address reuse across tests from
-  // returning stale reordered weights (silent wrong-answer bite).
-  zendnnl::lowoha::matmul::custom_kernel::clear_custom_kernel_pack_cache();
-  // The INT8 CK pack cache is a SEPARATE singleton from the BF16 one
-  // (`pack_cache_singleton_int8`).  It must be cleared too, otherwise
-  // its pointer-keyed entries survive across tests and heap-address
-  // reuse returns a stale packed weight built from a prior test's
-  // (now-freed) buffer — an order-dependent silent wrong-answer bite
-  // identical to the one the BF16 clear above guards against.
-  zendnnl::lowoha::matmul::custom_kernel::clear_custom_kernel_pack_cache_int8();
-  // The FP16 CK pack cache is ALSO a separate singleton
-  // (`pack_cache_singleton_f16`, keyed with `kCustomKernelF16Marker`),
-  // disjoint from the BF16 and INT8 ones.  Clear it for the same
-  // reason: pointer-keyed entries that survive across tests let
-  // heap-address reuse return a stale f16 packed weight built from a
-  // prior test's freed buffer — the identical order-dependent silent
-  // wrong-answer bite the BF16 / INT8 clears above guard against.
-  zendnnl::lowoha::matmul::custom_kernel::clear_custom_kernel_pack_cache_f16();
-  zendnnl::lowoha::matmul::group_matmul_prepack::clear_fingerprint_cache_for_test();
-  // The GGML unpack/reorder cache is ALSO pointer-keyed (weight_ptr + shape)
-  // and process-wide, so it has the exact same heap-address-reuse hazard as
-  // the AOCL/CK/native LRUs above: a later test whose fresh weight buffer
-  // lands on a freed GGML packed-weight address would get a stale reordered
-  // weight back (silent wrong-answer bite, and the fused-MoE dispatch can even
-  // mis-route off the stale metadata).  Clear it here so every test that
-  // resets group-matmul caches starts from a clean GGML cache too.
-  zendnnl::lowoha::matmul::clear_ggml_weight_unpack_cache();
-  clear_matmul_test_caches();
+    // Order matters: drop the CK arena (which owns its own packed
+    // buffers) and the fingerprint short-circuit FIRST so any later
+    // `clear_matmul_test_caches()` won't be observed as "already
+    // warmed" by the prepack module on the next test.  The AOCL/oneDNN/
+    // native LRUs are pointer-keyed and process-wide; clearing them
+    // here is what unblocks heap-address reuse across tests from
+    // returning stale reordered weights (silent wrong-answer bite).
+    zendnnl::lowoha::matmul::custom_kernel::clear_custom_kernel_pack_cache();
+    // The INT8 CK pack cache is a SEPARATE singleton from the BF16 one
+    // (`pack_cache_singleton_int8`).  It must be cleared too, otherwise
+    // its pointer-keyed entries survive across tests and heap-address
+    // reuse returns a stale packed weight built from a prior test's
+    // (now-freed) buffer — an order-dependent silent wrong-answer bite
+    // identical to the one the BF16 clear above guards against.
+    zendnnl::lowoha::matmul::custom_kernel::
+            clear_custom_kernel_pack_cache_int8();
+    // The FP16 CK pack cache is ALSO a separate singleton
+    // (`pack_cache_singleton_f16`, keyed with `kCustomKernelF16Marker`),
+    // disjoint from the BF16 and INT8 ones.  Clear it for the same
+    // reason: pointer-keyed entries that survive across tests let
+    // heap-address reuse return a stale f16 packed weight built from a
+    // prior test's freed buffer — the identical order-dependent silent
+    // wrong-answer bite the BF16 / INT8 clears above guard against.
+    zendnnl::lowoha::matmul::custom_kernel::
+            clear_custom_kernel_pack_cache_f16();
+    zendnnl::lowoha::matmul::group_matmul_prepack::
+            clear_fingerprint_cache_for_test();
+    // The GGML unpack/reorder cache is ALSO pointer-keyed (weight_ptr + shape)
+    // and process-wide, so it has the exact same heap-address-reuse hazard as
+    // the AOCL/CK/native LRUs above: a later test whose fresh weight buffer
+    // lands on a freed GGML packed-weight address would get a stale reordered
+    // weight back (silent wrong-answer bite, and the fused-MoE dispatch can even
+    // mis-route off the stale metadata).  Clear it here so every test that
+    // resets group-matmul caches starts from a clean GGML cache too.
+    zendnnl::lowoha::matmul::clear_ggml_weight_unpack_cache();
+    clear_matmul_test_caches();
 }
 
-void repack_weights_q8_0(const int8_t *weight_buffer,
-                         const float *scale_buffer,
-                         int64_t M, int64_t K,
-                         void *out_blocks) {
-  const int64_t ng = K / 32;
-  auto *out = static_cast<block_q8_0 *>(out_blocks);
+void repack_weights_q8_0(const int8_t *weight_buffer, const float *scale_buffer,
+        int64_t M, int64_t K, void *out_blocks) {
+    const int64_t ng = K / 32;
+    auto *out = static_cast<block_q8_0 *>(out_blocks);
 
-  for (int64_t row = 0; row < M; row++) {
-    for (int64_t g = 0; g < ng; g++) {
-      block_q8_0 *b = &out[row * ng + g];
-      b->d = gtest_fp32_to_fp16(scale_buffer[g * M + row]);
-      std::memcpy(b->qs, weight_buffer + row * K + g * 32, 32);
+    for (int64_t row = 0; row < M; row++) {
+        for (int64_t g = 0; g < ng; g++) {
+            block_q8_0 *b = &out[row * ng + g];
+            b->d = gtest_fp32_to_fp16(scale_buffer[g * M + row]);
+            std::memcpy(b->qs, weight_buffer + row * K + g * 32, 32);
+        }
     }
-  }
 }
 
-void repack_weights_q4_0(const int8_t *weight_buffer,
-                         const float *scale_buffer,
-                         int64_t M, int64_t K,
-                         void *out_blocks) {
-  const int64_t ng = K / 32;
-  auto *out = static_cast<block_q4_0 *>(out_blocks);
+void repack_weights_q4_0(const int8_t *weight_buffer, const float *scale_buffer,
+        int64_t M, int64_t K, void *out_blocks) {
+    const int64_t ng = K / 32;
+    auto *out = static_cast<block_q4_0 *>(out_blocks);
 
-  for (int64_t row = 0; row < M; row++) {
-    for (int64_t g = 0; g < ng; g++) {
-      block_q4_0 *b = &out[row * ng + g];
-      b->d = gtest_fp32_to_fp16(scale_buffer[g * M + row]);
-      const int8_t *w = weight_buffer + row * K + g * 32;
-      // GGML block_q4_0 nibble order: quant[j] in the low nibble of qs[j],
-      // quant[j+16] in the high nibble, each stored with the unsigned +8
-      // offset the regular (signed) Q4_0 unpack reverses.  Input values must
-      // already lie in [-8, 7] so the 4-bit round-trip is lossless.
-      for (int j = 0; j < 16; j++) {
-        uint8_t lo = static_cast<uint8_t>((w[j] + 8) & 0x0F);
-        uint8_t hi = static_cast<uint8_t>((w[j + 16] + 8) & 0x0F);
-        b->qs[j] = static_cast<uint8_t>(lo | (hi << 4));
-      }
+    for (int64_t row = 0; row < M; row++) {
+        for (int64_t g = 0; g < ng; g++) {
+            block_q4_0 *b = &out[row * ng + g];
+            b->d = gtest_fp32_to_fp16(scale_buffer[g * M + row]);
+            const int8_t *w = weight_buffer + row * K + g * 32;
+            // GGML block_q4_0 nibble order: quant[j] in the low nibble of qs[j],
+            // quant[j+16] in the high nibble, each stored with the unsigned +8
+            // offset the regular (signed) Q4_0 unpack reverses.  Input values must
+            // already lie in [-8, 7] so the 4-bit round-trip is lossless.
+            for (int j = 0; j < 16; j++) {
+                uint8_t lo = static_cast<uint8_t>((w[j] + 8) & 0x0F);
+                uint8_t hi = static_cast<uint8_t>((w[j + 16] + 8) & 0x0F);
+                b->qs[j] = static_cast<uint8_t>(lo | (hi << 4));
+            }
+        }
     }
-  }
 }
 
 MatmulType::MatmulType(const MatmulInput &matmul_input, uint32_t test_index,
-                       uint32_t total_tests, bool is_bmm) {
-  // Use std::mt19937 for random float generation
-  std::mt19937 gen(rand());
-  matmul_m = (matmul_input.m &&
-              *matmul_input.m > 0) ? *matmul_input.m : MATMUL_SIZE_START + rand() %
-             MATMUL_SIZE_END;
-  matmul_k = (matmul_input.k &&
-              *matmul_input.k > 0) ? *matmul_input.k : MATMUL_SIZE_START + rand() %
-             MATMUL_SIZE_END;
-  matmul_n = (matmul_input.n &&
-              *matmul_input.n > 0) ? *matmul_input.n : MATMUL_SIZE_START + rand() %
-             MATMUL_SIZE_END;
-  transA     = matmul_input.transA ? *matmul_input.transA : rand() % 2;
-  transB     = matmul_input.transB ? *matmul_input.transB : rand() % 2;
-  // Post-op selection based on command-line input or random selection
-  if (matmul_input.po_types) {
-    if (matmul_input.po_types->size() > POST_OPS_LIMIT) {
-      EXCEPTION("Post-op chain length exceeds POST_OPS_LIMIT.");
+        uint32_t total_tests, bool is_bmm) {
+    // Use std::mt19937 for random float generation
+    std::mt19937 gen(rand());
+    matmul_m = (matmul_input.m && *matmul_input.m > 0)
+            ? *matmul_input.m
+            : MATMUL_SIZE_START + rand() % MATMUL_SIZE_END;
+    matmul_k = (matmul_input.k && *matmul_input.k > 0)
+            ? *matmul_input.k
+            : MATMUL_SIZE_START + rand() % MATMUL_SIZE_END;
+    matmul_n = (matmul_input.n && *matmul_input.n > 0)
+            ? *matmul_input.n
+            : MATMUL_SIZE_START + rand() % MATMUL_SIZE_END;
+    transA = matmul_input.transA ? *matmul_input.transA : rand() % 2;
+    transB = matmul_input.transB ? *matmul_input.transB : rand() % 2;
+    // Post-op selection based on command-line input or random selection
+    if (matmul_input.po_types) {
+        if (matmul_input.po_types->size() > POST_OPS_LIMIT) {
+            EXCEPTION("Post-op chain length exceeds POST_OPS_LIMIT.");
+        }
+        po_types = *matmul_input.po_types;
+    } else {
+        std::uniform_int_distribution<int> num_po(1, POST_OPS_LIMIT);
+        int num_po_local = num_po(gen);
+        for (int i = 0; i < num_po_local; ++i) {
+            po_types.push_back(post_op_arr[rand() % (po_size + 1)]);
+        }
     }
-    po_types = *matmul_input.po_types;
-  }
-  else {
-    std::uniform_int_distribution<int> num_po(1, POST_OPS_LIMIT);
-    int num_po_local = num_po(gen);
-    for (int i = 0; i < num_po_local; ++i) {
-      po_types.push_back(post_op_arr[rand() % (po_size + 1)]);
-    }
-  }
 
-  std::uniform_real_distribution<float> dist(0.0, 10.0);
-  alpha    = matmul_input.alpha ? *matmul_input.alpha : dist(gen);
-  beta     = matmul_input.beta ? *matmul_input.beta : dist(gen);
+    std::uniform_real_distribution<float> dist(0.0, 10.0);
+    alpha = matmul_input.alpha ? *matmul_input.alpha : dist(gen);
+    beta = matmul_input.beta ? *matmul_input.beta : dist(gen);
 
-  if (cmd_num_threads) {
-    num_threads = cmd_num_threads;
-  }
-  else {
-    int max_threads = omp_get_max_threads();
-    std::uniform_int_distribution<int> thread_dist(1, max_threads);
-    num_threads = thread_dist(gen);
-  }
+    if (cmd_num_threads) {
+        num_threads = cmd_num_threads;
+    } else {
+        int max_threads = omp_get_max_threads();
+        std::uniform_int_distribution<int> thread_dist(1, max_threads);
+        num_threads = thread_dist(gen);
+    }
 
-  const auto is_libxsmm_algo = [](matmul_algo_t a) {
-    return a == matmul_algo_t::libxsmm || a == matmul_algo_t::libxsmm_blocked;
-  };
-  // LOWOHA-only mode: default to LOWOHA API. If the user passes --lowoha
-  // with any value that does not parse as true ("true"/"1", case-insensitive
-  // via `parse_bool_field()`) -- e.g. false/0 or any invalid non-empty token
-  // such as "maybe" -- tests will detect this and skip with a "Please use
-  // LOA API" message in each test fixture's SetUp().
-  const bool user_specified_lowoha = !cmd_lowoha.empty();
-  if (user_specified_lowoha) {
-    use_LOWOHA = parse_cmd_lowoha().value_or(false);
-  }
-  else {
-    use_LOWOHA = true;
-  }
-  matmul_config_t &matmul_config = matmul_config_t::instance();
-  int32_t algo_ = is_bmm ? matmul_config.get_bmm_algo()
-                  : matmul_config.get_algo();
-  algo = static_cast<matmul_algo_t>(algo_);
+    const auto is_libxsmm_algo = [](matmul_algo_t a) {
+        return a == matmul_algo_t::libxsmm
+                || a == matmul_algo_t::libxsmm_blocked;
+    };
+    // LOWOHA-only mode: default to LOWOHA API. If the user passes --lowoha
+    // with any value that does not parse as true ("true"/"1", case-insensitive
+    // via `parse_bool_field()`) -- e.g. false/0 or any invalid non-empty token
+    // such as "maybe" -- tests will detect this and skip with a "Please use
+    // LOA API" message in each test fixture's SetUp().
+    const bool user_specified_lowoha = !cmd_lowoha.empty();
+    if (user_specified_lowoha) {
+        use_LOWOHA = parse_cmd_lowoha().value_or(false);
+    } else {
+        use_LOWOHA = true;
+    }
+    matmul_config_t &matmul_config = matmul_config_t::instance();
+    int32_t algo_
+            = is_bmm ? matmul_config.get_bmm_algo() : matmul_config.get_algo();
+    algo = static_cast<matmul_algo_t>(algo_);
 
-  // Command-line specified algo if no env-var is set
-  if (algo == matmul_algo_t::none && matmul_input.algo) {
-    algo = *matmul_input.algo;
-  }
-  // Fail if onednn/onednn_blocked was chosen (env or --backend) but the build has no OneDNN
-  if (!ZENDNNL_DEPENDS_ONEDNN && (algo == matmul_algo_t::onednn ||
-                                  algo == matmul_algo_t::onednn_blocked)) {
-    EXCEPTION("OneDNN backends (onednn, onednn_blocked) are unavailable: "
-              "ZenDNN build was compiled without OneDNN. Please rebuild ZenDNN with OneDNN support.");
-  }
-  // Fail if libxsmm/libxsmm_blocked was chosen (env or --backend) but the build has no LIBXSMM
-  if (!ZENDNNL_DEPENDS_LIBXSMM && is_libxsmm_algo(algo)) {
-    EXCEPTION("LIBXSMM backends (libxsmm, libxsmm_blocked) are unavailable: "
-              "ZenDNN build was compiled without LIBXSMM. Please rebuild ZenDNN with LIBXSMM support.");
-  }
+    // Command-line specified algo if no env-var is set
+    if (algo == matmul_algo_t::none && matmul_input.algo) {
+        algo = *matmul_input.algo;
+    }
+    // Fail if onednn/onednn_blocked was chosen (env or --backend) but the build has no OneDNN
+    if (!ZENDNNL_DEPENDS_ONEDNN
+            && (algo == matmul_algo_t::onednn
+                    || algo == matmul_algo_t::onednn_blocked)) {
+        EXCEPTION(
+                "OneDNN backends (onednn, onednn_blocked) are unavailable: "
+                "ZenDNN build was compiled without OneDNN. Please rebuild "
+                "ZenDNN with OneDNN support.");
+    }
+    // Fail if libxsmm/libxsmm_blocked was chosen (env or --backend) but the build has no LIBXSMM
+    if (!ZENDNNL_DEPENDS_LIBXSMM && is_libxsmm_algo(algo)) {
+        EXCEPTION(
+                "LIBXSMM backends (libxsmm, libxsmm_blocked) are unavailable: "
+                "ZenDNN build was compiled without LIBXSMM. Please rebuild "
+                "ZenDNN with LIBXSMM support.");
+    }
 
-  // LIBXSMM coverage is partitioned by test index: aocl_dlp for the first two
-  // thirds, libxsmm/libxsmm_blocked allowed in the last third. (The earlier
-  // LOWOHA partitioning has been removed since LOWOHA is now always on by
-  // default.)
-  uint32_t third = (total_tests + TEST_PARTITIONS - 1) / TEST_PARTITIONS;
-  bool in_last_third = test_index >= 2 * third;
-  bool randomized_algo_mode = false;
+    // LIBXSMM coverage is partitioned by test index: aocl_dlp for the first two
+    // thirds, libxsmm/libxsmm_blocked allowed in the last third. (The earlier
+    // LOWOHA partitioning has been removed since LOWOHA is now always on by
+    // default.)
+    uint32_t third = (total_tests + TEST_PARTITIONS - 1) / TEST_PARTITIONS;
+    bool in_last_third = test_index >= 2 * third;
+    bool randomized_algo_mode = false;
 
-  // If no algo specified through env-var or command-line, select a random algo
-  if (algo == matmul_algo_t::none) {
-    std::vector<int> algo_list;
-    bool onednn_disabled = !ZENDNNL_DEPENDS_ONEDNN;
-    bool libxsmm_disabled = !ZENDNNL_DEPENDS_LIBXSMM;
-    // Drop LIBXSMM backends (libxsmm, libxsmm_blocked) if LOWOHA is explicitly
-    // disabled or if LIBXSMM itself is not available in the build.
-    bool exclude_libxsmm = libxsmm_disabled || (user_specified_lowoha &&
-                           !use_LOWOHA);
-    if (onednn_disabled && exclude_libxsmm) {
-      algo_list = {1, 4};
+    // If no algo specified through env-var or command-line, select a random algo
+    if (algo == matmul_algo_t::none) {
+        std::vector<int> algo_list;
+        bool onednn_disabled = !ZENDNNL_DEPENDS_ONEDNN;
+        bool libxsmm_disabled = !ZENDNNL_DEPENDS_LIBXSMM;
+        // Drop LIBXSMM backends (libxsmm, libxsmm_blocked) if LOWOHA is explicitly
+        // disabled or if LIBXSMM itself is not available in the build.
+        bool exclude_libxsmm
+                = libxsmm_disabled || (user_specified_lowoha && !use_LOWOHA);
+        if (onednn_disabled && exclude_libxsmm) {
+            algo_list = {1, 4};
+        } else if (onednn_disabled) {
+            algo_list = {1, 3, 4, 6};
+        } else if (exclude_libxsmm) {
+            algo_list = {1, 2, 4, 5};
+        } else {
+            algo_list = {1, 2, 3, 4, 5, 6};
+        }
+        std::uniform_int_distribution<size_t> algo_dist(
+                0, algo_list.size() - 1);
+        algo = static_cast<matmul_algo_t>(algo_list[algo_dist(gen)]);
+        randomized_algo_mode = true;
     }
-    else if (onednn_disabled) {
-      algo_list = {1, 3, 4, 6};
+    if (randomized_algo_mode) {
+        // If randomized algo mode is active and we are in first two thirds, switch to aocl_dlp if libxsmm is selected
+        if (!in_last_third && is_libxsmm_algo(algo)) {
+            algo = matmul_algo_t::aocl_dlp;
+        }
+        // If randomized algo mode is active and we are in the last third, randomly choose libxsmm vs libxsmm_blocked
+        // when the build has LIBXSMM and the user did not explicitly disable LOWOHA.
+        else if (in_last_third) {
+            if (ZENDNNL_DEPENDS_LIBXSMM
+                    && (!user_specified_lowoha || use_LOWOHA)) {
+                algo = (rand() % 2) ? matmul_algo_t::libxsmm
+                                    : matmul_algo_t::libxsmm_blocked;
+            }
+        }
     }
-    else if (exclude_libxsmm) {
-      algo_list = {1, 2, 4, 5};
-    }
-    else {
-      algo_list = {1, 2, 3, 4, 5, 6};
-    }
-    std::uniform_int_distribution<size_t> algo_dist(0, algo_list.size() - 1);
-    algo = static_cast<matmul_algo_t>(algo_list[algo_dist(gen)]);
-    randomized_algo_mode = true;
-  }
-  if (randomized_algo_mode) {
-    // If randomized algo mode is active and we are in first two thirds, switch to aocl_dlp if libxsmm is selected
-    if (!in_last_third && is_libxsmm_algo(algo)) {
-      algo = matmul_algo_t::aocl_dlp;
-    }
-    // If randomized algo mode is active and we are in the last third, randomly choose libxsmm vs libxsmm_blocked
-    // when the build has LIBXSMM and the user did not explicitly disable LOWOHA.
-    else if (in_last_third) {
-      if (ZENDNNL_DEPENDS_LIBXSMM && (!user_specified_lowoha || use_LOWOHA)) {
-        algo = (rand() % 2) ? matmul_algo_t::libxsmm : matmul_algo_t::libxsmm_blocked;
-      }
-    }
-  }
 
-  // LOWOHA-only mode: do not randomize use_LOWOHA. It was already set above
-  // (default true, or honoring --lowoha when explicitly provided). Algorithms
-  // that require LOWOHA (LIBXSMM, native_gemm/native_brgemm) still force it on
-  // unless the user explicitly disabled LOWOHA -- in that case the test will
-  // be skipped at SetUp() time, so we leave use_LOWOHA false here.
-  const bool algo_forces_lowoha = is_libxsmm_algo(algo) ||
-                                  algo == matmul_algo_t::native_gemm || algo == matmul_algo_t::native_brgemm;
-  const bool user_disabled_lowoha = user_specified_lowoha && !use_LOWOHA;
-  if (algo_forces_lowoha && !user_disabled_lowoha) {
-    use_LOWOHA = true;
-  }
-  if (is_libxsmm_algo(algo)) {
-    alpha = 1.0f;
-    if (matmul_input.beta && beta != 0.0f && beta != 1.0f) {
-      log_info("Unsupported beta for LIBXSMM: ", beta,
-               " (use 0 or 1); using random beta.");
+    // LOWOHA-only mode: do not randomize use_LOWOHA. It was already set above
+    // (default true, or honoring --lowoha when explicitly provided). Algorithms
+    // that require LOWOHA (LIBXSMM, native_gemm/native_brgemm) still force it on
+    // unless the user explicitly disabled LOWOHA -- in that case the test will
+    // be skipped at SetUp() time, so we leave use_LOWOHA false here.
+    const bool algo_forces_lowoha = is_libxsmm_algo(algo)
+            || algo == matmul_algo_t::native_gemm
+            || algo == matmul_algo_t::native_brgemm;
+    const bool user_disabled_lowoha = user_specified_lowoha && !use_LOWOHA;
+    if (algo_forces_lowoha && !user_disabled_lowoha) { use_LOWOHA = true; }
+    if (is_libxsmm_algo(algo)) {
+        alpha = 1.0f;
+        if (matmul_input.beta && beta != 0.0f && beta != 1.0f) {
+            log_info("Unsupported beta for LIBXSMM: ", beta,
+                    " (use 0 or 1); using random beta.");
+        }
+        if (!matmul_input.beta || (beta != 0.0f && beta != 1.0f)) {
+            beta = rand() % 2;
+        }
+        // gelu_tanh, mish, swish and clip are not supported for LIBXSMM
+        // binary_mul and binary_add dropped for accuracy issues
+        for (uint32_t i = 0; i < po_types.size(); ++i) {
+            if (po_types[i] == post_op_type_t::gelu_tanh
+                    || po_types[i] == post_op_type_t::binary_mul
+                    || po_types[i] == post_op_type_t::binary_add
+                    || po_types[i] == post_op_type_t::mish
+                    || po_types[i] == post_op_type_t::swish
+                    || po_types[i] == post_op_type_t::clip) {
+                po_types[i] = post_op_type_t::none;
+            }
+        }
     }
-    if (!matmul_input.beta || (beta != 0.0f && beta != 1.0f)) {
-      beta = rand() % 2;
-    }
-    // gelu_tanh, mish, swish and clip are not supported for LIBXSMM
-    // binary_mul and binary_add dropped for accuracy issues
-    for (uint32_t i = 0; i < po_types.size(); ++i) {
-      if (po_types[i] == post_op_type_t::gelu_tanh ||
-          po_types[i] == post_op_type_t::binary_mul ||
-          po_types[i] == post_op_type_t::binary_add ||
-          po_types[i] == post_op_type_t::mish ||
-          po_types[i] == post_op_type_t::swish ||
-          po_types[i] == post_op_type_t::clip) {
-        po_types[i] = post_op_type_t::none;
-      }
-    }
-  }
 
-  // mish is not implemented in the native (gemm/brgemm) post-op
-  // dispatchers, so neutralize it for those algos to avoid silent skips.
-  if (algo == matmul_algo_t::native_gemm ||
-      algo == matmul_algo_t::native_brgemm) {
-    for (uint32_t i = 0; i < po_types.size(); ++i) {
-      if (po_types[i] == post_op_type_t::mish) {
-        po_types[i] = post_op_type_t::none;
-      }
+    // mish is not implemented in the native (gemm/brgemm) post-op
+    // dispatchers, so neutralize it for those algos to avoid silent skips.
+    if (algo == matmul_algo_t::native_gemm
+            || algo == matmul_algo_t::native_brgemm) {
+        for (uint32_t i = 0; i < po_types.size(); ++i) {
+            if (po_types[i] == post_op_type_t::mish) {
+                po_types[i] = post_op_type_t::none;
+            }
+        }
     }
-  }
 
-  if (matmul_input.src_dtype &&
-      (*matmul_input.src_dtype == data_type_t::s8 ||
-       *matmul_input.src_dtype == data_type_t::u8)) {
-    source_dtype = *matmul_input.src_dtype;
-  }
-  else {
-    if (matmul_input.src_dtype) {
-      log_info("Unsupported src_dtype: ", dtype_info(*matmul_input.src_dtype),
-               " (use s8, u8); using random src_dtype.");
+    if (matmul_input.src_dtype
+            && (*matmul_input.src_dtype == data_type_t::s8
+                    || *matmul_input.src_dtype == data_type_t::u8)) {
+        source_dtype = *matmul_input.src_dtype;
+    } else {
+        if (matmul_input.src_dtype) {
+            log_info("Unsupported src_dtype: ",
+                    dtype_info(*matmul_input.src_dtype),
+                    " (use s8, u8); using random src_dtype.");
+        }
+        source_dtype = rand() % 2 == 0 ? data_type_t::s8 : data_type_t::u8;
     }
-    source_dtype = rand() % 2 == 0 ? data_type_t::s8 : data_type_t::u8;
-  }
 
-  if (matmul_input.dst_dtype && (*matmul_input.dst_dtype == data_type_t::s8 ||
-                                 *matmul_input.dst_dtype == data_type_t::u8 ||
-                                 *matmul_input.dst_dtype == data_type_t::f32 ||
-                                 *matmul_input.dst_dtype == data_type_t::bf16 ||
-                                 *matmul_input.dst_dtype == data_type_t::f16)) {
-    output_dtype = *matmul_input.dst_dtype;
-  }
-  else {
-    if (matmul_input.dst_dtype) {
-      log_info("Unsupported dst_dtype: ", dtype_info(*matmul_input.dst_dtype),
-               " (use s8, u8, f32, bf16, f16); using random dst_dtype.");
+    if (matmul_input.dst_dtype
+            && (*matmul_input.dst_dtype == data_type_t::s8
+                    || *matmul_input.dst_dtype == data_type_t::u8
+                    || *matmul_input.dst_dtype == data_type_t::f32
+                    || *matmul_input.dst_dtype == data_type_t::bf16
+                    || *matmul_input.dst_dtype == data_type_t::f16)) {
+        output_dtype = *matmul_input.dst_dtype;
+    } else {
+        if (matmul_input.dst_dtype) {
+            log_info("Unsupported dst_dtype: ",
+                    dtype_info(*matmul_input.dst_dtype),
+                    " (use s8, u8, f32, bf16, f16); using random dst_dtype.");
+        }
+        output_dtype = dtype_arr[rand() % dtype_size];
     }
-    output_dtype = dtype_arr[rand() % dtype_size];
-  }
 
-  if (matmul_input.weight_granularity &&
-      (*matmul_input.weight_granularity == quant_granularity_t::tensor ||
-       *matmul_input.weight_granularity == quant_granularity_t::channel)) {
-    weight_granularity = *matmul_input.weight_granularity;
-  }
-  else {
-    weight_granularity = rand() % 2 == 0 ? quant_granularity_t::tensor :
-                         quant_granularity_t::channel;
-  }
+    if (matmul_input.weight_granularity
+            && (*matmul_input.weight_granularity == quant_granularity_t::tensor
+                    || *matmul_input.weight_granularity
+                            == quant_granularity_t::channel)) {
+        weight_granularity = *matmul_input.weight_granularity;
+    } else {
+        weight_granularity = rand() % 2 == 0 ? quant_granularity_t::tensor
+                                             : quant_granularity_t::channel;
+    }
 }
 
 // `GroupQuantMatmulType::GroupQuantMatmulType(...)` was lifted into
@@ -389,3159 +389,2979 @@ MatmulType::MatmulType(const MatmulInput &matmul_input, uint32_t test_index,
 
 // EmbagType constructor
 EmbagType::EmbagType(const EmbagInput &embag_input) {
-  num_embeddings = embag_input.embedding_input.num_embeddings ?
-                   *embag_input.embedding_input.num_embeddings :
-                   (EMBEDDING_SIZE_START + std::rand() % EMBEDDING_SIZE_END);
-  embedding_dim = embag_input.embedding_input.embedding_dim ?
-                  *embag_input.embedding_input.embedding_dim :
-                  (EMBEDDING_DIM_START + std::rand() % EMBEDDING_DIM_END);
-  num_indices = embag_input.embedding_input.num_indices ?
-                *embag_input.embedding_input.num_indices :
-                (NUM_INDICES_START + std::rand() % NUM_INDICES_END);
-  num_bags = embag_input.num_bags ? *embag_input.num_bags :
-             (NUM_BAGS_START + std::rand() % NUM_BAGS_END);
-  algo = embag_input.embag_algo ? *embag_input.embag_algo :
-         static_cast<embag_algo_t>(1 + std::rand() % 3); // sum=1, mean=2, max=3
-  padding_index = embag_input.embedding_input.padding_index ?
-                  *embag_input.embedding_input.padding_index : -1;
-  include_last_offset = embag_input.include_last_offset ?
-                        *embag_input.include_last_offset : std::rand() % 2;
-  is_weights = embag_input.embedding_input.is_weights ?
-               *embag_input.embedding_input.is_weights : std::rand() % 2;
-  if (embag_input.embedding_input.indices_dtype) {
-    if (*embag_input.embedding_input.indices_dtype == data_type_t::s32 ||
-        *embag_input.embedding_input.indices_dtype == data_type_t::s64) {
-      indices_dtype = *embag_input.embedding_input.indices_dtype;
+    num_embeddings = embag_input.embedding_input.num_embeddings
+            ? *embag_input.embedding_input.num_embeddings
+            : (EMBEDDING_SIZE_START + std::rand() % EMBEDDING_SIZE_END);
+    embedding_dim = embag_input.embedding_input.embedding_dim
+            ? *embag_input.embedding_input.embedding_dim
+            : (EMBEDDING_DIM_START + std::rand() % EMBEDDING_DIM_END);
+    num_indices = embag_input.embedding_input.num_indices
+            ? *embag_input.embedding_input.num_indices
+            : (NUM_INDICES_START + std::rand() % NUM_INDICES_END);
+    num_bags = embag_input.num_bags
+            ? *embag_input.num_bags
+            : (NUM_BAGS_START + std::rand() % NUM_BAGS_END);
+    algo = embag_input.embag_algo
+            ? *embag_input.embag_algo
+            : static_cast<embag_algo_t>(
+                      1 + std::rand() % 3); // sum=1, mean=2, max=3
+    padding_index = embag_input.embedding_input.padding_index
+            ? *embag_input.embedding_input.padding_index
+            : -1;
+    include_last_offset = embag_input.include_last_offset
+            ? *embag_input.include_last_offset
+            : std::rand() % 2;
+    is_weights = embag_input.embedding_input.is_weights
+            ? *embag_input.embedding_input.is_weights
+            : std::rand() % 2;
+    if (embag_input.embedding_input.indices_dtype) {
+        if (*embag_input.embedding_input.indices_dtype == data_type_t::s32
+                || *embag_input.embedding_input.indices_dtype
+                        == data_type_t::s64) {
+            indices_dtype = *embag_input.embedding_input.indices_dtype;
+        } else {
+            log_info("Unsupported indices_dtype: ",
+                    dtype_info(*embag_input.embedding_input.indices_dtype),
+                    " (use s32, s64); using random indices_dtype.");
+            indices_dtype
+                    = rand() % 2 == 0 ? data_type_t::s32 : data_type_t::s64;
+        }
+    } else {
+        indices_dtype = rand() % 2 == 0 ? data_type_t::s32 : data_type_t::s64;
     }
-    else {
-      log_info("Unsupported indices_dtype: ",
-               dtype_info(*embag_input.embedding_input.indices_dtype),
-               " (use s32, s64); using random indices_dtype.");
-      indices_dtype = rand() % 2 == 0 ? data_type_t::s32 : data_type_t::s64;
+    offsets_dtype = indices_dtype;
+    fp16_scale_bias = embag_input.embedding_input.fp16_scale_bias
+            ? *embag_input.embedding_input.fp16_scale_bias
+            : std::rand() % 2;
+    strided = embag_input.embedding_input.strided
+            ? *embag_input.embedding_input.strided
+            : std::rand() % 2;
+    // LOWOHA-only mode: default to LOWOHA API. If the user passes --lowoha
+    // with any value that does not parse as true ("true"/"1", case-insensitive
+    // via `parse_bool_field()`) -- e.g. false/0 or any invalid non-empty
+    // token -- the test fixture's SetUp() will skip with a "Please use LOA
+    // API" message.
+    if (cmd_lowoha.empty()) {
+        use_LOWOHA = true;
+    } else {
+        use_LOWOHA = parse_cmd_lowoha().value_or(false);
     }
-  }
-  else {
-    indices_dtype = rand() % 2 == 0 ? data_type_t::s32 : data_type_t::s64;
-  }
-  offsets_dtype = indices_dtype;
-  fp16_scale_bias = embag_input.embedding_input.fp16_scale_bias ?
-                    *embag_input.embedding_input.fp16_scale_bias :
-                    std::rand() % 2;
-  strided = embag_input.embedding_input.strided ?
-            *embag_input.embedding_input.strided : std::rand() % 2;
-  // LOWOHA-only mode: default to LOWOHA API. If the user passes --lowoha
-  // with any value that does not parse as true ("true"/"1", case-insensitive
-  // via `parse_bool_field()`) -- e.g. false/0 or any invalid non-empty
-  // token -- the test fixture's SetUp() will skip with a "Please use LOA
-  // API" message.
-  if (cmd_lowoha.empty()) {
-    use_LOWOHA = true;
-  }
-  else {
-    use_LOWOHA = parse_cmd_lowoha().value_or(false);
-  }
-  if (cmd_num_threads) {
-    num_threads = cmd_num_threads;
-  }
-  else {
-    int max_threads = omp_get_max_threads();
-    num_threads = 1 + std::rand() % max_threads;
-  }
+    if (cmd_num_threads) {
+        num_threads = cmd_num_threads;
+    } else {
+        int max_threads = omp_get_max_threads();
+        num_threads = 1 + std::rand() % max_threads;
+    }
 }
 
 // EmbeddingType constructor
 EmbeddingType::EmbeddingType(const EmbeddingInput &embedding_input) {
-  num_embeddings = embedding_input.num_embeddings ?
-                   *embedding_input.num_embeddings : (EMBEDDING_SIZE_START + std::rand() %
-                       EMBEDDING_SIZE_END);
-  embedding_dim = embedding_input.embedding_dim ?
-                  *embedding_input.embedding_dim : (EMBEDDING_DIM_START + std::rand() %
-                      EMBEDDING_DIM_END);
-  num_indices = embedding_input.num_indices ? *embedding_input.num_indices :
-                (NUM_INDICES_START + std::rand() % NUM_INDICES_END);
-  padding_index = embedding_input.padding_index ? *embedding_input.padding_index :
-                  -1;
-  is_weights = embedding_input.is_weights ? *embedding_input.is_weights :
-               std::rand() % 2;
-  if (embedding_input.indices_dtype) {
-    if (*embedding_input.indices_dtype == data_type_t::s32 ||
-        *embedding_input.indices_dtype == data_type_t::s64) {
-      indices_dtype = *embedding_input.indices_dtype;
+    num_embeddings = embedding_input.num_embeddings
+            ? *embedding_input.num_embeddings
+            : (EMBEDDING_SIZE_START + std::rand() % EMBEDDING_SIZE_END);
+    embedding_dim = embedding_input.embedding_dim
+            ? *embedding_input.embedding_dim
+            : (EMBEDDING_DIM_START + std::rand() % EMBEDDING_DIM_END);
+    num_indices = embedding_input.num_indices
+            ? *embedding_input.num_indices
+            : (NUM_INDICES_START + std::rand() % NUM_INDICES_END);
+    padding_index = embedding_input.padding_index
+            ? *embedding_input.padding_index
+            : -1;
+    is_weights = embedding_input.is_weights ? *embedding_input.is_weights
+                                            : std::rand() % 2;
+    if (embedding_input.indices_dtype) {
+        if (*embedding_input.indices_dtype == data_type_t::s32
+                || *embedding_input.indices_dtype == data_type_t::s64) {
+            indices_dtype = *embedding_input.indices_dtype;
+        } else {
+            log_info("Unsupported indices_dtype: ",
+                    dtype_info(*embedding_input.indices_dtype),
+                    " (use s32, s64); using random indices_dtype.");
+            indices_dtype
+                    = rand() % 2 == 0 ? data_type_t::s32 : data_type_t::s64;
+        }
+    } else {
+        indices_dtype = rand() % 2 == 0 ? data_type_t::s32 : data_type_t::s64;
     }
-    else {
-      log_info("Unsupported indices_dtype: ",
-               dtype_info(*embedding_input.indices_dtype),
-               " (use s32, s64); using random indices_dtype.");
-      indices_dtype = rand() % 2 == 0 ? data_type_t::s32 : data_type_t::s64;
+    fp16_scale_bias = embedding_input.fp16_scale_bias
+            ? *embedding_input.fp16_scale_bias
+            : std::rand() % 2;
+    strided = embedding_input.strided ? *embedding_input.strided
+                                      : std::rand() % 2;
+    // LOWOHA-only mode: default to LOWOHA API. If the user passes --lowoha
+    // with any value that does not parse as true ("true"/"1", case-insensitive
+    // via `parse_bool_field()`) -- e.g. false/0 or any invalid non-empty
+    // token -- the test fixture's SetUp() will skip with a "Please use LOA
+    // API" message.
+    if (cmd_lowoha.empty()) {
+        use_LOWOHA = true;
+    } else {
+        use_LOWOHA = parse_cmd_lowoha().value_or(false);
     }
-  }
-  else {
-    indices_dtype = rand() % 2 == 0 ? data_type_t::s32 : data_type_t::s64;
-  }
-  fp16_scale_bias = embedding_input.fp16_scale_bias ?
-                    *embedding_input.fp16_scale_bias :
-                    std::rand() % 2;
-  strided = embedding_input.strided ? *embedding_input.strided : std::rand() % 2;
-  // LOWOHA-only mode: default to LOWOHA API. If the user passes --lowoha
-  // with any value that does not parse as true ("true"/"1", case-insensitive
-  // via `parse_bool_field()`) -- e.g. false/0 or any invalid non-empty
-  // token -- the test fixture's SetUp() will skip with a "Please use LOA
-  // API" message.
-  if (cmd_lowoha.empty()) {
-    use_LOWOHA = true;
-  }
-  else {
-    use_LOWOHA = parse_cmd_lowoha().value_or(false);
-  }
-  if (cmd_num_threads) {
-    num_threads = cmd_num_threads;
-  }
-  else {
-    int max_threads = omp_get_max_threads();
-    static std::mt19937 gen(rand());
-    std::uniform_int_distribution<int> thread_dist(1, max_threads);
-    num_threads = thread_dist(gen);
-  }
+    if (cmd_num_threads) {
+        num_threads = cmd_num_threads;
+    } else {
+        int max_threads = omp_get_max_threads();
+        static std::mt19937 gen(rand());
+        std::uniform_int_distribution<int> thread_dist(1, max_threads);
+        num_threads = thread_dist(gen);
+    }
 }
 
 // NormalizationType constructor
-NormalizationType::NormalizationType(const NormalizationInput
-                                     &normalization_input) {
-  if (normalization_input.norm_type) {
-    norm_type = *normalization_input.norm_type;
-  }
-  else {
-    int type_choice = std::rand() % 4;
-    switch (type_choice) {
-    case 0:
-      norm_type = norm_type_t::LAYER_NORM;
-      break;
-    case 1:
-      norm_type = norm_type_t::RMS_NORM;
-      break;
-    case 2:
-      norm_type = norm_type_t::FUSED_ADD_RMS_NORM;
-      break;
-    case 3:
-      norm_type = norm_type_t::BATCH_NORM;
-      break;
-    }
-  }
-
-  if (norm_type == norm_type_t::BATCH_NORM) {
-    int ndims = 0;
-    if (normalization_input.norm_shape) {
-      const auto &input_shape = *normalization_input.norm_shape;
-      if (input_shape.size() < 2) {
-        log_info("norm_shape for batch norm needs at least two dimensions; "
-                 "using random shape.");
-      }
-      else {
-        shape = input_shape;
-        ndims = static_cast<int>(shape.size());
-      }
-    }
-    if (ndims == 0) {
-      ndims = 2 + std::rand() % 4;
-      shape.resize(ndims);
-      shape[0] = 1 + std::rand() % 8;
-      shape[1] = 1 + std::rand() % 32;
-      for (int i = 2; i < ndims; ++i) {
-        shape[i] = 1 + std::rand() % 16;
-      }
-    }
-    batch = shape[0];
-    num_channels = shape[1];
-    norm_size = 1;
-    for (int i = 2; i < ndims; ++i) {
-      norm_size *= shape[i];
-    }
-  }
-  else {
-    int ndims = 0;
-    if (normalization_input.norm_shape) {
-      const auto &input_shape = *normalization_input.norm_shape;
-      if (input_shape.empty()) {
-        log_info("norm_shape needs at least one dimension; using random shape.");
-      }
-      else {
-        shape = input_shape;
-        ndims = static_cast<int>(shape.size());
-      }
-    }
-    if (ndims == 0) {
-      ndims = 1 + std::rand() % 5;
-      shape.resize(ndims);
-      for (int i = 0; i < ndims - 1; ++i) {
-        shape[i] = 1 + std::rand() % 8;
-      }
-      shape[ndims - 1] = 1 + std::rand() % 512;
+NormalizationType::NormalizationType(
+        const NormalizationInput &normalization_input) {
+    if (normalization_input.norm_type) {
+        norm_type = *normalization_input.norm_type;
+    } else {
+        int type_choice = std::rand() % 4;
+        switch (type_choice) {
+            case 0: norm_type = norm_type_t::LAYER_NORM; break;
+            case 1: norm_type = norm_type_t::RMS_NORM; break;
+            case 2: norm_type = norm_type_t::FUSED_ADD_RMS_NORM; break;
+            case 3: norm_type = norm_type_t::BATCH_NORM; break;
+        }
     }
 
-    int norm_ndims_local;
-    int choice = std::rand() % 20;
-    if (ndims == 1) {
-      norm_ndims_local = 1;
-    }
-    else if (choice < 14) {
-      norm_ndims_local = 1;
-    }
-    else if (choice < 17) {
-      norm_ndims_local = 1 + std::rand() % (ndims - 1);
-    }
-    else {
-      norm_ndims_local = ndims;
+    if (norm_type == norm_type_t::BATCH_NORM) {
+        int ndims = 0;
+        if (normalization_input.norm_shape) {
+            const auto &input_shape = *normalization_input.norm_shape;
+            if (input_shape.size() < 2) {
+                log_info(
+                        "norm_shape for batch norm needs at least two "
+                        "dimensions; "
+                        "using random shape.");
+            } else {
+                shape = input_shape;
+                ndims = static_cast<int>(shape.size());
+            }
+        }
+        if (ndims == 0) {
+            ndims = 2 + std::rand() % 4;
+            shape.resize(ndims);
+            shape[0] = 1 + std::rand() % 8;
+            shape[1] = 1 + std::rand() % 32;
+            for (int i = 2; i < ndims; ++i) {
+                shape[i] = 1 + std::rand() % 16;
+            }
+        }
+        batch = shape[0];
+        num_channels = shape[1];
+        norm_size = 1;
+        for (int i = 2; i < ndims; ++i) {
+            norm_size *= shape[i];
+        }
+    } else {
+        int ndims = 0;
+        if (normalization_input.norm_shape) {
+            const auto &input_shape = *normalization_input.norm_shape;
+            if (input_shape.empty()) {
+                log_info(
+                        "norm_shape needs at least one dimension; using random "
+                        "shape.");
+            } else {
+                shape = input_shape;
+                ndims = static_cast<int>(shape.size());
+            }
+        }
+        if (ndims == 0) {
+            ndims = 1 + std::rand() % 5;
+            shape.resize(ndims);
+            for (int i = 0; i < ndims - 1; ++i) {
+                shape[i] = 1 + std::rand() % 8;
+            }
+            shape[ndims - 1] = 1 + std::rand() % 512;
+        }
+
+        int norm_ndims_local;
+        int choice = std::rand() % 20;
+        if (ndims == 1) {
+            norm_ndims_local = 1;
+        } else if (choice < 14) {
+            norm_ndims_local = 1;
+        } else if (choice < 17) {
+            norm_ndims_local = 1 + std::rand() % (ndims - 1);
+        } else {
+            norm_ndims_local = ndims;
+        }
+
+        batch = 1;
+        for (int i = 0; i < ndims - norm_ndims_local; ++i) {
+            batch *= shape[i];
+        }
+        norm_size = 1;
+        for (int i = ndims - norm_ndims_local; i < ndims; ++i) {
+            norm_size *= shape[i];
+        }
+        num_channels = 0;
     }
 
-    batch = 1;
-    for (int i = 0; i < ndims - norm_ndims_local; ++i) {
-      batch *= shape[i];
-    }
-    norm_size = 1;
-    for (int i = ndims - norm_ndims_local; i < ndims; ++i) {
-      norm_size *= shape[i];
-    }
-    num_channels = 0;
-  }
+    epsilon = (norm_type == norm_type_t::RMS_NORM
+                      || norm_type == norm_type_t::FUSED_ADD_RMS_NORM)
+            ? 1e-6f
+            : 1e-5f;
 
-  epsilon = (norm_type == norm_type_t::RMS_NORM ||
-             norm_type == norm_type_t::FUSED_ADD_RMS_NORM) ? 1e-6f : 1e-5f;
-
-  use_scale = normalization_input.use_scale ? *normalization_input.use_scale :
-              (std::rand() % 4 != 0); // 75% true
-  if (norm_type == norm_type_t::LAYER_NORM ||
-      norm_type == norm_type_t::BATCH_NORM) {
-    use_shift = normalization_input.use_shift ? *normalization_input.use_shift :
-                (std::rand() % 4 != 0); // 75% true
-  }
-  else {
-    use_shift = normalization_input.use_shift ? *normalization_input.use_shift :
-                false;
-  }
-
-  // Pick gamma_dt / beta_dt independently from {f32, bf16, f16}. f16 is only
-  // included when the platform supports F16 ISA, since otherwise F32/BF16 I/O
-  // tests would fail with isa_unsupported when gamma/beta are f16.
-  // CLI overrides (--gamma_dt, --beta_dt) are honored when valid; otherwise
-  // a random pick from the supported set is used.
-  const bool f16_ok = zendnnl_platform_info().get_avx512_f16_status();
-  auto pick_gamma_beta_dt = [f16_ok]() {
-    int n_choices = f16_ok ? 3 : 2;
-    int c = std::rand() % n_choices;
-    if (c == 0) {
-      return data_type_t::f32;
+    use_scale = normalization_input.use_scale
+            ? *normalization_input.use_scale
+            : (std::rand() % 4 != 0); // 75% true
+    if (norm_type == norm_type_t::LAYER_NORM
+            || norm_type == norm_type_t::BATCH_NORM) {
+        use_shift = normalization_input.use_shift
+                ? *normalization_input.use_shift
+                : (std::rand() % 4 != 0); // 75% true
+    } else {
+        use_shift = normalization_input.use_shift
+                ? *normalization_input.use_shift
+                : false;
     }
-    if (c == 1) {
-      return data_type_t::bf16;
-    }
-    return data_type_t::f16;
-  };
-  auto resolve_gamma_beta_dt = [&](const char *name,
-  const std::optional<data_type_t> &cli_dt) {
-    if (cli_dt) {
-      const bool supported = (*cli_dt == data_type_t::f32 ||
-                              *cli_dt == data_type_t::bf16 ||
-                              (*cli_dt == data_type_t::f16 && f16_ok));
-      if (supported) {
-        return *cli_dt;
-      }
-      log_info("Unsupported ", name, ": ", dtype_info(*cli_dt),
-               " (use f32, bf16",
-               f16_ok ? ", f16" : "",
-               "); using random ", name, ".");
-    }
-    return pick_gamma_beta_dt();
-  };
-  gamma_dt = resolve_gamma_beta_dt("gamma_dt", normalization_input.gamma_dt);
-  beta_dt  = resolve_gamma_beta_dt("beta_dt",  normalization_input.beta_dt);
 
-  if (cmd_num_threads) {
-    num_threads = cmd_num_threads;
-  }
-  else {
-    int max_threads = omp_get_max_threads();
-    static std::mt19937 gen(std::rand());
-    std::uniform_int_distribution<int> thread_dist(1, max_threads);
-    num_threads = thread_dist(gen);
-  }
+    // Pick gamma_dt / beta_dt independently from {f32, bf16, f16}. f16 is only
+    // included when the platform supports F16 ISA, since otherwise F32/BF16 I/O
+    // tests would fail with isa_unsupported when gamma/beta are f16.
+    // CLI overrides (--gamma_dt, --beta_dt) are honored when valid; otherwise
+    // a random pick from the supported set is used.
+    const bool f16_ok = zendnnl_platform_info().get_avx512_f16_status();
+    auto pick_gamma_beta_dt = [f16_ok]() {
+        int n_choices = f16_ok ? 3 : 2;
+        int c = std::rand() % n_choices;
+        if (c == 0) { return data_type_t::f32; }
+        if (c == 1) { return data_type_t::bf16; }
+        return data_type_t::f16;
+    };
+    auto resolve_gamma_beta_dt
+            = [&](const char *name, const std::optional<data_type_t> &cli_dt) {
+        if (cli_dt) {
+            const bool supported = (*cli_dt == data_type_t::f32
+                    || *cli_dt == data_type_t::bf16
+                    || (*cli_dt == data_type_t::f16 && f16_ok));
+            if (supported) { return *cli_dt; }
+            log_info("Unsupported ", name, ": ", dtype_info(*cli_dt),
+                    " (use f32, bf16", f16_ok ? ", f16" : "",
+                    "); using random ", name, ".");
+        }
+        return pick_gamma_beta_dt();
+    };
+    gamma_dt = resolve_gamma_beta_dt("gamma_dt", normalization_input.gamma_dt);
+    beta_dt = resolve_gamma_beta_dt("beta_dt", normalization_input.beta_dt);
+
+    if (cmd_num_threads) {
+        num_threads = cmd_num_threads;
+    } else {
+        int max_threads = omp_get_max_threads();
+        static std::mt19937 gen(std::rand());
+        std::uniform_int_distribution<int> thread_dist(1, max_threads);
+        num_threads = thread_dist(gen);
+    }
 }
 
 SoftmaxType::SoftmaxType() {
-  ndims = 1 + std::rand() % SOFTMAX_MAX_NDIMS;
+    ndims = 1 + std::rand() % SOFTMAX_MAX_NDIMS;
 
-  // Per-dim limits scaled by ndims to keep total elements under ~1M
-  // and avoid excessive memory usage for high-dimensional tensors.
-  static const int dim_limit[] = {10000, 1000, 100, 32, 16};
-  int max_per_dim = dim_limit[ndims - 1];
-  for (int i = 0; i < ndims; ++i) {
-    shape[i] = 1 + std::rand() % max_per_dim;
-  }
-  for (int i = ndims; i < SOFTMAX_MAX_NDIMS; ++i) {
-    shape[i] = 0;
-  }
-  // Restrict to last-axis softmax (axis=-1) which is the standard case
-  // for attention mechanisms and classification layers.
-  // TODO: Extend to non-last-axis after root-causing the OneDNN vs
-  // reference kernel discrepancy for strided (non-contiguous) axis layouts.
-  axis = -1;
-  log_softmax = (std::rand() % 2 == 0);
-  softmin     = (std::rand() % 2 == 0);
+    // Per-dim limits scaled by ndims to keep total elements under ~1M
+    // and avoid excessive memory usage for high-dimensional tensors.
+    static const int dim_limit[] = {10000, 1000, 100, 32, 16};
+    int max_per_dim = dim_limit[ndims - 1];
+    for (int i = 0; i < ndims; ++i) {
+        shape[i] = 1 + std::rand() % max_per_dim;
+    }
+    for (int i = ndims; i < SOFTMAX_MAX_NDIMS; ++i) {
+        shape[i] = 0;
+    }
+    // Restrict to last-axis softmax (axis=-1) which is the standard case
+    // for attention mechanisms and classification layers.
+    // TODO: Extend to non-last-axis after root-causing the OneDNN vs
+    // reference kernel discrepancy for strided (non-contiguous) axis layouts.
+    axis = -1;
+    log_softmax = (std::rand() % 2 == 0);
+    softmin = (std::rand() % 2 == 0);
 
-  if (cmd_num_threads) {
-    num_threads = cmd_num_threads;
-  }
-  else {
-    int max_threads = omp_get_max_threads();
-    static std::mt19937 gen(std::rand());
-    std::uniform_int_distribution<int> thread_dist(1, max_threads);
-    num_threads = thread_dist(gen);
-  }
+    if (cmd_num_threads) {
+        num_threads = cmd_num_threads;
+    } else {
+        int max_threads = omp_get_max_threads();
+        static std::mt19937 gen(std::rand());
+        std::uniform_int_distribution<int> thread_dist(1, max_threads);
+        num_threads = thread_dist(gen);
+    }
 }
 
 BatchMatmulType::BatchMatmulType(const MatmulInput &matmul_input,
-                                 uint32_t test_index, uint32_t total_tests) {
-  batch_size = (matmul_input.batch_size &&
-                *matmul_input.batch_size > 0) ? *matmul_input.batch_size : BATCH_START + rand()
-               %
-               BATCH_END;
-  mat = MatmulType(matmul_input, test_index, total_tests,
-                   true);  //set is_bmm=true
+        uint32_t test_index, uint32_t total_tests) {
+    batch_size = (matmul_input.batch_size && *matmul_input.batch_size > 0)
+            ? *matmul_input.batch_size
+            : BATCH_START + rand() % BATCH_END;
+    mat = MatmulType(matmul_input, test_index, total_tests,
+            true); //set is_bmm=true
 }
 
 // SdpaType constructor: random SDPA shape and configuration
 SdpaType::SdpaType() {
-  static std::mt19937 gen(rand());
+    static std::mt19937 gen(rand());
 
-  // Keep dimensions modest so total elements stay reasonable for CI runtime
-  // and so the seq_len * seq_len attention scratch fits comfortably.
-  std::uniform_int_distribution<uint64_t> batch_dist(1, 4);
-  std::uniform_int_distribution<uint64_t> heads_dist(1, 16);
-  std::uniform_int_distribution<uint64_t> seq_dist(1, 128);
-  // Restrict head_dim to powers-of-two-ish typical transformer sizes.
-  static const uint64_t head_dim_choices[] = {16, 32, 64, 96, 128};
-  std::uniform_int_distribution<size_t> hd_dist(0,
-      sizeof(head_dim_choices) / sizeof(head_dim_choices[0]) - 1);
+    // Keep dimensions modest so total elements stay reasonable for CI runtime
+    // and so the seq_len * seq_len attention scratch fits comfortably.
+    std::uniform_int_distribution<uint64_t> batch_dist(1, 4);
+    std::uniform_int_distribution<uint64_t> heads_dist(1, 16);
+    std::uniform_int_distribution<uint64_t> seq_dist(1, 128);
+    // Restrict head_dim to powers-of-two-ish typical transformer sizes.
+    static const uint64_t head_dim_choices[] = {16, 32, 64, 96, 128};
+    std::uniform_int_distribution<size_t> hd_dist(
+            0, sizeof(head_dim_choices) / sizeof(head_dim_choices[0]) - 1);
 
-  batch     = batch_dist(gen);
-  num_heads = heads_dist(gen);
-  seq_len   = seq_dist(gen);
-  head_dim  = head_dim_choices[hd_dist(gen)];
+    batch = batch_dist(gen);
+    num_heads = heads_dist(gen);
+    seq_len = seq_dist(gen);
+    head_dim = head_dim_choices[hd_dist(gen)];
 
-  // ~50% self-attention (kv_seq_len == seq_len), ~50% cross-attention
-  // (independently drawn kv_seq_len). Cross-attn exercises the distinct
-  // q/kv stride paths in the kernel and the [S_q, S_kv] mask layout.
-  kv_seq_len = (std::rand() % 2 == 0) ? seq_len : seq_dist(gen);
+    // ~50% self-attention (kv_seq_len == seq_len), ~50% cross-attention
+    // (independently drawn kv_seq_len). Cross-attn exercises the distinct
+    // q/kv stride paths in the kernel and the [S_q, S_kv] mask layout.
+    kv_seq_len = (std::rand() % 2 == 0) ? seq_len : seq_dist(gen);
 
-  // 1/sqrt(head_dim) is the canonical SDPA scale; keep it positive (validate())
-  scale     = 1.0f / std::sqrt(static_cast<float>(head_dim));
+    // 1/sqrt(head_dim) is the canonical SDPA scale; keep it positive (validate())
+    scale = 1.0f / std::sqrt(static_cast<float>(head_dim));
 
-  // Randomly exercise all causal/mask combinations, including the combined
-  // causal+explicit-mask path, to cover SDPA behavior in all modes.
-  // Mode encoding (~25% probability each):
-  //   0 -> neither (pure softmax(QK^T * scale) V)
-  //   1 -> causal only
-  //   2 -> explicit additive mask only
-  //   3 -> causal AND explicit mask: causal sets scores[i][j>i] to -inf
-  //        first, then the mask is added; -inf + finite stays -inf so the
-  //        upper triangle remains masked. The bounded [-0.5, +0.5] mask
-  //        used by the dependent tests guarantees row 0 retains a finite
-  //        entry at position 0 (no all-(-inf) row -> no NaN softmax).
-  int mode = std::rand() % 4;
-  is_causal = (mode == 1 || mode == 3);
-  has_mask  = (mode == 2 || mode == 3);
+    // Randomly exercise all causal/mask combinations, including the combined
+    // causal+explicit-mask path, to cover SDPA behavior in all modes.
+    // Mode encoding (~25% probability each):
+    //   0 -> neither (pure softmax(QK^T * scale) V)
+    //   1 -> causal only
+    //   2 -> explicit additive mask only
+    //   3 -> causal AND explicit mask: causal sets scores[i][j>i] to -inf
+    //        first, then the mask is added; -inf + finite stays -inf so the
+    //        upper triangle remains masked. The bounded [-0.5, +0.5] mask
+    //        used by the dependent tests guarantees row 0 retains a finite
+    //        entry at position 0 (no all-(-inf) row -> no NaN softmax).
+    int mode = std::rand() % 4;
+    is_causal = (mode == 1 || mode == 3);
+    has_mask = (mode == 2 || mode == 3);
 
-  if (cmd_num_threads) {
-    num_threads = cmd_num_threads;
-  }
-  else {
-    int max_threads = omp_get_max_threads();
-    std::uniform_int_distribution<int> thread_dist(1, max_threads);
-    num_threads = thread_dist(gen);
-  }
+    if (cmd_num_threads) {
+        num_threads = cmd_num_threads;
+    } else {
+        int max_threads = omp_get_max_threads();
+        std::uniform_int_distribution<int> thread_dist(1, max_threads);
+        num_threads = thread_dist(gen);
+    }
 }
 
 // `ReorderType::ReorderType(...)` was moved to `reorder/reorder_test_helpers.cpp`.
 
 bool is_binary_postop(post_op_type_t post_op) {
-  return post_op == post_op_type_t::binary_add ||
-         post_op == post_op_type_t::binary_mul;
+    return post_op == post_op_type_t::binary_add
+            || post_op == post_op_type_t::binary_mul;
 }
 
 std::vector<tensor_t> make_binary_postop_tensors(
-  tensor_factory_t &tensor_factory, const std::vector<post_op_type_t> &po_types,
-  const std::vector<tensor_factory_t::index_type> &output_shape,
-  data_type_t binary_dtype, float uniform_range) {
-  std::vector<tensor_t> out;
-  out.reserve(po_types.size());
-  for (const auto &po : po_types) {
-    if (is_binary_postop(po)) {
-      out.push_back(
-        tensor_factory.uniform_dist_tensor(output_shape, binary_dtype, uniform_range));
+        tensor_factory_t &tensor_factory,
+        const std::vector<post_op_type_t> &po_types,
+        const std::vector<tensor_factory_t::index_type> &output_shape,
+        data_type_t binary_dtype, float uniform_range) {
+    std::vector<tensor_t> out;
+    out.reserve(po_types.size());
+    for (const auto &po : po_types) {
+        if (is_binary_postop(po)) {
+            out.push_back(tensor_factory.uniform_dist_tensor(
+                    output_shape, binary_dtype, uniform_range));
+        }
     }
-  }
-  return out;
+    return out;
 }
 
 tensor_t tensor_factory_t::zero_tensor(const std::vector<index_type> size_,
-                                       data_type dtype_, tensor_t scale, tensor_t zp,
-                                       bool strided, bool trans) {
+        data_type dtype_, tensor_t scale, tensor_t zp, bool strided,
+        bool trans) {
 
-  auto ztensor = tensor_t()
-                 .set_name("zero tensor")
-                 .set_size(size_)
-                 .set_data_type(dtype_);
-  auto tensor_dim = ztensor.get_dim();
-  if (trans && tensor_dim >= 2) {
-    std::string tag;
-    for (size_t i = 0; i < tensor_dim; ++i) {
-      tag += 'a' + i;
+    auto ztensor = tensor_t()
+                           .set_name("zero tensor")
+                           .set_size(size_)
+                           .set_data_type(dtype_);
+    auto tensor_dim = ztensor.get_dim();
+    if (trans && tensor_dim >= 2) {
+        std::string tag;
+        for (size_t i = 0; i < tensor_dim; ++i) {
+            tag += 'a' + i;
+        }
+        std::swap(tag[size_.size() - 2], tag[size_.size() - 1]);
+        ztensor.set_order(tag);
     }
-    std::swap(tag[size_.size() - 2], tag[size_.size() - 1]);
-    ztensor.set_order(tag);
-  }
-  if (strided) {
-    uint64_t x = size_[1] + rand() % 50;
-    ztensor.set_stride({x, 1});
-    ztensor.set_aligned_size({size_[0], x});
-    ztensor.set_storage();
-  }
-  else {
-    ztensor.set_storage();
-  }
+    if (strided) {
+        uint64_t x = size_[1] + rand() % 50;
+        ztensor.set_stride({x, 1});
+        ztensor.set_aligned_size({size_[0], x});
+        ztensor.set_storage();
+    } else {
+        ztensor.set_storage();
+    }
 
-  if (scale.get_nelem() != 0) {
-    ztensor.set_quant_scale(scale);
-  }
-  if (zp.get_nelem() != 0) {
-    ztensor.set_quant_zero_point(zp);
-  }
-  ztensor.create();
+    if (scale.get_nelem() != 0) { ztensor.set_quant_scale(scale); }
+    if (zp.get_nelem() != 0) { ztensor.set_quant_zero_point(zp); }
+    ztensor.create();
 
-  if (! ztensor.check()) {
-    log_warning("tensor creation of ", ztensor.get_name(), " failed.");
-  }
-  else {
-    auto  buf_size = ztensor.get_buffer_sz_bytes();
-    void *buf_ptr  = ztensor.get_raw_handle_unsafe();
-    std::memset(buf_ptr, 0, buf_size);
-  }
-  return ztensor;
+    if (!ztensor.check()) {
+        log_warning("tensor creation of ", ztensor.get_name(), " failed.");
+    } else {
+        auto buf_size = ztensor.get_buffer_sz_bytes();
+        void *buf_ptr = ztensor.get_raw_handle_unsafe();
+        std::memset(buf_ptr, 0, buf_size);
+    }
+    return ztensor;
 }
 
-tensor_t tensor_factory_t::uniform_dist_tensor(const std::vector<index_type>
-    size_, data_type dtype_, float val,
-    bool trans, tensor_t scale, tensor_t zp) {
-  auto udtensor = tensor_t()
-                  .set_name("uniform distributed tensor")
-                  .set_size(size_)
-                  .set_data_type(dtype_);
+tensor_t tensor_factory_t::uniform_dist_tensor(
+        const std::vector<index_type> size_, data_type dtype_, float val,
+        bool trans, tensor_t scale, tensor_t zp) {
+    auto udtensor = tensor_t()
+                            .set_name("uniform distributed tensor")
+                            .set_size(size_)
+                            .set_data_type(dtype_);
 
-  auto tensor_dim = udtensor.get_dim();
-  if (trans && tensor_dim >=2) {
-    std::string tag;
-    for (size_t i=0; i<tensor_dim; ++i) {
-      tag += 'a' + i;
+    auto tensor_dim = udtensor.get_dim();
+    if (trans && tensor_dim >= 2) {
+        std::string tag;
+        for (size_t i = 0; i < tensor_dim; ++i) {
+            tag += 'a' + i;
+        }
+        std::swap(tag[size_.size() - 2], tag[size_.size() - 1]);
+        udtensor.set_order(tag);
     }
-    std::swap(tag[size_.size() - 2], tag[size_.size() - 1]);
-    udtensor.set_order(tag);
-  }
 
-  udtensor.set_storage();
+    udtensor.set_storage();
 
-  if (scale.get_nelem() != 0) {
-    udtensor.set_quant_scale(scale);
-  }
-  if (zp.get_nelem() != 0) {
-    udtensor.set_quant_zero_point(zp);
-  }
-  udtensor.create();
+    if (scale.get_nelem() != 0) { udtensor.set_quant_scale(scale); }
+    if (zp.get_nelem() != 0) { udtensor.set_quant_zero_point(zp); }
+    udtensor.create();
 
-  if (! udtensor.check()) {
-    log_warning("tensor creation of ", udtensor.get_name(), " failed.");
-  }
-  else {
-    std::mt19937 gen(seed);
-    std::uniform_real_distribution<float> dist2(-1.0 * val, 1.0 * val);
+    if (!udtensor.check()) {
+        log_warning("tensor creation of ", udtensor.get_name(), " failed.");
+    } else {
+        std::mt19937 gen(seed);
+        std::uniform_real_distribution<float> dist2(-1.0 * val, 1.0 * val);
 
-    auto  buf_nelem  = udtensor.get_nelem();
-    void *buf_vptr   = udtensor.get_raw_handle_unsafe();
+        auto buf_nelem = udtensor.get_nelem();
+        void *buf_vptr = udtensor.get_raw_handle_unsafe();
 
-    if (dtype_ == data_type::f32) {
-      float *buf_ptr = static_cast<float *>(buf_vptr);
-      std::generate(buf_ptr, buf_ptr+buf_nelem, [&] {return dist2(gen);});
+        if (dtype_ == data_type::f32) {
+            float *buf_ptr = static_cast<float *>(buf_vptr);
+            std::generate(
+                    buf_ptr, buf_ptr + buf_nelem, [&] { return dist2(gen); });
+        } else if (dtype_ == data_type::bf16) {
+            bfloat16_t *buf_ptr = static_cast<bfloat16_t *>(buf_vptr);
+            std::generate(buf_ptr, buf_ptr + buf_nelem,
+                    [&] { return bfloat16_t(dist2(gen)); });
+        } else if (dtype_ == data_type::f16) {
+            float16_t *buf_ptr = static_cast<float16_t *>(buf_vptr);
+            std::generate(buf_ptr, buf_ptr + buf_nelem,
+                    [&] { return float16_t(dist2(gen)); });
+        } else if (dtype_ == data_type::s8) {
+            std::uniform_int_distribution<int> dist_s8(-1 * val, val);
+            int8_t *buf_ptr = static_cast<int8_t *>(buf_vptr);
+            std::generate(buf_ptr, buf_ptr + buf_nelem,
+                    [&] { return static_cast<int8_t>(dist_s8(gen)); });
+        } else if (dtype_ == data_type::u8) {
+            std::uniform_int_distribution<int> dist_u8(0, val);
+            uint8_t *buf_ptr = static_cast<uint8_t *>(buf_vptr);
+            std::generate(buf_ptr, buf_ptr + buf_nelem,
+                    [&] { return static_cast<uint8_t>(dist_u8(gen)); });
+        } else if (dtype_ == data_type::s32) {
+            std::uniform_int_distribution<int> dist_s32(-1 * val, val);
+            int32_t *buf_ptr = static_cast<int32_t *>(buf_vptr);
+            std::generate(buf_ptr, buf_ptr + buf_nelem,
+                    [&] { return static_cast<int32_t>(dist_s32(gen)); });
+        } else if (dtype_ == data_type::s4) {
+            // S4 is packed: 2 x 4-bit values per byte, range [-8, 7]
+            // buf_nelem is the number of S4 elements, stored in buf_nelem/2 bytes
+            std::uniform_int_distribution<int> dist_s4(
+                    -8, 7); // S4 range: -8 to 7
+            int8_t *buf_ptr = static_cast<int8_t *>(buf_vptr);
+            size_t num_bytes = (buf_nelem + 1)
+                    / 2; // Round up for odd number of elements
+            for (size_t i = 0; i < num_bytes; ++i) {
+                int8_t low_nibble = static_cast<int8_t>(dist_s4(gen)) & 0x0F;
+                int8_t high_nibble = static_cast<int8_t>(dist_s4(gen)) & 0x0F;
+                buf_ptr[i] = low_nibble | (high_nibble << 4);
+            }
+        } else if (dtype_ == data_type::u4) {
+            std::uniform_int_distribution<int> dist_u4(0, 15);
+            uint8_t *buf_ptr = static_cast<uint8_t *>(buf_vptr);
+            size_t num_bytes = (buf_nelem + 1) / 2;
+            for (size_t i = 0; i < num_bytes; ++i) {
+                uint8_t low_nibble = static_cast<uint8_t>(dist_u4(gen)) & 0x0F;
+                uint8_t high_nibble = static_cast<uint8_t>(dist_u4(gen)) & 0x0F;
+                buf_ptr[i] = low_nibble | (high_nibble << 4);
+            }
+        } else {
+            log_warning(
+                    "tensor ", udtensor.get_name(), " unsupported data type.");
+        }
     }
-    else if (dtype_ == data_type::bf16) {
-      bfloat16_t *buf_ptr = static_cast<bfloat16_t *>(buf_vptr);
-      std::generate(buf_ptr, buf_ptr+buf_nelem, [&] {return bfloat16_t(dist2(gen));});
-    }
-    else if (dtype_ == data_type::f16) {
-      float16_t *buf_ptr = static_cast<float16_t *>(buf_vptr);
-      std::generate(buf_ptr, buf_ptr+buf_nelem, [&] {return float16_t(dist2(gen));});
-    }
-    else if (dtype_ == data_type::s8) {
-      std::uniform_int_distribution<int> dist_s8(-1*val, val);
-      int8_t *buf_ptr = static_cast<int8_t *>(buf_vptr);
-      std::generate(buf_ptr, buf_ptr + buf_nelem, [&] { return static_cast<int8_t>(dist_s8(gen)); });
-    }
-    else if (dtype_ == data_type::u8) {
-      std::uniform_int_distribution<int> dist_u8(0, val);
-      uint8_t *buf_ptr = static_cast<uint8_t *>(buf_vptr);
-      std::generate(buf_ptr, buf_ptr + buf_nelem, [&] { return static_cast<uint8_t>(dist_u8(gen)); });
-    }
-    else if (dtype_ == data_type::s32) {
-      std::uniform_int_distribution<int> dist_s32(-1 * val, val);
-      int32_t *buf_ptr = static_cast<int32_t *>(buf_vptr);
-      std::generate(buf_ptr, buf_ptr + buf_nelem, [&] { return static_cast<int32_t>(dist_s32(gen)); });
-    }
-    else if (dtype_ == data_type::s4) {
-      // S4 is packed: 2 x 4-bit values per byte, range [-8, 7]
-      // buf_nelem is the number of S4 elements, stored in buf_nelem/2 bytes
-      std::uniform_int_distribution<int> dist_s4(-8, 7);  // S4 range: -8 to 7
-      int8_t *buf_ptr = static_cast<int8_t *>(buf_vptr);
-      size_t num_bytes = (buf_nelem + 1) / 2;  // Round up for odd number of elements
-      for (size_t i = 0; i < num_bytes; ++i) {
-        int8_t low_nibble = static_cast<int8_t>(dist_s4(gen)) & 0x0F;
-        int8_t high_nibble = static_cast<int8_t>(dist_s4(gen)) & 0x0F;
-        buf_ptr[i] = low_nibble | (high_nibble << 4);
-      }
-    }
-    else if (dtype_ == data_type::u4) {
-      std::uniform_int_distribution<int> dist_u4(0, 15);
-      uint8_t *buf_ptr = static_cast<uint8_t *>(buf_vptr);
-      size_t num_bytes = (buf_nelem + 1) / 2;
-      for (size_t i = 0; i < num_bytes; ++i) {
-        uint8_t low_nibble = static_cast<uint8_t>(dist_u4(gen)) & 0x0F;
-        uint8_t high_nibble = static_cast<uint8_t>(dist_u4(gen)) & 0x0F;
-        buf_ptr[i] = low_nibble | (high_nibble << 4);
-      }
-    }
-    else {
-      log_warning("tensor ", udtensor.get_name(), " unsupported data type.");
-    }
-  }
-  return udtensor;
+    return udtensor;
 }
 
 tensor_t tensor_factory_t::uniform_tensor(const std::vector<index_type> size_,
-    data_type dtype_, float val_,
-    std::string tensor_name_, bool trans,
-    tensor_t scale, tensor_t zp) {
+        data_type dtype_, float val_, std::string tensor_name_, bool trans,
+        tensor_t scale, tensor_t zp) {
 
-  auto utensor = tensor_t()
-                 .set_name(tensor_name_)
-                 .set_size(size_)
-                 .set_data_type(dtype_);
+    auto utensor = tensor_t()
+                           .set_name(tensor_name_)
+                           .set_size(size_)
+                           .set_data_type(dtype_);
 
-  auto tensor_dim = utensor.get_dim();
-  if (trans && tensor_dim >= 2) {
-    std::string tag;
-    for (size_t i = 0; i < tensor_dim; ++i) {
-      tag += 'a' + i;
+    auto tensor_dim = utensor.get_dim();
+    if (trans && tensor_dim >= 2) {
+        std::string tag;
+        for (size_t i = 0; i < tensor_dim; ++i) {
+            tag += 'a' + i;
+        }
+        std::swap(tag[size_.size() - 2], tag[size_.size() - 1]);
+        utensor.set_order(tag);
     }
-    std::swap(tag[size_.size() - 2], tag[size_.size() - 1]);
-    utensor.set_order(tag);
-  }
 
-  utensor.set_storage();
+    utensor.set_storage();
 
-  if (scale.get_nelem() != 0) {
-    utensor.set_quant_scale(scale);
-  }
-  if (zp.get_nelem() != 0) {
-    utensor.set_quant_zero_point(zp);
-  }
-  utensor.create();
+    if (scale.get_nelem() != 0) { utensor.set_quant_scale(scale); }
+    if (zp.get_nelem() != 0) { utensor.set_quant_zero_point(zp); }
+    utensor.create();
 
-  if (!utensor.check()) {
-    log_warning("tensor creation of ", utensor.get_name(), " failed.");
-  }
-  else {
-    auto  buf_nelem = utensor.get_nelem();
-    void *buf_vptr  = utensor.get_raw_handle_unsafe();
+    if (!utensor.check()) {
+        log_warning("tensor creation of ", utensor.get_name(), " failed.");
+    } else {
+        auto buf_nelem = utensor.get_nelem();
+        void *buf_vptr = utensor.get_raw_handle_unsafe();
 
-    if (dtype_ == data_type::f32) {
-      float *buf_ptr = static_cast<float *>(buf_vptr);
-      for (index_type i = 0; i < buf_nelem; ++i) {
-        buf_ptr[i] = val_;
-      }
+        if (dtype_ == data_type::f32) {
+            float *buf_ptr = static_cast<float *>(buf_vptr);
+            for (index_type i = 0; i < buf_nelem; ++i) {
+                buf_ptr[i] = val_;
+            }
+        } else if (dtype_ == data_type::bf16) {
+            bfloat16_t *buf_ptr = static_cast<bfloat16_t *>(buf_vptr);
+            for (index_type i = 0; i < buf_nelem; ++i) {
+                buf_ptr[i] = bfloat16_t(val_);
+            }
+        } else if (dtype_ == data_type::f16) {
+            float16_t *buf_ptr = static_cast<float16_t *>(buf_vptr);
+            for (index_type i = 0; i < buf_nelem; ++i) {
+                buf_ptr[i] = float16_t(val_);
+            }
+        } else if (dtype_ == data_type::s8) {
+            int8_t *buf_ptr = static_cast<int8_t *>(buf_vptr);
+            for (index_type i = 0; i < buf_nelem; ++i) {
+                buf_ptr[i] = static_cast<int8_t>(val_);
+            }
+        } else if (dtype_ == data_type::u8) {
+            uint8_t *buf_ptr = static_cast<uint8_t *>(buf_vptr);
+            for (index_type i = 0; i < buf_nelem; ++i) {
+                buf_ptr[i] = static_cast<uint8_t>(val_);
+            }
+        } else if (dtype_ == data_type::s32) {
+            int32_t *buf_ptr = static_cast<int32_t *>(buf_vptr);
+            for (index_type i = 0; i < buf_nelem; ++i) {
+                buf_ptr[i] = static_cast<int32_t>(val_);
+            }
+        } else if (dtype_ == data_type::s4) {
+            // S4 is packed: 2 x 4-bit values per byte, range [-8, 7]
+            int8_t s4_val = static_cast<int8_t>(val_) & 0x0F;
+            int8_t packed_val
+                    = s4_val | (s4_val << 4); // Same value in both nibbles
+            int8_t *buf_ptr = static_cast<int8_t *>(buf_vptr);
+            size_t num_bytes = (buf_nelem + 1) / 2;
+            for (size_t i = 0; i < num_bytes; ++i) {
+                buf_ptr[i] = packed_val;
+            }
+        } else if (dtype_ == data_type::u4) {
+            uint8_t u4_val = static_cast<uint8_t>(val_) & 0x0F;
+            uint8_t packed_val = u4_val | (u4_val << 4);
+            uint8_t *buf_ptr = static_cast<uint8_t *>(buf_vptr);
+            size_t num_bytes = (buf_nelem + 1) / 2;
+            for (size_t i = 0; i < num_bytes; ++i) {
+                buf_ptr[i] = packed_val;
+            }
+        } else {
+            log_warning(
+                    "tensor ", utensor.get_name(), " unsupported data type.");
+        }
     }
-    else if (dtype_ == data_type::bf16) {
-      bfloat16_t *buf_ptr = static_cast<bfloat16_t *>(buf_vptr);
-      for (index_type i = 0; i < buf_nelem; ++i) {
-        buf_ptr[i] = bfloat16_t(val_);
-      }
-    }
-    else if (dtype_ == data_type::f16) {
-      float16_t *buf_ptr = static_cast<float16_t *>(buf_vptr);
-      for (index_type i = 0; i < buf_nelem; ++i) {
-        buf_ptr[i] = float16_t(val_);
-      }
-    }
-    else if (dtype_ == data_type::s8) {
-      int8_t *buf_ptr = static_cast<int8_t *>(buf_vptr);
-      for (index_type i = 0; i < buf_nelem; ++i) {
-        buf_ptr[i] = static_cast<int8_t>(val_);
-      }
-    }
-    else if (dtype_ == data_type::u8) {
-      uint8_t *buf_ptr = static_cast<uint8_t *>(buf_vptr);
-      for (index_type i = 0; i < buf_nelem; ++i) {
-        buf_ptr[i] = static_cast<uint8_t>(val_);
-      }
-    }
-    else if (dtype_ == data_type::s32) {
-      int32_t *buf_ptr = static_cast<int32_t *>(buf_vptr);
-      for (index_type i = 0; i < buf_nelem; ++i) {
-        buf_ptr[i] = static_cast<int32_t>(val_);
-      }
-    }
-    else if (dtype_ == data_type::s4) {
-      // S4 is packed: 2 x 4-bit values per byte, range [-8, 7]
-      int8_t s4_val = static_cast<int8_t>(val_) & 0x0F;
-      int8_t packed_val = s4_val | (s4_val << 4);  // Same value in both nibbles
-      int8_t *buf_ptr = static_cast<int8_t *>(buf_vptr);
-      size_t num_bytes = (buf_nelem + 1) / 2;
-      for (size_t i = 0; i < num_bytes; ++i) {
-        buf_ptr[i] = packed_val;
-      }
-    }
-    else if (dtype_ == data_type::u4) {
-      uint8_t u4_val = static_cast<uint8_t>(val_) & 0x0F;
-      uint8_t packed_val = u4_val | (u4_val << 4);
-      uint8_t *buf_ptr = static_cast<uint8_t *>(buf_vptr);
-      size_t num_bytes = (buf_nelem + 1) / 2;
-      for (size_t i = 0; i < num_bytes; ++i) {
-        buf_ptr[i] = packed_val;
-      }
-    }
-    else {
-      log_warning("tensor ", utensor.get_name(), " unsupported data type.");
-    }
-  }
-  return utensor;
+    return utensor;
 }
 
-tensor_t tensor_factory_t::uniform_dist_strided_tensor(const
-    std::vector<index_type> size_, const std::vector<index_type> aligned_size_,
-    data_type dtype_, float range_, bool trans, tensor_t scale, tensor_t zp) {
-  auto udstensor = tensor_t()
-                   .set_name("uniform distributed strided tensor")
-                   .set_size(size_)
-                   .set_data_type(dtype_)
-                   .set_aligned_size(aligned_size_)
-                   .set_storage();
-  if (scale.get_nelem() != 0) {
-    udstensor.set_quant_scale(scale);
-  }
-  if (zp.get_nelem() != 0) {
-    udstensor.set_quant_zero_point(zp);
-  }
-  udstensor.create();
+tensor_t tensor_factory_t::uniform_dist_strided_tensor(
+        const std::vector<index_type> size_,
+        const std::vector<index_type> aligned_size_, data_type dtype_,
+        float range_, bool trans, tensor_t scale, tensor_t zp) {
+    auto udstensor = tensor_t()
+                             .set_name("uniform distributed strided tensor")
+                             .set_size(size_)
+                             .set_data_type(dtype_)
+                             .set_aligned_size(aligned_size_)
+                             .set_storage();
+    if (scale.get_nelem() != 0) { udstensor.set_quant_scale(scale); }
+    if (zp.get_nelem() != 0) { udstensor.set_quant_zero_point(zp); }
+    udstensor.create();
 
-  if (! udstensor.check()) {
-    log_warning("tensor creation of ", udstensor.get_name(), " failed.");
-  }
-  else {
-    std::mt19937 gen(100);
-    std::uniform_real_distribution<float> dist(-1.0 * range_, 1.0 * range_);
+    if (!udstensor.check()) {
+        log_warning("tensor creation of ", udstensor.get_name(), " failed.");
+    } else {
+        std::mt19937 gen(100);
+        std::uniform_real_distribution<float> dist(-1.0 * range_, 1.0 * range_);
 
-    auto  buf_nelem   = aligned_size_[0];
-    for (size_t i = 1; i < aligned_size_.size(); i++) {
-      buf_nelem *= aligned_size_[i];
-    }
-    void *buf_vptr = udstensor.get_raw_handle_unsafe();
+        auto buf_nelem = aligned_size_[0];
+        for (size_t i = 1; i < aligned_size_.size(); i++) {
+            buf_nelem *= aligned_size_[i];
+        }
+        void *buf_vptr = udstensor.get_raw_handle_unsafe();
 
-    if (dtype_ == data_type::f32) {
-      float *buf_ptr = static_cast<float *>(buf_vptr);
-      std::generate(buf_ptr, buf_ptr + buf_nelem, [&] {return dist(gen);});
+        if (dtype_ == data_type::f32) {
+            float *buf_ptr = static_cast<float *>(buf_vptr);
+            std::generate(
+                    buf_ptr, buf_ptr + buf_nelem, [&] { return dist(gen); });
+        } else if (dtype_ == data_type::bf16) {
+            bfloat16_t *buf_ptr = static_cast<bfloat16_t *>(buf_vptr);
+            std::generate(buf_ptr, buf_ptr + buf_nelem,
+                    [&] { return bfloat16_t(dist(gen)); });
+        } else if (dtype_ == data_type::f16) {
+            float16_t *buf_ptr = static_cast<float16_t *>(buf_vptr);
+            std::generate(buf_ptr, buf_ptr + buf_nelem,
+                    [&] { return float16_t(dist(gen)); });
+        } else if (dtype_ == data_type::s8) {
+            int8_t *buf_ptr = static_cast<int8_t *>(buf_vptr);
+            std::generate(buf_ptr, buf_ptr + buf_nelem,
+                    [&] { return static_cast<int8_t>(dist(gen)); });
+        } else if (dtype_ == data_type::u8) {
+            uint8_t *buf_ptr = static_cast<uint8_t *>(buf_vptr);
+            std::generate(buf_ptr, buf_ptr + buf_nelem,
+                    [&] { return static_cast<uint8_t>(dist(gen)); });
+        } else if (dtype_ == data_type::s4) {
+            std::uniform_int_distribution<int> dist_s4(-8, 7);
+            int8_t *buf_ptr = static_cast<int8_t *>(buf_vptr);
+            size_t num_bytes = (buf_nelem + 1) / 2;
+            for (size_t i = 0; i < num_bytes; ++i) {
+                int8_t low_nibble = static_cast<int8_t>(dist_s4(gen)) & 0x0F;
+                int8_t high_nibble = static_cast<int8_t>(dist_s4(gen)) & 0x0F;
+                buf_ptr[i] = low_nibble | (high_nibble << 4);
+            }
+        } else if (dtype_ == data_type::u4) {
+            std::uniform_int_distribution<int> dist_u4(0, 15);
+            uint8_t *buf_ptr = static_cast<uint8_t *>(buf_vptr);
+            size_t num_bytes = (buf_nelem + 1) / 2;
+            for (size_t i = 0; i < num_bytes; ++i) {
+                uint8_t low_nibble = static_cast<uint8_t>(dist_u4(gen)) & 0x0F;
+                uint8_t high_nibble = static_cast<uint8_t>(dist_u4(gen)) & 0x0F;
+                buf_ptr[i] = low_nibble | (high_nibble << 4);
+            }
+        } else {
+            log_warning(
+                    "tensor ", udstensor.get_name(), " unsupported data type.");
+        }
     }
-    else if (dtype_ == data_type::bf16) {
-      bfloat16_t *buf_ptr = static_cast<bfloat16_t *>(buf_vptr);
-      std::generate(buf_ptr, buf_ptr + buf_nelem, [&] {return bfloat16_t(dist(gen));});
-    }
-    else if (dtype_ == data_type::f16) {
-      float16_t *buf_ptr = static_cast<float16_t *>(buf_vptr);
-      std::generate(buf_ptr, buf_ptr + buf_nelem, [&] {return float16_t(dist(gen));});
-    }
-    else if (dtype_ == data_type::s8) {
-      int8_t *buf_ptr = static_cast<int8_t *>(buf_vptr);
-      std::generate(buf_ptr, buf_ptr + buf_nelem, [&] { return static_cast<int8_t>(dist(gen)); });
-    }
-    else if (dtype_ == data_type::u8) {
-      uint8_t *buf_ptr = static_cast<uint8_t *>(buf_vptr);
-      std::generate(buf_ptr, buf_ptr + buf_nelem, [&] { return static_cast<uint8_t>(dist(gen)); });
-    }
-    else if (dtype_ == data_type::s4) {
-      std::uniform_int_distribution<int> dist_s4(-8, 7);
-      int8_t *buf_ptr = static_cast<int8_t *>(buf_vptr);
-      size_t num_bytes = (buf_nelem + 1) / 2;
-      for (size_t i = 0; i < num_bytes; ++i) {
-        int8_t low_nibble = static_cast<int8_t>(dist_s4(gen)) & 0x0F;
-        int8_t high_nibble = static_cast<int8_t>(dist_s4(gen)) & 0x0F;
-        buf_ptr[i] = low_nibble | (high_nibble << 4);
-      }
-    }
-    else if (dtype_ == data_type::u4) {
-      std::uniform_int_distribution<int> dist_u4(0, 15);
-      uint8_t *buf_ptr = static_cast<uint8_t *>(buf_vptr);
-      size_t num_bytes = (buf_nelem + 1) / 2;
-      for (size_t i = 0; i < num_bytes; ++i) {
-        uint8_t low_nibble = static_cast<uint8_t>(dist_u4(gen)) & 0x0F;
-        uint8_t high_nibble = static_cast<uint8_t>(dist_u4(gen)) & 0x0F;
-        buf_ptr[i] = low_nibble | (high_nibble << 4);
-      }
-    }
-    else {
-      log_warning("tensor ", udstensor.get_name(), " unsupported data type.");
-    }
-  }
-  return udstensor;
+    return udstensor;
 }
 
-tensor_t tensor_factory_t::blocked_tensor(const std::vector<index_type> size_,
-    data_type dtype_,
-    float val) {
+tensor_t tensor_factory_t::blocked_tensor(
+        const std::vector<index_type> size_, data_type dtype_, float val) {
 
-  auto btensor = tensor_t()
-                 .set_name("blocked tensor")
-                 .set_size(size_)
-                 .set_data_type(dtype_)
-                 .set_layout(tensor_layout_t::blocked)
-                 .set_storage()
-                 .create();
+    auto btensor = tensor_t()
+                           .set_name("blocked tensor")
+                           .set_size(size_)
+                           .set_data_type(dtype_)
+                           .set_layout(tensor_layout_t::blocked)
+                           .set_storage()
+                           .create();
 
-  if (! btensor.check()) {
-    log_warning("tensor creation of ", btensor.get_name(), " failed.");
-  }
-  else {
-    std::mt19937 gen(100);
-    std::uniform_real_distribution<float> dist(-1.0 * val, 1.0 * val);
+    if (!btensor.check()) {
+        log_warning("tensor creation of ", btensor.get_name(), " failed.");
+    } else {
+        std::mt19937 gen(100);
+        std::uniform_real_distribution<float> dist(-1.0 * val, 1.0 * val);
 
-    auto  buf_nelem  = btensor.get_nelem();
-    void *buf_vptr   = btensor.get_raw_handle_unsafe();
+        auto buf_nelem = btensor.get_nelem();
+        void *buf_vptr = btensor.get_raw_handle_unsafe();
 
-    if (dtype_ == data_type::f32) {
-      float *buf_ptr = static_cast<float *>(buf_vptr);
-      std::generate(buf_ptr, buf_ptr+buf_nelem, [&] {return dist(gen);});
+        if (dtype_ == data_type::f32) {
+            float *buf_ptr = static_cast<float *>(buf_vptr);
+            std::generate(
+                    buf_ptr, buf_ptr + buf_nelem, [&] { return dist(gen); });
+        } else if (dtype_ == data_type::bf16) {
+            bfloat16_t *buf_ptr = static_cast<bfloat16_t *>(buf_vptr);
+            std::generate(buf_ptr, buf_ptr + buf_nelem,
+                    [&] { return bfloat16_t(dist(gen)); });
+        } else if (dtype_ == data_type::f16) {
+            float16_t *buf_ptr = static_cast<float16_t *>(buf_vptr);
+            std::generate(buf_ptr, buf_ptr + buf_nelem,
+                    [&] { return float16_t(dist(gen)); });
+        } else if (dtype_ == data_type::s8) {
+            int8_t *buf_ptr = static_cast<int8_t *>(buf_vptr);
+            std::generate(buf_ptr, buf_ptr + buf_nelem,
+                    [&] { return int8_t(dist(gen)); });
+        } else if (dtype_ == data_type::s4) {
+            std::uniform_int_distribution<int> dist_s4(-8, 7);
+            int8_t *buf_ptr = static_cast<int8_t *>(buf_vptr);
+            size_t num_bytes = (buf_nelem + 1) / 2;
+            for (size_t i = 0; i < num_bytes; ++i) {
+                int8_t low_nibble = static_cast<int8_t>(dist_s4(gen)) & 0x0F;
+                int8_t high_nibble = static_cast<int8_t>(dist_s4(gen)) & 0x0F;
+                buf_ptr[i] = low_nibble | (high_nibble << 4);
+            }
+        } else if (dtype_ == data_type::u4) {
+            std::uniform_int_distribution<int> dist_u4(0, 15);
+            uint8_t *buf_ptr = static_cast<uint8_t *>(buf_vptr);
+            size_t num_bytes = (buf_nelem + 1) / 2;
+            for (size_t i = 0; i < num_bytes; ++i) {
+                uint8_t low_nibble = static_cast<uint8_t>(dist_u4(gen)) & 0x0F;
+                uint8_t high_nibble = static_cast<uint8_t>(dist_u4(gen)) & 0x0F;
+                buf_ptr[i] = low_nibble | (high_nibble << 4);
+            }
+        } else {
+            log_warning(
+                    "tensor ", btensor.get_name(), " unsupported data type.");
+        }
     }
-    else if (dtype_ == data_type::bf16) {
-      bfloat16_t *buf_ptr = static_cast<bfloat16_t *>(buf_vptr);
-      std::generate(buf_ptr, buf_ptr+buf_nelem, [&] {return bfloat16_t(dist(gen));});
-    }
-    else if (dtype_ == data_type::f16) {
-      float16_t *buf_ptr = static_cast<float16_t *>(buf_vptr);
-      std::generate(buf_ptr, buf_ptr+buf_nelem, [&] {return float16_t(dist(gen));});
-    }
-    else if (dtype_ == data_type::s8) {
-      int8_t *buf_ptr = static_cast<int8_t *>(buf_vptr);
-      std::generate(buf_ptr, buf_ptr+buf_nelem, [&] {return int8_t(dist(gen));});
-    }
-    else if (dtype_ == data_type::s4) {
-      std::uniform_int_distribution<int> dist_s4(-8, 7);
-      int8_t *buf_ptr = static_cast<int8_t *>(buf_vptr);
-      size_t num_bytes = (buf_nelem + 1) / 2;
-      for (size_t i = 0; i < num_bytes; ++i) {
-        int8_t low_nibble = static_cast<int8_t>(dist_s4(gen)) & 0x0F;
-        int8_t high_nibble = static_cast<int8_t>(dist_s4(gen)) & 0x0F;
-        buf_ptr[i] = low_nibble | (high_nibble << 4);
-      }
-    }
-    else if (dtype_ == data_type::u4) {
-      std::uniform_int_distribution<int> dist_u4(0, 15);
-      uint8_t *buf_ptr = static_cast<uint8_t *>(buf_vptr);
-      size_t num_bytes = (buf_nelem + 1) / 2;
-      for (size_t i = 0; i < num_bytes; ++i) {
-        uint8_t low_nibble = static_cast<uint8_t>(dist_u4(gen)) & 0x0F;
-        uint8_t high_nibble = static_cast<uint8_t>(dist_u4(gen)) & 0x0F;
-        buf_ptr[i] = low_nibble | (high_nibble << 4);
-      }
-    }
-    else {
-      log_warning("tensor ", btensor.get_name(), " unsupported data type.");
-    }
-  }
 
-  return btensor;
+    return btensor;
 }
 
 tensor_t tensor_factory_t::copy_tensor(const std::vector<index_type> size_,
-                                       data_type dtype_, StorageParam param,
-                                       bool trans, bool is_blocked) {
-  auto ctensor = tensor_t()
-                 .set_size(size_)
-                 .set_data_type(dtype_);
+        data_type dtype_, StorageParam param, bool trans, bool is_blocked) {
+    auto ctensor = tensor_t().set_size(size_).set_data_type(dtype_);
 
-  auto tensor_dim = ctensor.get_dim();
-  if (trans && tensor_dim >=2) {
-    std::string tag;
-    for (size_t i=0; i<tensor_dim; ++i) {
-      tag += 'a' + i;
+    auto tensor_dim = ctensor.get_dim();
+    if (trans && tensor_dim >= 2) {
+        std::string tag;
+        for (size_t i = 0; i < tensor_dim; ++i) {
+            tag += 'a' + i;
+        }
+        std::swap(tag[size_.size() - 2], tag[size_.size() - 1]);
+        ctensor.set_order(tag);
     }
-    std::swap(tag[size_.size() - 2], tag[size_.size() - 1]);
-    ctensor.set_order(tag);
-  }
 
-  if (is_blocked) {
-    ctensor.set_name("blocked tensor");
-    ctensor.set_layout(tensor_layout_t::blocked);
-  }
-  else {
-    ctensor.set_name("uniform distributed tensor");
-  }
+    if (is_blocked) {
+        ctensor.set_name("blocked tensor");
+        ctensor.set_layout(tensor_layout_t::blocked);
+    } else {
+        ctensor.set_name("uniform distributed tensor");
+    }
 
-  if (std::holds_alternative<std::pair<size_t, void *>>(param)) {
-    auto [reorder_size, reorder_buff] = std::get<std::pair<size_t, void *>>(param);
-    ctensor.set_storage(reorder_buff, reorder_size);
-  }
-  else if (std::holds_alternative<tensor_t>(param)) {
-    tensor_t input_tensor = std::get<tensor_t>(param);
-    ctensor.set_storage(input_tensor);
-  }
-  ctensor.create();
+    if (std::holds_alternative<std::pair<size_t, void *>>(param)) {
+        auto [reorder_size, reorder_buff]
+                = std::get<std::pair<size_t, void *>>(param);
+        ctensor.set_storage(reorder_buff, reorder_size);
+    } else if (std::holds_alternative<tensor_t>(param)) {
+        tensor_t input_tensor = std::get<tensor_t>(param);
+        ctensor.set_storage(input_tensor);
+    }
+    ctensor.create();
 
-  if (! ctensor.check()) {
-    log_warning("tensor creation of ", ctensor.get_name(), " failed.");
-  }
-  return ctensor;
+    if (!ctensor.check()) {
+        log_warning("tensor creation of ", ctensor.get_name(), " failed.");
+    }
+    return ctensor;
 }
 
 // Extended tensor factory implementations
-tensor_t tensor_factory_t::random_indices_tensor(const std::vector<index_type>
-    size_, uint64_t num_embeddings_,
-    data_type_t indices_dtype_) {
-  auto indices_tensor = tensor_t()
-                        .set_name("indices_tensor")
-                        .set_size(size_)
-                        .set_data_type(indices_dtype_)
-                        .set_storage()
-                        .create();
-  void *data = indices_tensor.get_raw_handle_unsafe();
-  int num_indices = size_[0];
+tensor_t tensor_factory_t::random_indices_tensor(
+        const std::vector<index_type> size_, uint64_t num_embeddings_,
+        data_type_t indices_dtype_) {
+    auto indices_tensor = tensor_t()
+                                  .set_name("indices_tensor")
+                                  .set_size(size_)
+                                  .set_data_type(indices_dtype_)
+                                  .set_storage()
+                                  .create();
+    void *data = indices_tensor.get_raw_handle_unsafe();
+    int num_indices = size_[0];
 
-  std::random_device rd;
-  std::mt19937 gen(rd());
+    std::random_device rd;
+    std::mt19937 gen(rd());
 
-  if (indices_dtype_ == data_type_t::s32) {
-    std::uniform_int_distribution<int32_t> dist(0,
-        static_cast<int32_t>(num_embeddings_ - 1));
+    if (indices_dtype_ == data_type_t::s32) {
+        std::uniform_int_distribution<int32_t> dist(
+                0, static_cast<int32_t>(num_embeddings_ - 1));
 
-    for (int i = 0; i < num_indices; ++i) {
-      static_cast<int32_t *>(data)[i] = dist(gen);
+        for (int i = 0; i < num_indices; ++i) {
+            static_cast<int32_t *>(data)[i] = dist(gen);
+        }
+    } else if (indices_dtype_ == data_type_t::s64) {
+        std::uniform_int_distribution<int64_t> dist(
+                0, static_cast<int64_t>(num_embeddings_ - 1));
+
+        for (int i = 0; i < num_indices; ++i) {
+            static_cast<int64_t *>(data)[i] = dist(gen);
+        }
+    } else {
+        log_warning("tensor ", indices_tensor.get_name(),
+                " unsupported data type.");
     }
-  }
-  else if (indices_dtype_ == data_type_t::s64) {
-    std::uniform_int_distribution<int64_t> dist(0,
-        static_cast<int64_t>(num_embeddings_ - 1));
 
-    for (int i = 0; i < num_indices; ++i) {
-      static_cast<int64_t *>(data)[i] = dist(gen);
-    }
-  }
-  else {
-    log_warning("tensor ", indices_tensor.get_name(), " unsupported data type.");
-  }
-
-  return indices_tensor;
+    return indices_tensor;
 }
 
-tensor_t tensor_factory_t::random_offsets_tensor(const std::vector<index_type>
-    size_, uint64_t num_indices_,
-    data_type_t offsets_dtype_,
-    bool include_last_offset_) {
-  auto tensor = tensor_t()
-                .set_name("offsets_tensor")
-                .set_size(size_)
-                .set_data_type(offsets_dtype_)
-                .set_storage()
-                .create();
-  void *data = tensor.get_raw_handle_unsafe();
+tensor_t tensor_factory_t::random_offsets_tensor(
+        const std::vector<index_type> size_, uint64_t num_indices_,
+        data_type_t offsets_dtype_, bool include_last_offset_) {
+    auto tensor = tensor_t()
+                          .set_name("offsets_tensor")
+                          .set_size(size_)
+                          .set_data_type(offsets_dtype_)
+                          .set_storage()
+                          .create();
+    void *data = tensor.get_raw_handle_unsafe();
 
-  int num_offsets = size_[0];
-  if (include_last_offset_) {
-    num_offsets--;
-  }
+    int num_offsets = size_[0];
+    if (include_last_offset_) { num_offsets--; }
 
-  if (offsets_dtype_ == data_type_t::s32) {
-    for (int i = 0; i < num_offsets; ++i) {
-      static_cast<int32_t *>(data)[i] = (i * num_indices_) / num_offsets;
+    if (offsets_dtype_ == data_type_t::s32) {
+        for (int i = 0; i < num_offsets; ++i) {
+            static_cast<int32_t *>(data)[i] = (i * num_indices_) / num_offsets;
+        }
+
+        if (include_last_offset_) {
+            static_cast<int32_t *>(data)[num_offsets] = num_indices_;
+        }
+    } else if (offsets_dtype_ == data_type_t::s64) {
+        for (int i = 0; i < num_offsets; ++i) {
+            static_cast<int64_t *>(data)[i] = (i * num_indices_) / num_offsets;
+        }
+
+        if (include_last_offset_) {
+            static_cast<int64_t *>(data)[num_offsets] = num_indices_;
+        }
+    } else {
+        log_warning("tensor ", tensor.get_name(), " unsupported data type.");
     }
 
-    if (include_last_offset_) {
-      static_cast<int32_t *>(data)[num_offsets] = num_indices_;
-    }
-  }
-  else if (offsets_dtype_ == data_type_t::s64) {
-    for (int i = 0; i < num_offsets; ++i) {
-      static_cast<int64_t *>(data)[i] = (i * num_indices_) / num_offsets;
-    }
-
-    if (include_last_offset_) {
-      static_cast<int64_t *>(data)[num_offsets] = num_indices_;
-    }
-  }
-  else {
-    log_warning("tensor ", tensor.get_name(), " unsupported data type.");
-  }
-
-  return tensor;
+    return tensor;
 }
 
 tensor_t tensor_factory_t::quantized_embedding_tensor_random(
-  const std::vector<index_type> size_,
-  data_type dtype_,
-  std::string tensor_name_,
-  bool fp16_scale_bias,
-  float scale_min,
-  float scale_max,
-  float bias_min,
-  float bias_max) {
+        const std::vector<index_type> size_, data_type dtype_,
+        std::string tensor_name_, bool fp16_scale_bias, float scale_min,
+        float scale_max, float bias_min, float bias_max) {
 
-  const int num_embeddings = size_[0];
-  const int embedding_dim = size_[1];
-  const int quantized_size = (dtype_ == data_type_t::s4 ||
-                              dtype_ == data_type_t::u4) ?
-                             (embedding_dim + 1) / 2 :
-                             embedding_dim;
-  const int row_size = quantized_size + (fp16_scale_bias ? 4 : 8);
+    const int num_embeddings = size_[0];
+    const int embedding_dim = size_[1];
+    const int quantized_size
+            = (dtype_ == data_type_t::s4 || dtype_ == data_type_t::u4)
+            ? (embedding_dim + 1) / 2
+            : embedding_dim;
+    const int row_size = quantized_size + (fp16_scale_bias ? 4 : 8);
 
-  uint64_t num_bytes = static_cast<uint64_t>(num_embeddings) *
-                       static_cast<uint64_t>(row_size) * sizeof(uint8_t);
+    uint64_t num_bytes = static_cast<uint64_t>(num_embeddings)
+            * static_cast<uint64_t>(row_size) * sizeof(uint8_t);
 
-  void *raw_buffer = malloc(num_bytes);
+    void *raw_buffer = malloc(num_bytes);
 
-  if (!raw_buffer) {
-    log_warning("malloc failed for ", num_bytes, " bytes");
-    return tensor_t();
-  }
-  std::memset(raw_buffer, 0, num_bytes);
-
-  auto qtensor = tensor_t()
-                 .set_name(tensor_name_)
-                 .set_size({static_cast<size_t>(num_embeddings), static_cast<size_t>(embedding_dim)})
-                 .set_data_type(dtype_)
-                 .set_storage(raw_buffer, num_bytes - (fp16_scale_bias ? 4 : 8))
-                 .create();
-  if (! qtensor.check()) {
-    log_warning("tensor creation of ", qtensor.get_name(), " failed.");
-    std::free(raw_buffer);
-  }
-  else {
-    int8_t *input = static_cast<int8_t *>(raw_buffer);
-
-    // Random generators
-    std::mt19937 gen(std::random_device{}());
-    std::uniform_int_distribution<int> dist_s4(-8, 7);
-    std::uniform_int_distribution<int> dist_u4(0, 15);
-    std::uniform_int_distribution<int> dist_s8(-128, 127);
-    std::uniform_real_distribution<float> scale_dist(scale_min, scale_max);
-    std::uniform_real_distribution<float> bias_dist(bias_min, bias_max);
-
-    for (int i = 0; i < num_embeddings; ++i) {
-      const size_t row_base = i * row_size;
-      float scale = scale_dist(gen);
-      float bias = bias_dist(gen);
-
-      if (dtype_ == data_type_t::s4) {
-        std::memset(input + row_base, 0, quantized_size);
-        for (int j = 0; j < embedding_dim; ++j) {
-          int8_t qval = dist_s4(gen);
-          int byte_idx = j/2;
-          if (j % 2 == 0) {
-            input[row_base + byte_idx] = (qval & 0x0F);
-          }
-          else {
-            input[row_base + byte_idx] &= 0x0F;
-            input[row_base + byte_idx] |= (qval & 0x0F) << 4;
-          }
-        }
-      }
-      else if (dtype_ == data_type_t::u4) {
-        std::memset(input + row_base, 0, quantized_size);
-        for (int j = 0; j < embedding_dim; ++j) {
-          uint8_t qval = dist_u4(gen);
-          int byte_idx = j/2;
-          if (j % 2 == 0) {
-            input[row_base + byte_idx] = (qval & 0x0F);
-          }
-          else {
-            input[row_base + byte_idx] &= 0x0F;
-            input[row_base + byte_idx] |= (qval & 0x0F) << 4;
-          }
-        }
-      }
-      else {
-        for (int j = 0; j < embedding_dim; ++j) {
-          int8_t qval = dist_s8(gen);
-          input[row_base + j] = qval;
-        }
-      }
-
-      // Append scale and bias
-      if (fp16_scale_bias) {
-        float16_t scale_fp16 = float16_t(scale);
-        float16_t bias_fp16 = float16_t(bias);
-        std::memcpy(&input[row_base + quantized_size], &scale_fp16,
-                    sizeof(float16_t));
-        std::memcpy(&input[row_base + quantized_size + 2], &bias_fp16,
-                    sizeof(float16_t));
-      }
-      else {
-        std::memcpy(&input[row_base + quantized_size], &scale, sizeof(float));
-        std::memcpy(&input[row_base + quantized_size + 4], &bias, sizeof(float));
-      }
+    if (!raw_buffer) {
+        log_warning("malloc failed for ", num_bytes, " bytes");
+        return tensor_t();
     }
-  }
-  return qtensor;
+    std::memset(raw_buffer, 0, num_bytes);
+
+    auto qtensor = tensor_t()
+                           .set_name(tensor_name_)
+                           .set_size({static_cast<size_t>(num_embeddings),
+                                   static_cast<size_t>(embedding_dim)})
+                           .set_data_type(dtype_)
+                           .set_storage(raw_buffer,
+                                   num_bytes - (fp16_scale_bias ? 4 : 8))
+                           .create();
+    if (!qtensor.check()) {
+        log_warning("tensor creation of ", qtensor.get_name(), " failed.");
+        std::free(raw_buffer);
+    } else {
+        int8_t *input = static_cast<int8_t *>(raw_buffer);
+
+        // Random generators
+        std::mt19937 gen(std::random_device {}());
+        std::uniform_int_distribution<int> dist_s4(-8, 7);
+        std::uniform_int_distribution<int> dist_u4(0, 15);
+        std::uniform_int_distribution<int> dist_s8(-128, 127);
+        std::uniform_real_distribution<float> scale_dist(scale_min, scale_max);
+        std::uniform_real_distribution<float> bias_dist(bias_min, bias_max);
+
+        for (int i = 0; i < num_embeddings; ++i) {
+            const size_t row_base = i * row_size;
+            float scale = scale_dist(gen);
+            float bias = bias_dist(gen);
+
+            if (dtype_ == data_type_t::s4) {
+                std::memset(input + row_base, 0, quantized_size);
+                for (int j = 0; j < embedding_dim; ++j) {
+                    int8_t qval = dist_s4(gen);
+                    int byte_idx = j / 2;
+                    if (j % 2 == 0) {
+                        input[row_base + byte_idx] = (qval & 0x0F);
+                    } else {
+                        input[row_base + byte_idx] &= 0x0F;
+                        input[row_base + byte_idx] |= (qval & 0x0F) << 4;
+                    }
+                }
+            } else if (dtype_ == data_type_t::u4) {
+                std::memset(input + row_base, 0, quantized_size);
+                for (int j = 0; j < embedding_dim; ++j) {
+                    uint8_t qval = dist_u4(gen);
+                    int byte_idx = j / 2;
+                    if (j % 2 == 0) {
+                        input[row_base + byte_idx] = (qval & 0x0F);
+                    } else {
+                        input[row_base + byte_idx] &= 0x0F;
+                        input[row_base + byte_idx] |= (qval & 0x0F) << 4;
+                    }
+                }
+            } else {
+                for (int j = 0; j < embedding_dim; ++j) {
+                    int8_t qval = dist_s8(gen);
+                    input[row_base + j] = qval;
+                }
+            }
+
+            // Append scale and bias
+            if (fp16_scale_bias) {
+                float16_t scale_fp16 = float16_t(scale);
+                float16_t bias_fp16 = float16_t(bias);
+                std::memcpy(&input[row_base + quantized_size], &scale_fp16,
+                        sizeof(float16_t));
+                std::memcpy(&input[row_base + quantized_size + 2], &bias_fp16,
+                        sizeof(float16_t));
+            } else {
+                std::memcpy(&input[row_base + quantized_size], &scale,
+                        sizeof(float));
+                std::memcpy(&input[row_base + quantized_size + 4], &bias,
+                        sizeof(float));
+            }
+        }
+    }
+    return qtensor;
 }
 
 void Parser::operator()(const int &argc, char *argv[], int64_t &seed,
-                        uint32_t &tests,
-                        std::string &ai_test_mode, std::string &lowoha,
-                        uint32_t &num_threads, std::string &input_file, std::string &op,
-                        uint32_t &ndims,
-                        CLIParams &cli_params) {
-  for (int i=1; i<argc; ++i) {
-    std::string arg = argv[i];
-    if (arg.rfind("--",0)==0 && arg.find("gtest")==std::string::npos && i+1<argc) {
-      std::string key = arg.substr(2);
-      umap[key] = argv[++i];
+        uint32_t &tests, std::string &ai_test_mode, std::string &lowoha,
+        uint32_t &num_threads, std::string &input_file, std::string &op,
+        uint32_t &ndims, CLIParams &cli_params) {
+    for (int i = 1; i < argc; ++i) {
+        std::string arg = argv[i];
+        if (arg.rfind("--", 0) == 0 && arg.find("gtest") == std::string::npos
+                && i + 1 < argc) {
+            std::string key = arg.substr(2);
+            umap[key] = argv[++i];
+        }
     }
-  }
-  read_from_umap("seed", seed);
-  read_from_umap("test", tests);
-  read_from_umap("postop", cli_params.matmul_input.po_types);
-  read_from_umap("backend", cli_params.matmul_input.algo);
-  read_from_umap("ai_test_mode", ai_test_mode);
-  read_from_umap("lowoha", lowoha);
-  read_from_umap("num_threads", num_threads);
-  read_from_umap("input_file", input_file);
-  read_from_umap("op", op);
-  read_from_umap("ndims", ndims);
-  read_from_umap("batch_size", cli_params.matmul_input.batch_size);
-  read_from_umap("m", cli_params.matmul_input.m);
-  read_from_umap("k", cli_params.matmul_input.k);
-  read_from_umap("n", cli_params.matmul_input.n);
-  read_from_umap("transA", cli_params.matmul_input.transA);
-  read_from_umap("transB", cli_params.matmul_input.transB);
-  read_from_umap("alpha", cli_params.matmul_input.alpha);
-  read_from_umap("beta", cli_params.matmul_input.beta);
-  read_from_umap("src_dtype", cli_params.matmul_input.src_dtype);
-  read_from_umap("dst_dtype", cli_params.matmul_input.dst_dtype);
-  read_from_umap("weight_granularity",
-                 cli_params.matmul_input.weight_granularity);
-  read_from_umap("inplace_reorder", cli_params.reorder_input.inplace_reorder);
-  read_from_umap("num_groups", cli_params.reorder_input.num_groups);
-  read_from_umap("dim_choice", cli_params.reorder_input.dim_choice);
-  read_from_umap("num_embeddings", cli_params.embedding_input.num_embeddings);
-  read_from_umap("embedding_dim", cli_params.embedding_input.embedding_dim);
-  read_from_umap("num_bags", cli_params.embag_input.num_bags);
-  read_from_umap("num_indices", cli_params.embedding_input.num_indices);
-  read_from_umap("embag_algo", cli_params.embag_input.embag_algo);
-  read_from_umap("padding_index", cli_params.embedding_input.padding_index);
-  read_from_umap("include_last_offset",
-                 cli_params.embag_input.include_last_offset);
-  read_from_umap("is_weights", cli_params.embedding_input.is_weights);
-  read_from_umap("indices_dtype", cli_params.embedding_input.indices_dtype);
-  read_from_umap("fp16_scale_bias", cli_params.embedding_input.fp16_scale_bias);
-  read_from_umap("strided", cli_params.embedding_input.strided);
-  read_from_umap("norm_type", cli_params.normalization_input.norm_type);
-  read_from_umap("norm_shape", cli_params.normalization_input.norm_shape);
-  read_from_umap("use_scale", cli_params.normalization_input.use_scale);
-  read_from_umap("use_shift", cli_params.normalization_input.use_shift);
-  read_from_umap("gamma_dt", cli_params.normalization_input.gamma_dt);
-  read_from_umap("beta_dt", cli_params.normalization_input.beta_dt);
+    read_from_umap("seed", seed);
+    read_from_umap("test", tests);
+    read_from_umap("postop", cli_params.matmul_input.po_types);
+    read_from_umap("backend", cli_params.matmul_input.algo);
+    read_from_umap("ai_test_mode", ai_test_mode);
+    read_from_umap("lowoha", lowoha);
+    read_from_umap("num_threads", num_threads);
+    read_from_umap("input_file", input_file);
+    read_from_umap("op", op);
+    read_from_umap("ndims", ndims);
+    read_from_umap("batch_size", cli_params.matmul_input.batch_size);
+    read_from_umap("m", cli_params.matmul_input.m);
+    read_from_umap("k", cli_params.matmul_input.k);
+    read_from_umap("n", cli_params.matmul_input.n);
+    read_from_umap("transA", cli_params.matmul_input.transA);
+    read_from_umap("transB", cli_params.matmul_input.transB);
+    read_from_umap("alpha", cli_params.matmul_input.alpha);
+    read_from_umap("beta", cli_params.matmul_input.beta);
+    read_from_umap("src_dtype", cli_params.matmul_input.src_dtype);
+    read_from_umap("dst_dtype", cli_params.matmul_input.dst_dtype);
+    read_from_umap(
+            "weight_granularity", cli_params.matmul_input.weight_granularity);
+    read_from_umap("inplace_reorder", cli_params.reorder_input.inplace_reorder);
+    read_from_umap("num_groups", cli_params.reorder_input.num_groups);
+    read_from_umap("dim_choice", cli_params.reorder_input.dim_choice);
+    read_from_umap("num_embeddings", cli_params.embedding_input.num_embeddings);
+    read_from_umap("embedding_dim", cli_params.embedding_input.embedding_dim);
+    read_from_umap("num_bags", cli_params.embag_input.num_bags);
+    read_from_umap("num_indices", cli_params.embedding_input.num_indices);
+    read_from_umap("embag_algo", cli_params.embag_input.embag_algo);
+    read_from_umap("padding_index", cli_params.embedding_input.padding_index);
+    read_from_umap(
+            "include_last_offset", cli_params.embag_input.include_last_offset);
+    read_from_umap("is_weights", cli_params.embedding_input.is_weights);
+    read_from_umap("indices_dtype", cli_params.embedding_input.indices_dtype);
+    read_from_umap(
+            "fp16_scale_bias", cli_params.embedding_input.fp16_scale_bias);
+    read_from_umap("strided", cli_params.embedding_input.strided);
+    read_from_umap("norm_type", cli_params.normalization_input.norm_type);
+    read_from_umap("norm_shape", cli_params.normalization_input.norm_shape);
+    read_from_umap("use_scale", cli_params.normalization_input.use_scale);
+    read_from_umap("use_shift", cli_params.normalization_input.use_shift);
+    read_from_umap("gamma_dt", cli_params.normalization_input.gamma_dt);
+    read_from_umap("beta_dt", cli_params.normalization_input.beta_dt);
 
-  // Propagate matmul CLI params into reorder (same MatmulInput type).
-  cli_params.reorder_input.matmul_input = cli_params.matmul_input;
+    // Propagate matmul CLI params into reorder (same MatmulInput type).
+    cli_params.reorder_input.matmul_input = cli_params.matmul_input;
 
-  // Propagate shared embag CLI fields into embedding (EmbeddingInput is a
-  // subset of EmbagInput; embag-only fields like num_bags / embag_algo omitted).
-  // In random mode, shared flags affect both embag and embedding suites — see Readme.
-  cli_params.embag_input.embedding_input = cli_params.embedding_input;
+    // Propagate shared embag CLI fields into embedding (EmbeddingInput is a
+    // subset of EmbagInput; embag-only fields like num_bags / embag_algo omitted).
+    // In random mode, shared flags affect both embag and embedding suites — see Readme.
+    cli_params.embag_input.embedding_input = cli_params.embedding_input;
 
-  return;
+    return;
 }
 
 void Parser::read_from_umap(const std::string &key, int64_t &num) {
-  if (umap.count(key)) {
-    std::string val = umap.at(key);
-    if (isInteger(val)) {
-      try {
-        num = static_cast<int64_t>(stoll(val));
-        log_info("Using ", key, "=", num);
-      }
-      catch (const std::out_of_range &e) {
-        log_info("Out-of-range argument for ", key,
-                 ", so using default value i.e. timestamp.");
-      }
+    if (umap.count(key)) {
+        std::string val = umap.at(key);
+        if (isInteger(val)) {
+            try {
+                num = static_cast<int64_t>(stoll(val));
+                log_info("Using ", key, "=", num);
+            } catch (const std::out_of_range &e) {
+                log_info("Out-of-range argument for ", key,
+                        ", so using default value i.e. timestamp.");
+            }
+        } else {
+            log_info("Invalid argument for ", key,
+                    ", so using default value i.e. timestamp.");
+        }
     }
-    else {
-      log_info("Invalid argument for ", key,
-               ", so using default value i.e. timestamp.");
-    }
-  }
 }
 
 void Parser::read_from_umap(const std::string &key, uint32_t &num) {
-  if (umap.count(key)) {
-    std::string val = umap.at(key);
-    if (isInteger(val) && val[0] != '-') {
-      try {
-        num = static_cast<uint32_t>(stoul(val));
-        if (key == "num_threads" && num == 0) {
-          log_info("Using ", key,
-                   "=0 (treated as unset/randomized thread selection)");
+    if (umap.count(key)) {
+        std::string val = umap.at(key);
+        if (isInteger(val) && val[0] != '-') {
+            try {
+                num = static_cast<uint32_t>(stoul(val));
+                if (key == "num_threads" && num == 0) {
+                    log_info("Using ", key,
+                            "=0 (treated as unset/randomized thread "
+                            "selection)");
+                } else {
+                    log_info("Using ", key, "=", num);
+                }
+            } catch (const std::out_of_range &e) {
+                log_info("Out-of-range argument for ", key,
+                        ", so using default/random value");
+            }
+        } else {
+            log_info("Invalid argument for ", key,
+                    ", so using default/random value");
         }
-        else {
-          log_info("Using ", key, "=", num);
-        }
-      }
-      catch (const std::out_of_range &e) {
-        log_info("Out-of-range argument for ", key,
-                 ", so using default/random value");
-      }
     }
-    else {
-      log_info("Invalid argument for ", key, ", so using default/random value");
-    }
-  }
 }
 
 void Parser::read_from_umap(const std::string &key, std::string &num) {
-  if (umap.count(key)) {
-    num = umap.at(key);
-    log_info("Using ", key, "=", num);
-  }
+    if (umap.count(key)) {
+        num = umap.at(key);
+        log_info("Using ", key, "=", num);
+    }
 }
 
-void Parser::read_from_umap(const std::string &key,
-                            std::optional<uint64_t> &out) {
-  out.reset();
-  if (umap.count(key)) {
-    std::string val = umap.at(key);
-    if (isInteger(val) && val[0] != '-') {
-      try {
-        uint64_t parsed = static_cast<uint64_t>(stoull(val));
-        if (parsed > 0) {
-          out = parsed;
-          log_info("Using ", key, "=", out.value());
+void Parser::read_from_umap(
+        const std::string &key, std::optional<uint64_t> &out) {
+    out.reset();
+    if (umap.count(key)) {
+        std::string val = umap.at(key);
+        if (isInteger(val) && val[0] != '-') {
+            try {
+                uint64_t parsed = static_cast<uint64_t>(stoull(val));
+                if (parsed > 0) {
+                    out = parsed;
+                    log_info("Using ", key, "=", out.value());
+                } else {
+                    log_info("Invalid argument for ", key,
+                            ", expected a positive integer; ignored.");
+                }
+            } catch (const std::out_of_range &e) {
+                log_info("Invalid argument for ", key,
+                        ", expected a positive integer; ignored.");
+            }
+        } else {
+            log_info("Invalid argument for ", key,
+                    ", expected a positive integer; ignored.");
         }
-        else {
-          log_info("Invalid argument for ", key,
-                   ", expected a positive integer; ignored.");
+    }
+}
+
+void Parser::read_from_umap(const std::string &key,
+        std::optional<std::vector<post_op_type_t>> &out) {
+    out.reset();
+    if (umap.count(key)) {
+        std::string val = umap.at(key);
+        std::vector<post_op_type_t> parsed;
+        for (const auto &po : split(val, ':')) {
+            try {
+                parsed.push_back(strToPostOps(po));
+            } catch (const std::exception &) {
+                commonlog_error("Invalid post-op token '", po, "' for ", key,
+                        "; ignored.");
+                return;
+            }
         }
-      }
-      catch (const std::out_of_range &e) {
-        log_info("Invalid argument for ", key,
-                 ", expected a positive integer; ignored.");
-      }
+        if (parsed.size() > POST_OPS_LIMIT) {
+            commonlog_error("Post-op chain length exceeds POST_OPS_LIMIT for ",
+                    key, "; ignored.");
+            return;
+        }
+        out = std::move(parsed);
+        log_info("Using ", key, "=", val);
     }
-    else {
-      log_info("Invalid argument for ", key,
-               ", expected a positive integer; ignored.");
-    }
-  }
 }
 
-void Parser::read_from_umap(const std::string &key,
-                            std::optional<std::vector<post_op_type_t>> &out) {
-  out.reset();
-  if (umap.count(key)) {
-    std::string val = umap.at(key);
-    std::vector<post_op_type_t> parsed;
-    for (const auto &po : split(val, ':')) {
-      try {
-        parsed.push_back(strToPostOps(po));
-      }
-      catch (const std::exception &) {
-        commonlog_error("Invalid post-op token '", po, "' for ", key, "; ignored.");
-        return;
-      }
+void Parser::read_from_umap(
+        const std::string &key, std::optional<matmul_algo_t> &out) {
+    out.reset();
+    if (umap.count(key)) {
+        std::string val = umap.at(key);
+        try {
+            out = strToAlgo(val);
+            log_info("Using ", key, "=", val);
+        } catch (const std::exception &) {
+            log_info("Invalid algorithm for ", key, " ('", val, "'); ignored.");
+            return;
+        }
     }
-    if (parsed.size() > POST_OPS_LIMIT) {
-      commonlog_error("Post-op chain length exceeds POST_OPS_LIMIT for ", key,
-                      "; ignored.");
-      return;
-    }
-    out = std::move(parsed);
-    log_info("Using ", key, "=", val);
-  }
 }
 
-void Parser::read_from_umap(const std::string &key,
-                            std::optional<matmul_algo_t> &out) {
-  out.reset();
-  if (umap.count(key)) {
-    std::string val = umap.at(key);
-    try {
-      out = strToAlgo(val);
-      log_info("Using ", key, "=", val);
+void Parser::read_from_umap(
+        const std::string &key, std::optional<int64_t> &out) {
+    out.reset();
+    if (umap.count(key)) {
+        std::string val = umap.at(key);
+        if (isInteger(val)) {
+            try {
+                out = static_cast<int64_t>(stoll(val));
+                log_info("Using ", key, "=", out.value());
+            } catch (const std::out_of_range &) {
+                log_info("Invalid argument for ", key,
+                        ", expected a signed integer; ignored.");
+            }
+        } else {
+            log_info("Invalid argument for ", key,
+                    ", expected a signed integer; ignored.");
+        }
     }
-    catch (const std::exception &) {
-      log_info("Invalid algorithm for ", key, " ('", val, "'); ignored.");
-      return;
-    }
-  }
-}
-
-void Parser::read_from_umap(const std::string &key,
-                            std::optional<int64_t> &out) {
-  out.reset();
-  if (umap.count(key)) {
-    std::string val = umap.at(key);
-    if (isInteger(val)) {
-      try {
-        out = static_cast<int64_t>(stoll(val));
-        log_info("Using ", key, "=", out.value());
-      }
-      catch (const std::out_of_range &) {
-        log_info("Invalid argument for ", key,
-                 ", expected a signed integer; ignored.");
-      }
-    }
-    else {
-      log_info("Invalid argument for ", key,
-               ", expected a signed integer; ignored.");
-    }
-  }
 }
 
 void Parser::read_from_umap(const std::string &key, std::optional<bool> &out) {
-  out.reset();
-  if (umap.count(key)) {
-    std::string v = umap.at(key);
-    std::transform(v.begin(), v.end(), v.begin(), [](unsigned char c) {
-      return static_cast<char>(std::tolower(c));
-    });
-    if (v == "true" || v == "1") {
-      out = true;
+    out.reset();
+    if (umap.count(key)) {
+        std::string v = umap.at(key);
+        std::transform(v.begin(), v.end(), v.begin(), [](unsigned char c) {
+            return static_cast<char>(std::tolower(c));
+        });
+        if (v == "true" || v == "1") {
+            out = true;
+        } else if (v == "false" || v == "0") {
+            out = false;
+        } else {
+            log_info("Invalid boolean for ", key,
+                    " (use true/false or 1/0); ignored.");
+        }
+        if (out) { log_info("Using ", key, "=", out.value()); }
     }
-    else if (v == "false" || v == "0") {
-      out = false;
-    }
-    else {
-      log_info("Invalid boolean for ", key, " (use true/false or 1/0); ignored.");
-    }
-    if (out) {
-      log_info("Using ", key, "=", out.value());
-    }
-  }
 }
 
 void Parser::read_from_umap(const std::string &key, std::optional<float> &out) {
-  out.reset();
-  if (umap.count(key)) {
+    out.reset();
+    if (umap.count(key)) {
+        std::string val = umap.at(key);
+        try {
+            size_t parsed_len = 0;
+            float v = std::stof(val, &parsed_len);
+            if (parsed_len != val.size()) {
+                log_info("Invalid float for ", key, "; ignored.");
+                return;
+            }
+            out = v;
+            log_info("Using ", key, "=", out.value());
+        } catch (const std::exception &) {
+            log_info("Invalid float for ", key, "; ignored.");
+            return;
+        }
+    }
+}
+
+void Parser::read_from_umap(
+        const std::string &key, std::optional<data_type_t> &out) {
+    out.reset();
+    if (umap.count(key)) {
+        std::string val = umap.at(key);
+        try {
+            out = strToDatatype(val);
+            log_info("Using ", key, "=", dtype_info(out.value()));
+        } catch (const std::exception &) {
+            log_info("Invalid datatype for ", key, "; ignored.");
+            return;
+        }
+    }
+}
+
+void Parser::read_from_umap(
+        const std::string &key, std::optional<quant_granularity_t> &out) {
+    out.reset();
+    if (umap.count(key)) {
+        std::string val = umap.at(key);
+        std::transform(
+                val.begin(), val.end(), val.begin(), [](unsigned char c) {
+            return static_cast<char>(std::tolower(c));
+        });
+        if (val == "tensor" || val == "per_tensor") {
+            out = quant_granularity_t::tensor;
+        } else if (val == "channel" || val == "per_channel") {
+            out = quant_granularity_t::channel;
+        } else if (val == "group" || val == "per_group") {
+            out = quant_granularity_t::group;
+        } else {
+            log_info(
+                    "Invalid ", key, " (use tensor, channel, group); ignored.");
+        }
+        if (out) { log_info("Using ", key, "=", val); }
+    }
+}
+
+void Parser::read_from_umap(
+        const std::string &key, std::optional<uint32_t> &out) {
+    out.reset();
+    if (umap.count(key)) {
+        std::string val = umap.at(key);
+        if (!isInteger(val) || val[0] == '-') {
+            log_info("Invalid positive integer for ", key, "; ignored.");
+            return;
+        }
+        try {
+            size_t parsed_len = 0;
+            unsigned long parsed = std::stoul(val, &parsed_len);
+            if (parsed_len != val.size()) {
+                log_info("Invalid positive integer for ", key, "; ignored.");
+                return;
+            }
+            if (parsed > 0 && parsed <= 3) {
+                out = static_cast<uint32_t>(parsed);
+                log_info("Using ", key, "=", out.value());
+            } else {
+                log_info("Invalid positive integer for ", key,
+                        " (must be 1, 2, or 3); ignored.");
+            }
+        } catch (const std::exception &) {
+            log_info("Invalid positive integer for ", key,
+                    " (must be 1, 2, or 3); ignored.");
+        }
+    }
+}
+
+void Parser::read_from_umap(
+        const std::string &key, std::optional<embag_algo_t> &out) {
+    out.reset();
+    if (umap.count(key)) {
+        std::string val = umap.at(key);
+        try {
+            out = strToEmbagAlgo(val);
+            log_info("Using ", key, "=", val);
+        } catch (const std::exception &) {
+            log_info("Invalid embedding algorithm for ", key, "; ignored.");
+            return;
+        }
+    }
+}
+
+void Parser::read_from_umap(
+        const std::string &key, std::optional<norm_type_t> &out) {
+    out.reset();
+    if (umap.count(key)) {
+        std::string s = umap.at(key);
+        std::transform(s.begin(), s.end(), s.begin(), [](unsigned char c) {
+            return static_cast<char>(std::tolower(c));
+        });
+        if (s == "layer") {
+            out = norm_type_t::LAYER_NORM;
+        } else if (s == "batch") {
+            out = norm_type_t::BATCH_NORM;
+        } else if (s == "rms") {
+            out = norm_type_t::RMS_NORM;
+        } else if (s == "fusedaddrms") {
+            out = norm_type_t::FUSED_ADD_RMS_NORM;
+        } else {
+            log_info("Invalid ", key,
+                    " (use layer, batch, rms, fusedaddrms); ignored.");
+        }
+        if (out) { log_info("Using ", key, "=", s); }
+    }
+}
+
+void Parser::read_from_umap(
+        const std::string &key, std::optional<std::vector<uint64_t>> &out) {
+    out.reset();
+    if (!umap.count(key)) { return; }
     std::string val = umap.at(key);
-    try {
-      size_t parsed_len = 0;
-      float v = std::stof(val, &parsed_len);
-      if (parsed_len != val.size()) {
-        log_info("Invalid float for ", key, "; ignored.");
+    std::vector<uint64_t> parsed;
+    for (size_t pos = 0; pos < val.size();) {
+        const size_t comma = val.find(',', pos);
+        const size_t end = comma == std::string::npos ? val.size() : comma;
+        if (pos == end) {
+            log_info("Invalid ", key,
+                    " (empty component in comma-separated list); ignored.");
+            return;
+        }
+        const std::string t = val.substr(pos, end - pos);
+        if (!isInteger(t) || t[0] == '-') {
+            log_info("Invalid ", key,
+                    " (comma-separated positive integers, e.g. 2,8,32); "
+                    "ignored.");
+            return;
+        }
+        try {
+            auto val_ = std::stoull(t);
+            if (val_ > 0) {
+                parsed.push_back(val_);
+                log_info("Using ", key, "=", val_);
+            } else {
+                log_info("Invalid ", key, " (must be > 0); ignored.");
+                return;
+            }
+        } catch (const std::out_of_range &) {
+            log_info("Out-of-range value in ", key, "; ignored.");
+            return;
+        }
+        pos = comma == std::string::npos ? val.size() : comma + 1;
+    }
+    if (parsed.empty()) {
+        log_info("Invalid ", key, " (no dimensions); ignored.");
         return;
-      }
-      out = v;
-      log_info("Using ", key, "=", out.value());
     }
-    catch (const std::exception &) {
-      log_info("Invalid float for ", key, "; ignored.");
-      return;
-    }
-  }
-}
-
-void Parser::read_from_umap(const std::string &key,
-                            std::optional<data_type_t> &out) {
-  out.reset();
-  if (umap.count(key)) {
-    std::string val = umap.at(key);
-    try {
-      out = strToDatatype(val);
-      log_info("Using ", key, "=", dtype_info(out.value()));
-    }
-    catch (const std::exception &) {
-      log_info("Invalid datatype for ", key, "; ignored.");
-      return;
-    }
-  }
-}
-
-void Parser::read_from_umap(const std::string &key,
-                            std::optional<quant_granularity_t> &out) {
-  out.reset();
-  if (umap.count(key)) {
-    std::string val = umap.at(key);
-    std::transform(val.begin(), val.end(), val.begin(), [](unsigned char c) {
-      return static_cast<char>(std::tolower(c));
-    });
-    if (val == "tensor" || val == "per_tensor") {
-      out = quant_granularity_t::tensor;
-    }
-    else if (val == "channel" || val == "per_channel") {
-      out = quant_granularity_t::channel;
-    }
-    else if (val == "group" || val == "per_group") {
-      out = quant_granularity_t::group;
-    }
-    else {
-      log_info("Invalid ", key, " (use tensor, channel, group); ignored.");
-    }
-    if (out) {
-      log_info("Using ", key, "=", val);
-    }
-  }
-}
-
-void Parser::read_from_umap(const std::string &key,
-                            std::optional<uint32_t> &out) {
-  out.reset();
-  if (umap.count(key)) {
-    std::string val = umap.at(key);
-    if (!isInteger(val) || val[0] == '-') {
-      log_info("Invalid positive integer for ", key, "; ignored.");
-      return;
-    }
-    try {
-      size_t parsed_len = 0;
-      unsigned long parsed = std::stoul(val, &parsed_len);
-      if (parsed_len != val.size()) {
-        log_info("Invalid positive integer for ", key, "; ignored.");
-        return;
-      }
-      if (parsed > 0 && parsed <= 3) {
-        out = static_cast<uint32_t>(parsed);
-        log_info("Using ", key, "=", out.value());
-      }
-      else {
-        log_info("Invalid positive integer for ", key,
-                 " (must be 1, 2, or 3); ignored.");
-      }
-    }
-    catch (const std::exception &) {
-      log_info("Invalid positive integer for ", key,
-               " (must be 1, 2, or 3); ignored.");
-    }
-  }
-}
-
-void Parser::read_from_umap(const std::string &key,
-                            std::optional<embag_algo_t> &out) {
-  out.reset();
-  if (umap.count(key)) {
-    std::string val = umap.at(key);
-    try {
-      out = strToEmbagAlgo(val);
-      log_info("Using ", key, "=", val);
-    }
-    catch (const std::exception &) {
-      log_info("Invalid embedding algorithm for ", key, "; ignored.");
-      return;
-    }
-  }
-}
-
-void Parser::read_from_umap(const std::string &key,
-                            std::optional<norm_type_t> &out) {
-  out.reset();
-  if (umap.count(key)) {
-    std::string s = umap.at(key);
-    std::transform(s.begin(), s.end(), s.begin(), [](unsigned char c) {
-      return static_cast<char>(std::tolower(c));
-    });
-    if (s == "layer") {
-      out = norm_type_t::LAYER_NORM;
-    }
-    else if (s == "batch") {
-      out = norm_type_t::BATCH_NORM;
-    }
-    else if (s == "rms") {
-      out = norm_type_t::RMS_NORM;
-    }
-    else if (s == "fusedaddrms") {
-      out = norm_type_t::FUSED_ADD_RMS_NORM;
-    }
-    else {
-      log_info("Invalid ", key,
-               " (use layer, batch, rms, fusedaddrms); ignored.");
-    }
-    if (out) {
-      log_info("Using ", key, "=", s);
-    }
-  }
-}
-
-void Parser::read_from_umap(const std::string &key,
-                            std::optional<std::vector<uint64_t>> &out) {
-  out.reset();
-  if (!umap.count(key)) {
-    return;
-  }
-  std::string val = umap.at(key);
-  std::vector<uint64_t> parsed;
-  for (size_t pos = 0; pos < val.size();) {
-    const size_t comma = val.find(',', pos);
-    const size_t end = comma == std::string::npos ? val.size() : comma;
-    if (pos == end) {
-      log_info("Invalid ", key,
-               " (empty component in comma-separated list); ignored.");
-      return;
-    }
-    const std::string t = val.substr(pos, end - pos);
-    if (!isInteger(t) || t[0] == '-') {
-      log_info("Invalid ", key,
-               " (comma-separated positive integers, e.g. 2,8,32); ignored.");
-      return;
-    }
-    try {
-      auto val_ = std::stoull(t);
-      if (val_ > 0) {
-        parsed.push_back(val_);
-        log_info("Using ", key, "=", val_);
-      }
-      else {
-        log_info("Invalid ", key, " (must be > 0); ignored.");
-        return;
-      }
-    }
-    catch (const std::out_of_range &) {
-      log_info("Out-of-range value in ", key, "; ignored.");
-      return;
-    }
-    pos = comma == std::string::npos ? val.size() : comma + 1;
-  }
-  if (parsed.empty()) {
-    log_info("Invalid ", key, " (no dimensions); ignored.");
-    return;
-  }
-  out = std::move(parsed);
-  log_info("Using ", key, "=", val);
+    out = std::move(parsed);
+    log_info("Using ", key, "=", val);
 }
 
 bool Parser::isInteger(const std::string &s) {
-  if (s.empty()) {
-    return false;
-  }
-  size_t i = 0;
-  if (s[0] == '+' || s[0] == '-') {
-    i = 1;
-  }
-  for (; i < s.size(); ++i) {
-    if (!isdigit(s[i])) {
-      return false;
+    if (s.empty()) { return false; }
+    size_t i = 0;
+    if (s[0] == '+' || s[0] == '-') { i = 1; }
+    for (; i < s.size(); ++i) {
+        if (!isdigit(s[i])) { return false; }
     }
-  }
-  return true;
+    return true;
 }
 
 void PrintTo(const MatmulType &value, ::std::ostream *os) {
-  const std::string po_str = postOpTypesToStr(value.po_types);
-  *os << "m=" << value.matmul_m << ", k=" << value.matmul_k << ", n="
-      << value.matmul_n << ", transA=" << value.transA << ", transB="
-      << value.transB << ", alpha=" << value.alpha << ", beta=" << value.beta
-      << ", postop=" << po_str
-      << ", algo=" << algoToStr(value.algo)
-      << ", src_dtype=" << dtype_info(value.source_dtype)
-      << ", dst_dtype=" << dtype_info(value.output_dtype)
-      << ", weight_granularity=" << static_cast<int>(value.weight_granularity)
-      << ", use_LOWOHA=" << value.use_LOWOHA
-      << ", num_threads=" << value.num_threads << ", seed=" << seed;
+    const std::string po_str = postOpTypesToStr(value.po_types);
+    *os << "m=" << value.matmul_m << ", k=" << value.matmul_k
+        << ", n=" << value.matmul_n << ", transA=" << value.transA
+        << ", transB=" << value.transB << ", alpha=" << value.alpha
+        << ", beta=" << value.beta << ", postop=" << po_str
+        << ", algo=" << algoToStr(value.algo)
+        << ", src_dtype=" << dtype_info(value.source_dtype)
+        << ", dst_dtype=" << dtype_info(value.output_dtype)
+        << ", weight_granularity=" << static_cast<int>(value.weight_granularity)
+        << ", use_LOWOHA=" << value.use_LOWOHA
+        << ", num_threads=" << value.num_threads << ", seed=" << seed;
 }
 
 // `PrintTo(GroupQuantMatmulType, ...)` was lifted into
 // `group_matmul/group_matmul_test_helpers.cpp`.
 
 void PrintTo(const BatchMatmulType &value, ::std::ostream *os) {
-  *os << "batch_size=" << value.batch_size << ", ";
-  PrintTo(value.mat, os);
+    *os << "batch_size=" << value.batch_size << ", ";
+    PrintTo(value.mat, os);
 }
 
 // `PrintTo(const ReorderType &, ...)` was moved to `reorder/reorder_test_helpers.cpp`.
 
 void PrintTo(const EmbagType &value, ::std::ostream *os) {
-  *os << "num_embeddings=" << value.num_embeddings << ", embedding_dim=" <<
-      value.embedding_dim
-      << ", num_bags=" << value.num_bags << ", num_indices=" << value.num_indices
-      << ", algo=" << static_cast<int>(value.algo) << ", padding_index="
-      << value.padding_index << ", include_last_offset=" << value.include_last_offset
-      << ", is_weights=" << value.is_weights
-      << ", indices_dtype=" << dtype_info(value.indices_dtype)
-      << ", offsets_dtype=" << dtype_info(value.offsets_dtype)
-      << ", fp16_scale_bias=" << value.fp16_scale_bias
-      << ", strided=" << value.strided
-      << ", use_LOWOHA=" << value.use_LOWOHA << ", num_threads=" << value.num_threads
-      << ", seed=" << seed;
+    *os << "num_embeddings=" << value.num_embeddings
+        << ", embedding_dim=" << value.embedding_dim
+        << ", num_bags=" << value.num_bags
+        << ", num_indices=" << value.num_indices
+        << ", algo=" << static_cast<int>(value.algo)
+        << ", padding_index=" << value.padding_index
+        << ", include_last_offset=" << value.include_last_offset
+        << ", is_weights=" << value.is_weights
+        << ", indices_dtype=" << dtype_info(value.indices_dtype)
+        << ", offsets_dtype=" << dtype_info(value.offsets_dtype)
+        << ", fp16_scale_bias=" << value.fp16_scale_bias
+        << ", strided=" << value.strided << ", use_LOWOHA=" << value.use_LOWOHA
+        << ", num_threads=" << value.num_threads << ", seed=" << seed;
 }
 
 void PrintTo(const EmbeddingType &value, ::std::ostream *os) {
-  *os << "num_embeddings=" << value.num_embeddings
-      << ", embedding_dim=" << value.embedding_dim
-      << ", num_indices=" << value.num_indices
-      << ", padding_index=" << value.padding_index
-      << ", is_weights=" << value.is_weights
-      << ", indices_dtype=" << dtype_info(value.indices_dtype)
-      << ", fp16_scale_bias=" << value.fp16_scale_bias
-      << ", strided=" << value.strided
-      << ", use_LOWOHA=" << value.use_LOWOHA << ", num_threads=" << value.num_threads
-      << ", seed=" << seed;
+    *os << "num_embeddings=" << value.num_embeddings
+        << ", embedding_dim=" << value.embedding_dim
+        << ", num_indices=" << value.num_indices
+        << ", padding_index=" << value.padding_index
+        << ", is_weights=" << value.is_weights
+        << ", indices_dtype=" << dtype_info(value.indices_dtype)
+        << ", fp16_scale_bias=" << value.fp16_scale_bias
+        << ", strided=" << value.strided << ", use_LOWOHA=" << value.use_LOWOHA
+        << ", num_threads=" << value.num_threads << ", seed=" << seed;
 }
 
 void PrintTo(const NormalizationType &value, ::std::ostream *os) {
-  *os << "norm_type=" << norm_type_to_str(value.norm_type)
-      << ", batch=" << value.batch
-      << ", norm_size=" << value.norm_size
-      << ", num_channels=" << value.num_channels
-      << ", epsilon=" << value.epsilon
-      << ", use_scale=" << value.use_scale
-      << ", use_shift=" << value.use_shift
-      << ", gamma_dt=" << dtype_info(value.gamma_dt)
-      << ", beta_dt=" << dtype_info(value.beta_dt)
-      << ", num_threads=" << value.num_threads
-      << ", seed=" << seed;
+    *os << "norm_type=" << norm_type_to_str(value.norm_type)
+        << ", batch=" << value.batch << ", norm_size=" << value.norm_size
+        << ", num_channels=" << value.num_channels
+        << ", epsilon=" << value.epsilon << ", use_scale=" << value.use_scale
+        << ", use_shift=" << value.use_shift
+        << ", gamma_dt=" << dtype_info(value.gamma_dt)
+        << ", beta_dt=" << dtype_info(value.beta_dt)
+        << ", num_threads=" << value.num_threads << ", seed=" << seed;
 }
 
 void PrintTo(const SdpaType &value, ::std::ostream *os) {
-  *os << "batch=" << value.batch
-      << ", num_heads=" << value.num_heads
-      << ", seq_len=" << value.seq_len
-      << ", kv_seq_len=" << value.kv_seq_len
-      << ", head_dim=" << value.head_dim
-      << ", scale=" << value.scale
-      << ", is_causal=" << value.is_causal
-      << ", has_mask=" << value.has_mask
-      << ", num_threads=" << value.num_threads
-      << ", seed=" << seed;
+    *os << "batch=" << value.batch << ", num_heads=" << value.num_heads
+        << ", seq_len=" << value.seq_len << ", kv_seq_len=" << value.kv_seq_len
+        << ", head_dim=" << value.head_dim << ", scale=" << value.scale
+        << ", is_causal=" << value.is_causal << ", has_mask=" << value.has_mask
+        << ", num_threads=" << value.num_threads << ", seed=" << seed;
 }
 
 void PrintTo(const SoftmaxType &value, ::std::ostream *os) {
-  *os << "ndims=" << value.ndims
-      << ", shape=[" << value.shape[0];
-  for (int i = 1; i < value.ndims; ++i) {
-    *os << "," << value.shape[i];
-  }
-  *os << "]"
-      << ", axis=" << value.axis
-      << ", log_softmax=" << value.log_softmax
-      << ", softmin=" << value.softmin
-      << ", num_threads=" << value.num_threads
-      << ", seed=" << seed;
+    *os << "ndims=" << value.ndims << ", shape=[" << value.shape[0];
+    for (int i = 1; i < value.ndims; ++i) {
+        *os << "," << value.shape[i];
+    }
+    *os << "]"
+        << ", axis=" << value.axis << ", log_softmax=" << value.log_softmax
+        << ", softmin=" << value.softmin
+        << ", num_threads=" << value.num_threads << ", seed=" << seed;
 }
 
 data_type_t strToDatatype(const std::string &str) {
-  if (str == "f32") {
-    return data_type_t::f32;
-  }
-  if (str == "f16") {
-    return data_type_t::f16;
-  }
-  if (str == "bf16") {
-    return data_type_t::bf16;
-  }
-  if (str == "s32") {
-    return data_type_t::s32;
-  }
-  if (str == "s64") {
-    return data_type_t::s64;
-  }
-  if (str == "s16") {
-    return data_type_t::s16;
-  }
-  if (str == "s8") {
-    return data_type_t::s8;
-  }
-  if (str == "s4") {
-    return data_type_t::s4;
-  }
-  if (str == "u32") {
-    return data_type_t::u32;
-  }
-  if (str == "u16") {
-    return data_type_t::u16;
-  }
-  if (str == "u8") {
-    return data_type_t::u8;
-  }
-  if (str == "u4") {
-    return data_type_t::u4;
-  }
-  EXCEPTION("Unknown data type string '" + str + "'");
+    if (str == "f32") { return data_type_t::f32; }
+    if (str == "f16") { return data_type_t::f16; }
+    if (str == "bf16") { return data_type_t::bf16; }
+    if (str == "s32") { return data_type_t::s32; }
+    if (str == "s64") { return data_type_t::s64; }
+    if (str == "s16") { return data_type_t::s16; }
+    if (str == "s8") { return data_type_t::s8; }
+    if (str == "s4") { return data_type_t::s4; }
+    if (str == "u32") { return data_type_t::u32; }
+    if (str == "u16") { return data_type_t::u16; }
+    if (str == "u8") { return data_type_t::u8; }
+    if (str == "u4") { return data_type_t::u4; }
+    EXCEPTION("Unknown data type string '" + str + "'");
 }
 
 quant_granularity_t strToQuantGranularity(const std::string &str) {
-  std::string val = str;
-  std::transform(val.begin(), val.end(), val.begin(), [](unsigned char c) {
-    return static_cast<char>(std::tolower(c));
-  });
-  if (val == "tensor" || val == "per_tensor") {
-    return quant_granularity_t::tensor;
-  }
-  if (val == "channel" || val == "per_channel") {
-    return quant_granularity_t::channel;
-  }
-  if (val == "group" || val == "per_group") {
-    return quant_granularity_t::group;
-  }
-  EXCEPTION("Unknown weight granularity string '" + str + "'");
+    std::string val = str;
+    std::transform(val.begin(), val.end(), val.begin(),
+            [](unsigned char c) { return static_cast<char>(std::tolower(c)); });
+    if (val == "tensor" || val == "per_tensor") {
+        return quant_granularity_t::tensor;
+    }
+    if (val == "channel" || val == "per_channel") {
+        return quant_granularity_t::channel;
+    }
+    if (val == "group" || val == "per_group") {
+        return quant_granularity_t::group;
+    }
+    EXCEPTION("Unknown weight granularity string '" + str + "'");
 }
 
 embag_algo_t strToEmbagAlgo(std::string str) {
-  if (str == "sum") {
-    return embag_algo_t::sum;
-  }
-  if (str == "mean") {
-    return embag_algo_t::mean;
-  }
-  if (str == "max") {
-    return embag_algo_t::max;
-  }
-  EXCEPTION("Invalid embedding algorithm: " + str);
+    if (str == "sum") { return embag_algo_t::sum; }
+    if (str == "mean") { return embag_algo_t::mean; }
+    if (str == "max") { return embag_algo_t::max; }
+    EXCEPTION("Invalid embedding algorithm: " + str);
 }
 
 matmul_algo_t strToAlgo(std::string str) {
-  if (str == "aocl_dlp") {
-    return matmul_algo_t::aocl_dlp;
-  }
-  if (str == "aocl_dlp_blocked") {
-    return matmul_algo_t::aocl_dlp_blocked;
-  }
-  if (str == "onednn") {
-    return matmul_algo_t::onednn;
-  }
-  if (str == "onednn_blocked") {
-    return matmul_algo_t::onednn_blocked;
-  }
-  if (str == "libxsmm") {
-    return matmul_algo_t::libxsmm;
-  }
-  if (str == "libxsmm_blocked") {
-    return matmul_algo_t::libxsmm_blocked;
-  }
-  if (str == "native_gemm") {
-    return matmul_algo_t::native_gemm;
-  }
-  if (str == "native_brgemm") {
-    return matmul_algo_t::native_brgemm;
-  }
-  EXCEPTION("Invalid algorithm: " + str);
+    if (str == "aocl_dlp") { return matmul_algo_t::aocl_dlp; }
+    if (str == "aocl_dlp_blocked") { return matmul_algo_t::aocl_dlp_blocked; }
+    if (str == "onednn") { return matmul_algo_t::onednn; }
+    if (str == "onednn_blocked") { return matmul_algo_t::onednn_blocked; }
+    if (str == "libxsmm") { return matmul_algo_t::libxsmm; }
+    if (str == "libxsmm_blocked") { return matmul_algo_t::libxsmm_blocked; }
+    if (str == "native_gemm") { return matmul_algo_t::native_gemm; }
+    if (str == "native_brgemm") { return matmul_algo_t::native_brgemm; }
+    EXCEPTION("Invalid algorithm: " + str);
 }
 
 std::string algoToStr(matmul_algo_t algo) {
-  switch (algo) {
-  case matmul_algo_t::aocl_dlp:
-    return "aocl_dlp";
-  case matmul_algo_t::aocl_dlp_blocked:
-    return "aocl_dlp_blocked";
-  case matmul_algo_t::onednn:
-    return "onednn";
-  case matmul_algo_t::onednn_blocked:
-    return "onednn_blocked";
-  case matmul_algo_t::libxsmm:
-    return "libxsmm";
-  case matmul_algo_t::libxsmm_blocked:
-    return "libxsmm_blocked";
-  case matmul_algo_t::native_gemm:
-    return "native_gemm";
-  case matmul_algo_t::native_brgemm:
-    return "native_brgemm";
-  default:
-    return "none";
-  }
+    switch (algo) {
+        case matmul_algo_t::aocl_dlp: return "aocl_dlp";
+        case matmul_algo_t::aocl_dlp_blocked: return "aocl_dlp_blocked";
+        case matmul_algo_t::onednn: return "onednn";
+        case matmul_algo_t::onednn_blocked: return "onednn_blocked";
+        case matmul_algo_t::libxsmm: return "libxsmm";
+        case matmul_algo_t::libxsmm_blocked: return "libxsmm_blocked";
+        case matmul_algo_t::native_gemm: return "native_gemm";
+        case matmul_algo_t::native_brgemm: return "native_brgemm";
+        default: return "none";
+    }
 }
 
 post_op_type_t strToPostOps(const std::string &str) {
-  if (str.empty()) {
-    log_warning(
-      "Empty post-op token in ':'-separated chain (extra ':'); treating as "
-      "none.");
-    return post_op_type_t::none;
-  }
-  if (str == "relu") {
-    return post_op_type_t::relu;
-  }
-  if (str == "gelu_tanh") {
-    return post_op_type_t::gelu_tanh;
-  }
-  if (str == "gelu_erf") {
-    return post_op_type_t::gelu_erf;
-  }
-  if (str == "sigmoid") {
-    return post_op_type_t::sigmoid;
-  }
-  if (str == "swish") {
-    return post_op_type_t::swish;
-  }
-  if (str == "tanh") {
-    return post_op_type_t::tanh;
-  }
-  if (str == "clip") {
-    return post_op_type_t::clip;
-  }
-  if (str == "binary_add") {
-    return post_op_type_t::binary_add;
-  }
-  if (str == "binary_mul") {
-    return post_op_type_t::binary_mul;
-  }
-  if (str == "mish") {
-    return post_op_type_t::mish;
-  }
-  if (str == "none") {
-    return post_op_type_t::none;
-  }
-  EXCEPTION("Unknown post-op name \"" + str + "\".");
+    if (str.empty()) {
+        log_warning(
+                "Empty post-op token in ':'-separated chain (extra ':'); "
+                "treating as "
+                "none.");
+        return post_op_type_t::none;
+    }
+    if (str == "relu") { return post_op_type_t::relu; }
+    if (str == "gelu_tanh") { return post_op_type_t::gelu_tanh; }
+    if (str == "gelu_erf") { return post_op_type_t::gelu_erf; }
+    if (str == "sigmoid") { return post_op_type_t::sigmoid; }
+    if (str == "swish") { return post_op_type_t::swish; }
+    if (str == "tanh") { return post_op_type_t::tanh; }
+    if (str == "clip") { return post_op_type_t::clip; }
+    if (str == "binary_add") { return post_op_type_t::binary_add; }
+    if (str == "binary_mul") { return post_op_type_t::binary_mul; }
+    if (str == "mish") { return post_op_type_t::mish; }
+    if (str == "none") { return post_op_type_t::none; }
+    EXCEPTION("Unknown post-op name \"" + str + "\".");
 }
 
 std::string postOpsToStr(post_op_type_t post_op) {
-  switch (post_op) {
-  case post_op_type_t::relu:
-    return "relu";
-  case post_op_type_t::gelu_tanh:
-    return "gelu_tanh";
-  case post_op_type_t::gelu_erf:
-    return "gelu_erf";
-  case post_op_type_t::sigmoid:
-    return "sigmoid";
-  case post_op_type_t::swish:
-    return "swish";
-  case post_op_type_t::tanh:
-    return "tanh";
-  case post_op_type_t::clip:
-    return "clip";
-  case post_op_type_t::binary_add:
-    return "binary_add";
-  case post_op_type_t::binary_mul:
-    return "binary_mul";
-  case post_op_type_t::mish:
-    return "mish";
-  default:
-    return "none";
-  }
+    switch (post_op) {
+        case post_op_type_t::relu: return "relu";
+        case post_op_type_t::gelu_tanh: return "gelu_tanh";
+        case post_op_type_t::gelu_erf: return "gelu_erf";
+        case post_op_type_t::sigmoid: return "sigmoid";
+        case post_op_type_t::swish: return "swish";
+        case post_op_type_t::tanh: return "tanh";
+        case post_op_type_t::clip: return "clip";
+        case post_op_type_t::binary_add: return "binary_add";
+        case post_op_type_t::binary_mul: return "binary_mul";
+        case post_op_type_t::mish: return "mish";
+        default: return "none";
+    }
 }
 
 std::string postOpTypesToStr(const std::vector<post_op_type_t> &po_types) {
-  std::string s;
-  bool first = true;
-  for (size_t i = 0; i < po_types.size(); ++i) {
-    if (po_types[i] == post_op_type_t::none) {
-      continue;
+    std::string s;
+    bool first = true;
+    for (size_t i = 0; i < po_types.size(); ++i) {
+        if (po_types[i] == post_op_type_t::none) { continue; }
+        if (!first) { s += ':'; }
+        s += postOpsToStr(po_types[i]);
+        first = false;
     }
-    if (!first) {
-      s += ':';
-    }
-    s += postOpsToStr(po_types[i]);
-    first = false;
-  }
-  return s;
+    return s;
 }
 
 void neutralize_mish_quant_int8(std::vector<post_op_type_t> &po_types) {
-  for (uint32_t i = 0; i < po_types.size(); ++i) {
-    if (po_types[i] == post_op_type_t::mish) {
-      po_types[i] = post_op_type_t::none;
+    for (uint32_t i = 0; i < po_types.size(); ++i) {
+        if (po_types[i] == post_op_type_t::mish) {
+            po_types[i] = post_op_type_t::none;
+        }
     }
-  }
 }
 
 void trim(std::string &str) {
-  const auto not_space = [](unsigned char c) {
-    return !std::isspace(c);
-  };
-  str.erase(str.begin(), std::find_if(str.begin(), str.end(), not_space));
-  str.erase(std::find_if(str.rbegin(), str.rend(), not_space).base(), str.end());
+    const auto not_space = [](unsigned char c) { return !std::isspace(c); };
+    str.erase(str.begin(), std::find_if(str.begin(), str.end(), not_space));
+    str.erase(std::find_if(str.rbegin(), str.rend(), not_space).base(),
+            str.end());
 }
 std::vector<std::string> split(const std::string &str, char delimiter) {
-  std::vector<std::string> tokens;
-  size_t start = 0, end;
+    std::vector<std::string> tokens;
+    size_t start = 0, end;
 
-  while ((end = str.find(delimiter, start)) != std::string::npos) {
-    std::string token = str.substr(start, end - start);
+    while ((end = str.find(delimiter, start)) != std::string::npos) {
+        std::string token = str.substr(start, end - start);
+        trim(token);
+        tokens.emplace_back(token); // include empty token
+        start = end + 1;
+    }
+
+    std::string token = str.substr(start);
     trim(token);
-    tokens.emplace_back(token);  // include empty token
-    start = end + 1;
-  }
-
-  std::string token = str.substr(start);
-  trim(token);
-  tokens.emplace_back(token);  // last token (even if empty)
-  return tokens;
+    tokens.emplace_back(token); // last token (even if empty)
+    return tokens;
 }
 
-std::vector<MatmulInput> read_matmul_inputs(const std::string &file,
-    uint32_t ndims) {
-  std::vector<MatmulInput> inputs;
-  std::ifstream infile(file);
-  if (infile.is_open()) {
-    std::string line;
-    while (std::getline(infile, line)) {
-      if (line.empty()) {
-        continue;
-      }
-      auto fields = split(line, ',');
-      size_t expected_fields = (ndims == 3) ? 13 : 12;
-      if (fields.size() != expected_fields) {
-        if (ndims == 3) {
-          commonlog_error("Invalid line (expected ", expected_fields,
-                          " fields, got ", fields.size(),
-                          "): [batch_size, M, K, N, postOp, kernel, transA, transB, alpha, beta, src_dtype, dst_dtype, weight_granularity]");
-        }
-        else {
-          commonlog_error("Invalid line (expected ", expected_fields,
-                          " fields, got ", fields.size(),
-                          "): [M, K, N, postOp, kernel, transA, transB, alpha, beta, src_dtype, dst_dtype, weight_granularity]");
-        }
-        continue;
-      }
-      MatmulInput cfg;
-      try {
-        int id = 0;
-        if (ndims == 3) {
-          if (!fields[id].empty()) {
-            const auto parsed = parse_positive_uint64_field(fields[id]);
-            if (!parsed) {
-              commonlog_error("Invalid batch size: " + fields[id]);
-              continue;
+std::vector<MatmulInput> read_matmul_inputs(
+        const std::string &file, uint32_t ndims) {
+    std::vector<MatmulInput> inputs;
+    std::ifstream infile(file);
+    if (infile.is_open()) {
+        std::string line;
+        while (std::getline(infile, line)) {
+            if (line.empty()) { continue; }
+            auto fields = split(line, ',');
+            size_t expected_fields = (ndims == 3) ? 13 : 12;
+            if (fields.size() != expected_fields) {
+                if (ndims == 3) {
+                    commonlog_error("Invalid line (expected ", expected_fields,
+                            " fields, got ", fields.size(),
+                            "): [batch_size, M, K, N, postOp, kernel, transA, "
+                            "transB, alpha, beta, src_dtype, dst_dtype, "
+                            "weight_granularity]");
+                } else {
+                    commonlog_error("Invalid line (expected ", expected_fields,
+                            " fields, got ", fields.size(),
+                            "): [M, K, N, postOp, kernel, transA, transB, "
+                            "alpha, beta, src_dtype, dst_dtype, "
+                            "weight_granularity]");
+                }
+                continue;
             }
-            cfg.batch_size = *parsed;
-          }
-          id++;
-        }
-        if (!fields[id].empty()) {
-          const auto parsed = parse_positive_uint64_field(fields[id]);
-          if (!parsed) {
-            commonlog_error("Invalid M: " + fields[id]);
-            continue;
-          }
-          cfg.m = *parsed;
-        }
-        id++;
-        if (!fields[id].empty()) {
-          const auto parsed = parse_positive_uint64_field(fields[id]);
-          if (!parsed) {
-            commonlog_error("Invalid K: " + fields[id]);
-            continue;
-          }
-          cfg.k = *parsed;
-        }
-        id++;
-        if (!fields[id].empty()) {
-          const auto parsed = parse_positive_uint64_field(fields[id]);
-          if (!parsed) {
-            commonlog_error("Invalid N: " + fields[id]);
-            continue;
-          }
-          cfg.n = *parsed;
-        }
-        id++;
-        if (!fields[id].empty()) {
-          std::vector<post_op_type_t> parsed;
-          bool post_op_ok = true;
-          for (const auto &po : split(fields[id], ':')) {
+            MatmulInput cfg;
             try {
-              parsed.push_back(strToPostOps(po));
+                int id = 0;
+                if (ndims == 3) {
+                    if (!fields[id].empty()) {
+                        const auto parsed
+                                = parse_positive_uint64_field(fields[id]);
+                        if (!parsed) {
+                            commonlog_error(
+                                    "Invalid batch size: " + fields[id]);
+                            continue;
+                        }
+                        cfg.batch_size = *parsed;
+                    }
+                    id++;
+                }
+                if (!fields[id].empty()) {
+                    const auto parsed = parse_positive_uint64_field(fields[id]);
+                    if (!parsed) {
+                        commonlog_error("Invalid M: " + fields[id]);
+                        continue;
+                    }
+                    cfg.m = *parsed;
+                }
+                id++;
+                if (!fields[id].empty()) {
+                    const auto parsed = parse_positive_uint64_field(fields[id]);
+                    if (!parsed) {
+                        commonlog_error("Invalid K: " + fields[id]);
+                        continue;
+                    }
+                    cfg.k = *parsed;
+                }
+                id++;
+                if (!fields[id].empty()) {
+                    const auto parsed = parse_positive_uint64_field(fields[id]);
+                    if (!parsed) {
+                        commonlog_error("Invalid N: " + fields[id]);
+                        continue;
+                    }
+                    cfg.n = *parsed;
+                }
+                id++;
+                if (!fields[id].empty()) {
+                    std::vector<post_op_type_t> parsed;
+                    bool post_op_ok = true;
+                    for (const auto &po : split(fields[id], ':')) {
+                        try {
+                            parsed.push_back(strToPostOps(po));
+                        } catch (const std::exception &) {
+                            commonlog_error("Invalid postOp token '" + po
+                                    + "' in line: " + line);
+                            post_op_ok = false;
+                            break;
+                        }
+                    }
+                    if (!post_op_ok) { continue; }
+                    if (parsed.size() > POST_OPS_LIMIT) {
+                        commonlog_error(
+                                "Post-op chain length exceeds POST_OPS_LIMIT.");
+                        continue;
+                    }
+                    cfg.po_types = std::move(parsed);
+                }
+                id++;
+                if (!fields[id].empty()) {
+                    try {
+                        cfg.algo = strToAlgo(fields[id]);
+                    } catch (const std::exception &) {
+                        commonlog_error("Invalid kernel: " + fields[id]);
+                        continue;
+                    }
+                }
+                id++;
+                if (!fields[id].empty()) {
+                    const auto parsed = parse_bool_field(fields[id], "transA");
+                    if (!parsed) { continue; }
+                    cfg.transA = *parsed;
+                }
+                id++;
+                if (!fields[id].empty()) {
+                    const auto parsed = parse_bool_field(fields[id], "transB");
+                    if (!parsed) { continue; }
+                    cfg.transB = *parsed;
+                }
+                id++;
+                if (!fields[id].empty()) {
+                    try {
+                        size_t parsed_len = 0;
+                        cfg.alpha = std::stof(fields[id], &parsed_len);
+                        if (parsed_len != fields[id].size()) {
+                            throw std::invalid_argument("trailing characters");
+                        }
+                    } catch (const std::exception &) {
+                        commonlog_error("Invalid alpha: " + fields[id]);
+                        continue;
+                    }
+                }
+                id++;
+                if (!fields[id].empty()) {
+                    try {
+                        size_t parsed_len = 0;
+                        cfg.beta = std::stof(fields[id], &parsed_len);
+                        if (parsed_len != fields[id].size()) {
+                            throw std::invalid_argument("trailing characters");
+                        }
+                    } catch (const std::exception &) {
+                        commonlog_error("Invalid beta: " + fields[id]);
+                        continue;
+                    }
+                }
+                id++;
+                if (!fields[id].empty()) {
+                    try {
+                        cfg.src_dtype = strToDatatype(fields[id]);
+                    } catch (const std::exception &) {
+                        commonlog_error("Invalid src_dtype: " + fields[id]);
+                        continue;
+                    }
+                }
+                id++;
+                if (!fields[id].empty()) {
+                    try {
+                        cfg.dst_dtype = strToDatatype(fields[id]);
+                    } catch (const std::exception &) {
+                        commonlog_error("Invalid dst_dtype: " + fields[id]);
+                        continue;
+                    }
+                }
+                id++;
+                if (!fields[id].empty()) {
+                    try {
+                        cfg.weight_granularity
+                                = strToQuantGranularity(fields[id]);
+                    } catch (const std::exception &) {
+                        commonlog_error(
+                                "Invalid weight_granularity: " + fields[id]);
+                        continue;
+                    }
+                }
+                id++;
+                inputs.push_back(cfg);
+            } catch (const std::exception &e) {
+                commonlog_error(e.what());
+                continue;
             }
-            catch (const std::exception &) {
-              commonlog_error("Invalid postOp token '" + po +
-                              "' in line: " + line);
-              post_op_ok = false;
-              break;
-            }
-          }
-          if (!post_op_ok) {
-            continue;
-          }
-          if (parsed.size() > POST_OPS_LIMIT) {
-            commonlog_error("Post-op chain length exceeds POST_OPS_LIMIT.");
-            continue;
-          }
-          cfg.po_types = std::move(parsed);
         }
-        id++;
-        if (!fields[id].empty()) {
-          try {
-            cfg.algo = strToAlgo(fields[id]);
-          }
-          catch (const std::exception &) {
-            commonlog_error("Invalid kernel: " + fields[id]);
-            continue;
-          }
-        }
-        id++;
-        if (!fields[id].empty()) {
-          const auto parsed = parse_bool_field(fields[id], "transA");
-          if (!parsed) {
-            continue;
-          }
-          cfg.transA = *parsed;
-        }
-        id++;
-        if (!fields[id].empty()) {
-          const auto parsed = parse_bool_field(fields[id], "transB");
-          if (!parsed) {
-            continue;
-          }
-          cfg.transB = *parsed;
-        }
-        id++;
-        if (!fields[id].empty()) {
-          try {
-            size_t parsed_len = 0;
-            cfg.alpha = std::stof(fields[id], &parsed_len);
-            if (parsed_len != fields[id].size()) {
-              throw std::invalid_argument("trailing characters");
-            }
-          }
-          catch (const std::exception &) {
-            commonlog_error("Invalid alpha: " + fields[id]);
-            continue;
-          }
-        }
-        id++;
-        if (!fields[id].empty()) {
-          try {
-            size_t parsed_len = 0;
-            cfg.beta = std::stof(fields[id], &parsed_len);
-            if (parsed_len != fields[id].size()) {
-              throw std::invalid_argument("trailing characters");
-            }
-          }
-          catch (const std::exception &) {
-            commonlog_error("Invalid beta: " + fields[id]);
-            continue;
-          }
-        }
-        id++;
-        if (!fields[id].empty()) {
-          try {
-            cfg.src_dtype = strToDatatype(fields[id]);
-          }
-          catch (const std::exception &) {
-            commonlog_error("Invalid src_dtype: " + fields[id]);
-            continue;
-          }
-        }
-        id++;
-        if (!fields[id].empty()) {
-          try {
-            cfg.dst_dtype = strToDatatype(fields[id]);
-          }
-          catch (const std::exception &) {
-            commonlog_error("Invalid dst_dtype: " + fields[id]);
-            continue;
-          }
-        }
-        id++;
-        if (!fields[id].empty()) {
-          try {
-            cfg.weight_granularity = strToQuantGranularity(fields[id]);
-          }
-          catch (const std::exception &) {
-            commonlog_error("Invalid weight_granularity: " + fields[id]);
-            continue;
-          }
-        }
-        id++;
-        inputs.push_back(cfg);
-      }
-      catch (const std::exception &e) {
-        commonlog_error(e.what());
-        continue;
-      }
+    } else {
+        testlog_error("Error: Cannot open file ", file);
     }
-  }
-  else {
-    testlog_error("Error: Cannot open file ", file);
-  }
-  return inputs;
+    return inputs;
 }
 
-std::vector<ReorderInput> read_reorder_inputs(const std::string &file,
-    bool is_lowoha_test) {
-  std::vector<ReorderInput> inputs;
-  std::ifstream infile(file);
-  if (infile.is_open()) {
-    std::string line;
-    while (std::getline(infile, line)) {
-      if (line.empty()) {
-        continue;
-      }
-      auto fields = split(line, ',');
-      ReorderInput cfg;
-      try {
-        if (!is_lowoha_test) { // Regular reorder test
-          int id = 0;
-          const int expected_fields = 8;
-          if (fields.size() != static_cast<size_t>(expected_fields)) {
-            commonlog_error("Invalid line (expected ", expected_fields,
-                            " fields, got ", fields.size(),
-                            "): [M, K, N, postOp, kernel, transA, transB, inplace_reorder]");
-            continue;
-          }
-          if (!fields[id].empty()) {
-            const auto parsed = parse_positive_uint64_field(fields[id]);
-            if (!parsed) {
-              commonlog_error("Invalid M: " + fields[id]);
-              continue;
-            }
-            cfg.matmul_input.m = *parsed;
-          }
-          id++;
-          if (!fields[id].empty()) {
-            const auto parsed = parse_positive_uint64_field(fields[id]);
-            if (!parsed) {
-              commonlog_error("Invalid K: " + fields[id]);
-              continue;
-            }
-            cfg.matmul_input.k = *parsed;
-          }
-          id++;
-          if (!fields[id].empty()) {
-            const auto parsed = parse_positive_uint64_field(fields[id]);
-            if (!parsed) {
-              commonlog_error("Invalid N: " + fields[id]);
-              continue;
-            }
-            cfg.matmul_input.n = *parsed;
-          }
-          id++;
-          if (!fields[id].empty()) {
-            std::vector<post_op_type_t> parsed;
-            bool post_op_ok = true;
-            for (const auto &po : split(fields[id], ':')) {
-              try {
-                parsed.push_back(strToPostOps(po));
-              }
-              catch (const std::exception &) {
-                commonlog_error("Invalid postOp token '" + po +
-                                "' in line: " + line);
-                post_op_ok = false;
-                break;
-              }
-            }
-            if (!post_op_ok) {
-              continue;
-            }
-            if (parsed.size() > POST_OPS_LIMIT) {
-              commonlog_error("Post-op chain length exceeds POST_OPS_LIMIT.");
-              continue;
-            }
-            cfg.matmul_input.po_types = std::move(parsed);
-          }
-          id++;
-          if (!fields[id].empty()) {
+std::vector<ReorderInput> read_reorder_inputs(
+        const std::string &file, bool is_lowoha_test) {
+    std::vector<ReorderInput> inputs;
+    std::ifstream infile(file);
+    if (infile.is_open()) {
+        std::string line;
+        while (std::getline(infile, line)) {
+            if (line.empty()) { continue; }
+            auto fields = split(line, ',');
+            ReorderInput cfg;
             try {
-              cfg.matmul_input.algo = strToAlgo(fields[id]);
+                if (!is_lowoha_test) { // Regular reorder test
+                    int id = 0;
+                    const int expected_fields = 8;
+                    if (fields.size() != static_cast<size_t>(expected_fields)) {
+                        commonlog_error("Invalid line (expected ",
+                                expected_fields, " fields, got ", fields.size(),
+                                "): [M, K, N, postOp, kernel, transA, transB, "
+                                "inplace_reorder]");
+                        continue;
+                    }
+                    if (!fields[id].empty()) {
+                        const auto parsed
+                                = parse_positive_uint64_field(fields[id]);
+                        if (!parsed) {
+                            commonlog_error("Invalid M: " + fields[id]);
+                            continue;
+                        }
+                        cfg.matmul_input.m = *parsed;
+                    }
+                    id++;
+                    if (!fields[id].empty()) {
+                        const auto parsed
+                                = parse_positive_uint64_field(fields[id]);
+                        if (!parsed) {
+                            commonlog_error("Invalid K: " + fields[id]);
+                            continue;
+                        }
+                        cfg.matmul_input.k = *parsed;
+                    }
+                    id++;
+                    if (!fields[id].empty()) {
+                        const auto parsed
+                                = parse_positive_uint64_field(fields[id]);
+                        if (!parsed) {
+                            commonlog_error("Invalid N: " + fields[id]);
+                            continue;
+                        }
+                        cfg.matmul_input.n = *parsed;
+                    }
+                    id++;
+                    if (!fields[id].empty()) {
+                        std::vector<post_op_type_t> parsed;
+                        bool post_op_ok = true;
+                        for (const auto &po : split(fields[id], ':')) {
+                            try {
+                                parsed.push_back(strToPostOps(po));
+                            } catch (const std::exception &) {
+                                commonlog_error("Invalid postOp token '" + po
+                                        + "' in line: " + line);
+                                post_op_ok = false;
+                                break;
+                            }
+                        }
+                        if (!post_op_ok) { continue; }
+                        if (parsed.size() > POST_OPS_LIMIT) {
+                            commonlog_error(
+                                    "Post-op chain length exceeds "
+                                    "POST_OPS_LIMIT.");
+                            continue;
+                        }
+                        cfg.matmul_input.po_types = std::move(parsed);
+                    }
+                    id++;
+                    if (!fields[id].empty()) {
+                        try {
+                            cfg.matmul_input.algo = strToAlgo(fields[id]);
+                        } catch (const std::exception &) {
+                            commonlog_error("Invalid kernel: " + fields[id]);
+                            continue;
+                        }
+                    }
+                    id++;
+                    if (!fields[id].empty()) {
+                        const auto parsed
+                                = parse_bool_field(fields[id], "transA");
+                        if (!parsed) { continue; }
+                        cfg.matmul_input.transA = *parsed;
+                    }
+                    id++;
+                    if (!fields[id].empty()) {
+                        const auto parsed
+                                = parse_bool_field(fields[id], "transB");
+                        if (!parsed) { continue; }
+                        cfg.matmul_input.transB = *parsed;
+                    }
+                    id++;
+                    if (!fields[id].empty()) {
+                        const auto parsed = parse_bool_field(
+                                fields[id], "inplace_reorder");
+                        if (!parsed) { continue; }
+                        cfg.inplace_reorder = *parsed;
+                    }
+                    id++;
+                } else {
+                    // LOWOHA reorder test
+                    int id = 0;
+                    const int expected_fields = 8;
+                    if (fields.size() != static_cast<size_t>(expected_fields)) {
+                        commonlog_error("Invalid line (expected ",
+                                expected_fields, " fields, got ", fields.size(),
+                                "): [batch_size, M, N, src_dtype, dst_dtype, "
+                                "weight_granularity, num_groups, dim_choice]");
+                        continue;
+                    }
+                    if (!fields[id].empty()) {
+                        const auto parsed
+                                = parse_positive_uint64_field(fields[id]);
+                        if (!parsed) {
+                            commonlog_error(
+                                    "Invalid batch size: " + fields[id]);
+                            continue;
+                        }
+                        cfg.matmul_input.batch_size = *parsed;
+                    }
+                    id++;
+                    if (!fields[id].empty()) {
+                        const auto parsed
+                                = parse_positive_uint64_field(fields[id]);
+                        if (!parsed) {
+                            commonlog_error("Invalid M: " + fields[id]);
+                            continue;
+                        }
+                        cfg.matmul_input.m = *parsed;
+                    }
+                    id++;
+                    if (!fields[id].empty()) {
+                        const auto parsed
+                                = parse_positive_uint64_field(fields[id]);
+                        if (!parsed) {
+                            commonlog_error("Invalid N: " + fields[id]);
+                            continue;
+                        }
+                        cfg.matmul_input.n = *parsed;
+                    }
+                    id++;
+                    if (!fields[id].empty()) {
+                        try {
+                            cfg.matmul_input.src_dtype
+                                    = std::optional<data_type_t>(
+                                            strToDatatype(fields[id]));
+                        } catch (const std::exception &) {
+                            commonlog_error("Invalid src_dtype: " + fields[id]);
+                            continue;
+                        }
+                    }
+                    id++;
+                    if (!fields[id].empty()) {
+                        try {
+                            cfg.matmul_input.dst_dtype
+                                    = std::optional<data_type_t>(
+                                            strToDatatype(fields[id]));
+                        } catch (const std::exception &) {
+                            commonlog_error("Invalid dst_dtype: " + fields[id]);
+                            continue;
+                        }
+                    }
+                    id++;
+                    if (!fields[id].empty()) {
+                        try {
+                            cfg.matmul_input.weight_granularity
+                                    = std::optional<quant_granularity_t>(
+                                            strToQuantGranularity(fields[id]));
+                        } catch (const std::exception &) {
+                            commonlog_error("Invalid weight_granularity: "
+                                    + fields[id]);
+                            continue;
+                        }
+                    }
+                    id++;
+                    if (!fields[id].empty()) {
+                        const auto parsed
+                                = parse_positive_uint64_field(fields[id]);
+                        if (!parsed) {
+                            commonlog_error(
+                                    "Invalid num groups: " + fields[id]);
+                            continue;
+                        }
+                        cfg.num_groups = *parsed;
+                    }
+                    id++;
+                    if (!fields[id].empty()) {
+                        const auto parsed
+                                = parse_positive_uint64_field(fields[id]);
+                        if (!parsed) {
+                            commonlog_error(
+                                    "Invalid dim choice: " + fields[id]);
+                            continue;
+                        }
+                        if (*parsed < 1U || *parsed > 3U) {
+                            commonlog_error(
+                                    "Invalid dim choice (must be 1, 2, or 3): "
+                                    + fields[id]);
+                            continue;
+                        }
+                        cfg.dim_choice = std::optional<uint32_t>(
+                                static_cast<uint32_t>(*parsed));
+                    }
+                    id++;
+                }
+                inputs.push_back(cfg);
+            } catch (const std::exception &e) {
+                commonlog_error(e.what());
+                continue;
             }
-            catch (const std::exception &) {
-              commonlog_error("Invalid kernel: " + fields[id]);
-              continue;
-            }
-          }
-          id++;
-          if (!fields[id].empty()) {
-            const auto parsed = parse_bool_field(fields[id], "transA");
-            if (!parsed) {
-              continue;
-            }
-            cfg.matmul_input.transA = *parsed;
-          }
-          id++;
-          if (!fields[id].empty()) {
-            const auto parsed = parse_bool_field(fields[id], "transB");
-            if (!parsed) {
-              continue;
-            }
-            cfg.matmul_input.transB = *parsed;
-          }
-          id++;
-          if (!fields[id].empty()) {
-            const auto parsed = parse_bool_field(fields[id], "inplace_reorder");
-            if (!parsed) {
-              continue;
-            }
-            cfg.inplace_reorder = *parsed;
-          }
-          id++;
         }
-        else {
-          // LOWOHA reorder test
-          int id = 0;
-          const int expected_fields = 8;
-          if (fields.size() != static_cast<size_t>(expected_fields)) {
-            commonlog_error("Invalid line (expected ", expected_fields,
-                            " fields, got ", fields.size(),
-                            "): [batch_size, M, N, src_dtype, dst_dtype, weight_granularity, num_groups, dim_choice]");
-            continue;
-          }
-          if (!fields[id].empty()) {
-            const auto parsed = parse_positive_uint64_field(fields[id]);
-            if (!parsed) {
-              commonlog_error("Invalid batch size: " + fields[id]);
-              continue;
-            }
-            cfg.matmul_input.batch_size = *parsed;
-          }
-          id++;
-          if (!fields[id].empty()) {
-            const auto parsed = parse_positive_uint64_field(fields[id]);
-            if (!parsed) {
-              commonlog_error("Invalid M: " + fields[id]);
-              continue;
-            }
-            cfg.matmul_input.m = *parsed;
-          }
-          id++;
-          if (!fields[id].empty()) {
-            const auto parsed = parse_positive_uint64_field(fields[id]);
-            if (!parsed) {
-              commonlog_error("Invalid N: " + fields[id]);
-              continue;
-            }
-            cfg.matmul_input.n = *parsed;
-          }
-          id++;
-          if (!fields[id].empty()) {
-            try {
-              cfg.matmul_input.src_dtype = std::optional<data_type_t>(
-                                             strToDatatype(fields[id]));
-            }
-            catch (const std::exception &) {
-              commonlog_error("Invalid src_dtype: " + fields[id]);
-              continue;
-            }
-          }
-          id++;
-          if (!fields[id].empty()) {
-            try {
-              cfg.matmul_input.dst_dtype = std::optional<data_type_t>(
-                                             strToDatatype(fields[id]));
-            }
-            catch (const std::exception &) {
-              commonlog_error("Invalid dst_dtype: " + fields[id]);
-              continue;
-            }
-          }
-          id++;
-          if (!fields[id].empty()) {
-            try {
-              cfg.matmul_input.weight_granularity =
-                std::optional<quant_granularity_t>(strToQuantGranularity(fields[id]));
-            }
-            catch (const std::exception &) {
-              commonlog_error("Invalid weight_granularity: " + fields[id]);
-              continue;
-            }
-          }
-          id++;
-          if (!fields[id].empty()) {
-            const auto parsed = parse_positive_uint64_field(fields[id]);
-            if (!parsed) {
-              commonlog_error("Invalid num groups: " + fields[id]);
-              continue;
-            }
-            cfg.num_groups = *parsed;
-          }
-          id++;
-          if (!fields[id].empty()) {
-            const auto parsed = parse_positive_uint64_field(fields[id]);
-            if (!parsed) {
-              commonlog_error("Invalid dim choice: " + fields[id]);
-              continue;
-            }
-            if (*parsed < 1U || *parsed > 3U) {
-              commonlog_error("Invalid dim choice (must be 1, 2, or 3): " + fields[id]);
-              continue;
-            }
-            cfg.dim_choice = std::optional<uint32_t>(static_cast<uint32_t>(*parsed));
-          }
-          id++;
-        }
-        inputs.push_back(cfg);
-      }
-      catch (const std::exception &e) {
-        commonlog_error(e.what());
-        continue;
-      }
+    } else {
+        testlog_error("Error: Cannot open file ", file);
     }
-  }
-  else {
-    testlog_error("Error: Cannot open file ", file);
-  }
-  return inputs;
+    return inputs;
 }
 
 std::vector<EmbagInput> read_embag_inputs(const std::string &file) {
-  std::vector<EmbagInput> inputs;
-  std::ifstream infile(file);
-  if (infile.is_open()) {
-    std::string line;
-    while (std::getline(infile, line)) {
-      if (line.empty()) {
-        continue;
-      }
-      auto fields = split(line, ',');
-      const int expected_fields = 11;
-      if (fields.size() != static_cast<size_t>(expected_fields)) {
-        commonlog_error("Invalid line (expected ", expected_fields,
+    std::vector<EmbagInput> inputs;
+    std::ifstream infile(file);
+    if (infile.is_open()) {
+        std::string line;
+        while (std::getline(infile, line)) {
+            if (line.empty()) { continue; }
+            auto fields = split(line, ',');
+            const int expected_fields = 11;
+            if (fields.size() != static_cast<size_t>(expected_fields)) {
+                commonlog_error("Invalid line (expected ", expected_fields,
                         " fields, got ", fields.size(),
-                        "): [num_embeddings, embedding_dim, num_bags, num_indices, embag_algo, padding_index, include_last_offset, is_weights, indices_dtype, fp16_scale_bias, strided]");
-        continue;
-      }
-      EmbagInput cfg;
-      try {
-        int id = 0;
-        if (!fields[id].empty()) {
-          const auto parsed = parse_positive_uint64_field(fields[id]);
-          if (!parsed) {
-            commonlog_error("Invalid num embeddings: " + fields[id]);
-            continue;
-          }
-          cfg.embedding_input.num_embeddings = *parsed;
-        }
-        id++;
-        if (!fields[id].empty()) {
-          const auto parsed = parse_positive_uint64_field(fields[id]);
-          if (!parsed) {
-            commonlog_error("Invalid embedding dim: " + fields[id]);
-            continue;
-          }
-          cfg.embedding_input.embedding_dim = *parsed;
-        }
-        id++;
-        if (!fields[id].empty()) {
-          const auto parsed = parse_positive_uint64_field(fields[id]);
-          if (!parsed) {
-            commonlog_error("Invalid num bags: " + fields[id]);
-            continue;
-          }
-          cfg.num_bags = *parsed;
-        }
-        id++;
-        if (!fields[id].empty()) {
-          const auto parsed = parse_positive_uint64_field(fields[id]);
-          if (!parsed) {
-            commonlog_error("Invalid num indices: " + fields[id]);
-            continue;
-          }
-          cfg.embedding_input.num_indices = *parsed;
-        }
-        id++;
-        if (!fields[id].empty()) {
-          try {
-            cfg.embag_algo = std::optional<embag_algo_t>(strToEmbagAlgo(fields[id]));
-          }
-          catch (const std::exception &) {
-            commonlog_error("Invalid embag_algo: " + fields[id]);
-            continue;
-          }
-        }
-        id++;
-        if (!fields[id].empty()) {
-          try {
-            size_t parsed_len = 0;
-            int64_t padding_index = std::stoll(fields[id], &parsed_len);
-            if (parsed_len != fields[id].size()) {
-              commonlog_error("Invalid padding_index: " + fields[id]);
-              continue;
+                        "): [num_embeddings, embedding_dim, num_bags, "
+                        "num_indices, embag_algo, padding_index, "
+                        "include_last_offset, is_weights, indices_dtype, "
+                        "fp16_scale_bias, strided]");
+                continue;
             }
-            cfg.embedding_input.padding_index = std::optional<int64_t>(padding_index);
-          }
-          catch (const std::exception &) {
-            commonlog_error("Invalid padding_index: " + fields[id]);
-            continue;
-          }
+            EmbagInput cfg;
+            try {
+                int id = 0;
+                if (!fields[id].empty()) {
+                    const auto parsed = parse_positive_uint64_field(fields[id]);
+                    if (!parsed) {
+                        commonlog_error(
+                                "Invalid num embeddings: " + fields[id]);
+                        continue;
+                    }
+                    cfg.embedding_input.num_embeddings = *parsed;
+                }
+                id++;
+                if (!fields[id].empty()) {
+                    const auto parsed = parse_positive_uint64_field(fields[id]);
+                    if (!parsed) {
+                        commonlog_error("Invalid embedding dim: " + fields[id]);
+                        continue;
+                    }
+                    cfg.embedding_input.embedding_dim = *parsed;
+                }
+                id++;
+                if (!fields[id].empty()) {
+                    const auto parsed = parse_positive_uint64_field(fields[id]);
+                    if (!parsed) {
+                        commonlog_error("Invalid num bags: " + fields[id]);
+                        continue;
+                    }
+                    cfg.num_bags = *parsed;
+                }
+                id++;
+                if (!fields[id].empty()) {
+                    const auto parsed = parse_positive_uint64_field(fields[id]);
+                    if (!parsed) {
+                        commonlog_error("Invalid num indices: " + fields[id]);
+                        continue;
+                    }
+                    cfg.embedding_input.num_indices = *parsed;
+                }
+                id++;
+                if (!fields[id].empty()) {
+                    try {
+                        cfg.embag_algo = std::optional<embag_algo_t>(
+                                strToEmbagAlgo(fields[id]));
+                    } catch (const std::exception &) {
+                        commonlog_error("Invalid embag_algo: " + fields[id]);
+                        continue;
+                    }
+                }
+                id++;
+                if (!fields[id].empty()) {
+                    try {
+                        size_t parsed_len = 0;
+                        int64_t padding_index
+                                = std::stoll(fields[id], &parsed_len);
+                        if (parsed_len != fields[id].size()) {
+                            commonlog_error(
+                                    "Invalid padding_index: " + fields[id]);
+                            continue;
+                        }
+                        cfg.embedding_input.padding_index
+                                = std::optional<int64_t>(padding_index);
+                    } catch (const std::exception &) {
+                        commonlog_error("Invalid padding_index: " + fields[id]);
+                        continue;
+                    }
+                }
+                id++;
+                if (!fields[id].empty()) {
+                    const auto parsed = parse_bool_field(
+                            fields[id], "include_last_offset");
+                    if (!parsed) { continue; }
+                    cfg.include_last_offset = *parsed;
+                }
+                id++;
+                if (!fields[id].empty()) {
+                    const auto parsed
+                            = parse_bool_field(fields[id], "is_weights");
+                    if (!parsed) { continue; }
+                    cfg.embedding_input.is_weights = *parsed;
+                }
+                id++;
+                if (!fields[id].empty()) {
+                    if (fields[id] == "s32") {
+                        cfg.embedding_input.indices_dtype = data_type_t::s32;
+                    } else if (fields[id] == "s64") {
+                        cfg.embedding_input.indices_dtype = data_type_t::s64;
+                    } else {
+                        commonlog_error("Invalid indices_dtype: " + fields[id]
+                                + " (expected s32 or s64)");
+                        continue;
+                    }
+                }
+                id++;
+                if (!fields[id].empty()) {
+                    const auto parsed
+                            = parse_bool_field(fields[id], "fp16_scale_bias");
+                    if (!parsed) { continue; }
+                    cfg.embedding_input.fp16_scale_bias = *parsed;
+                }
+                id++;
+                if (!fields[id].empty()) {
+                    const auto parsed = parse_bool_field(fields[id], "strided");
+                    if (!parsed) { continue; }
+                    cfg.embedding_input.strided = *parsed;
+                }
+                inputs.push_back(cfg);
+            } catch (const std::exception &e) {
+                commonlog_error(e.what());
+                continue;
+            }
         }
-        id++;
-        if (!fields[id].empty()) {
-          const auto parsed = parse_bool_field(fields[id], "include_last_offset");
-          if (!parsed) {
-            continue;
-          }
-          cfg.include_last_offset = *parsed;
-        }
-        id++;
-        if (!fields[id].empty()) {
-          const auto parsed = parse_bool_field(fields[id], "is_weights");
-          if (!parsed) {
-            continue;
-          }
-          cfg.embedding_input.is_weights = *parsed;
-        }
-        id++;
-        if (!fields[id].empty()) {
-          if (fields[id] == "s32") {
-            cfg.embedding_input.indices_dtype = data_type_t::s32;
-          }
-          else if (fields[id] == "s64") {
-            cfg.embedding_input.indices_dtype = data_type_t::s64;
-          }
-          else {
-            commonlog_error("Invalid indices_dtype: " + fields[id]
-                            + " (expected s32 or s64)");
-            continue;
-          }
-        }
-        id++;
-        if (!fields[id].empty()) {
-          const auto parsed = parse_bool_field(fields[id], "fp16_scale_bias");
-          if (!parsed) {
-            continue;
-          }
-          cfg.embedding_input.fp16_scale_bias = *parsed;
-        }
-        id++;
-        if (!fields[id].empty()) {
-          const auto parsed = parse_bool_field(fields[id], "strided");
-          if (!parsed) {
-            continue;
-          }
-          cfg.embedding_input.strided = *parsed;
-        }
-        inputs.push_back(cfg);
-      }
-      catch (const std::exception &e) {
-        commonlog_error(e.what());
-        continue;
-      }
+    } else {
+        testlog_error("Error: Cannot open file ", file);
     }
-  }
-  else {
-    testlog_error("Error: Cannot open file ", file);
-  }
-  return inputs;
+    return inputs;
 }
 
 std::vector<EmbeddingInput> read_embedding_inputs(const std::string &file) {
-  std::vector<EmbeddingInput> inputs;
-  std::ifstream infile(file);
-  if (infile.is_open()) {
-    std::string line;
-    while (std::getline(infile, line)) {
-      if (line.empty()) {
-        continue;
-      }
-      auto fields = split(line, ',');
-      const int expected_fields = 8;
-      if (fields.size() != static_cast<size_t>(expected_fields)) {
-        commonlog_error("Invalid line (expected ", expected_fields,
+    std::vector<EmbeddingInput> inputs;
+    std::ifstream infile(file);
+    if (infile.is_open()) {
+        std::string line;
+        while (std::getline(infile, line)) {
+            if (line.empty()) { continue; }
+            auto fields = split(line, ',');
+            const int expected_fields = 8;
+            if (fields.size() != static_cast<size_t>(expected_fields)) {
+                commonlog_error("Invalid line (expected ", expected_fields,
                         " fields, got ", fields.size(),
-                        "): [num_embeddings, embedding_dim, num_indices, padding_index, is_weights, indices_dtype, fp16_scale_bias, strided]");
-        continue;
-      }
-      EmbeddingInput cfg;
-      try {
-        int id = 0;
-        if (!fields[id].empty()) {
-          const auto parsed = parse_positive_uint64_field(fields[id]);
-          if (!parsed) {
-            commonlog_error("Invalid num embeddings: " + fields[id]);
-            continue;
-          }
-          cfg.num_embeddings = *parsed;
-        }
-        id++;
-        if (!fields[id].empty()) {
-          const auto parsed = parse_positive_uint64_field(fields[id]);
-          if (!parsed) {
-            commonlog_error("Invalid embedding dim: " + fields[id]);
-            continue;
-          }
-          cfg.embedding_dim = *parsed;
-        }
-        id++;
-        if (!fields[id].empty()) {
-          const auto parsed = parse_positive_uint64_field(fields[id]);
-          if (!parsed) {
-            commonlog_error("Invalid num indices: " + fields[id]);
-            continue;
-          }
-          cfg.num_indices = *parsed;
-        }
-        id++;
-        if (!fields[id].empty()) {
-          try {
-            size_t parsed_len = 0;
-            int64_t padding_index = std::stoll(fields[id], &parsed_len);
-            if (parsed_len != fields[id].size()) {
-              commonlog_error("Invalid padding_index: " + fields[id]);
-              continue;
+                        "): [num_embeddings, embedding_dim, num_indices, "
+                        "padding_index, is_weights, indices_dtype, "
+                        "fp16_scale_bias, strided]");
+                continue;
             }
-            cfg.padding_index = std::optional<int64_t>(padding_index);
-          }
-          catch (const std::exception &) {
-            commonlog_error("Invalid padding_index: " + fields[id]);
-            continue;
-          }
+            EmbeddingInput cfg;
+            try {
+                int id = 0;
+                if (!fields[id].empty()) {
+                    const auto parsed = parse_positive_uint64_field(fields[id]);
+                    if (!parsed) {
+                        commonlog_error(
+                                "Invalid num embeddings: " + fields[id]);
+                        continue;
+                    }
+                    cfg.num_embeddings = *parsed;
+                }
+                id++;
+                if (!fields[id].empty()) {
+                    const auto parsed = parse_positive_uint64_field(fields[id]);
+                    if (!parsed) {
+                        commonlog_error("Invalid embedding dim: " + fields[id]);
+                        continue;
+                    }
+                    cfg.embedding_dim = *parsed;
+                }
+                id++;
+                if (!fields[id].empty()) {
+                    const auto parsed = parse_positive_uint64_field(fields[id]);
+                    if (!parsed) {
+                        commonlog_error("Invalid num indices: " + fields[id]);
+                        continue;
+                    }
+                    cfg.num_indices = *parsed;
+                }
+                id++;
+                if (!fields[id].empty()) {
+                    try {
+                        size_t parsed_len = 0;
+                        int64_t padding_index
+                                = std::stoll(fields[id], &parsed_len);
+                        if (parsed_len != fields[id].size()) {
+                            commonlog_error(
+                                    "Invalid padding_index: " + fields[id]);
+                            continue;
+                        }
+                        cfg.padding_index
+                                = std::optional<int64_t>(padding_index);
+                    } catch (const std::exception &) {
+                        commonlog_error("Invalid padding_index: " + fields[id]);
+                        continue;
+                    }
+                }
+                id++;
+                if (!fields[id].empty()) {
+                    const auto parsed
+                            = parse_bool_field(fields[id], "is_weights");
+                    if (!parsed) { continue; }
+                    cfg.is_weights = *parsed;
+                }
+                id++;
+                if (!fields[id].empty()) {
+                    if (fields[id] == "s32") {
+                        cfg.indices_dtype = data_type_t::s32;
+                    } else if (fields[id] == "s64") {
+                        cfg.indices_dtype = data_type_t::s64;
+                    } else {
+                        commonlog_error("Invalid indices_dtype: " + fields[id]
+                                + " (expected s32 or s64)");
+                        continue;
+                    }
+                }
+                id++;
+                if (!fields[id].empty()) {
+                    const auto parsed
+                            = parse_bool_field(fields[id], "fp16_scale_bias");
+                    if (!parsed) { continue; }
+                    cfg.fp16_scale_bias = *parsed;
+                }
+                id++;
+                if (!fields[id].empty()) {
+                    const auto parsed = parse_bool_field(fields[id], "strided");
+                    if (!parsed) { continue; }
+                    cfg.strided = *parsed;
+                }
+                inputs.push_back(cfg);
+            } catch (const std::exception &e) {
+                commonlog_error(e.what());
+                continue;
+            }
         }
-        id++;
-        if (!fields[id].empty()) {
-          const auto parsed = parse_bool_field(fields[id], "is_weights");
-          if (!parsed) {
-            continue;
-          }
-          cfg.is_weights = *parsed;
-        }
-        id++;
-        if (!fields[id].empty()) {
-          if (fields[id] == "s32") {
-            cfg.indices_dtype = data_type_t::s32;
-          }
-          else if (fields[id] == "s64") {
-            cfg.indices_dtype = data_type_t::s64;
-          }
-          else {
-            commonlog_error("Invalid indices_dtype: " + fields[id]
-                            + " (expected s32 or s64)");
-            continue;
-          }
-        }
-        id++;
-        if (!fields[id].empty()) {
-          const auto parsed = parse_bool_field(fields[id], "fp16_scale_bias");
-          if (!parsed) {
-            continue;
-          }
-          cfg.fp16_scale_bias = *parsed;
-        }
-        id++;
-        if (!fields[id].empty()) {
-          const auto parsed = parse_bool_field(fields[id], "strided");
-          if (!parsed) {
-            continue;
-          }
-          cfg.strided = *parsed;
-        }
-        inputs.push_back(cfg);
-      }
-      catch (const std::exception &e) {
-        commonlog_error(e.what());
-        continue;
-      }
+    } else {
+        testlog_error("Error: Cannot open file ", file);
     }
-  }
-  else {
-    testlog_error("Error: Cannot open file ", file);
-  }
-  return inputs;
+    return inputs;
 }
 
 std::vector<NormalizationInput> read_normalization_inputs(
-  const std::string &file) {
-  std::vector<NormalizationInput> inputs;
-  std::ifstream infile(file);
-  if (infile.is_open()) {
-    std::string line;
-    while (std::getline(infile, line)) {
-      if (line.empty()) {
-        continue;
-      }
-      auto fields = split(line, ',');
-      const int expected_fields = 6;
-      if (fields.size() != static_cast<size_t>(expected_fields)) {
-        commonlog_error("Invalid line (expected ", expected_fields,
+        const std::string &file) {
+    std::vector<NormalizationInput> inputs;
+    std::ifstream infile(file);
+    if (infile.is_open()) {
+        std::string line;
+        while (std::getline(infile, line)) {
+            if (line.empty()) { continue; }
+            auto fields = split(line, ',');
+            const int expected_fields = 6;
+            if (fields.size() != static_cast<size_t>(expected_fields)) {
+                commonlog_error("Invalid line (expected ", expected_fields,
                         " fields, got ", fields.size(),
-                        "): [norm_type, norm_shape, use_scale, use_shift, gamma_dt, beta_dt]");
-        continue;
-      }
-      NormalizationInput cfg;
-      try {
-        int id = 0;
-        if (!fields[id].empty()) {
-          try {
-            cfg.norm_type = strToNormType(fields[id]);
-          }
-          catch (const std::exception &) {
-            commonlog_error("Invalid norm_type: " + fields[id]);
-            continue;
-          }
+                        "): [norm_type, norm_shape, use_scale, use_shift, "
+                        "gamma_dt, beta_dt]");
+                continue;
+            }
+            NormalizationInput cfg;
+            try {
+                int id = 0;
+                if (!fields[id].empty()) {
+                    try {
+                        cfg.norm_type = strToNormType(fields[id]);
+                    } catch (const std::exception &) {
+                        commonlog_error("Invalid norm_type: " + fields[id]);
+                        continue;
+                    }
+                }
+                id++;
+                if (!fields[id].empty()) {
+                    auto parsed_norm_shape = parse_norm_shape_field(fields[id]);
+                    if (parsed_norm_shape.empty()) { continue; }
+                    cfg.norm_shape = std::move(parsed_norm_shape);
+                }
+                id++;
+                if (!fields[id].empty()) {
+                    const auto parsed
+                            = parse_bool_field(fields[id], "use_scale");
+                    if (!parsed) { continue; }
+                    cfg.use_scale = *parsed;
+                }
+                id++;
+                if (!fields[id].empty()) {
+                    const auto parsed
+                            = parse_bool_field(fields[id], "use_shift");
+                    if (!parsed) { continue; }
+                    cfg.use_shift = *parsed;
+                }
+                id++;
+                if (!fields[id].empty()) {
+                    if (fields[id] == "bf16") {
+                        cfg.gamma_dt = data_type_t::bf16;
+                    } else if (fields[id] == "f32") {
+                        cfg.gamma_dt = data_type_t::f32;
+                    } else {
+                        commonlog_error("Invalid gamma_dt: " + fields[id]
+                                + " (expected bf16 or f32)");
+                        continue;
+                    }
+                }
+                id++;
+                if (!fields[id].empty()) {
+                    if (fields[id] == "bf16") {
+                        cfg.beta_dt = data_type_t::bf16;
+                    } else if (fields[id] == "f32") {
+                        cfg.beta_dt = data_type_t::f32;
+                    } else {
+                        commonlog_error("Invalid beta_dt: " + fields[id]
+                                + " (expected bf16 or f32)");
+                        continue;
+                    }
+                }
+                id++;
+                inputs.push_back(cfg);
+            } catch (const std::exception &e) {
+                commonlog_error(e.what());
+                continue;
+            }
         }
-        id++;
-        if (!fields[id].empty()) {
-          auto parsed_norm_shape = parse_norm_shape_field(fields[id]);
-          if (parsed_norm_shape.empty()) {
-            continue;
-          }
-          cfg.norm_shape = std::move(parsed_norm_shape);
-        }
-        id++;
-        if (!fields[id].empty()) {
-          const auto parsed = parse_bool_field(fields[id], "use_scale");
-          if (!parsed) {
-            continue;
-          }
-          cfg.use_scale = *parsed;
-        }
-        id++;
-        if (!fields[id].empty()) {
-          const auto parsed = parse_bool_field(fields[id], "use_shift");
-          if (!parsed) {
-            continue;
-          }
-          cfg.use_shift = *parsed;
-        }
-        id++;
-        if (!fields[id].empty()) {
-          if (fields[id] == "bf16") {
-            cfg.gamma_dt = data_type_t::bf16;
-          }
-          else if (fields[id] == "f32") {
-            cfg.gamma_dt = data_type_t::f32;
-          }
-          else {
-            commonlog_error("Invalid gamma_dt: " + fields[id]
-                            + " (expected bf16 or f32)");
-            continue;
-          }
-        }
-        id++;
-        if (!fields[id].empty()) {
-          if (fields[id] == "bf16") {
-            cfg.beta_dt = data_type_t::bf16;
-          }
-          else if (fields[id] == "f32") {
-            cfg.beta_dt = data_type_t::f32;
-          }
-          else {
-            commonlog_error("Invalid beta_dt: " + fields[id]
-                            + " (expected bf16 or f32)");
-            continue;
-          }
-        }
-        id++;
-        inputs.push_back(cfg);
-      }
-      catch (const std::exception &e) {
-        commonlog_error(e.what());
-        continue;
-      }
+    } else {
+        testlog_error("Error: Cannot open file ", file);
     }
-  }
-  else {
-    testlog_error("Error: Cannot open file ", file);
-  }
-  return inputs;
+    return inputs;
 }
 
 norm_type_t strToNormType(const std::string &str) {
-  std::string s = str;
-  std::transform(s.begin(), s.end(), s.begin(), [](unsigned char c) {
-    return static_cast<char>(std::tolower(c));
-  });
-  if (s == "layer") {
-    return norm_type_t::LAYER_NORM;
-  }
-  if (s == "batch") {
-    return norm_type_t::BATCH_NORM;
-  }
-  if (s == "rms") {
-    return norm_type_t::RMS_NORM;
-  }
-  if (s == "fusedaddrms") {
-    return norm_type_t::FUSED_ADD_RMS_NORM;
-  }
-  EXCEPTION("Unknown norm_type '" + str + "'");
+    std::string s = str;
+    std::transform(s.begin(), s.end(), s.begin(),
+            [](unsigned char c) { return static_cast<char>(std::tolower(c)); });
+    if (s == "layer") { return norm_type_t::LAYER_NORM; }
+    if (s == "batch") { return norm_type_t::BATCH_NORM; }
+    if (s == "rms") { return norm_type_t::RMS_NORM; }
+    if (s == "fusedaddrms") { return norm_type_t::FUSED_ADD_RMS_NORM; }
+    EXCEPTION("Unknown norm_type '" + str + "'");
 }
 
 std::optional<uint64_t> parse_positive_uint64_field(const std::string &field) {
-  if (field.empty()) {
-    return std::nullopt;
-  }
-  for (const char c : field) {
-    if (!std::isdigit(static_cast<unsigned char>(c))) {
-      return std::nullopt;
+    if (field.empty()) { return std::nullopt; }
+    for (const char c : field) {
+        if (!std::isdigit(static_cast<unsigned char>(c))) {
+            return std::nullopt;
+        }
     }
-  }
-  try {
-    size_t parsed_len = 0;
-    const uint64_t value = std::stoull(field, &parsed_len);
-    if (parsed_len != field.size() || value == 0U) {
-      return std::nullopt;
-    }
-    return value;
-  }
-  catch (const std::exception &) {
-    return std::nullopt;
-  }
+    try {
+        size_t parsed_len = 0;
+        const uint64_t value = std::stoull(field, &parsed_len);
+        if (parsed_len != field.size() || value == 0U) { return std::nullopt; }
+        return value;
+    } catch (const std::exception &) { return std::nullopt; }
 }
 
 std::vector<uint64_t> parse_norm_shape_field(const std::string &shape_str) {
-  std::vector<uint64_t> shape;
-  for (const auto &dim : split(shape_str, ':')) {
-    std::string t = dim;
-    trim(t);
-    if (t.empty()) {
-      commonlog_error("shape contains an empty dimension");
-      return std::vector<uint64_t>();
+    std::vector<uint64_t> shape;
+    for (const auto &dim : split(shape_str, ':')) {
+        std::string t = dim;
+        trim(t);
+        if (t.empty()) {
+            commonlog_error("shape contains an empty dimension");
+            return std::vector<uint64_t>();
+        }
+        const auto parsed = parse_positive_uint64_field(t);
+        if (!parsed) {
+            commonlog_error("invalid shape dimension: " + t);
+            return std::vector<uint64_t>();
+        }
+        shape.push_back(*parsed);
     }
-    const auto parsed = parse_positive_uint64_field(t);
-    if (!parsed) {
-      commonlog_error("invalid shape dimension: " + t);
-      return std::vector<uint64_t>();
+    if (shape.empty()) {
+        commonlog_error("shape must contain at least one dimension");
+        return std::vector<uint64_t>();
     }
-    shape.push_back(*parsed);
-  }
-  if (shape.empty()) {
-    commonlog_error("shape must contain at least one dimension");
-    return std::vector<uint64_t>();
-  }
-  return shape;
+    return shape;
 }
 
-std::optional<bool> parse_bool_field(const std::string &flag,
-                                     const std::string &column) {
-  std::string s = flag;
-  std::transform(s.begin(), s.end(), s.begin(), [](unsigned char c) {
-    return static_cast<char>(std::tolower(c));
-  });
-  if (s == "true" || s == "1") {
-    return true;
-  }
-  if (s.empty() || s == "false" || s == "0") {
-    return false;
-  }
-  if (!column.empty()) {
-    commonlog_error("Invalid " + column + ": " + flag);
-  }
-  else {
-    commonlog_error("Unknown boolean value '" + flag
-                    + "', expected true/false or 1/0");
-  }
-  return std::nullopt;
+std::optional<bool> parse_bool_field(
+        const std::string &flag, const std::string &column) {
+    std::string s = flag;
+    std::transform(s.begin(), s.end(), s.begin(),
+            [](unsigned char c) { return static_cast<char>(std::tolower(c)); });
+    if (s == "true" || s == "1") { return true; }
+    if (s.empty() || s == "false" || s == "0") { return false; }
+    if (!column.empty()) {
+        commonlog_error("Invalid " + column + ": " + flag);
+    } else {
+        commonlog_error("Unknown boolean value '" + flag
+                + "', expected true/false or 1/0");
+    }
+    return std::nullopt;
 }
 
 std::optional<bool> parse_cmd_lowoha() {
-  if (cmd_lowoha.empty()) {
-    return std::nullopt;
-  }
-  return parse_bool_field(cmd_lowoha, "lowoha");
+    if (cmd_lowoha.empty()) { return std::nullopt; }
+    return parse_bool_field(cmd_lowoha, "lowoha");
 }
 
 status_t matmul_kernel_test(tensor_t &input_tensor, tensor_t &weight_tensor,
-                            tensor_t &bias_tensor, tensor_t &output_tensor,
-                            const std::vector<post_op_type_t> &po_types,
-                            const std::vector<tensor_t> &binary_tensors,
-                            bool use_LOWOHA,
-                            matmul_algo_t algo,
-                            float alpha,
-                            float beta,
-                            int pack_format_b) {
-  try {
+        tensor_t &bias_tensor, tensor_t &output_tensor,
+        const std::vector<post_op_type_t> &po_types,
+        const std::vector<tensor_t> &binary_tensors, bool use_LOWOHA,
+        matmul_algo_t algo, float alpha, float beta, int pack_format_b) {
+    try {
 
-    if (use_LOWOHA) {
-      try {
-        // Validate input tensors
-        if (!input_tensor.check() || !weight_tensor.check() || !output_tensor.check()) {
-          log_error("LOWOHA: Invalid tensor state detected");
-          return status_t::failure;
-        }
-        auto input_dim              = input_tensor.get_dim();
-        auto weight_dim             = weight_tensor.get_dim();
-        auto output_dim             = output_tensor.get_dim();
-        if (input_dim < 2 || input_dim > 3 || weight_dim < 2 || weight_dim > 3 ||
-            output_dim < 2 || output_dim > 3 ||
-            !((input_dim == weight_dim && output_dim == input_dim) ||
-              (input_dim == 2 && weight_dim == 3 && output_dim == 3) ||
-              (input_dim == 3 && weight_dim == 2 && output_dim == 3))) {
-          log_error("LOWOHA: Invalid tensor dimensions - Input dim:", input_dim,
-                    " Weight dim:", weight_dim, " Output dim:", output_dim);
-          return status_t::failure;
-        }
-        if (input_tensor.get_size(input_dim - 2) != output_tensor.get_size(
-              output_dim - 2) ||
-            input_tensor.get_size(input_dim - 1) != weight_tensor.get_size(
-              weight_dim - 2) ||
-            weight_tensor.get_size(weight_dim - 1) != output_tensor.get_size(
-              output_dim - 1)) {
-          log_error("LOWOHA: Mismatched tensor dimensions - Input sizes: [",
-                    input_tensor.get_size(input_dim - 2),
-                    ", ", input_tensor.get_size(input_dim - 1), "], Weight sizes: [",
-                    weight_tensor.get_size(weight_dim - 2),
-                    ", ", weight_tensor.get_size(weight_dim - 1), "], Output sizes: [",
-                    output_tensor.get_size(output_dim - 2),
-                    ", ", output_tensor.get_size(output_dim - 1), "]");
-          return status_t::failure;
-        }
-        bool transA       = (input_dim == 2)  ? (input_tensor.get_order() ==
-                            "ba") : (input_tensor.get_order() == "acb");
-        bool transB       = (weight_dim == 2) ? (weight_tensor.get_order() ==
-                            "ba") : (weight_tensor.get_order() == "acb");
+        if (use_LOWOHA) {
+            try {
+                // Validate input tensors
+                if (!input_tensor.check() || !weight_tensor.check()
+                        || !output_tensor.check()) {
+                    log_error("LOWOHA: Invalid tensor state detected");
+                    return status_t::failure;
+                }
+                auto input_dim = input_tensor.get_dim();
+                auto weight_dim = weight_tensor.get_dim();
+                auto output_dim = output_tensor.get_dim();
+                if (input_dim < 2 || input_dim > 3 || weight_dim < 2
+                        || weight_dim > 3 || output_dim < 2 || output_dim > 3
+                        || !((input_dim == weight_dim
+                                     && output_dim == input_dim)
+                                || (input_dim == 2 && weight_dim == 3
+                                        && output_dim == 3)
+                                || (input_dim == 3 && weight_dim == 2
+                                        && output_dim == 3))) {
+                    log_error("LOWOHA: Invalid tensor dimensions - Input dim:",
+                            input_dim, " Weight dim:", weight_dim,
+                            " Output dim:", output_dim);
+                    return status_t::failure;
+                }
+                if (input_tensor.get_size(input_dim - 2)
+                                != output_tensor.get_size(output_dim - 2)
+                        || input_tensor.get_size(input_dim - 1)
+                                != weight_tensor.get_size(weight_dim - 2)
+                        || weight_tensor.get_size(weight_dim - 1)
+                                != output_tensor.get_size(output_dim - 1)) {
+                    log_error(
+                            "LOWOHA: Mismatched tensor dimensions - Input "
+                            "sizes: [",
+                            input_tensor.get_size(input_dim - 2), ", ",
+                            input_tensor.get_size(input_dim - 1),
+                            "], Weight sizes: [",
+                            weight_tensor.get_size(weight_dim - 2), ", ",
+                            weight_tensor.get_size(weight_dim - 1),
+                            "], Output sizes: [",
+                            output_tensor.get_size(output_dim - 2), ", ",
+                            output_tensor.get_size(output_dim - 1), "]");
+                    return status_t::failure;
+                }
+                bool transA = (input_dim == 2)
+                        ? (input_tensor.get_order() == "ba")
+                        : (input_tensor.get_order() == "acb");
+                bool transB = (weight_dim == 2)
+                        ? (weight_tensor.get_order() == "ba")
+                        : (weight_tensor.get_order() == "acb");
 
-        const int   lda             = transA ?
-                                      input_tensor.get_stride(input_dim-1) :
-                                      input_tensor.get_stride(input_dim-2);
-        const int   ldb             = transB ?
-                                      weight_tensor.get_stride(weight_dim-1):
-                                      weight_tensor.get_stride(weight_dim-2);
-        const int   ldc             = output_tensor.get_stride(output_dim-2);
+                const int lda = transA ? input_tensor.get_stride(input_dim - 1)
+                                       : input_tensor.get_stride(input_dim - 2);
+                const int ldb = transB
+                        ? weight_tensor.get_stride(weight_dim - 1)
+                        : weight_tensor.get_stride(weight_dim - 2);
+                const int ldc = output_tensor.get_stride(output_dim - 2);
 
-        // Extract tensor dimensions
-        const int batchA            = (input_dim==3) ? input_tensor.get_size(
-                                        input_dim-3) : 1;
-        const int batchB            = (weight_dim==3) ? weight_tensor.get_size(
-                                        weight_dim-3) : 1;
-        const int batchC            = (output_dim==3) ? output_tensor.get_size(
-                                        output_dim-3) : 1;
+                // Extract tensor dimensions
+                const int batchA = (input_dim == 3)
+                        ? input_tensor.get_size(input_dim - 3)
+                        : 1;
+                const int batchB = (weight_dim == 3)
+                        ? weight_tensor.get_size(weight_dim - 3)
+                        : 1;
+                const int batchC = (output_dim == 3)
+                        ? output_tensor.get_size(output_dim - 3)
+                        : 1;
 
-        const int M                 = output_tensor.get_size(output_dim-2);
-        const int K                 = input_tensor.get_size(input_dim-1);
-        const int N                 = output_tensor.get_size(output_dim-1);
-        // Validate dimensions
-        if (M == 0 || K == 0 || N == 0) {
-          log_error("LOWOHA: Invalid tensor dimensions - M:", M, " K:", K, " N:", N);
-          return status_t::failure;
-        }
-        if (std::max(batchA, batchB) != batchC) {
-          log_error("Invalid output batch size");
-          return status_t::failure;
-        }
+                const int M = output_tensor.get_size(output_dim - 2);
+                const int K = input_tensor.get_size(input_dim - 1);
+                const int N = output_tensor.get_size(output_dim - 1);
+                // Validate dimensions
+                if (M == 0 || K == 0 || N == 0) {
+                    log_error("LOWOHA: Invalid tensor dimensions - M:", M,
+                            " K:", K, " N:", N);
+                    return status_t::failure;
+                }
+                if (std::max(batchA, batchB) != batchC) {
+                    log_error("Invalid output batch size");
+                    return status_t::failure;
+                }
 
-        // Get tensor data pointers
-        void *A_data = input_tensor.get_raw_handle_unsafe();
-        void *B_data = weight_tensor.get_raw_handle_unsafe();
-        void *C_data = output_tensor.get_raw_handle_unsafe();
+                // Get tensor data pointers
+                void *A_data = input_tensor.get_raw_handle_unsafe();
+                void *B_data = weight_tensor.get_raw_handle_unsafe();
+                void *C_data = output_tensor.get_raw_handle_unsafe();
 
-        //TODO: For LIBXSMM matmul, bias is not supported currently due to accuracy issues
-        const bool is_libxsmm_kernel = (algo == matmul_algo_t::libxsmm ||
-                                        algo == matmul_algo_t::libxsmm_blocked);
-        // skip_bias triggers in two cases:
-        //   1. libxsmm/libxsmm_blocked + bf16 dst (pre-existing accuracy
-        //      workaround).
-        //   2. Caller deliberately passed a default-constructed tensor_t()
-        //      as the "no bias" sentinel (status != success). Used by paths
-        //      that cannot exercise bias for the current (src, dst) pair —
-        //      e.g. TestPostopCache.LifecycleClear under F16_F16, which sets
-        //      drop_postops_and_bias=true via aocl_dlp_supports_postops_for_src().
-        // Both branches reduce to bias_data=nullptr + the f32 bias-dtype
-        // sentinel set below.
-        const bool skip_bias =
-          (is_libxsmm_kernel && output_tensor.get_data_type() == data_type_t::bf16) ||
-          !bias_tensor.check();
-        void *bias_data = skip_bias ? nullptr :
-                          bias_tensor.get_raw_handle_unsafe();
+                //TODO: For LIBXSMM matmul, bias is not supported currently due to accuracy issues
+                const bool is_libxsmm_kernel = (algo == matmul_algo_t::libxsmm
+                        || algo == matmul_algo_t::libxsmm_blocked);
+                // skip_bias triggers in two cases:
+                //   1. libxsmm/libxsmm_blocked + bf16 dst (pre-existing accuracy
+                //      workaround).
+                //   2. Caller deliberately passed a default-constructed tensor_t()
+                //      as the "no bias" sentinel (status != success). Used by paths
+                //      that cannot exercise bias for the current (src, dst) pair —
+                //      e.g. TestPostopCache.LifecycleClear under F16_F16, which sets
+                //      drop_postops_and_bias=true via aocl_dlp_supports_postops_for_src().
+                // Both branches reduce to bias_data=nullptr + the f32 bias-dtype
+                // sentinel set below.
+                const bool skip_bias = (is_libxsmm_kernel
+                                               && output_tensor.get_data_type()
+                                                       == data_type_t::bf16)
+                        || !bias_tensor.check();
+                void *bias_data = skip_bias
+                        ? nullptr
+                        : bias_tensor.get_raw_handle_unsafe();
 
-        // Validate data pointers
-        if (!A_data || !B_data || !C_data) {
-          log_error("LOWOHA: Null data pointer detected");
-          return status_t::failure;
-        }
+                // Validate data pointers
+                if (!A_data || !B_data || !C_data) {
+                    log_error("LOWOHA: Null data pointer detected");
+                    return status_t::failure;
+                }
 
-        // Get data types
-        data_type_t src_data_type = input_tensor.get_data_type();
-        data_type_t wei_data_type = weight_tensor.get_data_type();
-        data_type_t out_data_type = output_tensor.get_data_type();
-        data_type_t bias_data_type = skip_bias ? data_type_t::f32 :
-                                     bias_tensor.get_data_type();
-        matmul_data_types matmul_dtypes;
-        matmul_dtypes.src = src_data_type;
-        matmul_dtypes.wei = wei_data_type;
-        matmul_dtypes.dst = out_data_type;
-        matmul_dtypes.bias = bias_data_type;
-        matmul_dtypes.compute = data_type_t::none;
+                // Get data types
+                data_type_t src_data_type = input_tensor.get_data_type();
+                data_type_t wei_data_type = weight_tensor.get_data_type();
+                data_type_t out_data_type = output_tensor.get_data_type();
+                data_type_t bias_data_type = skip_bias
+                        ? data_type_t::f32
+                        : bias_tensor.get_data_type();
+                matmul_data_types matmul_dtypes;
+                matmul_dtypes.src = src_data_type;
+                matmul_dtypes.wei = wei_data_type;
+                matmul_dtypes.dst = out_data_type;
+                matmul_dtypes.bias = bias_data_type;
+                matmul_dtypes.compute = data_type_t::none;
 
-        // Validate data types
-        if (src_data_type != data_type_t::f32 && src_data_type != data_type_t::bf16 &&
-            src_data_type != data_type_t::u8 && src_data_type != data_type_t::s8 &&
-            src_data_type != data_type_t::f16) {
-          log_error("LOWOHA: Unsupported source data type");
-          return status_t::failure;
-        }
-        if (out_data_type != data_type_t::f32 && out_data_type != data_type_t::bf16 &&
-            out_data_type != data_type_t::u8 && out_data_type != data_type_t::s8 &&
-            out_data_type != data_type_t::s32 && out_data_type != data_type_t::f16) {
-          log_error("LOWOHA: Unsupported output data type");
-          return status_t::failure;
-        }
+                // Validate data types
+                if (src_data_type != data_type_t::f32
+                        && src_data_type != data_type_t::bf16
+                        && src_data_type != data_type_t::u8
+                        && src_data_type != data_type_t::s8
+                        && src_data_type != data_type_t::f16) {
+                    log_error("LOWOHA: Unsupported source data type");
+                    return status_t::failure;
+                }
+                if (out_data_type != data_type_t::f32
+                        && out_data_type != data_type_t::bf16
+                        && out_data_type != data_type_t::u8
+                        && out_data_type != data_type_t::s8
+                        && out_data_type != data_type_t::s32
+                        && out_data_type != data_type_t::f16) {
+                    log_error("LOWOHA: Unsupported output data type");
+                    return status_t::failure;
+                }
 
-        // W4A8: dynamic bf16 src + s4 wei; wire scales like INT8 (not WOQ).
-        bool is_w4a8 =
-          wei_data_type == data_type_t::s4 &&
-          src_data_type == data_type_t::bf16 &&
-          input_tensor.is_quantized();
+                // W4A8: dynamic bf16 src + s4 wei; wire scales like INT8 (not WOQ).
+                bool is_w4a8 = wei_data_type == data_type_t::s4
+                        && src_data_type == data_type_t::bf16
+                        && input_tensor.is_quantized();
 
-        // bf16 + src_scale is W4A8 dynamic quant, not WOQ.
-        bool is_woq = !is_w4a8 &&
-                      (src_data_type == data_type_t::bf16 &&
-                       (wei_data_type == data_type_t::s4 || wei_data_type == data_type_t::u4));
+                // bf16 + src_scale is W4A8 dynamic quant, not WOQ.
+                bool is_woq = !is_w4a8
+                        && (src_data_type == data_type_t::bf16
+                                && (wei_data_type == data_type_t::s4
+                                        || wei_data_type == data_type_t::u4));
 
-        // Check if weight is INT8 (s8)
-        bool is_wei_s8 = wei_data_type == data_type_t::s8;
+                // Check if weight is INT8 (s8)
+                bool is_wei_s8 = wei_data_type == data_type_t::s8;
 
-        log_info("LOWOHA: Calling matmul_direct with batchA:", batchA, " batchB:",
-                 batchB, " M:", M, " N:", N, " K:", K,
-                 " alpha:", alpha, " beta:", beta, " is_woq:", is_woq, " is_wei_s8:", is_wei_s8);
+                log_info("LOWOHA: Calling matmul_direct with batchA:", batchA,
+                        " batchB:", batchB, " M:", M, " N:", N, " K:", K,
+                        " alpha:", alpha, " beta:", beta, " is_woq:", is_woq,
+                        " is_wei_s8:", is_wei_s8);
 
-        // Extract batch strides from tensors if they have batch dimension (3D)
-        // Batch strides are in elements, not bytes
-        size_t batch_stride_src = static_cast<size_t>(-1);
-        size_t batch_stride_wei = static_cast<size_t>(-1);
-        size_t batch_stride_dst = static_cast<size_t>(-1);
+                // Extract batch strides from tensors if they have batch dimension (3D)
+                // Batch strides are in elements, not bytes
+                size_t batch_stride_src = static_cast<size_t>(-1);
+                size_t batch_stride_wei = static_cast<size_t>(-1);
+                size_t batch_stride_dst = static_cast<size_t>(-1);
 
-        if (input_dim == 3) {
-          // For 3D input tensor, get stride of batch dimension (dimension 0) in elements
-          batch_stride_src = input_tensor.get_stride(0);
-        }
-        if (weight_dim == 3) {
-          // For 3D weight tensor, get stride of batch dimension (dimension 0) in elements
-          batch_stride_wei = weight_tensor.get_stride(0);
-        }
-        if (output_dim == 3) {
-          // For 3D output tensor, get stride of batch dimension (dimension 0) in elements
-          batch_stride_dst = output_tensor.get_stride(0);
-        }
+                if (input_dim == 3) {
+                    // For 3D input tensor, get stride of batch dimension (dimension 0) in elements
+                    batch_stride_src = input_tensor.get_stride(0);
+                }
+                if (weight_dim == 3) {
+                    // For 3D weight tensor, get stride of batch dimension (dimension 0) in elements
+                    batch_stride_wei = weight_tensor.get_stride(0);
+                }
+                if (output_dim == 3) {
+                    // For 3D output tensor, get stride of batch dimension (dimension 0) in elements
+                    batch_stride_dst = output_tensor.get_stride(0);
+                }
 
-        // Create lowoha_post_op structure
-        matmul_params params;
-        params.lowoha_algo = algo;
-        params.dtypes = matmul_dtypes;
-        params.num_threads = 0; // Use default (omp_get_max_threads)
-        params.packing.pack_format_b = pack_format_b;
+                // Create lowoha_post_op structure
+                matmul_params params;
+                params.lowoha_algo = algo;
+                params.dtypes = matmul_dtypes;
+                params.num_threads = 0; // Use default (omp_get_max_threads)
+                params.packing.pack_format_b = pack_format_b;
 
-        // For WOQ: Extract quantization parameters from weight tensor
-        if (is_woq) {
-          // Extract weight scale
-          const void *scale_buff = weight_tensor.get_quant_scale_raw_handle_const();
-          params.quant_params.wei_scale.buff = scale_buff;
-          params.quant_params.wei_scale.dt = weight_tensor.get_quant_scale_data_type();
-          auto scale_size = weight_tensor.get_quant_scale_size();
-          params.quant_params.wei_scale.dims.assign(scale_size.begin(), scale_size.end());
-          log_info("LOWOHA WOQ: Weight scale extracted, dims: [",
-                   params.quant_params.wei_scale.dims.size() > 0 ?
-                   params.quant_params.wei_scale.dims[0] : 0,
-                   params.quant_params.wei_scale.dims.size() > 1 ?
-                   params.quant_params.wei_scale.dims[1] : 0, "]");
+                // For WOQ: Extract quantization parameters from weight tensor
+                if (is_woq) {
+                    // Extract weight scale
+                    const void *scale_buff
+                            = weight_tensor.get_quant_scale_raw_handle_const();
+                    params.quant_params.wei_scale.buff = scale_buff;
+                    params.quant_params.wei_scale.dt
+                            = weight_tensor.get_quant_scale_data_type();
+                    auto scale_size = weight_tensor.get_quant_scale_size();
+                    params.quant_params.wei_scale.dims.assign(
+                            scale_size.begin(), scale_size.end());
+                    log_info("LOWOHA WOQ: Weight scale extracted, dims: [",
+                            params.quant_params.wei_scale.dims.size() > 0
+                                    ? params.quant_params.wei_scale.dims[0]
+                                    : 0,
+                            params.quant_params.wei_scale.dims.size() > 1
+                                    ? params.quant_params.wei_scale.dims[1]
+                                    : 0,
+                            "]");
 
+                    // Extract weight zero point (if asymmetric quantization)
+                    if (weight_tensor.get_quant_subtype()
+                            == quant_subtype_t::asymmetric) {
+                        const void *zp_buff
+                                = weight_tensor
+                                          .get_quant_zero_raw_handle_const();
+                        if (zp_buff) {
+                            params.quant_params.wei_zp.buff = zp_buff;
+                            params.quant_params.wei_zp.dt
+                                    = weight_tensor.get_quant_zero_data_type();
+                            auto zp_size = weight_tensor.get_quant_zero_size();
+                            params.quant_params.wei_zp.dims.assign(
+                                    zp_size.begin(), zp_size.end());
+                            log_info("LOWOHA WOQ: Weight zero point extracted");
+                        }
+                    }
+                }
 
-          // Extract weight zero point (if asymmetric quantization)
-          if (weight_tensor.get_quant_subtype() == quant_subtype_t::asymmetric) {
-            const void *zp_buff = weight_tensor.get_quant_zero_raw_handle_const();
-            if (zp_buff) {
-              params.quant_params.wei_zp.buff = zp_buff;
-              params.quant_params.wei_zp.dt = weight_tensor.get_quant_zero_data_type();
-              auto zp_size = weight_tensor.get_quant_zero_size();
-              params.quant_params.wei_zp.dims.assign(zp_size.begin(), zp_size.end());
-              log_info("LOWOHA WOQ: Weight zero point extracted");
+                // GGML packed s4 (Q4_0) uses a pre-quantized s8 source with a per-group
+                // source scale, exactly like the Q8_0 (is_wei_s8) path — the packed
+                // weight arrives as s4 but its source scale must still reach the API so
+                // the unpacked/widened s8 weight runs the sym-quant GEMM.
+                const bool is_ggml_packed_s4 = pack_format_b == 1
+                        && wei_data_type == data_type_t::s4;
+                // INT8 quant params (includes W4A8 s4 wei path and GGML Q4_0).
+                if (is_wei_s8 || is_w4a8 || is_ggml_packed_s4) {
+                    // Extract source scale
+                    if (input_tensor.is_quantized()) {
+                        const void *src_scale_buff
+                                = input_tensor
+                                          .get_quant_scale_raw_handle_const();
+                        if (src_scale_buff) {
+                            params.quant_params.src_scale.buff = src_scale_buff;
+                            params.quant_params.src_scale.dt
+                                    = input_tensor.get_quant_scale_data_type();
+                            auto src_scale_size
+                                    = input_tensor.get_quant_scale_size();
+                            params.quant_params.src_scale.dims.assign(
+                                    src_scale_size.begin(),
+                                    src_scale_size.end());
+                            log_info("LOWOHA INT8: Source scale extracted");
+                        }
+                        // Extract source zero point (for asymmetric quantization)
+                        if (input_tensor.get_quant_subtype()
+                                == quant_subtype_t::asymmetric) {
+                            const void *src_zp_buff
+                                    = input_tensor
+                                              .get_quant_zero_raw_handle_const();
+                            if (src_zp_buff) {
+                                params.quant_params.src_zp.buff = src_zp_buff;
+                                params.quant_params.src_zp.dt
+                                        = input_tensor
+                                                  .get_quant_zero_data_type();
+                                auto src_zp_size
+                                        = input_tensor.get_quant_zero_size();
+                                params.quant_params.src_zp.dims.assign(
+                                        src_zp_size.begin(), src_zp_size.end());
+                                log_info(
+                                        "LOWOHA INT8: Source zero-point "
+                                        "extracted");
+                            }
+                        }
+                    }
+
+                    // Extract weight scale
+                    if (weight_tensor.is_quantized()) {
+                        const void *wei_scale_buff
+                                = weight_tensor
+                                          .get_quant_scale_raw_handle_const();
+                        if (wei_scale_buff) {
+                            params.quant_params.wei_scale.buff = wei_scale_buff;
+                            params.quant_params.wei_scale.dt
+                                    = weight_tensor.get_quant_scale_data_type();
+                            auto wei_scale_size
+                                    = weight_tensor.get_quant_scale_size();
+                            params.quant_params.wei_scale.dims.assign(
+                                    wei_scale_size.begin(),
+                                    wei_scale_size.end());
+                            log_info("LOWOHA INT8: Weight scale extracted");
+                        }
+                        // Extract weight zero point (for asymmetric quantization)
+                        if (weight_tensor.get_quant_subtype()
+                                == quant_subtype_t::asymmetric) {
+                            const void *wei_zp_buff
+                                    = weight_tensor
+                                              .get_quant_zero_raw_handle_const();
+                            if (wei_zp_buff) {
+                                params.quant_params.wei_zp.buff = wei_zp_buff;
+                                params.quant_params.wei_zp.dt
+                                        = weight_tensor
+                                                  .get_quant_zero_data_type();
+                                auto wei_zp_size
+                                        = weight_tensor.get_quant_zero_size();
+                                params.quant_params.wei_zp.dims.assign(
+                                        wei_zp_size.begin(), wei_zp_size.end());
+                                log_info(
+                                        "LOWOHA INT8: Weight zero-point "
+                                        "extracted");
+                            }
+                        }
+                    }
+
+                    // Extract destination scale and zero-point
+                    if (output_tensor.is_quantized()) {
+                        const void *dst_scale_buff
+                                = output_tensor
+                                          .get_quant_scale_raw_handle_const();
+                        if (dst_scale_buff) {
+                            params.quant_params.dst_scale.buff = dst_scale_buff;
+                            params.quant_params.dst_scale.dt
+                                    = output_tensor.get_quant_scale_data_type();
+                            auto dst_scale_size
+                                    = output_tensor.get_quant_scale_size();
+                            params.quant_params.dst_scale.dims.assign(
+                                    dst_scale_size.begin(),
+                                    dst_scale_size.end());
+                            log_info(
+                                    "LOWOHA INT8: Destination scale extracted");
+                        }
+                        // Extract destination zero point (for asymmetric quantization)
+                        if (output_tensor.get_quant_subtype()
+                                == quant_subtype_t::asymmetric) {
+                            const void *dst_zp_buff
+                                    = output_tensor
+                                              .get_quant_zero_raw_handle_const();
+                            if (dst_zp_buff) {
+                                params.quant_params.dst_zp.buff = dst_zp_buff;
+                                params.quant_params.dst_zp.dt
+                                        = output_tensor
+                                                  .get_quant_zero_data_type();
+                                auto dst_zp_size
+                                        = output_tensor.get_quant_zero_size();
+                                params.quant_params.dst_zp.dims.assign(
+                                        dst_zp_size.begin(), dst_zp_size.end());
+                                log_info(
+                                        "LOWOHA INT8: Destination zero-point "
+                                        "extracted");
+                            }
+                        }
+                    }
+                }
+
+                if (is_wei_s8
+                        && (src_data_type == data_type_t::bf16
+                                || src_data_type == data_type_t::f32)
+                        && input_tensor.is_quantized()) {
+                    params.dynamic_quant = true;
+                    params.dtypes.compute = data_type_t::s8;
+                }
+                if (is_w4a8 && src_data_type == data_type_t::bf16
+                        && input_tensor.is_quantized()) {
+                    params.dynamic_quant = true;
+                    params.dtypes.compute = data_type_t::s8;
+                }
+
+                // Create batch_params structure
+                matmul_batch_params_t batch_params;
+                batch_params.Batch_A = batchA;
+                batch_params.Batch_B = batchB;
+                batch_params.batch_stride_src = batch_stride_src;
+                batch_params.batch_stride_wei = batch_stride_wei;
+                batch_params.batch_stride_dst = batch_stride_dst;
+
+                size_t expected_binary_tensors = 0;
+                for (const auto &p : po_types) {
+                    if (is_binary_postop(p)) { ++expected_binary_tensors; }
+                }
+                if (expected_binary_tensors != binary_tensors.size()) {
+                    log_error("LOWOHA: binary post-ops in po_types (",
+                            expected_binary_tensors,
+                            ") do not match binary_tensors size (",
+                            binary_tensors.size(), ")");
+                    return status_t::failure;
+                }
+
+                // Add post-ops based on po_types
+                int binary_index = 0;
+                for (const auto &po : po_types) {
+                    if (po == post_op_type_t::none) { continue; }
+                    matmul_post_op postop_item;
+                    postop_item.po_type = po;
+                    // For binary operations, set the buffer to binary_tensor
+                    if (po == post_op_type_t::binary_add
+                            || po == post_op_type_t::binary_mul) {
+                        postop_item.buff = binary_tensors[binary_index]
+                                                   .get_raw_handle_unsafe();
+                        postop_item.dtype
+                                = binary_tensors[binary_index].get_data_type();
+                        auto binary_tensor_dims
+                                = binary_tensors[binary_index].get_size();
+                        postop_item.dims.assign(binary_tensor_dims.begin(),
+                                binary_tensor_dims.end());
+                        binary_index++;
+                    } else {
+                        postop_item.buff
+                                = nullptr; // For element-wise operations
+                        postop_item.dtype = out_data_type;
+                    }
+
+                    // Fused post-op scalars from gtest_main.cpp (match reference post_op_t).
+                    if (po == post_op_type_t::swish) {
+                        postop_item.alpha = MATMUL_POSTOP_ELTWISE_ALPHA;
+                        postop_item.beta = 0.0f;
+                    } else if (po == post_op_type_t::elu) {
+                        postop_item.alpha = MATMUL_POSTOP_ELTWISE_ALPHA;
+                        postop_item.beta = 0.0f;
+                    } else if (po == post_op_type_t::clip) {
+                        float lo = MATMUL_POSTOP_CLIP_LOWER;
+                        float hi = MATMUL_POSTOP_CLIP_UPPER;
+                        if (lo > hi) { std::swap(lo, hi); }
+                        if (hi - lo < 1e-6f) { hi = lo + 1e-3f; }
+                        postop_item.alpha = lo;
+                        postop_item.beta = hi;
+                    }
+                    params.postop_.push_back(postop_item);
+                }
+                // GGML packed weights (pack_format_b == 1) MUST be constant — the
+                // library caches the out-of-place unpack/reorder keyed on the weight
+                // pointer and rejects non-const GGML weights.  Q8_0 (s8) already lands
+                // in is_wei_s8; force it for the Q4_0 (s4) case too so the test isn't
+                // flaky on the random branch.
+                bool is_weights_const = is_woq || is_wei_s8 || is_w4a8
+                        || pack_format_b == 1 || (rand() % 2 == 0);
+                if (matmul_config_t::instance().get_weight_cache() != 0
+                        && is_weights_const
+                        && (algo == matmul_algo_t::aocl_dlp_blocked
+                                || algo == matmul_algo_t::onednn_blocked
+                                || algo == matmul_algo_t::libxsmm_blocked)) {
+                    matmul_batch_params_t batch_params_warmup = batch_params;
+                    matmul_params params_warmup = params;
+                    const size_t c_warmup_bytes
+                            = output_tensor.get_buffer_sz_bytes();
+                    std::vector<uint8_t> C_warmup(c_warmup_bytes);
+                    if (beta != 0.0f) {
+                        std::memcpy(C_warmup.data(), C_data, c_warmup_bytes);
+                    }
+                    status_t status = matmul_direct('r', // layout: row-major
+                            transA, transB, static_cast<int>(M),
+                            static_cast<int>(N), static_cast<int>(K), alpha,
+                            A_data, lda, B_data, ldb, bias_data, beta,
+                            C_warmup.data(), ldc, is_weights_const,
+                            batch_params_warmup, params_warmup);
+                    if (status != status_t::success) {
+                        if (status != status_t::isa_unsupported) {
+                            log_error(
+                                    "LOWOHA matmul_direct warmup execution "
+                                    "failed.");
+                        }
+                        return status;
+                    }
+                }
+                status_t status = matmul_direct('r', // layout: row-major
+                        transA, transB, static_cast<int>(M),
+                        static_cast<int>(N), static_cast<int>(K), alpha, A_data,
+                        lda, B_data, ldb, bias_data, beta, C_data, ldc,
+                        is_weights_const, batch_params, params);
+                if (status != status_t::success) {
+                    if (status != status_t::isa_unsupported) {
+                        log_error("LOWOHA matmul_direct execution failed.");
+                    }
+                    return status;
+                }
+            } catch (const std::exception &e) {
+                log_error("LOWOHA matmul_direct execution failed: ", e.what());
+                return status_t::failure;
+            } catch (...) {
+                log_error(
+                        "LOWOHA matmul_direct execution failed with unknown "
+                        "exception");
+                return status_t::failure;
             }
-          }
+        } else {
+            weight_tensor.set_name("weights");
+            const bool has_bias = bias_tensor.check();
+            if (has_bias) { bias_tensor.set_name("bias"); }
+
+            //define matmul context
+            matmul_context_t matmul_context
+                    = matmul_context_t()
+                              .set_param("weights", weight_tensor)
+                              .set_alpha(alpha)
+                              .set_beta(beta);
+            if (has_bias) {
+                matmul_context = matmul_context.set_param("bias", bias_tensor);
+            }
+            for (const auto &po : po_types) {
+                auto post_op = post_op_t {po};
+                if (po != post_op_type_t::none) {
+                    switch (po) {
+                        case post_op_type_t::clip: {
+                            float lo = MATMUL_POSTOP_CLIP_LOWER;
+                            float hi = MATMUL_POSTOP_CLIP_UPPER;
+                            if (lo > hi) { std::swap(lo, hi); }
+                            if (hi - lo < 1e-6f) { hi = lo + 1e-3f; }
+                            post_op = post_op_t(clip_params_t {lo, hi});
+                            break;
+                        }
+                        case post_op_type_t::swish:
+                            post_op = post_op_t(swish_params_t {
+                                    MATMUL_POSTOP_ELTWISE_ALPHA});
+                            break;
+                        case post_op_type_t::elu:
+                            post_op = post_op_t(
+                                    elu_params_t {MATMUL_POSTOP_ELTWISE_ALPHA});
+                            break;
+                        default: post_op = post_op_t {po}; break;
+                    }
+                    matmul_context = matmul_context.set_post_op(post_op);
+                }
+            }
+            matmul_context = matmul_context.create();
+
+            //define matmul operator
+            matmul_operator_t matmul_operator
+                    = matmul_operator_t()
+                              .set_name("matmul_operator")
+                              .set_context(matmul_context)
+                              .create();
+
+            if (matmul_operator.is_bad_object()) {
+                log_error("operator ", matmul_operator.get_name(),
+                        " creation failed.");
+                return status_t::failure;
+            }
+
+            input_tensor.set_name("matmul_input");
+            output_tensor.set_name("matmul_output");
+            // Set binary tensor for binary postops
+            size_t expected_binary_tensors = 0;
+            for (const auto &p : po_types) {
+                if (is_binary_postop(p)) { ++expected_binary_tensors; }
+            }
+            if (expected_binary_tensors != binary_tensors.size()) {
+                log_error("matmul: binary post-ops in po_types (",
+                        expected_binary_tensors,
+                        ") do not match binary_tensors size (",
+                        binary_tensors.size(), ")");
+                return status_t::failure;
+            }
+            uint32_t binary_index = 0, po_index = 0;
+            for (auto po : po_types) {
+                if (po == post_op_type_t::none) { continue; }
+                if (po == post_op_type_t::binary_add) {
+                    matmul_operator.set_input(
+                            matmul_context.get_post_op(po_index)
+                                    .binary_add_params.tensor_name,
+                            binary_tensors[binary_index++]);
+                } else if (po == post_op_type_t::binary_mul) {
+                    matmul_operator.set_input(
+                            matmul_context.get_post_op(po_index)
+                                    .binary_mul_params.tensor_name,
+                            binary_tensors[binary_index++]);
+                }
+                po_index++;
+            }
+            matmul_operator.set_input("matmul_input", input_tensor)
+                    .set_output("matmul_output", output_tensor);
+            if (algo != matmul_algo_t::none) {
+                matmul_operator.set_forced_kernel(algoToStr(algo));
+            }
+            status_t status = matmul_operator.execute();
+
+            if (status != status_t::success) {
+                if (status != status_t::isa_unsupported) {
+                    log_error("operator ", matmul_operator.get_name(),
+                            " execution failed.");
+                }
+                return status;
+            }
         }
 
-        // GGML packed s4 (Q4_0) uses a pre-quantized s8 source with a per-group
-        // source scale, exactly like the Q8_0 (is_wei_s8) path — the packed
-        // weight arrives as s4 but its source scale must still reach the API so
-        // the unpacked/widened s8 weight runs the sym-quant GEMM.
-        const bool is_ggml_packed_s4 =
-          pack_format_b == 1 && wei_data_type == data_type_t::s4;
-        // INT8 quant params (includes W4A8 s4 wei path and GGML Q4_0).
-        if (is_wei_s8 || is_w4a8 || is_ggml_packed_s4) {
-          // Extract source scale
-          if (input_tensor.is_quantized()) {
-            const void *src_scale_buff = input_tensor.get_quant_scale_raw_handle_const();
-            if (src_scale_buff) {
-              params.quant_params.src_scale.buff = src_scale_buff;
-              params.quant_params.src_scale.dt = input_tensor.get_quant_scale_data_type();
-              auto src_scale_size = input_tensor.get_quant_scale_size();
-              params.quant_params.src_scale.dims.assign(src_scale_size.begin(),
-                  src_scale_size.end());
-              log_info("LOWOHA INT8: Source scale extracted");
-            }
-            // Extract source zero point (for asymmetric quantization)
-            if (input_tensor.get_quant_subtype() == quant_subtype_t::asymmetric) {
-              const void *src_zp_buff = input_tensor.get_quant_zero_raw_handle_const();
-              if (src_zp_buff) {
-                params.quant_params.src_zp.buff = src_zp_buff;
-                params.quant_params.src_zp.dt = input_tensor.get_quant_zero_data_type();
-                auto src_zp_size = input_tensor.get_quant_zero_size();
-                params.quant_params.src_zp.dims.assign(src_zp_size.begin(), src_zp_size.end());
-                log_info("LOWOHA INT8: Source zero-point extracted");
-              }
-            }
-          }
-
-          // Extract weight scale
-          if (weight_tensor.is_quantized()) {
-            const void *wei_scale_buff = weight_tensor.get_quant_scale_raw_handle_const();
-            if (wei_scale_buff) {
-              params.quant_params.wei_scale.buff = wei_scale_buff;
-              params.quant_params.wei_scale.dt = weight_tensor.get_quant_scale_data_type();
-              auto wei_scale_size = weight_tensor.get_quant_scale_size();
-              params.quant_params.wei_scale.dims.assign(wei_scale_size.begin(),
-                  wei_scale_size.end());
-              log_info("LOWOHA INT8: Weight scale extracted");
-            }
-            // Extract weight zero point (for asymmetric quantization)
-            if (weight_tensor.get_quant_subtype() == quant_subtype_t::asymmetric) {
-              const void *wei_zp_buff = weight_tensor.get_quant_zero_raw_handle_const();
-              if (wei_zp_buff) {
-                params.quant_params.wei_zp.buff = wei_zp_buff;
-                params.quant_params.wei_zp.dt = weight_tensor.get_quant_zero_data_type();
-                auto wei_zp_size = weight_tensor.get_quant_zero_size();
-                params.quant_params.wei_zp.dims.assign(wei_zp_size.begin(), wei_zp_size.end());
-                log_info("LOWOHA INT8: Weight zero-point extracted");
-              }
-            }
-          }
-
-          // Extract destination scale and zero-point
-          if (output_tensor.is_quantized()) {
-            const void *dst_scale_buff = output_tensor.get_quant_scale_raw_handle_const();
-            if (dst_scale_buff) {
-              params.quant_params.dst_scale.buff = dst_scale_buff;
-              params.quant_params.dst_scale.dt = output_tensor.get_quant_scale_data_type();
-              auto dst_scale_size = output_tensor.get_quant_scale_size();
-              params.quant_params.dst_scale.dims.assign(dst_scale_size.begin(),
-                  dst_scale_size.end());
-              log_info("LOWOHA INT8: Destination scale extracted");
-            }
-            // Extract destination zero point (for asymmetric quantization)
-            if (output_tensor.get_quant_subtype() == quant_subtype_t::asymmetric) {
-              const void *dst_zp_buff = output_tensor.get_quant_zero_raw_handle_const();
-              if (dst_zp_buff) {
-                params.quant_params.dst_zp.buff = dst_zp_buff;
-                params.quant_params.dst_zp.dt = output_tensor.get_quant_zero_data_type();
-                auto dst_zp_size = output_tensor.get_quant_zero_size();
-                params.quant_params.dst_zp.dims.assign(dst_zp_size.begin(), dst_zp_size.end());
-                log_info("LOWOHA INT8: Destination zero-point extracted");
-              }
-            }
-          }
-        }
-
-        if (is_wei_s8 &&
-            (src_data_type == data_type_t::bf16 || src_data_type == data_type_t::f32) &&
-            input_tensor.is_quantized()) {
-          params.dynamic_quant = true;
-          params.dtypes.compute = data_type_t::s8;
-        }
-        if (is_w4a8 &&
-            src_data_type == data_type_t::bf16 &&
-            input_tensor.is_quantized()) {
-          params.dynamic_quant = true;
-          params.dtypes.compute = data_type_t::s8;
-        }
-
-        // Create batch_params structure
-        matmul_batch_params_t batch_params;
-        batch_params.Batch_A = batchA;
-        batch_params.Batch_B = batchB;
-        batch_params.batch_stride_src = batch_stride_src;
-        batch_params.batch_stride_wei = batch_stride_wei;
-        batch_params.batch_stride_dst = batch_stride_dst;
-
-        size_t expected_binary_tensors = 0;
-        for (const auto &p : po_types) {
-          if (is_binary_postop(p)) {
-            ++expected_binary_tensors;
-          }
-        }
-        if (expected_binary_tensors != binary_tensors.size()) {
-          log_error("LOWOHA: binary post-ops in po_types (", expected_binary_tensors,
-                    ") do not match binary_tensors size (", binary_tensors.size(), ")");
-          return status_t::failure;
-        }
-
-        // Add post-ops based on po_types
-        int binary_index = 0;
-        for (const auto &po : po_types) {
-          if (po == post_op_type_t::none) {
-            continue;
-          }
-          matmul_post_op postop_item;
-          postop_item.po_type = po;
-          // For binary operations, set the buffer to binary_tensor
-          if (po == post_op_type_t::binary_add || po == post_op_type_t::binary_mul) {
-            postop_item.buff = binary_tensors[binary_index].get_raw_handle_unsafe();
-            postop_item.dtype = binary_tensors[binary_index].get_data_type();
-            auto binary_tensor_dims = binary_tensors[binary_index].get_size();
-            postop_item.dims.assign(binary_tensor_dims.begin(), binary_tensor_dims.end());
-            binary_index++;
-          }
-          else {
-            postop_item.buff = nullptr; // For element-wise operations
-            postop_item.dtype = out_data_type;
-          }
-
-          // Fused post-op scalars from gtest_main.cpp (match reference post_op_t).
-          if (po == post_op_type_t::swish) {
-            postop_item.alpha = MATMUL_POSTOP_ELTWISE_ALPHA;
-            postop_item.beta = 0.0f;
-          }
-          else if (po == post_op_type_t::elu) {
-            postop_item.alpha = MATMUL_POSTOP_ELTWISE_ALPHA;
-            postop_item.beta = 0.0f;
-          }
-          else if (po == post_op_type_t::clip) {
-            float lo = MATMUL_POSTOP_CLIP_LOWER;
-            float hi = MATMUL_POSTOP_CLIP_UPPER;
-            if (lo > hi) {
-              std::swap(lo, hi);
-            }
-            if (hi - lo < 1e-6f) {
-              hi = lo + 1e-3f;
-            }
-            postop_item.alpha = lo;
-            postop_item.beta = hi;
-          }
-          params.postop_.push_back(postop_item);
-        }
-        // GGML packed weights (pack_format_b == 1) MUST be constant — the
-        // library caches the out-of-place unpack/reorder keyed on the weight
-        // pointer and rejects non-const GGML weights.  Q8_0 (s8) already lands
-        // in is_wei_s8; force it for the Q4_0 (s4) case too so the test isn't
-        // flaky on the random branch.
-        bool is_weights_const = is_woq || is_wei_s8 || is_w4a8 ||
-                                pack_format_b == 1 || (rand() % 2 == 0);
-        if (matmul_config_t::instance().get_weight_cache() != 0 && is_weights_const &&
-            (algo == matmul_algo_t::aocl_dlp_blocked ||
-             algo == matmul_algo_t::onednn_blocked ||
-             algo == matmul_algo_t::libxsmm_blocked)) {
-          matmul_batch_params_t batch_params_warmup = batch_params;
-          matmul_params params_warmup = params;
-          const size_t c_warmup_bytes = output_tensor.get_buffer_sz_bytes();
-          std::vector<uint8_t> C_warmup(c_warmup_bytes);
-          if (beta != 0.0f) {
-            std::memcpy(C_warmup.data(), C_data, c_warmup_bytes);
-          }
-          status_t status = matmul_direct(
-                              'r',  // layout: row-major
-                              transA, transB,
-                              static_cast<int>(M), static_cast<int>(N), static_cast<int>(K),
-                              alpha, A_data, lda, B_data, ldb, bias_data,
-                              beta, C_warmup.data(), ldc, is_weights_const,
-                              batch_params_warmup, params_warmup);
-          if (status != status_t::success) {
-            if (status != status_t::isa_unsupported) {
-              log_error("LOWOHA matmul_direct warmup execution failed.");
-            }
-            return status;
-          }
-        }
-        status_t status = matmul_direct(
-                            'r',  // layout: row-major
-                            transA, transB,
-                            static_cast<int>(M), static_cast<int>(N), static_cast<int>(K),
-                            alpha, A_data, lda, B_data, ldb, bias_data,
-                            beta, C_data, ldc, is_weights_const,
-                            batch_params, params);
-        if (status != status_t::success) {
-          if (status != status_t::isa_unsupported) {
-            log_error("LOWOHA matmul_direct execution failed.");
-          }
-          return status;
-        }
-      }
-      catch (const std::exception &e) {
-        log_error("LOWOHA matmul_direct execution failed: ", e.what());
+    } catch (const exception_t &ex) {
+        log_verbose(ex.what());
         return status_t::failure;
-      }
-      catch (...) {
-        log_error("LOWOHA matmul_direct execution failed with unknown exception");
-        return status_t::failure;
-      }
     }
-    else {
-      weight_tensor.set_name("weights");
-      const bool has_bias = bias_tensor.check();
-      if (has_bias) {
-        bias_tensor.set_name("bias");
-      }
-
-      //define matmul context
-      matmul_context_t matmul_context = matmul_context_t()
-                                        .set_param("weights", weight_tensor)
-                                        .set_alpha(alpha)
-                                        .set_beta(beta);
-      if (has_bias) {
-        matmul_context = matmul_context.set_param("bias", bias_tensor);
-      }
-      for (const auto &po : po_types) {
-        auto post_op = post_op_t{po};
-        if (po  != post_op_type_t::none) {
-          switch (po) {
-          case post_op_type_t::clip: {
-            float lo = MATMUL_POSTOP_CLIP_LOWER;
-            float hi = MATMUL_POSTOP_CLIP_UPPER;
-            if (lo > hi) {
-              std::swap(lo, hi);
-            }
-            if (hi - lo < 1e-6f) {
-              hi = lo + 1e-3f;
-            }
-            post_op = post_op_t(clip_params_t{lo, hi});
-            break;
-          }
-          case post_op_type_t::swish:
-            post_op = post_op_t(swish_params_t{MATMUL_POSTOP_ELTWISE_ALPHA});
-            break;
-          case post_op_type_t::elu:
-            post_op = post_op_t(elu_params_t{MATMUL_POSTOP_ELTWISE_ALPHA});
-            break;
-          default:
-            post_op = post_op_t{po};
-            break;
-          }
-          matmul_context = matmul_context.set_post_op(post_op);
-        }
-      }
-      matmul_context = matmul_context.create();
-
-      //define matmul operator
-      matmul_operator_t matmul_operator = matmul_operator_t()
-                                          .set_name("matmul_operator")
-                                          .set_context(matmul_context)
-                                          .create();
-
-      if (matmul_operator.is_bad_object()) {
-        log_error("operator ", matmul_operator.get_name(), " creation failed.");
-        return status_t::failure;
-      }
-
-      input_tensor.set_name("matmul_input");
-      output_tensor.set_name("matmul_output");
-      // Set binary tensor for binary postops
-      size_t expected_binary_tensors = 0;
-      for (const auto &p : po_types) {
-        if (is_binary_postop(p)) {
-          ++expected_binary_tensors;
-        }
-      }
-      if (expected_binary_tensors != binary_tensors.size()) {
-        log_error("matmul: binary post-ops in po_types (", expected_binary_tensors,
-                  ") do not match binary_tensors size (", binary_tensors.size(), ")");
-        return status_t::failure;
-      }
-      uint32_t binary_index = 0, po_index = 0;
-      for (auto po : po_types) {
-        if (po == post_op_type_t::none) {
-          continue;
-        }
-        if (po == post_op_type_t::binary_add) {
-          matmul_operator.set_input(matmul_context.get_post_op(
-                                      po_index).binary_add_params.tensor_name, binary_tensors[binary_index++]);
-        }
-        else if (po == post_op_type_t::binary_mul) {
-          matmul_operator.set_input(matmul_context.get_post_op(
-                                      po_index).binary_mul_params.tensor_name, binary_tensors[binary_index++]);
-        }
-        po_index++;
-      }
-      matmul_operator.set_input("matmul_input", input_tensor)
-      .set_output("matmul_output", output_tensor);
-      if (algo != matmul_algo_t::none) {
-        matmul_operator.set_forced_kernel(algoToStr(algo));
-      }
-      status_t status = matmul_operator.execute();
-
-      if (status != status_t::success) {
-        if (status != status_t::isa_unsupported) {
-          log_error("operator ", matmul_operator.get_name(), " execution failed.");
-        }
-        return status;
-      }
-
-    }
-
-  }
-  catch (const exception_t &ex) {
-    log_verbose(ex.what());
-    return status_t::failure;
-  }
-  return status_t::success;
+    return status_t::success;
 }
 
 // `group_matmul_kernel_test(...)` was lifted into
@@ -3549,822 +3369,774 @@ status_t matmul_kernel_test(tensor_t &input_tensor, tensor_t &weight_tensor,
 // refactor.
 
 status_t matmul_forced_ref_kernel_test(tensor_t &input_tensor,
-                                       tensor_t &weight_tensor,
-                                       tensor_t &bias_tensor, tensor_t &output_tensor,
-                                       const std::vector<post_op_type_t> &po_types,
-                                       const std::vector<tensor_t> &binary_tensors,
-                                       bool use_LOWOHA,
-                                       matmul_algo_t algo,
-                                       float alpha,
-                                       float beta) {
-  try {
-    weight_tensor.set_name("weights");
-    const bool has_bias = bias_tensor.check();
-    if (has_bias) {
-      bias_tensor.set_name("bias");
-    }
+        tensor_t &weight_tensor, tensor_t &bias_tensor, tensor_t &output_tensor,
+        const std::vector<post_op_type_t> &po_types,
+        const std::vector<tensor_t> &binary_tensors, bool use_LOWOHA,
+        matmul_algo_t algo, float alpha, float beta) {
+    try {
+        weight_tensor.set_name("weights");
+        const bool has_bias = bias_tensor.check();
+        if (has_bias) { bias_tensor.set_name("bias"); }
 
-    //define matmul context
-    matmul_context_t matmul_context = matmul_context_t()
-                                      .set_param("weights", weight_tensor)
-                                      .set_alpha(alpha)
-                                      .set_beta(beta);
+        //define matmul context
+        matmul_context_t matmul_context
+                = matmul_context_t()
+                          .set_param("weights", weight_tensor)
+                          .set_alpha(alpha)
+                          .set_beta(beta);
 
-    //TODO: For LIBXSMM matmul, bias is not supported currently due to accuracy issues
-    // bias is not supported for F16 batched_sgemm.
-    if (has_bias &&
-        !((algo == matmul_algo_t::libxsmm ||
-           algo == matmul_algo_t::libxsmm_blocked) &&
-          output_tensor.get_data_type() == data_type_t::bf16)) {
-      matmul_context = matmul_context.set_param("bias", bias_tensor);
-    }
-
-    for (const auto &po : po_types) {
-      auto post_op = post_op_t{po};
-      if (po != post_op_type_t::none) {
-        switch (po) {
-        case post_op_type_t::clip: {
-          float lo = MATMUL_POSTOP_CLIP_LOWER;
-          float hi = MATMUL_POSTOP_CLIP_UPPER;
-          if (lo > hi) {
-            std::swap(lo, hi);
-          }
-          if (hi - lo < 1e-6f) {
-            hi = lo + 1e-3f;
-          }
-          post_op = post_op_t(clip_params_t{lo, hi});
-          break;
+        //TODO: For LIBXSMM matmul, bias is not supported currently due to accuracy issues
+        // bias is not supported for F16 batched_sgemm.
+        if (has_bias
+                && !((algo == matmul_algo_t::libxsmm
+                             || algo == matmul_algo_t::libxsmm_blocked)
+                        && output_tensor.get_data_type()
+                                == data_type_t::bf16)) {
+            matmul_context = matmul_context.set_param("bias", bias_tensor);
         }
-        case post_op_type_t::swish:
-          post_op = post_op_t(swish_params_t{MATMUL_POSTOP_ELTWISE_ALPHA});
-          break;
-        case post_op_type_t::elu:
-          post_op = post_op_t(elu_params_t{MATMUL_POSTOP_ELTWISE_ALPHA});
-          break;
-        default:
-          post_op = post_op_t{po};
-          break;
+
+        for (const auto &po : po_types) {
+            auto post_op = post_op_t {po};
+            if (po != post_op_type_t::none) {
+                switch (po) {
+                    case post_op_type_t::clip: {
+                        float lo = MATMUL_POSTOP_CLIP_LOWER;
+                        float hi = MATMUL_POSTOP_CLIP_UPPER;
+                        if (lo > hi) { std::swap(lo, hi); }
+                        if (hi - lo < 1e-6f) { hi = lo + 1e-3f; }
+                        post_op = post_op_t(clip_params_t {lo, hi});
+                        break;
+                    }
+                    case post_op_type_t::swish:
+                        post_op = post_op_t(
+                                swish_params_t {MATMUL_POSTOP_ELTWISE_ALPHA});
+                        break;
+                    case post_op_type_t::elu:
+                        post_op = post_op_t(
+                                elu_params_t {MATMUL_POSTOP_ELTWISE_ALPHA});
+                        break;
+                    default: post_op = post_op_t {po}; break;
+                }
+                matmul_context = matmul_context.set_post_op(post_op);
+            }
         }
-        matmul_context = matmul_context.set_post_op(post_op);
-      }
-    }
-    matmul_context = matmul_context.create();
+        matmul_context = matmul_context.create();
 
-    //define matmul operator
-    matmul_operator_t matmul_operator = matmul_operator_t()
-                                        .set_name("matmul_forced_ref_operator")
-                                        .set_context(matmul_context)
-                                        .create();
+        //define matmul operator
+        matmul_operator_t matmul_operator
+                = matmul_operator_t()
+                          .set_name("matmul_forced_ref_operator")
+                          .set_context(matmul_context)
+                          .create();
 
-    if (matmul_operator.is_bad_object()) {
-      log_error("operator ", matmul_operator.get_name(), " creation failed.");
-      return status_t::failure;
-    }
-    input_tensor.set_name("matmul_input");
-    output_tensor.set_name("matmul_output");
+        if (matmul_operator.is_bad_object()) {
+            log_error("operator ", matmul_operator.get_name(),
+                    " creation failed.");
+            return status_t::failure;
+        }
+        input_tensor.set_name("matmul_input");
+        output_tensor.set_name("matmul_output");
 
-    size_t expected_binary_tensors = 0;
-    for (const auto &p : po_types) {
-      if (is_binary_postop(p)) {
-        ++expected_binary_tensors;
-      }
-    }
-    if (expected_binary_tensors != binary_tensors.size()) {
-      log_error("matmul_forced_ref: binary post-ops in po_types (",
-                expected_binary_tensors,
-                ") do not match binary_tensors size (", binary_tensors.size(), ")");
-      return status_t::failure;
-    }
+        size_t expected_binary_tensors = 0;
+        for (const auto &p : po_types) {
+            if (is_binary_postop(p)) { ++expected_binary_tensors; }
+        }
+        if (expected_binary_tensors != binary_tensors.size()) {
+            log_error("matmul_forced_ref: binary post-ops in po_types (",
+                    expected_binary_tensors,
+                    ") do not match binary_tensors size (",
+                    binary_tensors.size(), ")");
+            return status_t::failure;
+        }
 
-    uint32_t binary_index = 0, po_index = 0;
-    for (auto po : po_types) {
-      if (po == post_op_type_t::none) {
-        continue;
-      }
-      if (po == post_op_type_t::binary_add) {
-        matmul_operator.set_input(matmul_context.get_post_op(
-                                    po_index).binary_add_params.tensor_name, binary_tensors[binary_index++]);
-      }
-      else if (po == post_op_type_t::binary_mul) {
-        matmul_operator.set_input(matmul_context.get_post_op(
-                                    po_index).binary_mul_params.tensor_name, binary_tensors[binary_index++]);
-      }
-      po_index++;
-    }
+        uint32_t binary_index = 0, po_index = 0;
+        for (auto po : po_types) {
+            if (po == post_op_type_t::none) { continue; }
+            if (po == post_op_type_t::binary_add) {
+                matmul_operator.set_input(
+                        matmul_context.get_post_op(po_index)
+                                .binary_add_params.tensor_name,
+                        binary_tensors[binary_index++]);
+            } else if (po == post_op_type_t::binary_mul) {
+                matmul_operator.set_input(
+                        matmul_context.get_post_op(po_index)
+                                .binary_mul_params.tensor_name,
+                        binary_tensors[binary_index++]);
+            }
+            po_index++;
+        }
 
-    status_t status = matmul_operator.set_input("matmul_input", input_tensor)
-                      .set_output("matmul_output", output_tensor)
-                      .set_forced_kernel("reference")
-                      .execute();
+        status_t status
+                = matmul_operator.set_input("matmul_input", input_tensor)
+                          .set_output("matmul_output", output_tensor)
+                          .set_forced_kernel("reference")
+                          .execute();
 
-    if (status != status_t::success) {
-      log_info("operator ", matmul_operator.get_name(), " execution failed.");
-      return status_t::failure;
+        if (status != status_t::success) {
+            log_info("operator ", matmul_operator.get_name(),
+                    " execution failed.");
+            return status_t::failure;
+        }
+    } catch (const exception_t &ex) {
+        log_verbose(ex.what());
+        return status_t::failure;
     }
-  }
-  catch (const exception_t &ex) {
-    log_verbose(ex.what());
-    return status_t::failure;
-  }
-  return status_t::success;
+    return status_t::success;
 }
 
 // `reorder_kernel_test(...)` was moved to `reorder/reorder_test_helpers.cpp`.
 
-status_t embag_kernel_test(tensor_t &table_tensor,
-                           tensor_t &indices_tensor,
-                           tensor_t &offsets_tensor,
-                           tensor_t &weights_tensor,
-                           tensor_t &output_tensor,
-                           embag_algo_t algo,
-                           int64_t padding_index,
-                           bool include_last_offset,
-                           bool is_weights,
-                           bool fp16_scale_bias,
-                           embag_kernel_t kernel,
-                           bool use_LOWOHA) {
-  try {
-    status_t status;
+status_t embag_kernel_test(tensor_t &table_tensor, tensor_t &indices_tensor,
+        tensor_t &offsets_tensor, tensor_t &weights_tensor,
+        tensor_t &output_tensor, embag_algo_t algo, int64_t padding_index,
+        bool include_last_offset, bool is_weights, bool fp16_scale_bias,
+        embag_kernel_t kernel, bool use_LOWOHA) {
+    try {
+        status_t status;
 
-    if (use_LOWOHA) {
-      // LOWOHA path - use embedding_bag_direct API
-      try {
-        // Validate input tensors
-        if (!table_tensor.check() || !indices_tensor.check() ||
-            !offsets_tensor.check() || !output_tensor.check() ||
-            (is_weights && !weights_tensor.check())) {
-          log_error("LOWOHA embag: Invalid tensor state detected");
-          return status_t::failure;
+        if (use_LOWOHA) {
+            // LOWOHA path - use embedding_bag_direct API
+            try {
+                // Validate input tensors
+                if (!table_tensor.check() || !indices_tensor.check()
+                        || !offsets_tensor.check() || !output_tensor.check()
+                        || (is_weights && !weights_tensor.check())) {
+                    log_error("LOWOHA embag: Invalid tensor state detected");
+                    return status_t::failure;
+                }
+
+                // Get raw data pointers
+                void *table_data = table_tensor.get_raw_handle_unsafe();
+                void *indices_data = indices_tensor.get_raw_handle_unsafe();
+                void *offsets_data = offsets_tensor.get_raw_handle_unsafe();
+                float *weights_data = is_weights
+                        ? (float *)weights_tensor.get_raw_handle_unsafe()
+                        : nullptr;
+                void *output_data = output_tensor.get_raw_handle_unsafe();
+
+                if (!table_data || !indices_data || !offsets_data
+                        || !output_data || (is_weights && !weights_data)) {
+                    log_error("LOWOHA embag: Null data pointer detected");
+                    return status_t::failure;
+                }
+
+                // Build embag_params_t structure
+                embag_params_t params;
+
+                // Set data types
+                params.dtypes.table = table_tensor.get_data_type();
+                params.dtypes.output = output_tensor.get_data_type();
+                params.dtypes.indices = indices_tensor.get_data_type();
+                params.dtypes.offsets = offsets_tensor.get_data_type();
+
+                // Use algo directly (embag_algo_t is aliased to ops::embag_algo_t)
+                params.algo = algo;
+                if (kernel == embag_kernel_t::reference) {
+                    params.kernel = kernel;
+                }
+
+                // Set dimensions
+                params.num_embeddings = table_tensor.get_size(0);
+                params.embedding_dim = table_tensor.get_size(1);
+                params.num_indices = indices_tensor.get_size(0);
+                params.num_bags = include_last_offset
+                        ? offsets_tensor.get_size(0) - 1
+                        : offsets_tensor.get_size(0);
+                params.is_weights = is_weights;
+                params.include_last_offset = include_last_offset;
+                params.padding_idx = padding_index;
+                params.num_threads = 0; // Use default (omp_get_max_threads)
+                params.fp16_scale_bias = fp16_scale_bias;
+                params.dst_stride = output_tensor.get_stride()[0];
+
+                log_info(
+                        "LOWOHA embag: Calling embedding_bag_direct with "
+                        "num_embeddings=",
+                        params.num_embeddings,
+                        ", embedding_dim=", params.embedding_dim,
+                        ", num_indices=", params.num_indices,
+                        ", num_bags=", params.num_bags);
+
+                // Call LOWOHA embedding_bag_direct API
+                status = embedding_bag_direct(table_data, indices_data,
+                        offsets_data, weights_data, output_data, params);
+
+                if (status != status_t::success) {
+                    if (status != status_t::isa_unsupported) {
+                        log_error(
+                                "LOWOHA embedding_bag_direct execution "
+                                "failed.");
+                    }
+                    return status;
+                }
+            } catch (const std::exception &e) {
+                log_error("LOWOHA embedding_bag_direct execution failed: ",
+                        e.what());
+                return status_t::failure;
+            } catch (...) {
+                log_error(
+                        "LOWOHA embedding_bag_direct execution failed with "
+                        "unknown exception");
+                return status_t::failure;
+            }
+        } else {
+            // Regular operator API path
+            //define embag context
+            embag_context_t embedding_bag_context
+                    = embag_context_t()
+                              .set_param("table", table_tensor)
+                              .set_algo(algo)
+                              .set_padding_index(padding_index)
+                              .set_include_last_offset(include_last_offset)
+                              .set_is_weights(is_weights);
+            if (table_tensor.get_data_type() == data_type_t::s8
+                    || table_tensor.get_data_type() == data_type_t::s4
+                    || table_tensor.get_data_type() == data_type_t::u4) {
+                embedding_bag_context.set_fp16_scale_bias(fp16_scale_bias);
+                embedding_bag_context.create();
+            } else {
+                embedding_bag_context.create();
+            }
+
+            //define embedding bag operator
+            embag_operator_t embedding_bag_operator
+                    = embag_operator_t()
+                              .set_name("embedding_bag")
+                              .set_context(embedding_bag_context)
+                              .create();
+
+            if (embedding_bag_operator.is_bad_object()) {
+                testlog_error(" operator ", embedding_bag_operator.get_name(),
+                        " creation failed.");
+                return status_t::failure;
+            }
+
+            if (is_weights) {
+                // Execute operator
+                status = embedding_bag_operator
+                                 .set_input("indices", indices_tensor)
+                                 .set_input("weights", weights_tensor)
+                                 .set_input("offsets", offsets_tensor)
+                                 .set_output("output", output_tensor)
+                                 .execute();
+            } else {
+                status = embedding_bag_operator
+                                 .set_input("indices", indices_tensor)
+                                 .set_input("offsets", offsets_tensor)
+                                 .set_output("output", output_tensor)
+                                 .execute();
+            }
+
+            if (status != status_t::success) {
+                if (status != status_t::isa_unsupported) {
+                    log_error("operator ", embedding_bag_operator.get_name(),
+                            " execution failed.");
+                }
+                return status;
+            }
         }
-
-        // Get raw data pointers
-        void *table_data = table_tensor.get_raw_handle_unsafe();
-        void *indices_data = indices_tensor.get_raw_handle_unsafe();
-        void *offsets_data = offsets_tensor.get_raw_handle_unsafe();
-        float *weights_data = is_weights ? (float *)
-                              weights_tensor.get_raw_handle_unsafe() : nullptr;
-        void *output_data = output_tensor.get_raw_handle_unsafe();
-
-        if (!table_data || !indices_data || !offsets_data || !output_data ||
-            (is_weights && !weights_data)) {
-          log_error("LOWOHA embag: Null data pointer detected");
-          return status_t::failure;
-        }
-
-        // Build embag_params_t structure
-        embag_params_t params;
-
-        // Set data types
-        params.dtypes.table = table_tensor.get_data_type();
-        params.dtypes.output = output_tensor.get_data_type();
-        params.dtypes.indices = indices_tensor.get_data_type();
-        params.dtypes.offsets = offsets_tensor.get_data_type();
-
-        // Use algo directly (embag_algo_t is aliased to ops::embag_algo_t)
-        params.algo = algo;
-        if (kernel == embag_kernel_t::reference) {
-          params.kernel = kernel;
-        }
-
-        // Set dimensions
-        params.num_embeddings = table_tensor.get_size(0);
-        params.embedding_dim = table_tensor.get_size(1);
-        params.num_indices = indices_tensor.get_size(0);
-        params.num_bags = include_last_offset ?
-                          offsets_tensor.get_size(0) - 1 :
-                          offsets_tensor.get_size(0);
-        params.is_weights = is_weights;
-        params.include_last_offset = include_last_offset;
-        params.padding_idx = padding_index;
-        params.num_threads = 0;  // Use default (omp_get_max_threads)
-        params.fp16_scale_bias = fp16_scale_bias;
-        params.dst_stride = output_tensor.get_stride()[0];
-
-        log_info("LOWOHA embag: Calling embedding_bag_direct with "
-                 "num_embeddings=", params.num_embeddings,
-                 ", embedding_dim=", params.embedding_dim,
-                 ", num_indices=", params.num_indices,
-                 ", num_bags=", params.num_bags);
-
-        // Call LOWOHA embedding_bag_direct API
-        status = embedding_bag_direct(
-                   table_data,
-                   indices_data,
-                   offsets_data,
-                   weights_data,
-                   output_data,
-                   params);
-
-        if (status != status_t::success) {
-          if (status != status_t::isa_unsupported) {
-            log_error("LOWOHA embedding_bag_direct execution failed.");
-          }
-          return status;
-        }
-      }
-      catch (const std::exception &e) {
-        log_error("LOWOHA embedding_bag_direct execution failed: ", e.what());
+    } catch (const exception_t &ex) {
+        log_verbose(ex.what());
         return status_t::failure;
-      }
-      catch (...) {
-        log_error("LOWOHA embedding_bag_direct execution failed with unknown exception");
-        return status_t::failure;
-      }
     }
-    else {
-      // Regular operator API path
-      //define embag context
-      embag_context_t embedding_bag_context = embag_context_t()
-                                              .set_param("table", table_tensor)
-                                              .set_algo(algo)
-                                              .set_padding_index(padding_index)
-                                              .set_include_last_offset(include_last_offset)
-                                              .set_is_weights(is_weights);
-      if (table_tensor.get_data_type() == data_type_t::s8 ||
-          table_tensor.get_data_type() == data_type_t::s4 ||
-          table_tensor.get_data_type() == data_type_t::u4) {
-        embedding_bag_context.set_fp16_scale_bias(fp16_scale_bias);
-        embedding_bag_context.create();
-      }
-      else {
-        embedding_bag_context.create();
-      }
-
-      //define embedding bag operator
-      embag_operator_t embedding_bag_operator = embag_operator_t()
-          .set_name("embedding_bag")
-          .set_context(embedding_bag_context)
-          .create();
-
-      if (embedding_bag_operator.is_bad_object()) {
-        testlog_error(" operator ", embedding_bag_operator.get_name(),
-                      " creation failed.");
-        return status_t::failure;
-      }
-
-      if (is_weights) {
-        // Execute operator
-        status = embedding_bag_operator
-                 .set_input("indices", indices_tensor)
-                 .set_input("weights", weights_tensor)
-                 .set_input("offsets", offsets_tensor)
-                 .set_output("output", output_tensor)
-                 .execute();
-      }
-      else {
-        status = embedding_bag_operator
-                 .set_input("indices", indices_tensor)
-                 .set_input("offsets", offsets_tensor)
-                 .set_output("output", output_tensor)
-                 .execute();
-      }
-
-      if (status != status_t::success) {
-        if (status != status_t::isa_unsupported) {
-          log_error("operator ", embedding_bag_operator.get_name(), " execution failed.");
-        }
-        return status;
-      }
-    }
-  }
-  catch (const exception_t &ex) {
-    log_verbose(ex.what());
-    return status_t::failure;
-  }
-  return status_t::success;
+    return status_t::success;
 }
 
-status_t embedding_kernel_test(tensor_t &table_tensor,
-                               tensor_t &indices_tensor,
-                               tensor_t &weights_tensor,
-                               tensor_t &output_tensor,
-                               int64_t padding_index,
-                               bool is_weights,
-                               bool fp16_scale_bias,
-                               embag_kernel_t kernel,
-                               bool use_LOWOHA) {
-  try {
-    status_t status;
+status_t embedding_kernel_test(tensor_t &table_tensor, tensor_t &indices_tensor,
+        tensor_t &weights_tensor, tensor_t &output_tensor,
+        int64_t padding_index, bool is_weights, bool fp16_scale_bias,
+        embag_kernel_t kernel, bool use_LOWOHA) {
+    try {
+        status_t status;
 
-    if (use_LOWOHA) {
-      // LOWOHA path - use embedding_direct API
-      try {
-        // Validate input tensors
-        if (!table_tensor.check() || !indices_tensor.check() ||
-            !output_tensor.check() ||
-            (is_weights && !weights_tensor.check())) {
-          log_error("LOWOHA embedding: Invalid tensor state detected");
-          return status_t::failure;
+        if (use_LOWOHA) {
+            // LOWOHA path - use embedding_direct API
+            try {
+                // Validate input tensors
+                if (!table_tensor.check() || !indices_tensor.check()
+                        || !output_tensor.check()
+                        || (is_weights && !weights_tensor.check())) {
+                    log_error(
+                            "LOWOHA embedding: Invalid tensor state detected");
+                    return status_t::failure;
+                }
+
+                // Get raw data pointers
+                void *table_data = table_tensor.get_raw_handle_unsafe();
+                void *indices_data = indices_tensor.get_raw_handle_unsafe();
+                float *weights_data = is_weights
+                        ? (float *)weights_tensor.get_raw_handle_unsafe()
+                        : nullptr;
+                void *output_data = output_tensor.get_raw_handle_unsafe();
+
+                if (!table_data || !indices_data || !output_data
+                        || (is_weights && !weights_data)) {
+                    log_error("LOWOHA embedding: Null data pointer detected");
+                    return status_t::failure;
+                }
+
+                // Build embag_params_t structure
+                embag_params_t params;
+
+                // Set data types
+                params.dtypes.table = table_tensor.get_data_type();
+                params.dtypes.output = output_tensor.get_data_type();
+                params.dtypes.indices = indices_tensor.get_data_type();
+
+                // Embedding uses algo = none (no reduction)
+                params.algo = embag_algo_t::none;
+
+                // Set dimensions
+                params.num_embeddings = table_tensor.get_size(0);
+                params.embedding_dim = table_tensor.get_size(1);
+                params.num_indices = indices_tensor.get_size(0);
+                params.is_weights = is_weights;
+                params.padding_idx = padding_index;
+                params.num_threads = 0; // Use default (omp_get_max_threads)
+                params.fp16_scale_bias = fp16_scale_bias;
+                params.dst_stride = output_tensor.get_stride()[0];
+                if (kernel == embag_kernel_t::reference) {
+                    params.kernel = kernel;
+                }
+
+                log_info(
+                        "LOWOHA embedding: Calling embedding_direct with "
+                        "num_embeddings=",
+                        params.num_embeddings,
+                        ", embedding_dim=", params.embedding_dim,
+                        ", num_indices=", params.num_indices);
+
+                // Call LOWOHA embedding_direct API
+                status = embedding_direct(table_data, indices_data,
+                        weights_data, output_data, params);
+
+                if (status != status_t::success) {
+                    if (status != status_t::isa_unsupported) {
+                        log_error("LOWOHA embedding_direct execution failed.");
+                    }
+                    return status;
+                }
+            } catch (const std::exception &e) {
+                log_error(
+                        "LOWOHA embedding_direct execution failed: ", e.what());
+                return status_t::failure;
+            } catch (...) {
+                log_error(
+                        "LOWOHA embedding_direct execution failed with unknown "
+                        "exception");
+                return status_t::failure;
+            }
+        } else {
+            // Regular operator API path
+            //define embedding context
+            embag_context_t embedding_context
+                    = embag_context_t()
+                              .set_param("table", table_tensor)
+                              .set_padding_index(padding_index)
+                              .set_is_weights(is_weights);
+            if (table_tensor.get_data_type() == data_type_t::s8
+                    || table_tensor.get_data_type() == data_type_t::s4
+                    || table_tensor.get_data_type() == data_type_t::u4) {
+                embedding_context.set_fp16_scale_bias(fp16_scale_bias);
+                embedding_context.create();
+            } else {
+                embedding_context.create();
+            }
+            //define embedding operator
+            embag_operator_t embedding_operator
+                    = embag_operator_t()
+                              .set_name("embedding_bag")
+                              .set_context(embedding_context)
+                              .create();
+
+            if (embedding_operator.is_bad_object()) {
+                testlog_error(" operator ", embedding_operator.get_name(),
+                        " creation failed.");
+                return status_t::failure;
+            }
+
+            if (is_weights) {
+                // Execute operator
+                status = embedding_operator.set_input("indices", indices_tensor)
+                                 .set_input("weights", weights_tensor)
+                                 .set_output("output", output_tensor)
+                                 .execute();
+            } else {
+                status = embedding_operator.set_input("indices", indices_tensor)
+                                 .set_output("output", output_tensor)
+                                 .execute();
+            }
+
+            if (status != status_t::success) {
+                if (status != status_t::isa_unsupported) {
+                    log_error("operator ", embedding_operator.get_name(),
+                            " execution failed.");
+                }
+                return status;
+            }
         }
-
-        // Get raw data pointers
-        void *table_data = table_tensor.get_raw_handle_unsafe();
-        void *indices_data = indices_tensor.get_raw_handle_unsafe();
-        float *weights_data = is_weights ? (float *)
-                              weights_tensor.get_raw_handle_unsafe() : nullptr;
-        void *output_data = output_tensor.get_raw_handle_unsafe();
-
-        if (!table_data || !indices_data || !output_data ||
-            (is_weights && !weights_data)) {
-          log_error("LOWOHA embedding: Null data pointer detected");
-          return status_t::failure;
-        }
-
-        // Build embag_params_t structure
-        embag_params_t params;
-
-        // Set data types
-        params.dtypes.table = table_tensor.get_data_type();
-        params.dtypes.output = output_tensor.get_data_type();
-        params.dtypes.indices = indices_tensor.get_data_type();
-
-        // Embedding uses algo = none (no reduction)
-        params.algo = embag_algo_t::none;
-
-        // Set dimensions
-        params.num_embeddings = table_tensor.get_size(0);
-        params.embedding_dim = table_tensor.get_size(1);
-        params.num_indices = indices_tensor.get_size(0);
-        params.is_weights = is_weights;
-        params.padding_idx = padding_index;
-        params.num_threads = 0;  // Use default (omp_get_max_threads)
-        params.fp16_scale_bias = fp16_scale_bias;
-        params.dst_stride = output_tensor.get_stride()[0];
-        if (kernel == embag_kernel_t::reference) {
-          params.kernel = kernel;
-        }
-
-        log_info("LOWOHA embedding: Calling embedding_direct with "
-                 "num_embeddings=", params.num_embeddings,
-                 ", embedding_dim=", params.embedding_dim,
-                 ", num_indices=", params.num_indices);
-
-        // Call LOWOHA embedding_direct API
-        status = embedding_direct(
-                   table_data,
-                   indices_data,
-                   weights_data,
-                   output_data,
-                   params);
-
-        if (status != status_t::success) {
-          if (status != status_t::isa_unsupported) {
-            log_error("LOWOHA embedding_direct execution failed.");
-          }
-          return status;
-        }
-      }
-      catch (const std::exception &e) {
-        log_error("LOWOHA embedding_direct execution failed: ", e.what());
+    } catch (const exception_t &ex) {
+        log_verbose(ex.what());
         return status_t::failure;
-      }
-      catch (...) {
-        log_error("LOWOHA embedding_direct execution failed with unknown exception");
-        return status_t::failure;
-      }
     }
-    else {
-      // Regular operator API path
-      //define embedding context
-      embag_context_t embedding_context = embag_context_t()
-                                          .set_param("table", table_tensor)
-                                          .set_padding_index(padding_index)
-                                          .set_is_weights(is_weights);
-      if (table_tensor.get_data_type() == data_type_t::s8 ||
-          table_tensor.get_data_type() == data_type_t::s4 ||
-          table_tensor.get_data_type() == data_type_t::u4) {
-        embedding_context.set_fp16_scale_bias(fp16_scale_bias);
-        embedding_context.create();
-      }
-      else {
-        embedding_context.create();
-      }
-      //define embedding operator
-      embag_operator_t embedding_operator = embag_operator_t()
-                                            .set_name("embedding_bag")
-                                            .set_context(embedding_context)
-                                            .create();
-
-      if (embedding_operator.is_bad_object()) {
-        testlog_error(" operator ", embedding_operator.get_name(),
-                      " creation failed.");
-        return status_t::failure;
-      }
-
-      if (is_weights) {
-        // Execute operator
-        status = embedding_operator
-                 .set_input("indices", indices_tensor)
-                 .set_input("weights", weights_tensor)
-                 .set_output("output", output_tensor)
-                 .execute();
-      }
-      else {
-        status = embedding_operator
-                 .set_input("indices", indices_tensor)
-                 .set_output("output", output_tensor)
-                 .execute();
-      }
-
-      if (status != status_t::success) {
-        if (status != status_t::isa_unsupported) {
-          log_error("operator ", embedding_operator.get_name(), " execution failed.");
-        }
-        return status;
-      }
-    }
-  }
-  catch (const exception_t &ex) {
-    log_verbose(ex.what());
-    return status_t::failure;
-  }
-  return status_t::success;
+    return status_t::success;
 }
 
 void compare_tensor_2D(tensor_t &output_tensor, tensor_t &output_tensor_ref,
-                       uint64_t m,
-                       uint64_t n, const float tol, bool &is_comparison_successful) {
-  const float atol = tol;
-  const float rtol = tol * 10;
-  #pragma omp parallel for collapse(2)
-  for (uint64_t i=0; i<m; ++i) {
-    for (uint64_t j=0; j<n; ++j) {
-      if (is_comparison_successful) {
-        float actual_val = output_tensor.at({i,j});
-        float ref_val = output_tensor_ref.at({i,j});
+        uint64_t m, uint64_t n, const float tol,
+        bool &is_comparison_successful) {
+    const float atol = tol;
+    const float rtol = tol * 10;
+#pragma omp parallel for collapse(2)
+    for (uint64_t i = 0; i < m; ++i) {
+        for (uint64_t j = 0; j < n; ++j) {
+            if (is_comparison_successful) {
+                float actual_val = output_tensor.at({i, j});
+                float ref_val = output_tensor_ref.at({i, j});
 
-        float abs_err = fabs(ref_val - actual_val);
+                float abs_err = fabs(ref_val - actual_val);
 
-        if (abs_err > (atol + rtol * fabs(ref_val))) {
-          log_verbose("actual(",i,",",j,"): ",actual_val," , ref(",i,",",j,"): ",ref_val);
-          is_comparison_successful = false;
+                if (abs_err > (atol + rtol * fabs(ref_val))) {
+                    log_verbose("actual(", i, ",", j, "): ", actual_val,
+                            " , ref(", i, ",", j, "): ", ref_val);
+                    is_comparison_successful = false;
+                }
+            }
         }
-      }
     }
-  }
-  return;
+    return;
 }
 
 void compare_tensor_2D_matrix(tensor_t &output_tensor,
-                              tensor_t &output_tensor_ref,
-                              uint64_t m,
-                              uint64_t n,
-                              uint64_t k,
-                              const float rtol,
-                              const float epsilon,
-                              bool &is_comparison_successful,
-                              bool enable_f32_relaxation,
-                              float alpha,
-                              bool is_quant) {
-  constexpr int C = 20; // Margin for F32 tolerance
-  //ToDo: Add P value according to the postop currently, same value is used for all.
-  constexpr int P = 15; // Post-op accumulation margin
-  constexpr int scale_factor = 4; // scale factor
+        tensor_t &output_tensor_ref, uint64_t m, uint64_t n, uint64_t k,
+        const float rtol, const float epsilon, bool &is_comparison_successful,
+        bool enable_f32_relaxation, float alpha, bool is_quant) {
+    constexpr int C = 20; // Margin for F32 tolerance
+    //ToDo: Add P value according to the postop currently, same value is used for all.
+    constexpr int P = 15; // Post-op accumulation margin
+    constexpr int scale_factor = 4; // scale factor
 
 #if ENABLE_F32_RELAXATION
-  enable_f32_relaxation = true;
+    enable_f32_relaxation = true;
 #endif
 
-  // Accumulation-based absolute bound, scaled by alpha
-  // abs_bound = alpha * (C*k+P)*epsilon
-  const bool is_low_precision = (output_tensor.get_data_type() ==
-                                 data_type_t::bf16) ||
-                                (output_tensor.get_data_type() == data_type_t::f16) || is_quant;
-  // For u8 dst, set abs_bound to 1.0f to avoid strict comparison due to rounding errors.
-  bool is_dst_u8 = output_tensor.get_data_type() == data_type_t::u8;
-  const float abs_bound = is_dst_u8 ? 1.0f : is_low_precision
-                          ? (alpha * k * epsilon)
-                          : (alpha * ((C + log2(k) / scale_factor) * k + P) * epsilon);
+    // Accumulation-based absolute bound, scaled by alpha
+    // abs_bound = alpha * (C*k+P)*epsilon
+    const bool is_low_precision
+            = (output_tensor.get_data_type() == data_type_t::bf16)
+            || (output_tensor.get_data_type() == data_type_t::f16) || is_quant;
+    // For u8 dst, set abs_bound to 1.0f to avoid strict comparison due to rounding errors.
+    bool is_dst_u8 = output_tensor.get_data_type() == data_type_t::u8;
+    const float abs_bound = is_dst_u8 ? 1.0f
+            : is_low_precision
+            ? (alpha * k * epsilon)
+            : (alpha * ((C + log2(k) / scale_factor) * k + P) * epsilon);
 
-  // F32 zero-reference handling tolerances (controlled by bool flag) for libxsmm backends
-  constexpr float ABS_ZERO_TOL_F32 = 8e-4f;
-  constexpr float ZERO_REF_THRESH = 1e-6f;
-  constexpr float F32_EPS_SLACK = 9e-4f;
+    // F32 zero-reference handling tolerances (controlled by bool flag) for libxsmm backends
+    constexpr float ABS_ZERO_TOL_F32 = 8e-4f;
+    constexpr float ZERO_REF_THRESH = 1e-6f;
+    constexpr float F32_EPS_SLACK = 9e-4f;
 
-  const bool is_f32 = output_tensor.get_data_type() == data_type_t::f32;
+    const bool is_f32 = output_tensor.get_data_type() == data_type_t::f32;
 
-  log_verbose("abs_bound: ", abs_bound);
+    log_verbose("abs_bound: ", abs_bound);
 
-  #pragma omp parallel for collapse(2)
-  for (uint64_t i = 0; i < m; ++i) {
-    for (uint64_t j = 0; j < n; ++j) {
-      if (is_comparison_successful) {
-        float actual_val = output_tensor.at({i, j});
-        float ref_val    = output_tensor_ref.at({i, j});
-        float abs_err    = fabs(ref_val - actual_val);
+#pragma omp parallel for collapse(2)
+    for (uint64_t i = 0; i < m; ++i) {
+        for (uint64_t j = 0; j < n; ++j) {
+            if (is_comparison_successful) {
+                float actual_val = output_tensor.at({i, j});
+                float ref_val = output_tensor_ref.at({i, j});
+                float abs_err = fabs(ref_val - actual_val);
 
-        float allowed_err;
-        if (enable_f32_relaxation && is_f32) {
-          if (fabs(ref_val) < ZERO_REF_THRESH) {
-            // Zero-reference F32 path
-            allowed_err = std::max(abs_bound, ABS_ZERO_TOL_F32) + F32_EPS_SLACK;
-          }
-          else {
-            // Normal F32 path with small slack
-            allowed_err = abs_bound + rtol * fabs(ref_val) + F32_EPS_SLACK;
-          }
+                float allowed_err;
+                if (enable_f32_relaxation && is_f32) {
+                    if (fabs(ref_val) < ZERO_REF_THRESH) {
+                        // Zero-reference F32 path
+                        allowed_err = std::max(abs_bound, ABS_ZERO_TOL_F32)
+                                + F32_EPS_SLACK;
+                    } else {
+                        // Normal F32 path with small slack
+                        allowed_err = abs_bound + rtol * fabs(ref_val)
+                                + F32_EPS_SLACK;
+                    }
+                } else {
+                    // Default path
+                    allowed_err = abs_bound + rtol * fabs(ref_val);
+                }
+
+                if (abs_err > allowed_err) {
+                    log_verbose("actual(", i, ",", j, "): ", actual_val,
+                            " , ref(", i, ",", j, "): ", ref_val);
+                    log_verbose("abs_error: ", abs_err,
+                            " , allowed_err: ", allowed_err,
+                            " , abs_bound: ", abs_bound);
+                    is_comparison_successful = false;
+                }
+            }
         }
-        else {
-          // Default path
-          allowed_err = abs_bound + rtol * fabs(ref_val);
-        }
-
-        if (abs_err > allowed_err) {
-          log_verbose("actual(", i, ",", j, "): ", actual_val,
-                      " , ref(", i, ",", j, "): ", ref_val);
-          log_verbose("abs_error: ", abs_err,
-                      " , allowed_err: ", allowed_err,
-                      " , abs_bound: ", abs_bound);
-          is_comparison_successful = false;
-        }
-      }
     }
-  }
 }
 void compare_tensor_3D_matrix(tensor_t &output_tensor,
-                              tensor_t &output_tensor_ref,
-                              uint64_t batch_size,
-                              uint64_t m,
-                              uint64_t n,
-                              uint64_t k,
-                              const float rtol,
-                              const float epsilon,
-                              bool &is_comparison_successful,
-                              bool enable_f32_relaxation,
-                              float alpha) {
-  constexpr int C = 20; // Margin for F32 tolerance
-  //ToDo: Add P value according to the postop currently, same value is used for all.
-  constexpr int P = 15; // Post-op accumulation margin
-  constexpr int scale_factor = 4; // scale factor
+        tensor_t &output_tensor_ref, uint64_t batch_size, uint64_t m,
+        uint64_t n, uint64_t k, const float rtol, const float epsilon,
+        bool &is_comparison_successful, bool enable_f32_relaxation,
+        float alpha) {
+    constexpr int C = 20; // Margin for F32 tolerance
+    //ToDo: Add P value according to the postop currently, same value is used for all.
+    constexpr int P = 15; // Post-op accumulation margin
+    constexpr int scale_factor = 4; // scale factor
 
 #if ENABLE_F32_RELAXATION
-  enable_f32_relaxation = true;
+    enable_f32_relaxation = true;
 #endif
 
-  // Accumulation-based absolute bound, scaled by alpha
-  //float abs_bound = alpha * ((20 + log2(k)/4) * k + 15) * epsilon;
-  //(alpha*C*K+P)*epsilon
-  const bool is_low_precision = (output_tensor.get_data_type() ==
-                                 data_type_t::bf16) ||
-                                (output_tensor.get_data_type() == data_type_t::f16);
-  // For u8 dst, set abs_bound to 1.0f to avoid strict comparison due to rounding errors.
-  bool is_dst_u8 = output_tensor.get_data_type() == data_type_t::u8;
+    // Accumulation-based absolute bound, scaled by alpha
+    //float abs_bound = alpha * ((20 + log2(k)/4) * k + 15) * epsilon;
+    //(alpha*C*K+P)*epsilon
+    const bool is_low_precision
+            = (output_tensor.get_data_type() == data_type_t::bf16)
+            || (output_tensor.get_data_type() == data_type_t::f16);
+    // For u8 dst, set abs_bound to 1.0f to avoid strict comparison due to rounding errors.
+    bool is_dst_u8 = output_tensor.get_data_type() == data_type_t::u8;
 
-  const float abs_bound = is_dst_u8 ? 1.0f : is_low_precision
-                          ? (alpha * k * epsilon)
-                          : (alpha * ((C + log2(k) / scale_factor) * k + P) * epsilon);
+    const float abs_bound = is_dst_u8 ? 1.0f
+            : is_low_precision
+            ? (alpha * k * epsilon)
+            : (alpha * ((C + log2(k) / scale_factor) * k + P) * epsilon);
 
-  // F32 zero-reference handling tolerances (controlled by bool flag) for libxsmm backends
-  constexpr float ABS_ZERO_TOL_F32 = 8e-4f;
-  constexpr float ZERO_REF_THRESH = 1e-6f;
-  constexpr float F32_EPS_SLACK = 9e-4f;
+    // F32 zero-reference handling tolerances (controlled by bool flag) for libxsmm backends
+    constexpr float ABS_ZERO_TOL_F32 = 8e-4f;
+    constexpr float ZERO_REF_THRESH = 1e-6f;
+    constexpr float F32_EPS_SLACK = 9e-4f;
 
-  const bool is_f32 = output_tensor.get_data_type() == data_type_t::f32;
+    const bool is_f32 = output_tensor.get_data_type() == data_type_t::f32;
 
-  log_verbose("abs_bound: ", abs_bound);
+    log_verbose("abs_bound: ", abs_bound);
 
-  #pragma omp parallel for collapse(3)
-  for (uint64_t bs = 0; bs < batch_size; ++bs) {
-    for (uint64_t i = 0; i < m; ++i) {
-      for (uint64_t j = 0; j < n; ++j) {
-        if (is_comparison_successful) {
-          float actual_val = output_tensor.at({bs, i, j});
-          float ref_val    = output_tensor_ref.at({bs, i, j});
-          float abs_err    = fabs(ref_val - actual_val);
+#pragma omp parallel for collapse(3)
+    for (uint64_t bs = 0; bs < batch_size; ++bs) {
+        for (uint64_t i = 0; i < m; ++i) {
+            for (uint64_t j = 0; j < n; ++j) {
+                if (is_comparison_successful) {
+                    float actual_val = output_tensor.at({bs, i, j});
+                    float ref_val = output_tensor_ref.at({bs, i, j});
+                    float abs_err = fabs(ref_val - actual_val);
 
-          float allowed_err;
-          if (enable_f32_relaxation && is_f32) {
-            if (fabs(ref_val) < ZERO_REF_THRESH) {
-              // Zero-reference F32 path
-              allowed_err = std::max(abs_bound, ABS_ZERO_TOL_F32) + F32_EPS_SLACK;
+                    float allowed_err;
+                    if (enable_f32_relaxation && is_f32) {
+                        if (fabs(ref_val) < ZERO_REF_THRESH) {
+                            // Zero-reference F32 path
+                            allowed_err = std::max(abs_bound, ABS_ZERO_TOL_F32)
+                                    + F32_EPS_SLACK;
+                        } else {
+                            // Normal F32 path with small slack
+                            allowed_err = abs_bound + rtol * fabs(ref_val)
+                                    + F32_EPS_SLACK;
+                        }
+                    } else {
+                        // Default path
+                        allowed_err = abs_bound + rtol * fabs(ref_val);
+                    }
+
+                    if (abs_err > allowed_err) {
+                        log_verbose("actual(", bs, ",", i, ",", j,
+                                "): ", actual_val, " , ref(", bs, ",", i, ",",
+                                j, "): ", ref_val);
+                        log_verbose("abs_error: ", abs_err,
+                                " , allowed_err: ", allowed_err,
+                                " , abs_bound: ", abs_bound);
+                        is_comparison_successful = false;
+                    }
+                }
             }
-            else {
-              // Normal F32 path with small slack
-              allowed_err = abs_bound + rtol * fabs(ref_val) + F32_EPS_SLACK;
-            }
-          }
-          else {
-            // Default path
-            allowed_err = abs_bound + rtol * fabs(ref_val);
-          }
-
-          if (abs_err > allowed_err) {
-            log_verbose("actual(", bs, ",", i, ",", j, "): ", actual_val,
-                        " , ref(", bs, ",", i, ",", j, "): ", ref_val);
-            log_verbose("abs_error: ", abs_err,
-                        " , allowed_err: ", allowed_err,
-                        " , abs_bound: ", abs_bound);
-            is_comparison_successful = false;
-          }
         }
-      }
     }
-  }
 }
 size_t get_aligned_size(size_t alignment, size_t size_) {
-  return ((size_ + alignment - 1) & ~(alignment - 1));
+    return ((size_ + alignment - 1) & ~(alignment - 1));
 }
 
 // `lowoha_granularity_to_str(...)` and `lowoha_reorder_algo_to_str(...)` were moved to `reorder/reorder_test_helpers.cpp`.
 
 // Helper: Convert float32 to bf16 (as uint16_t)
 [[maybe_unused]] static inline uint16_t float_to_bf16_helper(float val) {
-  uint32_t bits;
-  std::memcpy(&bits, &val, sizeof(float));
-  // Round-to-nearest-even
-  uint32_t lsb = (bits >> 16) & 1;
-  uint32_t rounding_bias = 0x7FFF + lsb;
-  bits += rounding_bias;
-  return static_cast<uint16_t>(bits >> 16);
+    uint32_t bits;
+    std::memcpy(&bits, &val, sizeof(float));
+    // Round-to-nearest-even
+    uint32_t lsb = (bits >> 16) & 1;
+    uint32_t rounding_bias = 0x7FFF + lsb;
+    bits += rounding_bias;
+    return static_cast<uint16_t>(bits >> 16);
 }
 
 // `lowoha_reorder_kernel_test(...)` was moved to `reorder/reorder_test_helpers.cpp`.
 
 // The reorder LOWOHA compare/log/shape helpers were moved to `reorder/reorder_test_helpers.cpp`.
 
-status_t quant_params_compute(
-  tensor_factory_t &factory,
-  const tensor_t &src_ref,
-  data_type_t src_dtype,
-  data_type_t dst_dtype,
-  const std::vector<int64_t> &scale_dims,
-  data_type_t scale_dt,
-  tensor_t &scale_out,
-  tensor_t &zp_out,
-  tensor_t *dst_out) {
-  if (src_dtype != data_type_t::bf16 && src_dtype != data_type_t::f32) {
-    log_error("quant_params_compute: src_dtype must be bf16 or f32");
-    return status_t::failure;
-  }
-  if (dst_dtype != data_type_t::s8 && dst_dtype != data_type_t::u8) {
-    log_error("quant_params_compute: dst_dtype must be s8 or u8");
-    return status_t::failure;
-  }
-  if (scale_dt != data_type_t::f32 && scale_dt != data_type_t::bf16) {
-    log_error("quant_params_compute: scale_dt must be f32 or bf16");
-    return status_t::failure;
-  }
-  if (scale_dims.empty()) {
-    log_error("quant_params_compute: scale_dims must be non-empty");
-    return status_t::failure;
-  }
-  const std::vector<uint64_t> src_shape_u64 = src_ref.get_size();
-  if (src_shape_u64.empty()) {
-    log_error("quant_params_compute: src_ref shape must be non-empty");
-    return status_t::failure;
-  }
-  std::vector<int64_t> src_shape(src_shape_u64.begin(), src_shape_u64.end());
-  for (size_t i = 0; i < src_shape.size(); ++i) {
-    if (src_shape[i] <= 0) {
-      log_error("quant_params_compute: src_ref shape[", i, "]=", src_shape[i],
-                " must be > 0");
-      return status_t::failure;
+status_t quant_params_compute(tensor_factory_t &factory,
+        const tensor_t &src_ref, data_type_t src_dtype, data_type_t dst_dtype,
+        const std::vector<int64_t> &scale_dims, data_type_t scale_dt,
+        tensor_t &scale_out, tensor_t &zp_out, tensor_t *dst_out) {
+    if (src_dtype != data_type_t::bf16 && src_dtype != data_type_t::f32) {
+        log_error("quant_params_compute: src_dtype must be bf16 or f32");
+        return status_t::failure;
     }
-  }
-  for (size_t i = 0; i < scale_dims.size(); ++i) {
-    if (scale_dims[i] <= 0) {
-      log_error("quant_params_compute: scale_dims[", i, "]=", scale_dims[i],
-                " must be > 0");
-      return status_t::failure;
+    if (dst_dtype != data_type_t::s8 && dst_dtype != data_type_t::u8) {
+        log_error("quant_params_compute: dst_dtype must be s8 or u8");
+        return status_t::failure;
     }
-  }
+    if (scale_dt != data_type_t::f32 && scale_dt != data_type_t::bf16) {
+        log_error("quant_params_compute: scale_dt must be f32 or bf16");
+        return status_t::failure;
+    }
+    if (scale_dims.empty()) {
+        log_error("quant_params_compute: scale_dims must be non-empty");
+        return status_t::failure;
+    }
+    const std::vector<uint64_t> src_shape_u64 = src_ref.get_size();
+    if (src_shape_u64.empty()) {
+        log_error("quant_params_compute: src_ref shape must be non-empty");
+        return status_t::failure;
+    }
+    std::vector<int64_t> src_shape(src_shape_u64.begin(), src_shape_u64.end());
+    for (size_t i = 0; i < src_shape.size(); ++i) {
+        if (src_shape[i] <= 0) {
+            log_error("quant_params_compute: src_ref shape[", i,
+                    "]=", src_shape[i], " must be > 0");
+            return status_t::failure;
+        }
+    }
+    for (size_t i = 0; i < scale_dims.size(); ++i) {
+        if (scale_dims[i] <= 0) {
+            log_error("quant_params_compute: scale_dims[", i,
+                    "]=", scale_dims[i], " must be > 0");
+            return status_t::failure;
+        }
+    }
 
-  std::vector<uint64_t> scale_size(scale_dims.begin(), scale_dims.end());
+    std::vector<uint64_t> scale_size(scale_dims.begin(), scale_dims.end());
 
-  scale_out = factory.zero_tensor(scale_size, scale_dt);
+    scale_out = factory.zero_tensor(scale_size, scale_dt);
 
-  bool is_asymmetric = (dst_dtype == data_type_t::u8);
-  if (is_asymmetric) {
-    zp_out = factory.zero_tensor(scale_size, data_type_t::s32);
-  }
-  else {
-    zp_out = tensor_t();
-  }
+    bool is_asymmetric = (dst_dtype == data_type_t::u8);
+    if (is_asymmetric) {
+        zp_out = factory.zero_tensor(scale_size, data_type_t::s32);
+    } else {
+        zp_out = tensor_t();
+    }
 
-  const bool src_is_transposed = src_ref.is_transposed();
+    const bool src_is_transposed = src_ref.is_transposed();
 
-  // Compute physical shape: reorder_direct operates on the physical memory
-  // layout, so when the source is transposed we swap the last two dims
-  std::vector<int64_t> phys_shape = src_shape;
-  if (src_is_transposed && phys_shape.size() >= 2) {
-    std::swap(phys_shape[phys_shape.size() - 2],
-              phys_shape[phys_shape.size() - 1]);
-  }
+    // Compute physical shape: reorder_direct operates on the physical memory
+    // layout, so when the source is transposed we swap the last two dims
+    std::vector<int64_t> phys_shape = src_shape;
+    if (src_is_transposed && phys_shape.size() >= 2) {
+        std::swap(phys_shape[phys_shape.size() - 2],
+                phys_shape[phys_shape.size() - 1]);
+    }
 
-  void *dst_ptr = nullptr;
-  if (dst_out) {
-    std::vector<uint64_t> tensor_size(src_shape_u64.begin(), src_shape_u64.end());
-    *dst_out = factory.zero_tensor(tensor_size, dst_dtype, scale_out, zp_out,
-                                   false, src_is_transposed);
-    dst_ptr = dst_out->get_raw_handle_unsafe();
-  }
+    void *dst_ptr = nullptr;
+    if (dst_out) {
+        std::vector<uint64_t> tensor_size(
+                src_shape_u64.begin(), src_shape_u64.end());
+        *dst_out = factory.zero_tensor(tensor_size, dst_dtype, scale_out,
+                zp_out, false, src_is_transposed);
+        dst_ptr = dst_out->get_raw_handle_unsafe();
+    }
 
-  reorder_params_t rp;
-  rp.src_dtype     = src_dtype;
-  rp.dst_dtype     = dst_dtype;
-  rp.dynamic_quant = true;
-  rp.src_shape     = phys_shape;
-  rp.dst_shape     = phys_shape;
+    reorder_params_t rp;
+    rp.src_dtype = src_dtype;
+    rp.dst_dtype = dst_dtype;
+    rp.dynamic_quant = true;
+    rp.src_shape = phys_shape;
+    rp.dst_shape = phys_shape;
 
-  // Scale/zp dims must match the physical layout; swap when transposed.
-  std::vector<int64_t> phys_scale_dims = scale_dims;
-  if (src_is_transposed && phys_scale_dims.size() >= 2) {
-    std::swap(phys_scale_dims[phys_scale_dims.size() - 2],
-              phys_scale_dims[phys_scale_dims.size() - 1]);
-  }
+    // Scale/zp dims must match the physical layout; swap when transposed.
+    std::vector<int64_t> phys_scale_dims = scale_dims;
+    if (src_is_transposed && phys_scale_dims.size() >= 2) {
+        std::swap(phys_scale_dims[phys_scale_dims.size() - 2],
+                phys_scale_dims[phys_scale_dims.size() - 1]);
+    }
 
-  rp.quant_params.scale.buff = scale_out.get_raw_handle_unsafe();
-  rp.quant_params.scale.dt   = scale_dt;
-  rp.quant_params.scale.dims = phys_scale_dims;
-  if (is_asymmetric) {
-    rp.quant_params.zero_point.buff = zp_out.get_raw_handle_unsafe();
-    rp.quant_params.zero_point.dt   = data_type_t::s32;
-    rp.quant_params.zero_point.dims = phys_scale_dims;
-  }
+    rp.quant_params.scale.buff = scale_out.get_raw_handle_unsafe();
+    rp.quant_params.scale.dt = scale_dt;
+    rp.quant_params.scale.dims = phys_scale_dims;
+    if (is_asymmetric) {
+        rp.quant_params.zero_point.buff = zp_out.get_raw_handle_unsafe();
+        rp.quant_params.zero_point.dt = data_type_t::s32;
+        rp.quant_params.zero_point.dims = phys_scale_dims;
+    }
 
-  return reorder_direct(src_ref.get_raw_handle_unsafe(), dst_ptr, rp);
+    return reorder_direct(src_ref.get_raw_handle_unsafe(), dst_ptr, rp);
 }
 
 static void *safe_raw_ptr(tensor_t &t) {
-  return (t.get_nelem() > 0) ? t.get_raw_handle_unsafe() : nullptr;
+    return (t.get_nelem() > 0) ? t.get_raw_handle_unsafe() : nullptr;
 }
 
-status_t normalization_kernel_test(
-  tensor_t &input_tensor,
-  tensor_t &output_tensor,
-  tensor_t &gamma_tensor,
-  tensor_t &beta_tensor,
-  tensor_t &running_mean_tensor,
-  tensor_t &running_var_tensor,
-  tensor_t &residual_tensor,
-  norm_params &params) {
-  try {
-    void *input_ptr    = safe_raw_ptr(input_tensor);
-    void *output_ptr   = safe_raw_ptr(output_tensor);
-    void *gamma_ptr    = safe_raw_ptr(gamma_tensor);
-    void *beta_ptr     = safe_raw_ptr(beta_tensor);
-    void *mean_ptr     = safe_raw_ptr(running_mean_tensor);
-    void *var_ptr      = safe_raw_ptr(running_var_tensor);
-    void *residual_ptr = safe_raw_ptr(residual_tensor);
+status_t normalization_kernel_test(tensor_t &input_tensor,
+        tensor_t &output_tensor, tensor_t &gamma_tensor, tensor_t &beta_tensor,
+        tensor_t &running_mean_tensor, tensor_t &running_var_tensor,
+        tensor_t &residual_tensor, norm_params &params) {
+    try {
+        void *input_ptr = safe_raw_ptr(input_tensor);
+        void *output_ptr = safe_raw_ptr(output_tensor);
+        void *gamma_ptr = safe_raw_ptr(gamma_tensor);
+        void *beta_ptr = safe_raw_ptr(beta_tensor);
+        void *mean_ptr = safe_raw_ptr(running_mean_tensor);
+        void *var_ptr = safe_raw_ptr(running_var_tensor);
+        void *residual_ptr = safe_raw_ptr(residual_tensor);
 
-    status_t status = normalization_direct(
-                        input_ptr, output_ptr, gamma_ptr, beta_ptr,
-                        mean_ptr, var_ptr, residual_ptr, params);
+        status_t status = normalization_direct(input_ptr, output_ptr, gamma_ptr,
+                beta_ptr, mean_ptr, var_ptr, residual_ptr, params);
 
-    if (status != status_t::success) {
-      if (status != status_t::isa_unsupported) {
-        log_error("normalization_direct execution failed");
-      }
+        if (status != status_t::success) {
+            if (status != status_t::isa_unsupported) {
+                log_error("normalization_direct execution failed");
+            }
+        }
+        return status;
+    } catch (const exception_t &ex) {
+        log_error("normalization_kernel_test exception: ", ex.what());
+        return status_t::failure;
+    } catch (const std::exception &e) {
+        log_error("normalization_kernel_test std::exception: ", e.what());
+        return status_t::failure;
     }
-    return status;
-  }
-  catch (const exception_t &ex) {
-    log_error("normalization_kernel_test exception: ", ex.what());
-    return status_t::failure;
-  }
-  catch (const std::exception &e) {
-    log_error("normalization_kernel_test std::exception: ", e.what());
-    return status_t::failure;
-  }
 }
 
-status_t normalization_forced_ref_kernel_test(
-  tensor_t &input_tensor,
-  tensor_t &output_tensor,
-  tensor_t &gamma_tensor,
-  tensor_t &beta_tensor,
-  tensor_t &running_mean_tensor,
-  tensor_t &running_var_tensor,
-  tensor_t &residual_tensor,
-  norm_params &params) {
-  try {
-    void *input_ptr    = safe_raw_ptr(input_tensor);
-    void *output_ptr   = safe_raw_ptr(output_tensor);
-    void *gamma_ptr    = safe_raw_ptr(gamma_tensor);
-    void *beta_ptr     = safe_raw_ptr(beta_tensor);
-    void *mean_ptr     = safe_raw_ptr(running_mean_tensor);
-    void *var_ptr      = safe_raw_ptr(running_var_tensor);
-    void *residual_ptr = safe_raw_ptr(residual_tensor);
+status_t normalization_forced_ref_kernel_test(tensor_t &input_tensor,
+        tensor_t &output_tensor, tensor_t &gamma_tensor, tensor_t &beta_tensor,
+        tensor_t &running_mean_tensor, tensor_t &running_var_tensor,
+        tensor_t &residual_tensor, norm_params &params) {
+    try {
+        void *input_ptr = safe_raw_ptr(input_tensor);
+        void *output_ptr = safe_raw_ptr(output_tensor);
+        void *gamma_ptr = safe_raw_ptr(gamma_tensor);
+        void *beta_ptr = safe_raw_ptr(beta_tensor);
+        void *mean_ptr = safe_raw_ptr(running_mean_tensor);
+        void *var_ptr = safe_raw_ptr(running_var_tensor);
+        void *residual_ptr = safe_raw_ptr(residual_tensor);
 
-    status_t status = normalization_reference_wrapper(
-                        input_ptr, output_ptr, gamma_ptr, beta_ptr,
-                        mean_ptr, var_ptr, residual_ptr, params);
+        status_t status = normalization_reference_wrapper(input_ptr, output_ptr,
+                gamma_ptr, beta_ptr, mean_ptr, var_ptr, residual_ptr, params);
 
-    if (status != status_t::success) {
-      if (status != status_t::isa_unsupported) {
-        log_error("normalization_reference_wrapper execution failed");
-      }
+        if (status != status_t::success) {
+            if (status != status_t::isa_unsupported) {
+                log_error("normalization_reference_wrapper execution failed");
+            }
+        }
+        return status;
+    } catch (const exception_t &ex) {
+        log_error(
+                "normalization_forced_ref_kernel_test exception: ", ex.what());
+        return status_t::failure;
+    } catch (const std::exception &e) {
+        log_error("normalization_forced_ref_kernel_test std::exception: ",
+                e.what());
+        return status_t::failure;
     }
-    return status;
-  }
-  catch (const exception_t &ex) {
-    log_error("normalization_forced_ref_kernel_test exception: ", ex.what());
-    return status_t::failure;
-  }
-  catch (const std::exception &e) {
-    log_error("normalization_forced_ref_kernel_test std::exception: ", e.what());
-    return status_t::failure;
-  }
 }
 
 // Shared element-wise tensor comparator for any dimensionality.
@@ -4372,355 +4144,314 @@ status_t normalization_forced_ref_kernel_test(
 // tensors. Tolerance is `atol + rtol * |ref|` with rtol = 10 * atol.
 // The `mismatch_label` prefix is included in the log message so callers
 // can distinguish which operator reported the mismatch.
-static void compare_tensors_elementwise(
-  tensor_t &output, tensor_t &output_ref,
-  const std::vector<uint64_t> &shape,
-  uint64_t total_elements,
-  float tol,
-  const char *mismatch_label,
-  bool &is_comparison_successful) {
-  const float atol = tol;
-  const float rtol = tol * 10;
-  std::atomic<bool> success{true};
+static void compare_tensors_elementwise(tensor_t &output, tensor_t &output_ref,
+        const std::vector<uint64_t> &shape, uint64_t total_elements, float tol,
+        const char *mismatch_label, bool &is_comparison_successful) {
+    const float atol = tol;
+    const float rtol = tol * 10;
+    std::atomic<bool> success {true};
 
-  #pragma omp parallel
-  {
-    std::vector<uint64_t> idx(shape.size());
-    #pragma omp for
-    for (uint64_t flat = 0; flat < total_elements; ++flat) {
-      if (success.load(std::memory_order_relaxed)) {
-        uint64_t remaining = flat;
-        for (int d = static_cast<int>(shape.size()) - 1; d >= 0; --d) {
-          idx[d] = remaining % shape[d];
-          remaining /= shape[d];
-        }
-        float actual_val = output.at(idx);
-        float ref_val    = output_ref.at(idx);
-        float abs_err    = std::fabs(ref_val - actual_val);
+#pragma omp parallel
+    {
+        std::vector<uint64_t> idx(shape.size());
+#pragma omp for
+        for (uint64_t flat = 0; flat < total_elements; ++flat) {
+            if (success.load(std::memory_order_relaxed)) {
+                uint64_t remaining = flat;
+                for (int d = static_cast<int>(shape.size()) - 1; d >= 0; --d) {
+                    idx[d] = remaining % shape[d];
+                    remaining /= shape[d];
+                }
+                float actual_val = output.at(idx);
+                float ref_val = output_ref.at(idx);
+                float abs_err = std::fabs(ref_val - actual_val);
 
-        if (abs_err > (atol + rtol * std::fabs(ref_val))) {
-          log_verbose(mismatch_label, " at flat=", flat,
-                      ": actual=", actual_val,
-                      ", ref=", ref_val,
-                      ", abs_err=", abs_err);
-          success.store(false, std::memory_order_relaxed);
+                if (abs_err > (atol + rtol * std::fabs(ref_val))) {
+                    log_verbose(mismatch_label, " at flat=", flat,
+                            ": actual=", actual_val, ", ref=", ref_val,
+                            ", abs_err=", abs_err);
+                    success.store(false, std::memory_order_relaxed);
+                }
+            }
         }
-      }
     }
-  }
 
-  if (!success.load()) {
-    is_comparison_successful = false;
-  }
+    if (!success.load()) { is_comparison_successful = false; }
 }
 
 void compare_norm_tensors(tensor_t &output, tensor_t &output_ref,
-                          const std::vector<uint64_t> &shape,
-                          uint64_t total_elements,
-                          float tol, bool &is_comparison_successful) {
-  compare_tensors_elementwise(output, output_ref, shape, total_elements,
-                              tol, "Normalization Mismatch", is_comparison_successful);
+        const std::vector<uint64_t> &shape, uint64_t total_elements, float tol,
+        bool &is_comparison_successful) {
+    compare_tensors_elementwise(output, output_ref, shape, total_elements, tol,
+            "Normalization Mismatch", is_comparison_successful);
 }
 
 status_t build_sdpa_params_from_tensors(tensor_t &query_tensor,
-                                        tensor_t &key_tensor,
-                                        tensor_t &value_tensor,
-                                        tensor_t &mask_tensor,
-                                        tensor_t &output_tensor,
-                                        float scale,
-                                        bool is_causal,
-                                        bool has_mask,
-                                        sdpa_params &params,
-                                        void *&q_data,
-                                        void *&k_data,
-                                        void *&v_data,
-                                        void *&o_data,
-                                        const void *&mask_ptr) {
-  if (!query_tensor.check() || !key_tensor.check() ||
-      !value_tensor.check() || !output_tensor.check()) {
-    log_error("SDPA LOWOHA: Invalid tensor state detected");
-    return status_t::failure;
-  }
-  if (has_mask && !mask_tensor.check()) {
-    log_error("SDPA LOWOHA: has_mask=true but mask tensor is invalid");
-    return status_t::failure;
-  }
-
-  // Tensors are logically 4D [B, H, S, D] per the SDPA contract;
-  // their physical memory layout may vary according to stride.
-  auto q_size = query_tensor.get_size();
-  auto k_size = key_tensor.get_size();
-  auto v_size = value_tensor.get_size();
-  auto o_size = output_tensor.get_size();
-  if (q_size.size() != 4 || k_size.size() != 4 ||
-      v_size.size() != 4 || o_size.size() != 4) {
-    log_error("SDPA LOWOHA: Q/K/V/O tensors must be 4D [B, H, S, D]");
-    return status_t::failure;
-  }
-  if (k_size[1] != v_size[1]) {
-    log_error("SDPA LOWOHA: K and V must have the same number of heads");
-    return status_t::failure;
-  }
-  if (k_size[2] != v_size[2]) {
-    log_error("SDPA LOWOHA: K and V must have the same sequence length");
-    return status_t::failure;
-  }
-  if (q_size[3] != k_size[3] || q_size[3] != v_size[3]) {
-    log_error("SDPA LOWOHA: Q/K/V must have the same head_dim");
-    return status_t::failure;
-  }
-
-  params = sdpa_params{};
-  params.batch      = static_cast<int64_t>(q_size[0]);
-  params.num_heads  = static_cast<int64_t>(q_size[1]);
-  params.kv_num_heads = static_cast<int64_t>(k_size[1]);
-  params.seq_len    = static_cast<int64_t>(q_size[2]);
-  params.kv_seq_len = static_cast<int64_t>(k_size[2]);
-  params.head_dim   = static_cast<int64_t>(q_size[3]);
-
-  // Per-tensor BHSD strides taken directly from each tensor (NOT recomputed
-  // from sizes). The flash backend supports any per-tensor stride pattern
-  // on logical [B, H, S, D] inputs -- in particular BHSD canonical contiguous
-  // (stride = [H*S*D, S*D, D, 1]) and BSHD physical layout (stride =
-  // [S*H*D, D, H*D, 1], i.e. the PyTorch .transpose(1, 2) view of BSHD
-  // memory). Reading get_stride() makes this helper work uniformly for
-  // BHSD-, BSHD-, or otherwise-strided tensors built by the test fixture.
-  auto q_str = query_tensor.get_stride();
-  auto k_str = key_tensor.get_stride();
-  auto v_str = value_tensor.get_stride();
-  auto o_str = output_tensor.get_stride();
-
-  params.q_stride_b = static_cast<int64_t>(q_str[0]);
-  params.q_stride_h = static_cast<int64_t>(q_str[1]);
-  params.q_stride_s = static_cast<int64_t>(q_str[2]);
-  params.q_stride_d = static_cast<int64_t>(q_str[3]);
-
-  params.k_stride_b = static_cast<int64_t>(k_str[0]);
-  params.k_stride_h = static_cast<int64_t>(k_str[1]);
-  params.k_stride_s = static_cast<int64_t>(k_str[2]);
-  params.k_stride_d = static_cast<int64_t>(k_str[3]);
-
-  params.v_stride_b = static_cast<int64_t>(v_str[0]);
-  params.v_stride_h = static_cast<int64_t>(v_str[1]);
-  params.v_stride_s = static_cast<int64_t>(v_str[2]);
-  params.v_stride_d = static_cast<int64_t>(v_str[3]);
-
-  params.o_stride_b = static_cast<int64_t>(o_str[0]);
-  params.o_stride_h = static_cast<int64_t>(o_str[1]);
-  params.o_stride_s = static_cast<int64_t>(o_str[2]);
-  params.o_stride_d = static_cast<int64_t>(o_str[3]);
-
-  params.qkv_dt    = query_tensor.get_data_type();
-  params.out_dt    = output_tensor.get_data_type();
-  params.scale     = static_cast<double>(scale);
-  params.is_causal = is_causal;
-  params.dropout_p = 0.0;
-  params.num_threads = 0;
-
-  mask_ptr = nullptr;
-  if (has_mask) {
-    mask_ptr = mask_tensor.get_raw_handle_unsafe();
-    auto m_size = mask_tensor.get_size();
-    params.mask_ndims = static_cast<int>(m_size.size());
-    // Build the per-dim sizes/strides that LOWOHA SDPA backends expect in two
-    // phases:
-    //   1. For the mask's actual `m_size.size()` dims (2 or 4), assign
-    //      canonical row-major contiguous strides
-    //      (stride[i] = prod(size[i+1..])), including for size-1 dims.
-    //      The flash backend's normalize_mask keys broadcast off
-    //      size==1 (not stride==0; see lowoha_sdpa_flash_cpu.cpp::
-    //      expand_stride), so the size-1 strides are inert under
-    //      broadcast even when non-zero.
-    //   2. Pad the remaining trailing slots up to 4 with size=1,
-    //      stride=0 so the params struct is fully initialised;
-    //      sdpa_direct only reads slots [0..mv.ndim) so the padded
-    //      slots are unused.
-    int64_t prev_stride = 1;
-    for (int i = static_cast<int>(m_size.size()) - 1; i >= 0; --i) {
-      params.mask_sizes[i]   = static_cast<int64_t>(m_size[i]);
-      params.mask_strides[i] = prev_stride;
-      prev_stride *= params.mask_sizes[i];
+        tensor_t &key_tensor, tensor_t &value_tensor, tensor_t &mask_tensor,
+        tensor_t &output_tensor, float scale, bool is_causal, bool has_mask,
+        sdpa_params &params, void *&q_data, void *&k_data, void *&v_data,
+        void *&o_data, const void *&mask_ptr) {
+    if (!query_tensor.check() || !key_tensor.check() || !value_tensor.check()
+            || !output_tensor.check()) {
+        log_error("SDPA LOWOHA: Invalid tensor state detected");
+        return status_t::failure;
     }
-    for (int i = static_cast<int>(m_size.size()); i < 4; ++i) {
-      params.mask_sizes[i]   = 1;
-      params.mask_strides[i] = 0;
+    if (has_mask && !mask_tensor.check()) {
+        log_error("SDPA LOWOHA: has_mask=true but mask tensor is invalid");
+        return status_t::failure;
     }
-    params.mask_dt = mask_tensor.get_data_type();
-  }
-  else {
-    params.mask_ndims = 0;
-    params.mask_dt    = data_type_t::none;
-  }
 
-  q_data = query_tensor.get_raw_handle_unsafe();
-  k_data = key_tensor.get_raw_handle_unsafe();
-  v_data = value_tensor.get_raw_handle_unsafe();
-  o_data = output_tensor.get_raw_handle_unsafe();
-  if (!q_data || !k_data || !v_data || !o_data) {
-    log_error("SDPA LOWOHA: Null data pointer detected");
-    return status_t::failure;
-  }
+    // Tensors are logically 4D [B, H, S, D] per the SDPA contract;
+    // their physical memory layout may vary according to stride.
+    auto q_size = query_tensor.get_size();
+    auto k_size = key_tensor.get_size();
+    auto v_size = value_tensor.get_size();
+    auto o_size = output_tensor.get_size();
+    if (q_size.size() != 4 || k_size.size() != 4 || v_size.size() != 4
+            || o_size.size() != 4) {
+        log_error("SDPA LOWOHA: Q/K/V/O tensors must be 4D [B, H, S, D]");
+        return status_t::failure;
+    }
+    if (k_size[1] != v_size[1]) {
+        log_error("SDPA LOWOHA: K and V must have the same number of heads");
+        return status_t::failure;
+    }
+    if (k_size[2] != v_size[2]) {
+        log_error("SDPA LOWOHA: K and V must have the same sequence length");
+        return status_t::failure;
+    }
+    if (q_size[3] != k_size[3] || q_size[3] != v_size[3]) {
+        log_error("SDPA LOWOHA: Q/K/V must have the same head_dim");
+        return status_t::failure;
+    }
 
-  return status_t::success;
+    params = sdpa_params {};
+    params.batch = static_cast<int64_t>(q_size[0]);
+    params.num_heads = static_cast<int64_t>(q_size[1]);
+    params.kv_num_heads = static_cast<int64_t>(k_size[1]);
+    params.seq_len = static_cast<int64_t>(q_size[2]);
+    params.kv_seq_len = static_cast<int64_t>(k_size[2]);
+    params.head_dim = static_cast<int64_t>(q_size[3]);
+
+    // Per-tensor BHSD strides taken directly from each tensor (NOT recomputed
+    // from sizes). The flash backend supports any per-tensor stride pattern
+    // on logical [B, H, S, D] inputs -- in particular BHSD canonical contiguous
+    // (stride = [H*S*D, S*D, D, 1]) and BSHD physical layout (stride =
+    // [S*H*D, D, H*D, 1], i.e. the PyTorch .transpose(1, 2) view of BSHD
+    // memory). Reading get_stride() makes this helper work uniformly for
+    // BHSD-, BSHD-, or otherwise-strided tensors built by the test fixture.
+    auto q_str = query_tensor.get_stride();
+    auto k_str = key_tensor.get_stride();
+    auto v_str = value_tensor.get_stride();
+    auto o_str = output_tensor.get_stride();
+
+    params.q_stride_b = static_cast<int64_t>(q_str[0]);
+    params.q_stride_h = static_cast<int64_t>(q_str[1]);
+    params.q_stride_s = static_cast<int64_t>(q_str[2]);
+    params.q_stride_d = static_cast<int64_t>(q_str[3]);
+
+    params.k_stride_b = static_cast<int64_t>(k_str[0]);
+    params.k_stride_h = static_cast<int64_t>(k_str[1]);
+    params.k_stride_s = static_cast<int64_t>(k_str[2]);
+    params.k_stride_d = static_cast<int64_t>(k_str[3]);
+
+    params.v_stride_b = static_cast<int64_t>(v_str[0]);
+    params.v_stride_h = static_cast<int64_t>(v_str[1]);
+    params.v_stride_s = static_cast<int64_t>(v_str[2]);
+    params.v_stride_d = static_cast<int64_t>(v_str[3]);
+
+    params.o_stride_b = static_cast<int64_t>(o_str[0]);
+    params.o_stride_h = static_cast<int64_t>(o_str[1]);
+    params.o_stride_s = static_cast<int64_t>(o_str[2]);
+    params.o_stride_d = static_cast<int64_t>(o_str[3]);
+
+    params.qkv_dt = query_tensor.get_data_type();
+    params.out_dt = output_tensor.get_data_type();
+    params.scale = static_cast<double>(scale);
+    params.is_causal = is_causal;
+    params.dropout_p = 0.0;
+    params.num_threads = 0;
+
+    mask_ptr = nullptr;
+    if (has_mask) {
+        mask_ptr = mask_tensor.get_raw_handle_unsafe();
+        auto m_size = mask_tensor.get_size();
+        params.mask_ndims = static_cast<int>(m_size.size());
+        // Build the per-dim sizes/strides that LOWOHA SDPA backends expect in two
+        // phases:
+        //   1. For the mask's actual `m_size.size()` dims (2 or 4), assign
+        //      canonical row-major contiguous strides
+        //      (stride[i] = prod(size[i+1..])), including for size-1 dims.
+        //      The flash backend's normalize_mask keys broadcast off
+        //      size==1 (not stride==0; see lowoha_sdpa_flash_cpu.cpp::
+        //      expand_stride), so the size-1 strides are inert under
+        //      broadcast even when non-zero.
+        //   2. Pad the remaining trailing slots up to 4 with size=1,
+        //      stride=0 so the params struct is fully initialised;
+        //      sdpa_direct only reads slots [0..mv.ndim) so the padded
+        //      slots are unused.
+        int64_t prev_stride = 1;
+        for (int i = static_cast<int>(m_size.size()) - 1; i >= 0; --i) {
+            params.mask_sizes[i] = static_cast<int64_t>(m_size[i]);
+            params.mask_strides[i] = prev_stride;
+            prev_stride *= params.mask_sizes[i];
+        }
+        for (int i = static_cast<int>(m_size.size()); i < 4; ++i) {
+            params.mask_sizes[i] = 1;
+            params.mask_strides[i] = 0;
+        }
+        params.mask_dt = mask_tensor.get_data_type();
+    } else {
+        params.mask_ndims = 0;
+        params.mask_dt = data_type_t::none;
+    }
+
+    q_data = query_tensor.get_raw_handle_unsafe();
+    k_data = key_tensor.get_raw_handle_unsafe();
+    v_data = value_tensor.get_raw_handle_unsafe();
+    o_data = output_tensor.get_raw_handle_unsafe();
+    if (!q_data || !k_data || !v_data || !o_data) {
+        log_error("SDPA LOWOHA: Null data pointer detected");
+        return status_t::failure;
+    }
+
+    return status_t::success;
 }
 
-status_t sdpa_kernel_test(tensor_t &query_tensor,
-                          tensor_t &key_tensor,
-                          tensor_t &value_tensor,
-                          tensor_t &mask_tensor,
-                          tensor_t &output_tensor,
-                          float scale,
-                          bool is_causal,
-                          bool has_mask,
-                          sdpa_kernel_t kernel) {
-  try {
-    sdpa_params params{};
-    void *q_data = nullptr;
-    void *k_data = nullptr;
-    void *v_data = nullptr;
-    void *o_data = nullptr;
-    const void *mask_ptr = nullptr;
+status_t sdpa_kernel_test(tensor_t &query_tensor, tensor_t &key_tensor,
+        tensor_t &value_tensor, tensor_t &mask_tensor, tensor_t &output_tensor,
+        float scale, bool is_causal, bool has_mask, sdpa_kernel_t kernel) {
+    try {
+        sdpa_params params {};
+        void *q_data = nullptr;
+        void *k_data = nullptr;
+        void *v_data = nullptr;
+        void *o_data = nullptr;
+        const void *mask_ptr = nullptr;
 
-    status_t prep_status = build_sdpa_params_from_tensors(
-                             query_tensor, key_tensor, value_tensor, mask_tensor, output_tensor,
-                             scale, is_causal, has_mask, params, q_data, k_data, v_data, o_data,
-                             mask_ptr);
-    if (prep_status != status_t::success) {
-      return prep_status;
+        status_t prep_status = build_sdpa_params_from_tensors(query_tensor,
+                key_tensor, value_tensor, mask_tensor, output_tensor, scale,
+                is_causal, has_mask, params, q_data, k_data, v_data, o_data,
+                mask_ptr);
+        if (prep_status != status_t::success) { return prep_status; }
+
+        params.kernel = kernel;
+
+        log_info("SDPA LOWOHA: Calling sdpa_direct with batch=", params.batch,
+                ", num_heads=", params.num_heads, ", seq_len=", params.seq_len,
+                ", kv_num_heads=", params.kv_num_heads,
+                ", head_dim=", params.head_dim, ", scale=", params.scale,
+                ", is_causal=", params.is_causal, ", has_mask=", has_mask,
+                ", kernel=", kernel_to_string(params.kernel));
+
+        status_t status
+                = sdpa_direct(q_data, k_data, v_data, mask_ptr, o_data, params);
+        if (status != status_t::success) {
+            log_error("SDPA LOWOHA: sdpa_direct execution failed");
+        }
+        return status;
+    } catch (const exception_t &ex) {
+        log_verbose(ex.what());
+        return status_t::failure;
+    } catch (const std::exception &e) {
+        log_error("SDPA LOWOHA: ", e.what());
+        return status_t::failure;
+    } catch (...) {
+        log_error("SDPA LOWOHA: unknown exception");
+        return status_t::failure;
     }
-
-    params.kernel = kernel;
-
-    log_info("SDPA LOWOHA: Calling sdpa_direct with batch=", params.batch,
-             ", num_heads=", params.num_heads, ", seq_len=", params.seq_len,
-             ", kv_num_heads=", params.kv_num_heads,
-             ", head_dim=", params.head_dim, ", scale=", params.scale,
-             ", is_causal=", params.is_causal, ", has_mask=", has_mask,
-             ", kernel=", kernel_to_string(params.kernel));
-
-    status_t status = sdpa_direct(q_data, k_data, v_data, mask_ptr,
-                                  o_data, params);
-    if (status != status_t::success) {
-      log_error("SDPA LOWOHA: sdpa_direct execution failed");
-    }
-    return status;
-  }
-  catch (const exception_t &ex) {
-    log_verbose(ex.what());
-    return status_t::failure;
-  }
-  catch (const std::exception &e) {
-    log_error("SDPA LOWOHA: ", e.what());
-    return status_t::failure;
-  }
-  catch (...) {
-    log_error("SDPA LOWOHA: unknown exception");
-    return status_t::failure;
-  }
 }
 
 void compare_tensor_4D_sdpa(tensor_t &output_tensor,
-                            tensor_t &output_tensor_ref,
-                            uint64_t batch, uint64_t num_heads,
-                            uint64_t seq_len_q, uint64_t seq_len_kv,
-                            uint64_t head_dim,
-                            const float rtol, const float epsilon,
-                            bool &is_comparison_successful) {
-  // Error model: SDPA is two GEMM reductions (first over head_dim, then over
-  // seq_len_kv) separated by a stable softmax. The constants below mirror the
-  // matmul bound used in compare_tensor_2D_matrix; we sum the two reduction
-  // lengths since softmax is well-conditioned (outputs in [0,1] that sum to 1).
-  constexpr int C  = 20;
-  constexpr int P  = 15;
-  constexpr int sf = 4;
-  const float reduction_len =
-    static_cast<float>(head_dim) + static_cast<float>(seq_len_kv);
-  const float abs_bound =
-    ((C + std::log2(reduction_len) / sf) * reduction_len + P) * epsilon;
+        tensor_t &output_tensor_ref, uint64_t batch, uint64_t num_heads,
+        uint64_t seq_len_q, uint64_t seq_len_kv, uint64_t head_dim,
+        const float rtol, const float epsilon, bool &is_comparison_successful) {
+    // Error model: SDPA is two GEMM reductions (first over head_dim, then over
+    // seq_len_kv) separated by a stable softmax. The constants below mirror the
+    // matmul bound used in compare_tensor_2D_matrix; we sum the two reduction
+    // lengths since softmax is well-conditioned (outputs in [0,1] that sum to 1).
+    constexpr int C = 20;
+    constexpr int P = 15;
+    constexpr int sf = 4;
+    const float reduction_len
+            = static_cast<float>(head_dim) + static_cast<float>(seq_len_kv);
+    const float abs_bound
+            = ((C + std::log2(reduction_len) / sf) * reduction_len + P)
+            * epsilon;
 
-  log_verbose("SDPA abs_bound: ", abs_bound);
+    log_verbose("SDPA abs_bound: ", abs_bound);
 
-  std::atomic<bool> success(is_comparison_successful);
+    std::atomic<bool> success(is_comparison_successful);
 
-  // Output is [B, H, S_q, head_dim] -- iterate over its actual shape.
-  #pragma omp parallel for collapse(4)
-  for (uint64_t b = 0; b < batch; ++b) {
-    for (uint64_t h = 0; h < num_heads; ++h) {
-      for (uint64_t i = 0; i < seq_len_q; ++i) {
-        for (uint64_t j = 0; j < head_dim; ++j) {
-          if (success.load(std::memory_order_relaxed)) {
-            float actual_val = output_tensor.at({b, h, i, j});
-            float ref_val    = output_tensor_ref.at({b, h, i, j});
-            float abs_err    = std::fabs(ref_val - actual_val);
-            float allowed_err = abs_bound + rtol * std::fabs(ref_val);
+// Output is [B, H, S_q, head_dim] -- iterate over its actual shape.
+#pragma omp parallel for collapse(4)
+    for (uint64_t b = 0; b < batch; ++b) {
+        for (uint64_t h = 0; h < num_heads; ++h) {
+            for (uint64_t i = 0; i < seq_len_q; ++i) {
+                for (uint64_t j = 0; j < head_dim; ++j) {
+                    if (success.load(std::memory_order_relaxed)) {
+                        float actual_val = output_tensor.at({b, h, i, j});
+                        float ref_val = output_tensor_ref.at({b, h, i, j});
+                        float abs_err = std::fabs(ref_val - actual_val);
+                        float allowed_err
+                                = abs_bound + rtol * std::fabs(ref_val);
 
-            if (abs_err > allowed_err) {
-              log_verbose("SDPA mismatch at [", b, ",", h, ",", i, ",", j,
-                          "]: actual=", actual_val, " , ref=", ref_val,
-                          " , abs_err=", abs_err,
-                          " , allowed_err=", allowed_err,
-                          " , abs_bound=", abs_bound);
-              success.store(false, std::memory_order_relaxed);
+                        if (abs_err > allowed_err) {
+                            log_verbose("SDPA mismatch at [", b, ",", h, ",", i,
+                                    ",", j, "]: actual=", actual_val,
+                                    " , ref=", ref_val, " , abs_err=", abs_err,
+                                    " , allowed_err=", allowed_err,
+                                    " , abs_bound=", abs_bound);
+                            success.store(false, std::memory_order_relaxed);
+                        }
+                    }
+                }
             }
-          }
         }
-      }
     }
-  }
 
-  if (!success.load()) {
-    is_comparison_successful = false;
-  }
+    if (!success.load()) { is_comparison_successful = false; }
 }
 
 status_t softmax_kernel_test(
-  const void *input,
-  void *output,
-  softmax_params &params) {
-  try {
-    params.algorithm = softmax_algo_t::onednn;
-    status_t status = softmax_direct(input, output, params);
-    if (status != status_t::success) {
-      log_error("softmax_direct (onednn) execution failed");
+        const void *input, void *output, softmax_params &params) {
+    try {
+        params.algorithm = softmax_algo_t::onednn;
+        status_t status = softmax_direct(input, output, params);
+        if (status != status_t::success) {
+            log_error("softmax_direct (onednn) execution failed");
+        }
+        return status;
+    } catch (const exception_t &ex) {
+        log_error("softmax_kernel_test exception: ", ex.what());
+        return status_t::failure;
+    } catch (const std::exception &e) {
+        log_error("softmax_kernel_test std::exception: ", e.what());
+        return status_t::failure;
     }
-    return status;
-  }
-  catch (const exception_t &ex) {
-    log_error("softmax_kernel_test exception: ", ex.what());
-    return status_t::failure;
-  }
-  catch (const std::exception &e) {
-    log_error("softmax_kernel_test std::exception: ", e.what());
-    return status_t::failure;
-  }
 }
 
 status_t softmax_forced_ref_kernel_test(
-  const void *input,
-  void *output,
-  softmax_params &params) {
-  try {
-    params.algorithm = softmax_algo_t::reference;
-    status_t status = softmax_reference_wrapper(input, output, params);
-    if (status != status_t::success) {
-      log_error("softmax_reference_wrapper execution failed");
+        const void *input, void *output, softmax_params &params) {
+    try {
+        params.algorithm = softmax_algo_t::reference;
+        status_t status = softmax_reference_wrapper(input, output, params);
+        if (status != status_t::success) {
+            log_error("softmax_reference_wrapper execution failed");
+        }
+        return status;
+    } catch (const exception_t &ex) {
+        log_error("softmax_forced_ref_kernel_test exception: ", ex.what());
+        return status_t::failure;
+    } catch (const std::exception &e) {
+        log_error("softmax_forced_ref_kernel_test std::exception: ", e.what());
+        return status_t::failure;
     }
-    return status;
-  }
-  catch (const exception_t &ex) {
-    log_error("softmax_forced_ref_kernel_test exception: ", ex.what());
-    return status_t::failure;
-  }
-  catch (const std::exception &e) {
-    log_error("softmax_forced_ref_kernel_test std::exception: ", e.what());
-    return status_t::failure;
-  }
 }
 
 void compare_softmax_tensors(tensor_t &output, tensor_t &output_ref,
-                             const std::vector<uint64_t> &shape,
-                             uint64_t total_elements,
-                             float tol, bool &is_comparison_successful) {
-  compare_tensors_elementwise(output, output_ref, shape, total_elements,
-                              tol, "Softmax Mismatch", is_comparison_successful);
+        const std::vector<uint64_t> &shape, uint64_t total_elements, float tol,
+        bool &is_comparison_successful) {
+    compare_tensors_elementwise(output, output_ref, shape, total_elements, tol,
+            "Softmax Mismatch", is_comparison_successful);
 }

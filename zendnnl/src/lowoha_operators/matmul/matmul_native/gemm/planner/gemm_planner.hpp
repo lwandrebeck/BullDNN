@@ -17,9 +17,9 @@
 #ifndef MATMUL_NATIVE_GEMM_PLANNER_HPP
 #define MATMUL_NATIVE_GEMM_PLANNER_HPP
 
-#include "lowoha_operators/matmul/matmul_native/common/gemm_descriptor.hpp"
-#include "lowoha_operators/matmul/matmul_native/common/cost_model.hpp"
 #include "lowoha_operators/matmul/lowoha_common.hpp"
+#include "lowoha_operators/matmul/matmul_native/common/cost_model.hpp"
+#include "lowoha_operators/matmul/matmul_native/common/gemm_descriptor.hpp"
 
 namespace zendnnl {
 namespace lowoha {
@@ -28,13 +28,11 @@ namespace native {
 
 /// Cache-blocking and register-tile plan for the GEMM macro-loop.
 struct BlockPlan {
-  int MB, NB, KB;
-  int MR, NR;
-  int num_threads;
+    int MB, NB, KB;
+    int MR, NR;
+    int num_threads;
 
-  BlockPlan()
-    : MB(0), NB(0), KB(0), MR(6), NR(16),
-      num_threads(1) {}
+    BlockPlan() : MB(0), NB(0), KB(0), MR(6), NR(16), num_threads(1) {}
 };
 
 /// BF16 GEMM plan: base blocking + BF16-specific MR/NR, KB, decode path.
@@ -55,16 +53,12 @@ struct FP32GemmPlan {
 BlockPlan plan_blocks(const GemmDescriptor &desc, const UarchParams &uarch);
 
 /// Build BF16 GEMM plan with thread-local plan caching.
-BF16GemmPlan plan_bf16_gemm(
-    const GemmDescriptor &desc,
-    const UarchParams &uarch,
-    const matmul_params &params);
+BF16GemmPlan plan_bf16_gemm(const GemmDescriptor &desc,
+        const UarchParams &uarch, const matmul_params &params);
 
 /// Build FP32 GEMM plan with thread-local plan caching.
-FP32GemmPlan plan_fp32_gemm(
-    const GemmDescriptor &desc,
-    const UarchParams &uarch,
-    const matmul_params &params);
+FP32GemmPlan plan_fp32_gemm(const GemmDescriptor &desc,
+        const UarchParams &uarch, const matmul_params &params);
 
 } // namespace native
 } // namespace matmul

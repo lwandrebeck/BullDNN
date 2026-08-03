@@ -28,8 +28,8 @@
 // normally would leave the caller's output buffer uninitialized (a silent
 // wrong result); instead they throw so an unsupported call fails loudly.
 
-#include "lowoha_operators/matmul/backends/aocl/aocl_kernel.hpp"
 #include "common/zendnnl_exceptions.hpp"
+#include "lowoha_operators/matmul/backends/aocl/aocl_kernel.hpp"
 
 namespace zendnnl {
 namespace lowoha {
@@ -37,54 +37,50 @@ namespace matmul {
 
 using namespace zendnnl::error_handling;
 
-void run_dlp(char, char, char, int, int, int,
-             float, float, int, int, int,
-             char, char, const void *,
-             const void *, void *, const matmul_data_types &,
-             const matmul_params &, const void *,
-             zendnnl::ops::matmul_algo_t, bool) {
-  apilog_error("AOCL-DLP matmul kernel (run_dlp) invoked but ZenDNNL was built "
-               "without AOCL-DLP support (ZENDNNL_DEPENDS_AOCLDLP=0).");
-  EXCEPTION_WITH_LOC("AOCL-DLP matmul kernel (run_dlp) invoked but ZenDNNL was "
-                     "built without AOCL-DLP support "
-                     "(ZENDNNL_DEPENDS_AOCLDLP=0).");
+void run_dlp(char, char, char, int, int, int, float, float, int, int, int, char,
+        char, const void *, const void *, void *, const matmul_data_types &,
+        const matmul_params &, const void *, zendnnl::ops::matmul_algo_t,
+        bool) {
+    apilog_error(
+            "AOCL-DLP matmul kernel (run_dlp) invoked but ZenDNNL was built "
+            "without AOCL-DLP support (ZENDNNL_DEPENDS_AOCLDLP=0).");
+    EXCEPTION_WITH_LOC(
+            "AOCL-DLP matmul kernel (run_dlp) invoked but ZenDNNL was "
+            "built without AOCL-DLP support "
+            "(ZENDNNL_DEPENDS_AOCLDLP=0).");
 }
 
-void matmul_batch_gemm_wrapper(char, char, char, int,
-                               int, int, float, const void *, int, const void *, int,
-                               float, void *, int, matmul_data_types &, int,
-                               int, int, char,
-                               char, size_t, size_t,
-                               size_t, const matmul_params &, const void *,
-                               int) {
-  apilog_error("AOCL-DLP batch matmul kernel (matmul_batch_gemm_wrapper) "
-               "invoked but ZenDNNL was built without AOCL-DLP support "
-               "(ZENDNNL_DEPENDS_AOCLDLP=0).");
-  EXCEPTION_WITH_LOC("AOCL-DLP batch matmul kernel (matmul_batch_gemm_wrapper) "
-                     "invoked but ZenDNNL was built without AOCL-DLP support "
-                     "(ZENDNNL_DEPENDS_AOCLDLP=0).");
+void matmul_batch_gemm_wrapper(char, char, char, int, int, int, float,
+        const void *, int, const void *, int, float, void *, int,
+        matmul_data_types &, int, int, int, char, char, size_t, size_t, size_t,
+        const matmul_params &, const void *, int) {
+    apilog_error(
+            "AOCL-DLP batch matmul kernel (matmul_batch_gemm_wrapper) "
+            "invoked but ZenDNNL was built without AOCL-DLP support "
+            "(ZENDNNL_DEPENDS_AOCLDLP=0).");
+    EXCEPTION_WITH_LOC(
+            "AOCL-DLP batch matmul kernel (matmul_batch_gemm_wrapper) "
+            "invoked but ZenDNNL was built without AOCL-DLP support "
+            "(ZENDNNL_DEPENDS_AOCLDLP=0).");
 }
 
 void clear_aocl_matmul_weight_caches() {
-  // No AOCL weight caches exist in this build; nothing to clear.
+    // No AOCL weight caches exist in this build; nothing to clear.
 }
 
 template <typename T>
-bool reorderAndCacheWeights(Key_matmul, const void *,
-                            void *&, const int, const int, const int,
-                            const char, const char, char,
-                            get_reorder_buff_size_func_ptr,
-                            reorder_func_ptr<T>, int) {
-  apilog_error("AOCL-DLP weight reorder requested but ZenDNNL was built "
-               "without AOCL-DLP support (ZENDNNL_DEPENDS_AOCLDLP=0).");
-  return false;
+bool reorderAndCacheWeights(Key_matmul, const void *, void *&, const int,
+        const int, const int, const char, const char, char,
+        get_reorder_buff_size_func_ptr, reorder_func_ptr<T>, int) {
+    apilog_error(
+            "AOCL-DLP weight reorder requested but ZenDNNL was built "
+            "without AOCL-DLP support (ZENDNNL_DEPENDS_AOCLDLP=0).");
+    return false;
 }
 
-template bool reorderAndCacheWeights<int16_t>(Key_matmul, const void *,
-    void *&, const int, const int, const int,
-    const char, const char, char,
-    get_reorder_buff_size_func_ptr,
-    reorder_func_ptr<int16_t>, int);
+template bool reorderAndCacheWeights<int16_t>(Key_matmul, const void *, void *&,
+        const int, const int, const int, const char, const char, char,
+        get_reorder_buff_size_func_ptr, reorder_func_ptr<int16_t>, int);
 
 } // namespace matmul
 } // namespace lowoha

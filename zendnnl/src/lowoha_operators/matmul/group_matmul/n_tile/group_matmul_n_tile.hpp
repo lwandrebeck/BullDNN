@@ -111,7 +111,7 @@
 #include <limits>
 #include <vector>
 
-#include "operators/matmul/matmul_config.hpp"  // matmul_algo_t
+#include "operators/matmul/matmul_config.hpp" // matmul_algo_t
 // `group_matmul_parallel_common.hpp` provides:
 //   * `parse_env_int_strict`            — strict env parsing helper
 //   * `matmul_params` / `data_type_t`   — used by `flat_n_tile()` decl
@@ -192,29 +192,29 @@ using zendnnl::ops::matmul_algo_t;
 // catches misuse if a future caller or test instantiates it as a
 // stack variable and accidentally returns / passes it by value.
 struct PerThreadScratch {
-  void *buf = nullptr;
-  size_t cap = 0;
-  PerThreadScratch() = default;
-  ~PerThreadScratch() { std::free(buf); }
-  PerThreadScratch(const PerThreadScratch &)            = delete;
-  PerThreadScratch &operator=(const PerThreadScratch &) = delete;
-  PerThreadScratch(PerThreadScratch &&)                 = delete;
-  PerThreadScratch &operator=(PerThreadScratch &&)      = delete;
+    void *buf = nullptr;
+    size_t cap = 0;
+    PerThreadScratch() = default;
+    ~PerThreadScratch() { std::free(buf); }
+    PerThreadScratch(const PerThreadScratch &) = delete;
+    PerThreadScratch &operator=(const PerThreadScratch &) = delete;
+    PerThreadScratch(PerThreadScratch &&) = delete;
+    PerThreadScratch &operator=(PerThreadScratch &&) = delete;
 };
 
 // Grow a per-thread scratch to at least `need` bytes, 64-byte aligned.
 // Returns false on alloc failure (caller signals via alloc_fail atomic
 // + post-OMP-region check).
 inline bool grow_scratch(PerThreadScratch &s, size_t need) {
-  if (need <= s.cap) return true;
-  std::free(s.buf);
-  s.buf = nullptr;
-  s.cap = 0;
-  void *tmp = nullptr;
-  if (posix_memalign(&tmp, 64, need) != 0 || tmp == nullptr) return false;
-  s.buf = tmp;
-  s.cap = need;
-  return true;
+    if (need <= s.cap) return true;
+    std::free(s.buf);
+    s.buf = nullptr;
+    s.cap = 0;
+    void *tmp = nullptr;
+    if (posix_memalign(&tmp, 64, need) != 0 || tmp == nullptr) return false;
+    s.buf = tmp;
+    s.cap = need;
+    return true;
 }
 
 // =====================================================================
@@ -267,7 +267,7 @@ namespace test_api {
 // 32 (e.g. 128, 256, 512).  Other positive values pass `ovr >= 0` but
 // are normalised to 0 by `get_grp_matmul_custom_kernel_n_tile()` (see
 // the doc-block on that getter for the full override semantics).
-inline std::atomic<int> s_grp_matmul_custom_kernel_n_tile_override{-1};
+inline std::atomic<int> s_grp_matmul_custom_kernel_n_tile_override {-1};
 
 // Sentinel `-1` = no override.  Settable values: 0 (auto, default —
 // try DecodeD if eligible, fall through to Rounds), 1 (decode —
@@ -276,7 +276,7 @@ inline std::atomic<int> s_grp_matmul_custom_kernel_n_tile_override{-1};
 // (rounds — skip DecodeD attempt entirely, always run Rounds-based
 // FewExperts/ManyExperts).  See `get_grp_n_tile_strategy()` for the
 // production env path.
-inline std::atomic<int> s_grp_n_tile_strategy_override{-1};
+inline std::atomic<int> s_grp_n_tile_strategy_override {-1};
 
 // Sentinel `INT_MIN` = no override; falls through to the cached env
 // path (which itself applies the documented default 0 = AUTO).
@@ -301,16 +301,16 @@ inline std::atomic<int> s_grp_n_tile_strategy_override{-1};
 // previous value across test scopes; it must be used for any test
 // that touches this atomic to guarantee teardown ordering on test
 // failure.
-inline std::atomic<int> s_grp_matmul_n_tile_heavy_threshold_override{
-    std::numeric_limits<int>::min()};
+inline std::atomic<int> s_grp_matmul_n_tile_heavy_threshold_override {
+        std::numeric_limits<int>::min()};
 
 // Sentinel `-1` = no override (falls through to env / default OFF).
 // `0` = force OFF (decode uses uniform Phase B base+1), `1` = force ON
 // (decode M-proportional split).  RAII helper `DecodeProportionalOverride`
 // in `gtests/group_matmul/moe_test_utils.hpp` saves/restores it.
-inline std::atomic<int> s_grp_matmul_decode_proportional_override{-1};
+inline std::atomic<int> s_grp_matmul_decode_proportional_override {-1};
 
-}  // namespace test_api
+} // namespace test_api
 
 // =====================================================================
 // Section A.4 — N-tile env getters
@@ -323,12 +323,12 @@ inline std::atomic<int> s_grp_matmul_decode_proportional_override{-1};
 //   default; the env is retained as an escape hatch.  Mid-process env
 //   changes have no effect (static const).
 inline bool get_grp_n_tile_fused_act() {
-  static const bool v = []() {
-    const char *e = std::getenv("ZENDNNL_GRP_MATMUL_N_TILE_FUSED_ACT");
-    if (e == nullptr || e[0] == '\0') return true;  // default: ON
-    return e[0] != '0';
-  }();
-  return v;
+    static const bool v = []() {
+        const char *e = std::getenv("ZENDNNL_GRP_MATMUL_N_TILE_FUSED_ACT");
+        if (e == nullptr || e[0] == '\0') return true; // default: ON
+        return e[0] != '0';
+    }();
+    return v;
 }
 
 // ZENDNNL_GRP_MATMUL_N_TILE_STRATEGY = { 0, 1, 2, 3 } — cached, default 2 (rounds).
@@ -454,25 +454,26 @@ inline bool get_grp_n_tile_fused_act() {
 //                 Non-negative override values > 3 clamp to 2
 //                 (rounds), mirroring the env path on the upper end.
 inline int get_grp_n_tile_strategy() {
-  // Unset / invalid → 2 (rounds): production default; ALGO 3 always
-  // runs FewExperts / ManyExperts when the structural gates pass.
-  // See the doc-block above for the rationale and the precedence
-  // diagram in `plan_group_n_tile`.  Strict env parsing — non-
-  // numeric input (e.g. `"abc"`) falls back to the documented
-  // default 2, NOT silently to mode 0 via legacy atoi-returns-0
-  // behaviour.  See `parse_env_int_strict`.
-  constexpr int kDefault = 2;
-  constexpr int kMaxValue = 3;  // 0=auto, 1=decode_d, 2=rounds, 3=decode_dynamic
-  const int ovr = test_api::s_grp_n_tile_strategy_override.load(
-      std::memory_order_relaxed);
-  if (ovr >= 0) return (ovr <= kMaxValue) ? ovr : kDefault;
-  static const int v = []() {
-    const char *e = std::getenv("ZENDNNL_GRP_MATMUL_N_TILE_STRATEGY");
-    int parsed = 0;
-    if (!parse_env_int_strict(e, parsed)) return kDefault;
-    return (parsed >= 0 && parsed <= kMaxValue) ? parsed : kDefault;
-  }();
-  return v;
+    // Unset / invalid → 2 (rounds): production default; ALGO 3 always
+    // runs FewExperts / ManyExperts when the structural gates pass.
+    // See the doc-block above for the rationale and the precedence
+    // diagram in `plan_group_n_tile`.  Strict env parsing — non-
+    // numeric input (e.g. `"abc"`) falls back to the documented
+    // default 2, NOT silently to mode 0 via legacy atoi-returns-0
+    // behaviour.  See `parse_env_int_strict`.
+    constexpr int kDefault = 2;
+    constexpr int kMaxValue
+            = 3; // 0=auto, 1=decode_d, 2=rounds, 3=decode_dynamic
+    const int ovr = test_api::s_grp_n_tile_strategy_override.load(
+            std::memory_order_relaxed);
+    if (ovr >= 0) return (ovr <= kMaxValue) ? ovr : kDefault;
+    static const int v = []() {
+        const char *e = std::getenv("ZENDNNL_GRP_MATMUL_N_TILE_STRATEGY");
+        int parsed = 0;
+        if (!parse_env_int_strict(e, parsed)) return kDefault;
+        return (parsed >= 0 && parsed <= kMaxValue) ? parsed : kDefault;
+    }();
+    return v;
 }
 
 // ── DecodeDynamic generic decision-tree knobs ────────────────────────
@@ -513,14 +514,14 @@ inline int get_grp_n_tile_strategy() {
 // ZENDNNL_GRP_MATMUL_DECDYN_EPC_MULT — cached, default 4.
 //   DecodeDynamic when active_ops >= this * num_ccds (experts-per-CCD).
 inline int get_grp_decdyn_epc_mult() {
-  constexpr int kDefault = 4;
-  static const int v = []() {
-    const char *e = std::getenv("ZENDNNL_GRP_MATMUL_DECDYN_EPC_MULT");
-    int parsed = 0;
-    if (!parse_env_int_strict(e, parsed) || parsed < 1) return kDefault;
-    return parsed;
-  }();
-  return v;
+    constexpr int kDefault = 4;
+    static const int v = []() {
+        const char *e = std::getenv("ZENDNNL_GRP_MATMUL_DECDYN_EPC_MULT");
+        int parsed = 0;
+        if (!parse_env_int_strict(e, parsed) || parsed < 1) return kDefault;
+        return parsed;
+    }();
+    return v;
 }
 
 // ZENDNNL_GRP_MATMUL_DECDYN_WEI_L3_MULT — cached, default 2.
@@ -528,14 +529,14 @@ inline int get_grp_decdyn_epc_mult() {
 //   i.e. the per-expert weight is large enough that Rounds' L3-batching
 //   serialises.  0 disables this branch (epc rule only).
 inline int get_grp_decdyn_wei_l3_mult() {
-  constexpr int kDefault = 2;
-  static const int v = []() {
-    const char *e = std::getenv("ZENDNNL_GRP_MATMUL_DECDYN_WEI_L3_MULT");
-    int parsed = 0;
-    if (!parse_env_int_strict(e, parsed) || parsed < 0) return kDefault;
-    return parsed;
-  }();
-  return v;
+    constexpr int kDefault = 2;
+    static const int v = []() {
+        const char *e = std::getenv("ZENDNNL_GRP_MATMUL_DECDYN_WEI_L3_MULT");
+        int parsed = 0;
+        if (!parse_env_int_strict(e, parsed) || parsed < 0) return kDefault;
+        return parsed;
+    }();
+    return v;
 }
 
 // ZENDNNL_GRP_MATMUL_N_ORDER = { 0..4 } — cached, default 3 (pair-balanced).
@@ -566,18 +567,18 @@ inline int get_grp_decdyn_wei_l3_mult() {
 //                           (heavies evenly distributed throughout).
 //   Mid-process env changes have no effect; relaunch to change it.
 inline int get_grp_matmul_n_order() {
-  // Default: 3 (pair-balanced).  Strict env parsing — non-numeric
-  // input (e.g. `"abc"`) falls back to the documented default 3,
-  // NOT silently to mode 0 via the legacy `std::atoi`-returns-0
-  // behaviour.  See `parse_env_int_strict`.
-  constexpr int kDefault = 3;
-  static const int v = []() {
-    const char *e = std::getenv("ZENDNNL_GRP_MATMUL_N_ORDER");
-    int parsed = 0;
-    if (!parse_env_int_strict(e, parsed)) return kDefault;
-    return (parsed >= 0 && parsed <= 4) ? parsed : kDefault;
-  }();
-  return v;
+    // Default: 3 (pair-balanced).  Strict env parsing — non-numeric
+    // input (e.g. `"abc"`) falls back to the documented default 3,
+    // NOT silently to mode 0 via the legacy `std::atoi`-returns-0
+    // behaviour.  See `parse_env_int_strict`.
+    constexpr int kDefault = 3;
+    static const int v = []() {
+        const char *e = std::getenv("ZENDNNL_GRP_MATMUL_N_ORDER");
+        int parsed = 0;
+        if (!parse_env_int_strict(e, parsed)) return kDefault;
+        return (parsed >= 0 && parsed <= 4) ? parsed : kDefault;
+    }();
+    return v;
 }
 
 // ZENDNNL_GRP_MATMUL_N_TILE_HEAVY_THRESHOLD = { -1, 0, positive int } —
@@ -636,24 +637,24 @@ inline int get_grp_matmul_n_order() {
 // (`stable_n_thr_per_expert[]` + `per_expert_remainder = true`); the
 // only difference is how the planner populates that array.
 inline int get_grp_matmul_n_tile_heavy_threshold() {
-  constexpr int kDefault = 0;  // AUTO (prompt adaptive tiers)
-  // Test override sentinel: INT_MIN = no override.  Cannot use `-1`
-  // any more since `-1` is now a meaningful (DISABLED) value.
-  // Production keeps the static-const env-cache for branch-
-  // predictor-friendly reads.
-  const int ovr = test_api::s_grp_matmul_n_tile_heavy_threshold_override
-      .load(std::memory_order_relaxed);
-  if (ovr != std::numeric_limits<int>::min()) return ovr;
-  static const int v = []() {
-    const char *e =
-        std::getenv("ZENDNNL_GRP_MATMUL_N_TILE_HEAVY_THRESHOLD");
-    int parsed = 0;
-    if (!parse_env_int_strict(e, parsed)) return kDefault;
-    // Accept -1 (DISABLED), 0 (AUTO), positive int (MANUAL).  Reject
-    // anything more negative — silently clamp to default.
-    return (parsed >= -1) ? parsed : kDefault;
-  }();
-  return v;
+    constexpr int kDefault = 0; // AUTO (prompt adaptive tiers)
+    // Test override sentinel: INT_MIN = no override.  Cannot use `-1`
+    // any more since `-1` is now a meaningful (DISABLED) value.
+    // Production keeps the static-const env-cache for branch-
+    // predictor-friendly reads.
+    const int ovr = test_api::s_grp_matmul_n_tile_heavy_threshold_override.load(
+            std::memory_order_relaxed);
+    if (ovr != std::numeric_limits<int>::min()) return ovr;
+    static const int v = []() {
+        const char *e
+                = std::getenv("ZENDNNL_GRP_MATMUL_N_TILE_HEAVY_THRESHOLD");
+        int parsed = 0;
+        if (!parse_env_int_strict(e, parsed)) return kDefault;
+        // Accept -1 (DISABLED), 0 (AUTO), positive int (MANUAL).  Reject
+        // anything more negative — silently clamp to default.
+        return (parsed >= -1) ? parsed : kDefault;
+    }();
+    return v;
 }
 
 // ZENDNNL_GRP_MATMUL_DECODE_PROPORTIONAL = { "0", "1" } — cached,
@@ -666,15 +667,15 @@ inline int get_grp_matmul_n_tile_heavy_threshold() {
 //   Independent of ZENDNNL_GRP_MATMUL_N_TILE_HEAVY_THRESHOLD (which is
 //   prompt-only).  Mid-process env changes have no effect (static const).
 inline bool get_grp_matmul_decode_proportional() {
-  const int ovr = test_api::s_grp_matmul_decode_proportional_override.load(
-      std::memory_order_relaxed);
-  if (ovr >= 0) return ovr != 0;
-  static const bool v = []() {
-    const char *e = std::getenv("ZENDNNL_GRP_MATMUL_DECODE_PROPORTIONAL");
-    if (e == nullptr || e[0] == '\0') return false;  // default: OFF
-    return e[0] != '0';
-  }();
-  return v;
+    const int ovr = test_api::s_grp_matmul_decode_proportional_override.load(
+            std::memory_order_relaxed);
+    if (ovr >= 0) return ovr != 0;
+    static const bool v = []() {
+        const char *e = std::getenv("ZENDNNL_GRP_MATMUL_DECODE_PROPORTIONAL");
+        if (e == nullptr || e[0] == '\0') return false; // default: OFF
+        return e[0] != '0';
+    }();
+    return v;
 }
 
 // ZENDNNL_GRP_MATMUL_CUSTOM_KERNEL_N_TILE = { unset, multiple of 32 } — cached.
@@ -683,37 +684,36 @@ inline bool get_grp_matmul_decode_proportional() {
 //   for prompt-class (wider tiles amortise kernel-call overhead).
 //   Non-multiples of 32 → ignored (silently safe vs typos).
 inline int get_grp_matmul_custom_kernel_n_tile() {
-  const int ovr =
-      test_api::s_grp_matmul_custom_kernel_n_tile_override.load(
-          std::memory_order_relaxed);
-  // Override semantics:
-  //   * `-1`  — sentinel, no test override; fall through to the
-  //             cached env / default path below.
-  //   * `0`   — explicit "no custom N-tile" override; the planner
-  //             reads 0 here and `effective_decode_n_tile()` falls
-  //             back to `kDecodeNTile` — same as an unset env.
-  //   * `> 0` AND multiple of 32 — adopted as the override value.
-  //   * any other positive value — normalised to 0 ("no custom
-  //             N-tile"), mirroring the `parsed > 0 && parsed % 32 == 0`
-  //             validation the env-cached path applies below.  This
-  //             still counts as a "test has spoken" override (it does
-  //             NOT fall through to the env path) — the planner reads
-  //             0 and `effective_decode_n_tile()` picks `kDecodeNTile`,
-  //             keeping the test API noise-free against typos.
-  //
-  // The `ovr >= 0` branch covers all three "test has spoken" cases
-  // (0 and any positive value, valid or not); only `-1` falls
-  // through to the env path.
-  if (ovr >= 0) return (ovr > 0 && (ovr % 32) == 0) ? ovr : 0;
-  // Strict env parsing — non-numeric input falls back to 0
-  // (auto-pick the planner's `effective_decode_n_tile()`).
-  static const int v = []() {
-    const char *e = std::getenv("ZENDNNL_GRP_MATMUL_CUSTOM_KERNEL_N_TILE");
-    int parsed = 0;
-    if (!parse_env_int_strict(e, parsed)) return 0;
-    return (parsed > 0 && (parsed % 32) == 0) ? parsed : 0;
-  }();
-  return v;
+    const int ovr = test_api::s_grp_matmul_custom_kernel_n_tile_override.load(
+            std::memory_order_relaxed);
+    // Override semantics:
+    //   * `-1`  — sentinel, no test override; fall through to the
+    //             cached env / default path below.
+    //   * `0`   — explicit "no custom N-tile" override; the planner
+    //             reads 0 here and `effective_decode_n_tile()` falls
+    //             back to `kDecodeNTile` — same as an unset env.
+    //   * `> 0` AND multiple of 32 — adopted as the override value.
+    //   * any other positive value — normalised to 0 ("no custom
+    //             N-tile"), mirroring the `parsed > 0 && parsed % 32 == 0`
+    //             validation the env-cached path applies below.  This
+    //             still counts as a "test has spoken" override (it does
+    //             NOT fall through to the env path) — the planner reads
+    //             0 and `effective_decode_n_tile()` picks `kDecodeNTile`,
+    //             keeping the test API noise-free against typos.
+    //
+    // The `ovr >= 0` branch covers all three "test has spoken" cases
+    // (0 and any positive value, valid or not); only `-1` falls
+    // through to the env path.
+    if (ovr >= 0) return (ovr > 0 && (ovr % 32) == 0) ? ovr : 0;
+    // Strict env parsing — non-numeric input falls back to 0
+    // (auto-pick the planner's `effective_decode_n_tile()`).
+    static const int v = []() {
+        const char *e = std::getenv("ZENDNNL_GRP_MATMUL_CUSTOM_KERNEL_N_TILE");
+        int parsed = 0;
+        if (!parse_env_int_strict(e, parsed)) return 0;
+        return (parsed > 0 && (parsed % 32) == 0) ? parsed : 0;
+    }();
+    return v;
 }
 
 // =====================================================================
@@ -733,14 +733,14 @@ inline int get_grp_matmul_custom_kernel_n_tile() {
 
 /// Sort `indices[0..n)` by `M[idx]` (asc or desc).  Heap-free; caller
 /// owns the buffer and guarantees `indices.size() >= n` and `M.size() >= n`.
-inline void sort_indices_by_m(int *indices, int n,
-                              const std::vector<int> &M, bool ascending) {
-  for (int i = 0; i < n; ++i) {
-    indices[i] = i;
-  }
-  std::sort(indices, indices + n, [&M, ascending](int a, int b) {
-    return ascending ? (M[a] < M[b]) : (M[a] > M[b]);
-  });
+inline void sort_indices_by_m(
+        int *indices, int n, const std::vector<int> &M, bool ascending) {
+    for (int i = 0; i < n; ++i) {
+        indices[i] = i;
+    }
+    std::sort(indices, indices + n, [&M, ascending](int a, int b) {
+        return ascending ? (M[a] < M[b]) : (M[a] > M[b]);
+    });
 }
 
 /// Env-gated custom-microkernel engagement for an N-tile executor.
@@ -770,58 +770,47 @@ inline void sort_indices_by_m(int *indices, int n,
 /// Supported `act`: none, swiglu_oai_mul (fused gate+up → halved out),
 /// silu_and_mul, gelu_and_mul (canonical split-halves; CK arena
 /// pack-permuted at prepack time).
-inline void engage_ntile_custom_kernel(
-    grp_matmul_gated_act_t act,
-    data_type_t src_dtype,
-    data_type_t wei_dtype,
-    data_type_t dst_dtype,
-    data_type_t act_dtype,
-    data_type_t bias_dtype,
-    const std::vector<bool>          &transA,
-    const std::vector<bool>          &transB,
-    const std::vector<int>           &M,
-    const std::vector<int>           &N,
-    const std::vector<int>           &K,
-    const std::vector<int>           &ldb,
-    const std::vector<float>         &alpha,
-    const std::vector<float>         &beta,
-    const std::vector<const void *>  &weight,
-    const std::vector<bool>          &is_weights_const,
-    custom_kernel::CallContext       &kctx,
-    bool                              dynamic_quant = false,
-    data_type_t                       compute_dtype = data_type_t::none,
-    // Per-expert "weight already CK-VNNI-packed" signal, forwarded to
-    // `prepare_for_call` (built from the caller's per-expert
-    // `mem_format_b == 'r'`).  Empty ⇒ no prepacked experts.
-    const std::vector<bool>          &weights_prepacked = {}) {
-  if (!get_grp_matmul_custom_kernel()) return;
-  // Master CK env is ON; gate the DQ-INT8 sub-toggle separately so
-  // operators can toggle int8 without disabling bf16.  The int8 CK path
-  // arrives two ways and BOTH must honour the sub-toggle:
-  //   * runtime hoist  — `dynamic_quant=true` (bf16 src quantized
-  //     per-tile);
-  //   * grouped pre-quant — `group_dynamic_quant` already produced an
-  //     s8 src and CLEARED `dynamic_quant`, so detect it via
-  //     `src=s8 && wei=s8`.  Without this, a grouped-s8 call would
-  //     engage CK even with the int8 sub-toggle OFF (inconsistent with
-  //     `ck_eligible_int8` / prepack which honour the sub-toggle).
-  // Bf16 calls (`src=bf16, wei=bf16`) never satisfy either clause.
-  const bool is_dq_int8_call =
-      dynamic_quant
-      || (src_dtype == data_type_t::s8 && wei_dtype == data_type_t::s8);
-  if (is_dq_int8_call && !get_grp_matmul_custom_kernel_int8()) return;
-  // FP16 CK sub-toggle — independent from the master + int8 knobs so
-  // operators can A/B the native AVX-512-FP16 fast path without
-  // disturbing the bf16 / int8 paths.  An f16×f16 call honours it;
-  // bf16 / int8 calls never satisfy this clause.
-  const bool is_f16_call =
-      (src_dtype == data_type_t::f16 && wei_dtype == data_type_t::f16);
-  if (is_f16_call && !get_grp_matmul_custom_kernel_f16()) return;
-  custom_kernel::prepare_for_call(
-      act, src_dtype, wei_dtype, dst_dtype, act_dtype, bias_dtype,
-      transA, transB, M, N, K, ldb, alpha, beta, weight,
-      is_weights_const, kctx, dynamic_quant, compute_dtype,
-      weights_prepacked);
+inline void engage_ntile_custom_kernel(grp_matmul_gated_act_t act,
+        data_type_t src_dtype, data_type_t wei_dtype, data_type_t dst_dtype,
+        data_type_t act_dtype, data_type_t bias_dtype,
+        const std::vector<bool> &transA, const std::vector<bool> &transB,
+        const std::vector<int> &M, const std::vector<int> &N,
+        const std::vector<int> &K, const std::vector<int> &ldb,
+        const std::vector<float> &alpha, const std::vector<float> &beta,
+        const std::vector<const void *> &weight,
+        const std::vector<bool> &is_weights_const,
+        custom_kernel::CallContext &kctx, bool dynamic_quant = false,
+        data_type_t compute_dtype = data_type_t::none,
+        // Per-expert "weight already CK-VNNI-packed" signal, forwarded to
+        // `prepare_for_call` (built from the caller's per-expert
+        // `mem_format_b == 'r'`).  Empty ⇒ no prepacked experts.
+        const std::vector<bool> &weights_prepacked = {}) {
+    if (!get_grp_matmul_custom_kernel()) return;
+    // Master CK env is ON; gate the DQ-INT8 sub-toggle separately so
+    // operators can toggle int8 without disabling bf16.  The int8 CK path
+    // arrives two ways and BOTH must honour the sub-toggle:
+    //   * runtime hoist  — `dynamic_quant=true` (bf16 src quantized
+    //     per-tile);
+    //   * grouped pre-quant — `group_dynamic_quant` already produced an
+    //     s8 src and CLEARED `dynamic_quant`, so detect it via
+    //     `src=s8 && wei=s8`.  Without this, a grouped-s8 call would
+    //     engage CK even with the int8 sub-toggle OFF (inconsistent with
+    //     `ck_eligible_int8` / prepack which honour the sub-toggle).
+    // Bf16 calls (`src=bf16, wei=bf16`) never satisfy either clause.
+    const bool is_dq_int8_call = dynamic_quant
+            || (src_dtype == data_type_t::s8 && wei_dtype == data_type_t::s8);
+    if (is_dq_int8_call && !get_grp_matmul_custom_kernel_int8()) return;
+    // FP16 CK sub-toggle — independent from the master + int8 knobs so
+    // operators can A/B the native AVX-512-FP16 fast path without
+    // disturbing the bf16 / int8 paths.  An f16×f16 call honours it;
+    // bf16 / int8 calls never satisfy this clause.
+    const bool is_f16_call
+            = (src_dtype == data_type_t::f16 && wei_dtype == data_type_t::f16);
+    if (is_f16_call && !get_grp_matmul_custom_kernel_f16()) return;
+    custom_kernel::prepare_for_call(act, src_dtype, wei_dtype, dst_dtype,
+            act_dtype, bias_dtype, transA, transB, M, N, K, ldb, alpha, beta,
+            weight, is_weights_const, kctx, dynamic_quant, compute_dtype,
+            weights_prepacked);
 }
 
 /// Effective N-column alignment for the per-thread split:
@@ -829,18 +818,12 @@ inline void engage_ntile_custom_kernel(
 /// `backend_nr` from backend_n_align(algo); `pair_aligned`=true when
 /// activation requires even col boundaries (e.g. swiglu_oai_mul must
 /// keep gate+up pairs on the same thread).
-inline int ntile_effective_nr_align(
-  int backend_nr,
-  const custom_kernel::CallContext &kctx,
-  bool pair_aligned) {
-  int a = backend_nr;
-  if (kctx.enabled) {
-    a = std::max(a, kctx.pack_nr);
-  }
-  if (pair_aligned) {
-    a = std::max(a, 2);
-  }
-  return a;
+inline int ntile_effective_nr_align(int backend_nr,
+        const custom_kernel::CallContext &kctx, bool pair_aligned) {
+    int a = backend_nr;
+    if (kctx.enabled) { a = std::max(a, kctx.pack_nr); }
+    if (pair_aligned) { a = std::max(a, 2); }
+    return a;
 }
 
 // `kNTileMaxExperts` previously duplicated `kNTilePlanMaxExperts` as
@@ -866,13 +849,13 @@ inline int ntile_effective_nr_align(
 /// The cutoffs are calibrated against the dispatcher's stable-N-tile
 /// plan and should be re-evaluated together if that planner changes.
 inline int auto_pick_n_order(int num_ops) {
-  if (num_ops <= 18) {
-    return 3;  // few-experts regime — pair-balanced is the better default
-  }
-  if (num_ops >= 26) {
-    return 3;  // many-experts regime — pair-balanced is the better default
-  }
-  return 0;    // mid-band — walk input order
+    if (num_ops <= 18) {
+        return 3; // few-experts regime — pair-balanced is the better default
+    }
+    if (num_ops >= 26) {
+        return 3; // many-experts regime — pair-balanced is the better default
+    }
+    return 0; // mid-band — walk input order
 }
 
 /// Write `out[0..out_size)` with expert indices ordered per
@@ -885,106 +868,97 @@ inline int auto_pick_n_order(int num_ops) {
 ///
 /// `auto_resolved_out` (optional): when env mode = 0, the resolved
 /// concrete sub-mode is written here for APILOG diagnostics.
-inline void fill_ntile_expert_order(
-  int *out, int &out_size, int max_size,
-  const std::vector<int> &M, int num_ops,
-  int *auto_resolved_out = nullptr) {
+inline void fill_ntile_expert_order(int *out, int &out_size, int max_size,
+        const std::vector<int> &M, int num_ops,
+        int *auto_resolved_out = nullptr) {
 
-  if (num_ops <= 0 || num_ops > max_size
-      || num_ops > kNTilePlanMaxExperts) {
-    out_size = 0;
-    return;
-  }
-
-  int order = get_grp_matmul_n_order();
-
-  // Mode 0 — auto: shape-aware sub-mode selection.
-  if (order == 0) {
-    order = auto_pick_n_order(num_ops);
-    if (auto_resolved_out != nullptr) {
-      *auto_resolved_out = order;
+    if (num_ops <= 0 || num_ops > max_size || num_ops > kNTilePlanMaxExperts) {
+        out_size = 0;
+        return;
     }
+
+    int order = get_grp_matmul_n_order();
+
+    // Mode 0 — auto: shape-aware sub-mode selection.
     if (order == 0) {
-      // Auto chose walk-input; leave out empty.
-      out_size = 0;
-      return;
-    }
-  }
-
-  // Modes 1 (ascending) and 2 (descending) are direct sorts.
-  if (order == 1 || order == 2) {
-    const bool ascending = (order == 1);
-    sort_indices_by_m(out, num_ops, M, ascending);
-    out_size = num_ops;
-    return;
-  }
-
-  // Mode 3 — pair-balanced: descending sort, then interleave
-  // (largest, smallest, 2nd-largest, 2nd-smallest, …) so each round
-  // sees a mix of heavy and light experts.
-  if (order == 3) {
-    std::array<int, kNTilePlanMaxExperts> sorted_desc{};
-    sort_indices_by_m(sorted_desc.data(), num_ops, M,
-                      /*ascending=*/false);
-    int lo = 0, hi = num_ops - 1, o = 0;
-    while (lo <= hi) {
-      out[o++] = sorted_desc[lo++];
-      if (lo <= hi) {
-        out[o++] = sorted_desc[hi--];
-      }
-    }
-    out_size = num_ops;
-    return;
-  }
-
-  // Mode 4 — balanced-spread: at each output position p, pick the
-  // remaining (sorted-desc) item whose M brings the running prefix
-  // sum closest to the ideal line `y = (p + 1) * total / num_ops`.
-  //
-  // Result: for any K, splitting the output into K equal-length
-  // consecutive chunks yields Σ M per chunk ≈ total / K.  Heavy
-  // experts land at positions ≈ i × num_ops / num_heavies, so the
-  // round scheduler sees at most ONE heavy expert per CCX slot for
-  // typical (batch_size, ccd_size) choices.
-  {
-    std::array<int, kNTilePlanMaxExperts> sorted_desc{};
-    sort_indices_by_m(sorted_desc.data(), num_ops, M,
-                      /*ascending=*/false);
-
-    int64_t total = 0;
-    for (int i = 0; i < num_ops; ++i) {
-      total += M[i];
-    }
-
-    std::array<bool, kNTilePlanMaxExperts> used{};  // zero-init
-    int64_t cum = 0;
-    for (int p = 0; p < num_ops; ++p) {
-      // Error metric: |target_scaled − num_ops × new_cum| where
-      // target_scaled = (p + 1) × total.  Integer-only; scales
-      // cancel out across candidates.
-      const int64_t target_scaled =
-        static_cast<int64_t>(p + 1) * total;
-      int best_j = -1;
-      int64_t best_err = std::numeric_limits<int64_t>::max();
-      for (int j = 0; j < num_ops; ++j) {
-        if (used[j]) {
-          continue;
+        order = auto_pick_n_order(num_ops);
+        if (auto_resolved_out != nullptr) { *auto_resolved_out = order; }
+        if (order == 0) {
+            // Auto chose walk-input; leave out empty.
+            out_size = 0;
+            return;
         }
-        const int64_t new_cum = cum + M[sorted_desc[j]];
-        const int64_t err = std::llabs(
-                              target_scaled - static_cast<int64_t>(num_ops) * new_cum);
-        if (err < best_err) {
-          best_err = err;
-          best_j = j;
-        }
-      }
-      used[best_j] = true;
-      out[p] = sorted_desc[best_j];
-      cum += M[sorted_desc[best_j]];
     }
-    out_size = num_ops;
-    return;
-  }
+
+    // Modes 1 (ascending) and 2 (descending) are direct sorts.
+    if (order == 1 || order == 2) {
+        const bool ascending = (order == 1);
+        sort_indices_by_m(out, num_ops, M, ascending);
+        out_size = num_ops;
+        return;
+    }
+
+    // Mode 3 — pair-balanced: descending sort, then interleave
+    // (largest, smallest, 2nd-largest, 2nd-smallest, …) so each round
+    // sees a mix of heavy and light experts.
+    if (order == 3) {
+        std::array<int, kNTilePlanMaxExperts> sorted_desc {};
+        sort_indices_by_m(sorted_desc.data(), num_ops, M,
+                /*ascending=*/false);
+        int lo = 0, hi = num_ops - 1, o = 0;
+        while (lo <= hi) {
+            out[o++] = sorted_desc[lo++];
+            if (lo <= hi) { out[o++] = sorted_desc[hi--]; }
+        }
+        out_size = num_ops;
+        return;
+    }
+
+    // Mode 4 — balanced-spread: at each output position p, pick the
+    // remaining (sorted-desc) item whose M brings the running prefix
+    // sum closest to the ideal line `y = (p + 1) * total / num_ops`.
+    //
+    // Result: for any K, splitting the output into K equal-length
+    // consecutive chunks yields Σ M per chunk ≈ total / K.  Heavy
+    // experts land at positions ≈ i × num_ops / num_heavies, so the
+    // round scheduler sees at most ONE heavy expert per CCX slot for
+    // typical (batch_size, ccd_size) choices.
+    {
+        std::array<int, kNTilePlanMaxExperts> sorted_desc {};
+        sort_indices_by_m(sorted_desc.data(), num_ops, M,
+                /*ascending=*/false);
+
+        int64_t total = 0;
+        for (int i = 0; i < num_ops; ++i) {
+            total += M[i];
+        }
+
+        std::array<bool, kNTilePlanMaxExperts> used {}; // zero-init
+        int64_t cum = 0;
+        for (int p = 0; p < num_ops; ++p) {
+            // Error metric: |target_scaled − num_ops × new_cum| where
+            // target_scaled = (p + 1) × total.  Integer-only; scales
+            // cancel out across candidates.
+            const int64_t target_scaled = static_cast<int64_t>(p + 1) * total;
+            int best_j = -1;
+            int64_t best_err = std::numeric_limits<int64_t>::max();
+            for (int j = 0; j < num_ops; ++j) {
+                if (used[j]) { continue; }
+                const int64_t new_cum = cum + M[sorted_desc[j]];
+                const int64_t err = std::llabs(target_scaled
+                        - static_cast<int64_t>(num_ops) * new_cum);
+                if (err < best_err) {
+                    best_err = err;
+                    best_j = j;
+                }
+            }
+            used[best_j] = true;
+            out[p] = sorted_desc[best_j];
+            cum += M[sorted_desc[best_j]];
+        }
+        out_size = num_ops;
+        return;
+    }
 }
 
 // =====================================================================
@@ -1000,25 +974,23 @@ inline void fill_ntile_expert_order(
 /// The caller is expected to thread this through to its own
 /// gemm_mode_out so benchdnn / profiler output reveals whether the
 /// custom BF16 microkernel engaged.
-void flat_n_tile(
-  const std::vector<char> &layout,
-  const std::vector<bool> &transA, const std::vector<bool> &transB,
-  const std::vector<int> &M, const std::vector<int> &N,
-  const std::vector<int> &K, const std::vector<float> &alpha,
-  const std::vector<const void *> &src, const std::vector<int> &lda,
-  const std::vector<const void *> &weight, const std::vector<int> &ldb,
-  const std::vector<const void *> &bias, const std::vector<float> &beta,
-  const std::vector<void *> &dst, const std::vector<int> &ldc,
-  const std::vector<bool> &is_weights_const,
-  std::vector<matmul_params> &params,
-  int num_threads,
-  grp_matmul_gated_act_t fused_act = grp_matmul_gated_act_t::none,
-  data_type_t act_dtype = data_type_t::none,
-  const char **gemm_mode_out = nullptr,
-  const std::vector<void *> *w4a8_s8_weights = nullptr);
+void flat_n_tile(const std::vector<char> &layout,
+        const std::vector<bool> &transA, const std::vector<bool> &transB,
+        const std::vector<int> &M, const std::vector<int> &N,
+        const std::vector<int> &K, const std::vector<float> &alpha,
+        const std::vector<const void *> &src, const std::vector<int> &lda,
+        const std::vector<const void *> &weight, const std::vector<int> &ldb,
+        const std::vector<const void *> &bias, const std::vector<float> &beta,
+        const std::vector<void *> &dst, const std::vector<int> &ldc,
+        const std::vector<bool> &is_weights_const,
+        std::vector<matmul_params> &params, int num_threads,
+        grp_matmul_gated_act_t fused_act = grp_matmul_gated_act_t::none,
+        data_type_t act_dtype = data_type_t::none,
+        const char **gemm_mode_out = nullptr,
+        const std::vector<void *> *w4a8_s8_weights = nullptr);
 
-}  // namespace matmul
-}  // namespace lowoha
-}  // namespace zendnnl
+} // namespace matmul
+} // namespace lowoha
+} // namespace zendnnl
 
-#endif  // ZENDNNL_GROUP_MATMUL_N_TILE_HPP
+#endif // ZENDNNL_GROUP_MATMUL_N_TILE_HPP

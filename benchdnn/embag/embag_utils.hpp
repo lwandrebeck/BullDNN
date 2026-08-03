@@ -46,21 +46,21 @@ namespace embag {
  * @var warmup_iters Number of warmup iterations to run before actual benchmarking.
  */
 struct EmbagConfig {
-  size_t num_embeddings; /**< Size of the dictionary of embeddings. */
-  size_t embedding_dims; /**< Size of each embedding vector. */
-  size_t num_bags; /**< Number of bags (groups of indices) used in embedding bag operation. */
-  size_t num_indices; /**< Total number of indices across all bags. */
-  zendnnl::ops::embag_algo_t algo; /**< Algorithm used for embag
+    size_t num_embeddings; /**< Size of the dictionary of embeddings. */
+    size_t embedding_dims; /**< Size of each embedding vector. */
+    size_t num_bags; /**< Number of bags (groups of indices) used in embedding bag operation. */
+    size_t num_indices; /**< Total number of indices across all bags. */
+    zendnnl::ops::embag_algo_t algo; /**< Algorithm used for embag
                                    computation (e.g., "sum", "mean", "max"). */
-  int iters; /**< Number of iterations to run the benchmark. */
-  std::vector<zendnnl::common::data_type_t> dt; /**< Data type for
+    int iters; /**< Number of iterations to run the benchmark. */
+    std::vector<zendnnl::common::data_type_t> dt; /**< Data type for
                                                 input and output (e.g., f32:f32). */
-  bool fp16_scale_bias; /**< Flag indicating the data type of scale and bias. */
-  int64_t padding_index; /**< Index used for padding; ignored during computation. */
-  bool include_last_offset; /**< Flag indicating whether to include the last offset in the offsets array. */
-  bool is_weights; /**< Flag indicating if weights are used for each index in the embag. */
-  int64_t scatter_stride; /**< Stride used when scattering embeddings in memory. */
-  int warmup_iters; /**< Number of warmup iterations to run before actual benchmarking. */
+    bool fp16_scale_bias; /**< Flag indicating the data type of scale and bias. */
+    int64_t padding_index; /**< Index used for padding; ignored during computation. */
+    bool include_last_offset; /**< Flag indicating whether to include the last offset in the offsets array. */
+    bool is_weights; /**< Flag indicating if weights are used for each index in the embag. */
+    int64_t scatter_stride; /**< Stride used when scattering embeddings in memory. */
+    int warmup_iters; /**< Number of warmup iterations to run before actual benchmarking. */
 };
 
 embag_algo_t strToEmbagalgo(const std::string &algo_str);
@@ -97,8 +97,9 @@ void log_benchmark_failure(const EmbagConfig &cfg);
  * @param outfile Output stream to print the table (e.g., std::cout or file stream).
  * @param isLOWOHA If true, skips individual timing metrics (context/operator creation/execution).
  */
-void print_results(std::vector<std::pair<EmbagConfig, TimingStats>>
-                   &embag_results, std::ostream &outfile, const bool isLOWOHA);
+void print_results(
+        std::vector<std::pair<EmbagConfig, TimingStats>> &embag_results,
+        std::ostream &outfile, const bool isLOWOHA);
 
 /**
  * @brief Logs the embag benchmark results in CSV format to the given output stream.
@@ -110,8 +111,9 @@ void print_results(std::vector<std::pair<EmbagConfig, TimingStats>>
  * @param outfile Output stream to write the CSV data (e.g., file stream).
  * @param isLOWOHA If true, skips individual timing metrics (context/operator creation/execution).
  */
-void log_results(std::vector<std::pair<EmbagConfig, TimingStats>>
-                 &embag_results, std::ostream &outfile, const bool isLOWOHA);
+void log_results(
+        std::vector<std::pair<EmbagConfig, TimingStats>> &embag_results,
+        std::ostream &outfile, const bool isLOWOHA);
 
 } // namespace embag
 } // namespace benchdnn

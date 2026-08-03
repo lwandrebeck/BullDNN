@@ -1,5 +1,5 @@
 /********************************************************************************
-# * Copyright (c) 2025 Advanced Micro Devices, Inc. All rights reserved.
+# * Copyright (c) 2025-2026 Advanced Micro Devices, Inc. All rights reserved.
 # *
 # * Licensed under the Apache License, Version 2.0 (the "License");
 # * you may not use this file except in compliance with the License.
@@ -22,813 +22,799 @@ namespace examples {
 using namespace zendnnl::interface;
 
 int reorder_outofplace_f32_kernel_contiguous_blocked_example() {
-  testlog_info("Reorder operator f32 kernel example");
-  try {
-    tensor_factory_t tensor_factory;
-    status_t status;
+    testlog_info("Reorder operator f32 kernel example");
+    try {
+        tensor_factory_t tensor_factory;
+        status_t status;
 
-    // Create input tensor with contigious layout.
-    auto input_tensor = tensor_factory.uniform_tensor({ROWS, COLS},
-                        data_type_t::f32,
-                        1.0, "reorder_input");
+        // Create input tensor with contigious layout.
+        auto input_tensor = tensor_factory.uniform_tensor(
+                {ROWS, COLS}, data_type_t::f32, 1.0, "reorder_input");
 
-    // Reorder context creation with backend aocl.
-    const reorder_context_t reorder_context = reorder_context_t()
-                           .set_algo_format("aocl")
-                           .create();
+        // Reorder context creation with backend aocl.
+        const reorder_context_t reorder_context
+                = reorder_context_t().set_algo_format("aocl").create();
 
-    if (! reorder_context.check()) {
-      testlog_error("reorder context creation failed");
-      return NOT_OK;
+        if (!reorder_context.check()) {
+            testlog_error("reorder context creation failed");
+            return NOT_OK;
+        }
+
+        // Reorder operator creation with name, context and input.
+        reorder_operator_t reorder_operator
+                = reorder_operator_t()
+                          .set_name("outofplace_reorder_f32_operator")
+                          .set_context(reorder_context)
+                          .create()
+                          .set_input("reorder_input", input_tensor);
+
+        // Check if reorder operation creation is successful.
+        if (reorder_operator.is_bad_object()) {
+            testlog_error("operator ", reorder_operator.get_name(),
+                    " creation failed");
+            return NOT_OK;
+        }
+
+        // Compute the reorder size and create a buffer with reorderd size
+        size_t reorder_size = reorder_operator.get_reorder_size();
+        size_t alignment = 64;
+        reorder_size = get_aligned_size(alignment, reorder_size);
+        void *reorder_weights = aligned_alloc(alignment, reorder_size);
+        if (reorder_weights == nullptr) {
+            testlog_error("reorder_weights can not have align allocation.");
+            return NOT_OK;
+        }
+
+        // Create a Pair of storage params [reorder size and reorder weights] and
+        // use it in tensor creation
+        StorageParam buffer_params
+                = std::make_pair(reorder_size, reorder_weights);
+
+        // Create output tensor with blocked layout.
+        auto output_tensor = tensor_factory.copy_tensor({ROWS, COLS},
+                data_type_t::f32, buffer_params, false, true, "reorder_output");
+
+        // Reorder operator execution.
+        status = reorder_operator.set_output("reorder_output", output_tensor)
+                         .execute();
+
+        if (status == status_t::success) {
+            testlog_info("operator ", reorder_operator.get_name(),
+                    " execution successful.");
+        } else {
+            testlog_error("operator ", reorder_operator.get_name(),
+                    " execution failed.");
+            free(reorder_weights);
+            return NOT_OK;
+        }
+
+        // Free reordered size buffer.
+        free(reorder_weights);
+    } catch (const exception_t &ex) {
+        std::cout << ex.what() << std::endl;
+        return NOT_OK;
     }
 
-    // Reorder operator creation with name, context and input.
-    reorder_operator_t reorder_operator = reorder_operator_t()
-                            .set_name("outofplace_reorder_f32_operator")
-                            .set_context(reorder_context)
-                            .create()
-                            .set_input("reorder_input", input_tensor);
-
-    // Check if reorder operation creation is successful.
-    if (reorder_operator.is_bad_object()) {
-      testlog_error("operator ", reorder_operator.get_name(), " creation failed");
-      return NOT_OK;
-    }
-
-    // Compute the reorder size and create a buffer with reorderd size
-    size_t reorder_size = reorder_operator.get_reorder_size();
-    size_t alignment = 64;
-    reorder_size = get_aligned_size(alignment, reorder_size);
-    void *reorder_weights = aligned_alloc(alignment, reorder_size);
-    if (reorder_weights == nullptr) {
-      testlog_error("reorder_weights can not have align allocation.");
-      return NOT_OK;
-    }
-
-    // Create a Pair of storage params [reorder size and reorder weights] and
-    // use it in tensor creation
-    StorageParam buffer_params = std::make_pair(reorder_size, reorder_weights);
-
-    // Create output tensor with blocked layout.
-    auto output_tensor = tensor_factory.copy_tensor({ROWS, COLS},
-                         data_type_t::f32,
-                         buffer_params,
-                         false, true, "reorder_output");
-
-    // Reorder operator execution.
-    status = reorder_operator
-             .set_output("reorder_output", output_tensor)
-             .execute();
-
-    if (status == status_t::success) {
-      testlog_info("operator ", reorder_operator.get_name(),
-                   " execution successful.");
-    }
-    else {
-      testlog_error("operator ", reorder_operator.get_name(), " execution failed.");
-      free(reorder_weights);
-      return NOT_OK;
-    }
-
-    // Free reordered size buffer.
-    free(reorder_weights);
-  }
-  catch (const exception_t &ex) {
-    std::cout << ex.what() << std::endl;
-    return NOT_OK;
-  }
-
-  return OK;
+    return OK;
 }
 
 int reorder_outofplace_s8_kernel_contiguous_blocked_example() {
-  testlog_info("Reorder operator s8 kernel example");
-  try {
-    tensor_factory_t tensor_factory;
-    status_t status;
+    testlog_info("Reorder operator s8 kernel example");
+    try {
+        tensor_factory_t tensor_factory;
+        status_t status;
 
-    // Create scale and zero point tensors for quantization
-    auto src_scale  = tensor_factory.uniform_tensor({1,COLS},
-                      data_type_t::f32,
-                      0.25, "src_scale_tensor");
+        // Create scale and zero point tensors for quantization
+        auto src_scale = tensor_factory.uniform_tensor(
+                {1, COLS}, data_type_t::f32, 0.25, "src_scale_tensor");
 
-    auto src_zero_points  = tensor_factory.uniform_tensor({1,1},
-                            data_type_t::s8,
-                            126, "zero tensor");
+        auto src_zero_points = tensor_factory.uniform_tensor(
+                {1, 1}, data_type_t::s8, 126, "zero tensor");
 
-    // Create input tensor with contigious layout.
-    auto input_tensor = tensor_factory.uniform_tensor({ROWS, COLS},
-                        data_type_t::s8,
+        // Create input tensor with contigious layout.
+        auto input_tensor
+                = tensor_factory.uniform_tensor({ROWS, COLS}, data_type_t::s8,
                         1.0, "reorder_input", src_scale, src_zero_points);
 
-    // Reorder context creation with backend aocl.
-    const reorder_context_t reorder_context = reorder_context_t()
-                           .set_algo_format("aocl")
-                           .set_source_dtype(data_type_t::u8)
-                           .create();
+        // Reorder context creation with backend aocl.
+        const reorder_context_t reorder_context
+                = reorder_context_t()
+                          .set_algo_format("aocl")
+                          .set_source_dtype(data_type_t::u8)
+                          .create();
 
-    if (! reorder_context.check()) {
-      testlog_error("reorder context creation failed");
-      return NOT_OK;
+        if (!reorder_context.check()) {
+            testlog_error("reorder context creation failed");
+            return NOT_OK;
+        }
+
+        // Reorder operator creation with name, context and input.
+        reorder_operator_t reorder_operator
+                = reorder_operator_t()
+                          .set_name("outofplace_reorder_s8_operator")
+                          .set_context(reorder_context)
+                          .create()
+                          .set_input("reorder_input", input_tensor);
+
+        // Check if reorder operation creation is successful.
+        if (reorder_operator.is_bad_object()) {
+            testlog_error("operator ", reorder_operator.get_name(),
+                    " creation failed");
+            return NOT_OK;
+        }
+
+        // Compute the reorder size and create a buffer with reorderd size
+        size_t alignment = 64;
+        size_t reorder_size = reorder_operator.get_reorder_size();
+        reorder_size = get_aligned_size(alignment, reorder_size);
+        void *reorder_weights = aligned_alloc(alignment, reorder_size);
+        if (reorder_weights == nullptr) {
+            testlog_error("reorder_weights can not have align allocation.");
+            return NOT_OK;
+        }
+
+        // Create a Pair of storage params [reorder size and reorder weights] and
+        // use it in tensor creation
+        StorageParam buffer_params
+                = std::make_pair(reorder_size, reorder_weights);
+
+        // Create output tensor with blocked layout.
+        auto output_tensor = tensor_factory.copy_tensor({ROWS, COLS},
+                data_type_t::s8, buffer_params, false, true, "reorder_output",
+                std::move(src_scale), std::move(src_zero_points));
+
+        // Reorder operator execution.
+        status = reorder_operator.set_output("reorder_output", output_tensor)
+                         .execute();
+
+        if (status == status_t::success) {
+            testlog_info("operator ", reorder_operator.get_name(),
+                    " execution successful.");
+        } else {
+            testlog_error("operator ", reorder_operator.get_name(),
+                    " execution failed.");
+            free(reorder_weights);
+            return NOT_OK;
+        }
+
+        // Free reordered size buffer.
+        free(reorder_weights);
+    } catch (const exception_t &ex) {
+        std::cout << ex.what() << std::endl;
+        return NOT_OK;
     }
 
-    // Reorder operator creation with name, context and input.
-    reorder_operator_t reorder_operator = reorder_operator_t()
-                            .set_name("outofplace_reorder_s8_operator")
-                            .set_context(reorder_context)
-                            .create()
-                            .set_input("reorder_input", input_tensor);
-
-    // Check if reorder operation creation is successful.
-    if (reorder_operator.is_bad_object()) {
-      testlog_error("operator ", reorder_operator.get_name(), " creation failed");
-      return NOT_OK;
-    }
-
-    // Compute the reorder size and create a buffer with reorderd size
-    size_t alignment = 64;
-    size_t reorder_size = reorder_operator.get_reorder_size();
-    reorder_size = get_aligned_size(alignment, reorder_size);
-    void *reorder_weights = aligned_alloc(alignment, reorder_size);
-    if (reorder_weights == nullptr) {
-      testlog_error("reorder_weights can not have align allocation.");
-      return NOT_OK;
-    }
-
-    // Create a Pair of storage params [reorder size and reorder weights] and
-    // use it in tensor creation
-    StorageParam buffer_params = std::make_pair(reorder_size, reorder_weights);
-
-    // Create output tensor with blocked layout.
-    auto output_tensor = tensor_factory.copy_tensor({ROWS, COLS},
-                         data_type_t::s8, buffer_params,
-                         false, true, "reorder_output", std::move(src_scale), std::move(src_zero_points));
-
-    // Reorder operator execution.
-    status = reorder_operator
-             .set_output("reorder_output", output_tensor)
-             .execute();
-
-    if (status == status_t::success) {
-      testlog_info("operator ", reorder_operator.get_name()," execution successful.");
-    }
-    else {
-      testlog_error("operator ", reorder_operator.get_name()," execution failed.");
-      free(reorder_weights);
-      return NOT_OK;
-    }
-
-    // Free reordered size buffer.
-    free(reorder_weights);
-  }
-  catch (const exception_t &ex) {
-    std::cout << ex.what() << std::endl;
-    return NOT_OK;
-  }
-
-  return OK;
+    return OK;
 }
 
 int reorder_outofplace_matmul_relu_f32_kernel_contiguous_blocked_example() {
-  testlog_info("Matmul with reorder weights+relu operator f32 kernel example");
+    testlog_info(
+            "Matmul with reorder weights+relu operator f32 kernel example");
 
-  try {
-    tensor_factory_t tensor_factory;
-    status_t status;
+    try {
+        tensor_factory_t tensor_factory;
+        status_t status;
 
-    // Create weight tensor with contigious layout.
-    auto weight_tensor = tensor_factory.uniform_dist_tensor({MATMUL_K, MATMUL_N},
-                         data_type_t::f32,
-                         5.0f, "reorder_input");
+        // Create weight tensor with contigious layout.
+        auto weight_tensor = tensor_factory.uniform_dist_tensor(
+                {MATMUL_K, MATMUL_N}, data_type_t::f32, 5.0f, "reorder_input");
 
-    // Reorder context creation with backend aocl.
-    const reorder_context_t reorder_context = reorder_context_t()
-                           .set_algo_format("aocl")
-                           .create();
+        // Reorder context creation with backend aocl.
+        const reorder_context_t reorder_context
+                = reorder_context_t().set_algo_format("aocl").create();
 
-    if (! reorder_context.check()) {
-      testlog_error("reorder context creation failed");
-      return NOT_OK;
-    }
+        if (!reorder_context.check()) {
+            testlog_error("reorder context creation failed");
+            return NOT_OK;
+        }
 
-    // Reorder operator creation with name, context and input.
-    reorder_operator_t reorder_operator = reorder_operator_t()
-                            .set_name("outofplace_reorder_f32_operator")
-                            .set_context(reorder_context)
-                            .create()
-                            .set_input("reorder_input", weight_tensor);
+        // Reorder operator creation with name, context and input.
+        reorder_operator_t reorder_operator
+                = reorder_operator_t()
+                          .set_name("outofplace_reorder_f32_operator")
+                          .set_context(reorder_context)
+                          .create()
+                          .set_input("reorder_input", weight_tensor);
 
-    // Check if reorder operation creation is successful.
-    if (reorder_operator.is_bad_object()) {
-      testlog_error("operator ", reorder_operator.get_name(), " creation failed");
-      return NOT_OK;
-    }
+        // Check if reorder operation creation is successful.
+        if (reorder_operator.is_bad_object()) {
+            testlog_error("operator ", reorder_operator.get_name(),
+                    " creation failed");
+            return NOT_OK;
+        }
 
-    // Compute the reorder size and create a buffer with reorderd size
-    size_t alignment    = 64;
-    size_t reorder_size = reorder_operator.get_reorder_size();
-    reorder_size = get_aligned_size(alignment, reorder_size);
-    void *reorder_weights = aligned_alloc(alignment, reorder_size);
-    if (reorder_weights == nullptr) {
-      testlog_error("reorder_weights can not have align allocation.");
-      return NOT_OK;
-    }
+        // Compute the reorder size and create a buffer with reorderd size
+        size_t alignment = 64;
+        size_t reorder_size = reorder_operator.get_reorder_size();
+        reorder_size = get_aligned_size(alignment, reorder_size);
+        void *reorder_weights = aligned_alloc(alignment, reorder_size);
+        if (reorder_weights == nullptr) {
+            testlog_error("reorder_weights can not have align allocation.");
+            return NOT_OK;
+        }
 
-    // Create a Pair of storage params [reorder size and reorder weights] and
-    // use it in tensor creation
-    StorageParam buffer_params = std::make_pair(reorder_size, reorder_weights);
+        // Create a Pair of storage params [reorder size and reorder weights] and
+        // use it in tensor creation
+        StorageParam buffer_params
+                = std::make_pair(reorder_size, reorder_weights);
 
-    // Create output tensor with blocked layout to store reordered buffer.
-    auto reorder_weights_tensor = tensor_factory.copy_tensor({MATMUL_K, MATMUL_N},
-                                  data_type_t::f32,
-                                  buffer_params,
-                                  false, true, "reorder_output");
+        // Create output tensor with blocked layout to store reordered buffer.
+        auto reorder_weights_tensor = tensor_factory.copy_tensor(
+                {MATMUL_K, MATMUL_N}, data_type_t::f32, buffer_params, false,
+                true, "reorder_output");
 
-    // Reorder operator execution.
-    status = reorder_operator
-             .set_output("reorder_output", reorder_weights_tensor)
-             .execute();
+        // Reorder operator execution.
+        status = reorder_operator
+                         .set_output("reorder_output", reorder_weights_tensor)
+                         .execute();
 
-    if (status == status_t::success) {
-      testlog_info("operator ", reorder_operator.get_name(),
-                   " execution successful.");
-    }
-    else {
-      testlog_error("operator ", reorder_operator.get_name(), " execution failed.");
-    }
+        if (status == status_t::success) {
+            testlog_info("operator ", reorder_operator.get_name(),
+                    " execution successful.");
+        } else {
+            testlog_error("operator ", reorder_operator.get_name(),
+                    " execution failed.");
+        }
 
-    reorder_weights_tensor.set_name("weights");
+        reorder_weights_tensor.set_name("weights");
 
-    // Create Bias tensor with contigious layout.
-    auto bias    = tensor_factory.uniform_tensor({1, MATMUL_N},
-                   data_type_t::f32,
-                   10.0, "bias");
+        // Create Bias tensor with contigious layout.
+        auto bias = tensor_factory.uniform_tensor(
+                {1, MATMUL_N}, data_type_t::f32, 10.0, "bias");
 
-    auto relu_post_op = post_op_t{post_op_type_t::relu};
+        auto relu_post_op = post_op_t {post_op_type_t::relu};
 
-    // Matmul context creation with weights, Bias and Postop: relu
-    const matmul_context_t matmul_context = matmul_context_t()
+        // Matmul context creation with weights, Bias and Postop: relu
+        const matmul_context_t matmul_context
+                = matmul_context_t()
                           .set_param("weights", reorder_weights_tensor)
                           .set_param("bias", bias)
                           .set_post_op(relu_post_op)
                           .create();
 
-    if (! matmul_context.check()) {
-      testlog_error("matmul context creation failed");
-      return NOT_OK;
+        if (!matmul_context.check()) {
+            testlog_error("matmul context creation failed");
+            return NOT_OK;
+        }
+
+        // Matmul operator creation with name and context
+        matmul_operator_t matmul_operator
+                = matmul_operator_t()
+                          .set_name("matmul_f32_operator")
+                          .set_context(matmul_context)
+                          .create();
+
+        // Check if matmul operation creation is successful.
+        if (matmul_operator.is_bad_object()) {
+            testlog_error(" operator ", matmul_operator.get_name(),
+                    " creation failed.");
+            return NOT_OK;
+        }
+
+        // Create input tensor with contigious layout.
+        auto input_tensor = tensor_factory.uniform_tensor(
+                {MATMUL_M, MATMUL_K}, data_type_t::f32, 1.0, "matmul_input");
+
+        // Create output tensor with contigious layout.
+        auto output_tensor = tensor_factory.zero_tensor(
+                {MATMUL_M, MATMUL_N}, data_type_t::f32, "matmul_output");
+
+        // Matmul operator execution
+        status = matmul_operator.set_input("matmul_input", input_tensor)
+                         .set_output("matmul_output", output_tensor)
+                         .execute();
+
+        if (status == status_t::success) {
+            testlog_info("operator ", matmul_operator.get_name(),
+                    " execution successful.");
+            testlog_verbose("output[", MATMUL_M / 2, ",", MATMUL_N / 2,
+                    "] = ", output_tensor.at({MATMUL_M / 2, MATMUL_N / 2}));
+        } else {
+            testlog_error("operator ", matmul_operator.get_name(),
+                    " execution failed.");
+            free(reorder_weights);
+            return NOT_OK;
+        }
+
+        // Free reorderd size buffer
+        free(reorder_weights);
+    } catch (const exception_t &ex) {
+        std::cout << ex.what() << std::endl;
+        return NOT_OK;
     }
 
-    // Matmul operator creation with name and context
-    matmul_operator_t matmul_operator = matmul_operator_t()
-                           .set_name("matmul_f32_operator")
-                           .set_context(matmul_context)
-                           .create();
-
-    // Check if matmul operation creation is successful.
-    if (matmul_operator.is_bad_object()) {
-      testlog_error(" operator ", matmul_operator.get_name(), " creation failed.");
-      return NOT_OK;
-    }
-
-    // Create input tensor with contigious layout.
-    auto input_tensor = tensor_factory.uniform_tensor({MATMUL_M, MATMUL_K},
-                        data_type_t::f32,
-                        1.0, "matmul_input");
-
-    // Create output tensor with contigious layout.
-    auto output_tensor = tensor_factory.zero_tensor({MATMUL_M, MATMUL_N},
-                         data_type_t::f32,
-                         "matmul_output");
-
-    // Matmul operator execution
-    status = matmul_operator
-             .set_input("matmul_input", input_tensor)
-             .set_output("matmul_output", output_tensor)
-             .execute();
-
-    if (status == status_t::success) {
-      testlog_info("operator ", matmul_operator.get_name(), " execution successful.");
-      testlog_verbose("output[", MATMUL_M/2, ",", MATMUL_N/2,"] = ",
-                      output_tensor.at({MATMUL_M/2, MATMUL_N/2}));
-    }
-    else {
-      testlog_error("operator ", matmul_operator.get_name(), " execution failed.");
-      free(reorder_weights);
-      return NOT_OK;
-    }
-
-    // Free reorderd size buffer
-    free(reorder_weights);
-  }
-  catch (const exception_t &ex) {
-    std::cout << ex.what() << std::endl;
-    return NOT_OK;
-  }
-
-  return OK;
+    return OK;
 }
 
 int reorder_inplace_bf16_kernel_contiguous_blocked_example() {
-  testlog_info("Inplace reorder operator bf16 kernel example");
-  try {
-    tensor_factory_t tensor_factory;
-    status_t status;
+    testlog_info("Inplace reorder operator bf16 kernel example");
+    try {
+        tensor_factory_t tensor_factory;
+        status_t status;
 
-    // Create input tensor with contigious layout.
-    auto input_tensor = tensor_factory.uniform_tensor({ROWS, COLS},
-                        data_type_t::bf16,
-                        1.0, "reorder_input");
+        // Create input tensor with contigious layout.
+        auto input_tensor = tensor_factory.uniform_tensor(
+                {ROWS, COLS}, data_type_t::bf16, 1.0, "reorder_input");
 
-    // Reorder context creation with backend aocl.
-    const reorder_context_t reorder_context = reorder_context_t()
-                           .set_algo_format("aocl")
-                           .create();
+        // Reorder context creation with backend aocl.
+        const reorder_context_t reorder_context
+                = reorder_context_t().set_algo_format("aocl").create();
 
-    if (! reorder_context.check()) {
-      testlog_error("reorder context creation failed");
-      return NOT_OK;
-    }
+        if (!reorder_context.check()) {
+            testlog_error("reorder context creation failed");
+            return NOT_OK;
+        }
 
-    // Reorder operator creation with name, context and input.
-    reorder_operator_t reorder_operator = reorder_operator_t()
-                            .set_name("inplace_reorder_bf16_operator")
-                            .set_context(reorder_context)
-                            .create()
-                            .set_input("reorder_input", input_tensor);
+        // Reorder operator creation with name, context and input.
+        reorder_operator_t reorder_operator
+                = reorder_operator_t()
+                          .set_name("inplace_reorder_bf16_operator")
+                          .set_context(reorder_context)
+                          .create()
+                          .set_input("reorder_input", input_tensor);
 
-    // Check if reorder operation creation is successful.
-    if (reorder_operator.is_bad_object()) {
-      testlog_error("operator ", reorder_operator.get_name(), " creation failed");
-      return NOT_OK;
-    }
+        // Check if reorder operation creation is successful.
+        if (reorder_operator.is_bad_object()) {
+            testlog_error("operator ", reorder_operator.get_name(),
+                    " creation failed");
+            return NOT_OK;
+        }
 
-    // Compute the reorder size
-    size_t reorder_size         = reorder_operator.get_reorder_size();
-    // Extract the input buffer size
-    size_t input_buffer_size    = input_tensor.get_buffer_sz_bytes();
+        // Compute the reorder size
+        size_t reorder_size = reorder_operator.get_reorder_size();
+        // Extract the input buffer size
+        size_t input_buffer_size = input_tensor.get_buffer_sz_bytes();
 
-    // Inplace reorder takes place when reorder buffer size is same as input buffer size
-    if (reorder_size == input_buffer_size) {
-      // Assign input_tensor to buffer_params as a tensor_t variant
-      StorageParam buffer_params = std::move(input_tensor);
+        // Inplace reorder takes place when reorder buffer size is same as input buffer size
+        if (reorder_size == input_buffer_size) {
+            // Assign input_tensor to buffer_params as a tensor_t variant
+            StorageParam buffer_params = std::move(input_tensor);
 
-      // Blocked Tensor creation with seperate view for input tensor.
-      auto output_tensor = tensor_factory.copy_tensor({ROWS, COLS},
-                           data_type_t::bf16,
-                           buffer_params,
-                           false, true, "reorder_output");
+            // Blocked Tensor creation with seperate view for input tensor.
+            auto output_tensor = tensor_factory.copy_tensor({ROWS, COLS},
+                    data_type_t::bf16, buffer_params, false, true,
+                    "reorder_output");
 
-      // Inplace Reorder operator execution.
-      // New tensor with same memory view is passed as output for reorder operation.
-      status = reorder_operator
-               .set_output("reorder_output", output_tensor)
-               .execute();
+            // Inplace Reorder operator execution.
+            // New tensor with same memory view is passed as output for reorder operation.
+            status = reorder_operator
+                             .set_output("reorder_output", output_tensor)
+                             .execute();
 
-      if (status == status_t::success) {
-        testlog_info("operator ", reorder_operator.get_name(),
-                     " execution successful.");
-      }
-      else {
-        testlog_error("operator ", reorder_operator.get_name(), " execution failed.");
+            if (status == status_t::success) {
+                testlog_info("operator ", reorder_operator.get_name(),
+                        " execution successful.");
+            } else {
+                testlog_error("operator ", reorder_operator.get_name(),
+                        " execution failed.");
+                return NOT_OK;
+            }
+        } else {
+            testlog_error("Inplace reorder is not possible for given input");
+            return NOT_OK;
+        }
+    } catch (const exception_t &ex) {
+        std::cout << ex.what() << std::endl;
         return NOT_OK;
-      }
     }
-    else {
-      testlog_error("Inplace reorder is not possible for given input");
-      return NOT_OK;
-    }
-  }
-  catch (const exception_t &ex) {
-    std::cout << ex.what() << std::endl;
-    return NOT_OK;
-  }
 
-  return OK;
+    return OK;
 }
 
 int reorder_inplace_matmul_relu_bf16_kernel_contiguous_blocked_example() {
-  testlog_info("Matmul reorder weights+relu operator bf16 kernel example");
+    testlog_info("Matmul reorder weights+relu operator bf16 kernel example");
 
-  try {
-    tensor_factory_t tensor_factory;
-    status_t status;
+    try {
+        tensor_factory_t tensor_factory;
+        status_t status;
 
-    // Create weight tensor with contigious layout.
-    auto weight_tensor = tensor_factory.uniform_dist_tensor({MATMUL_K, MATMUL_N},
-                         data_type_t::bf16,
-                         5.0f, "reorder_input");
+        // Create weight tensor with contigious layout.
+        auto weight_tensor = tensor_factory.uniform_dist_tensor(
+                {MATMUL_K, MATMUL_N}, data_type_t::bf16, 5.0f, "reorder_input");
 
-    // Reorder context creation with backend aocl.
-    const reorder_context_t reorder_context = reorder_context_t()
-                           .set_algo_format("aocl")
-                           .create();
+        // Reorder context creation with backend aocl.
+        const reorder_context_t reorder_context
+                = reorder_context_t().set_algo_format("aocl").create();
 
-    if (! reorder_context.check()) {
-      testlog_error("reorder context creation failed");
-      return NOT_OK;
+        if (!reorder_context.check()) {
+            testlog_error("reorder context creation failed");
+            return NOT_OK;
+        }
+
+        // Reorder operator creation with name, context and input.
+        reorder_operator_t reorder_operator
+                = reorder_operator_t()
+                          .set_name("inplace_reorder_bf16_operator")
+                          .set_context(reorder_context)
+                          .create()
+                          .set_input("reorder_input", weight_tensor);
+
+        // Compute and returns the reorder size
+        size_t reorder_size = reorder_operator.get_reorder_size();
+        // Extract the input buffer size
+        size_t input_buffer_size = weight_tensor.get_buffer_sz_bytes();
+
+        // Check if inplace reorder operation creation is successful.
+        if (reorder_operator.is_bad_object()) {
+            testlog_error("operator ", reorder_operator.get_name(),
+                    " creation failed");
+            return NOT_OK;
+        }
+
+        [[maybe_unused]] tensor_t reorder_weights_tensor {};
+        bool reorder_status = false;
+
+        // Inplace reorder takes place when input buffer size is equal to reorder size
+        if (reorder_size == input_buffer_size) {
+            // Assign input_tensor to buffer_params as a tensor_t variant
+            StorageParam buffer_params = std::move(weight_tensor);
+
+            // New Tensor is created with Blocked layout and is used for Reorder
+            reorder_weights_tensor = tensor_factory.copy_tensor(
+                    {MATMUL_K, MATMUL_N}, data_type_t::bf16, buffer_params,
+                    false, true, "reorder_output");
+
+            // Inplace Reorder operator execution.
+            // reorder_weights_tensor that points to same memory is passed
+            // as output for reorder operation.
+            status = reorder_operator
+                             .set_output(
+                                     "reorder_output", reorder_weights_tensor)
+                             .execute();
+
+            if (status == status_t::success) {
+                testlog_info("operator ", reorder_operator.get_name(),
+                        " execution successful.");
+                reorder_status = true;
+            } else {
+                testlog_error("operator ", reorder_operator.get_name(),
+                        " execution failed.");
+                reorder_status = false;
+            }
+        } else {
+            log_info("Inplace reorder is not possible for given input");
+            reorder_status = false;
+        }
+
+        // Create Bias tensor with contigious layout.
+        auto bias = tensor_factory.uniform_tensor(
+                {1, MATMUL_N}, data_type_t::bf16, 10.0, "bias");
+
+        auto relu_post_op = post_op_t {post_op_type_t::relu};
+
+        // Matmul context creation with weights, Bias and Postop: relu
+        auto matmul_context = matmul_context_t();
+        if (reorder_status) {
+            matmul_context.set_param("weights", reorder_weights_tensor);
+        } else {
+            matmul_context.set_param("weights", weight_tensor);
+        }
+
+        matmul_context.set_param("bias", bias)
+                .set_post_op(relu_post_op)
+                .create();
+
+        if (!matmul_context.check()) {
+            testlog_error("matmul context creation failed");
+            return NOT_OK;
+        }
+
+        // Matmul operator creation with name and context
+        matmul_operator_t matmul_operator
+                = matmul_operator_t()
+                          .set_name("matmul_bf16_operator")
+                          .set_context(matmul_context)
+                          .create();
+
+        // Check if matmul operation creation is successful.
+        if (matmul_operator.is_bad_object()) {
+            testlog_error(" operator ", matmul_operator.get_name(),
+                    " creation failed.");
+            return NOT_OK;
+        }
+
+        // Create input tensor with contigious layout.
+        auto input_tensor = tensor_factory.uniform_tensor(
+                {MATMUL_M, MATMUL_K}, data_type_t::bf16, 1.0, "matmul_input");
+
+        // Create output tensor with contigious layout.
+        auto output_tensor = tensor_factory.zero_tensor(
+                {MATMUL_M, MATMUL_N}, data_type_t::bf16, "matmul_output");
+
+        // Matmul operator execution
+        status = matmul_operator.set_input("matmul_input", input_tensor)
+                         .set_output("matmul_output", output_tensor)
+                         .execute();
+
+        if (status == status_t::success) {
+            testlog_info("operator ", matmul_operator.get_name(),
+                    " execution successful.");
+            testlog_verbose("output[", MATMUL_M / 2, ",", MATMUL_N / 2,
+                    "] = ", output_tensor.at({MATMUL_M / 2, MATMUL_N / 2}));
+        } else {
+            testlog_error("operator ", matmul_operator.get_name(),
+                    " execution failed.");
+            return NOT_OK;
+        }
+
+    } catch (const exception_t &ex) {
+        std::cout << ex.what() << std::endl;
+        return NOT_OK;
     }
 
-    // Reorder operator creation with name, context and input.
-    reorder_operator_t reorder_operator = reorder_operator_t()
-                            .set_name("inplace_reorder_bf16_operator")
-                            .set_context(reorder_context)
-                            .create()
-                            .set_input("reorder_input", weight_tensor);
-
-    // Compute and returns the reorder size
-    size_t reorder_size      = reorder_operator.get_reorder_size();
-    // Extract the input buffer size
-    size_t input_buffer_size = weight_tensor.get_buffer_sz_bytes();
-
-    // Check if inplace reorder operation creation is successful.
-    if (reorder_operator.is_bad_object()) {
-      testlog_error("operator ", reorder_operator.get_name(), " creation failed");
-      return NOT_OK;
-    }
-
-    [[maybe_unused]] tensor_t reorder_weights_tensor{};
-    bool reorder_status = false;
-
-    // Inplace reorder takes place when input buffer size is equal to reorder size
-    if (reorder_size == input_buffer_size) {
-      // Assign input_tensor to buffer_params as a tensor_t variant
-      StorageParam buffer_params = std::move(weight_tensor);
-
-      // New Tensor is created with Blocked layout and is used for Reorder
-      reorder_weights_tensor = tensor_factory.copy_tensor({MATMUL_K, MATMUL_N},
-                               data_type_t::bf16,
-                               buffer_params,
-                               false, true, "reorder_output");
-
-      // Inplace Reorder operator execution.
-      // reorder_weights_tensor that points to same memory is passed
-      // as output for reorder operation.
-      status = reorder_operator
-               .set_output("reorder_output", reorder_weights_tensor)
-               .execute();
-
-      if (status == status_t::success) {
-        testlog_info("operator ", reorder_operator.get_name(),
-                     " execution successful.");
-        reorder_status = true;
-      }
-      else {
-        testlog_error("operator ", reorder_operator.get_name(), " execution failed.");
-        reorder_status = false;
-      }
-    }
-    else {
-      log_info("Inplace reorder is not possible for given input");
-      reorder_status = false;
-    }
-
-    // Create Bias tensor with contigious layout.
-    auto bias    = tensor_factory.uniform_tensor({1, MATMUL_N},
-                   data_type_t::bf16,
-                   10.0, "bias");
-
-    auto relu_post_op = post_op_t{post_op_type_t::relu};
-
-    // Matmul context creation with weights, Bias and Postop: relu
-    auto matmul_context = matmul_context_t();
-    if (reorder_status) {
-      matmul_context.set_param("weights", reorder_weights_tensor);
-    }
-    else {
-      matmul_context.set_param("weights", weight_tensor);
-    }
-
-    matmul_context.set_param("bias", bias)
-    .set_post_op(relu_post_op)
-    .create();
-
-    if (! matmul_context.check()) {
-      testlog_error("matmul context creation failed");
-      return NOT_OK;
-    }
-
-    // Matmul operator creation with name and context
-    matmul_operator_t matmul_operator = matmul_operator_t()
-                           .set_name("matmul_bf16_operator")
-                           .set_context(matmul_context)
-                           .create();
-
-    // Check if matmul operation creation is successful.
-    if (matmul_operator.is_bad_object()) {
-      testlog_error(" operator ", matmul_operator.get_name(), " creation failed.");
-      return NOT_OK;
-    }
-
-    // Create input tensor with contigious layout.
-    auto input_tensor = tensor_factory.uniform_tensor({MATMUL_M, MATMUL_K},
-                        data_type_t::bf16,
-                        1.0, "matmul_input");
-
-    // Create output tensor with contigious layout.
-    auto output_tensor = tensor_factory.zero_tensor({MATMUL_M, MATMUL_N},
-                         data_type_t::bf16,
-                         "matmul_output");
-
-    // Matmul operator execution
-    status = matmul_operator
-             .set_input("matmul_input", input_tensor)
-             .set_output("matmul_output", output_tensor)
-             .execute();
-
-    if (status == status_t::success) {
-      testlog_info("operator ", matmul_operator.get_name(), " execution successful.");
-      testlog_verbose("output[", MATMUL_M/2, ",", MATMUL_N/2,"] = ",
-                      output_tensor.at({MATMUL_M/2, MATMUL_N/2}));
-    }
-    else {
-      testlog_error("operator ", matmul_operator.get_name(), " execution failed.");
-      return NOT_OK;
-    }
-
-  }
-  catch (const exception_t &ex) {
-    std::cout << ex.what() << std::endl;
-    return NOT_OK;
-  }
-
-  return OK;
+    return OK;
 }
 
 int reorder_outofplace_bf16_kernel_blocked_contiguous_example() {
-  testlog_info("reorder operator bf16 kernel example");
-  try {
-    tensor_factory_t tensor_factory;
-    status_t status;
-    float range = 5.0f;
+    testlog_info("reorder operator bf16 kernel example");
+    try {
+        tensor_factory_t tensor_factory;
+        status_t status;
+        float range = 5.0f;
 
-    // Create input tensor with blocked layout.
-    auto input_tensor = tensor_factory.blocked_tensor({ROWS, COLS},
-                        data_type_t::bf16,
-                        range, "reorder_input");
+        // Create input tensor with blocked layout.
+        auto input_tensor = tensor_factory.blocked_tensor(
+                {ROWS, COLS}, data_type_t::bf16, range, "reorder_input");
 
-    // Reorder context creation with backend aocl.
-    const reorder_context_t reorder_context = reorder_context_t()
-                           .set_algo_format("aocl")
-                           .create();
+        // Reorder context creation with backend aocl.
+        const reorder_context_t reorder_context
+                = reorder_context_t().set_algo_format("aocl").create();
 
-    if (! reorder_context.check()) {
-      testlog_error("reorder context creation failed");
-      return NOT_OK;
+        if (!reorder_context.check()) {
+            testlog_error("reorder context creation failed");
+            return NOT_OK;
+        }
+
+        // Reorder operator creation with name, context and input.
+        reorder_operator_t reorder_operator
+                = reorder_operator_t()
+                          .set_name("outofplace_reorder_bf16_operator")
+                          .set_context(reorder_context)
+                          .create()
+                          .set_input("reorder_input", input_tensor);
+
+        // Check if reorder operation creation is successful.
+        if (reorder_operator.is_bad_object()) {
+            testlog_error("operator ", reorder_operator.get_name(),
+                    " creation failed");
+            return NOT_OK;
+        }
+
+        // Compute the size to reorder and create a buffer with size
+        size_t reorder_size = reorder_operator.get_reorder_size();
+        size_t alignment = 64;
+        reorder_size = get_aligned_size(alignment, reorder_size);
+        void *reorder_weights = aligned_alloc(alignment, reorder_size);
+
+        // Create a Pair of storage params [reorder size and reorder weights] and
+        // use it in tensor creation
+        StorageParam buffer_params
+                = std::make_pair(reorder_size, reorder_weights);
+
+        // Create output tensor with blocked layout.
+        auto output_tensor
+                = tensor_factory.copy_tensor({ROWS, COLS}, data_type_t::bf16,
+                        buffer_params, false, false, "reorder_output");
+
+        // Reorder operator execution.
+        status = reorder_operator.set_output("reorder_output", output_tensor)
+                         .execute();
+
+        if (status == status_t::success) {
+            testlog_info("operator ", reorder_operator.get_name(),
+                    " execution successful.");
+        } else {
+            testlog_error("operator ", reorder_operator.get_name(),
+                    " execution failed.");
+            free(reorder_weights);
+            return NOT_OK;
+        }
+
+        // Free buffer.
+        free(reorder_weights);
+    } catch (const exception_t &ex) {
+        std::cout << ex.what() << std::endl;
+        return NOT_OK;
     }
 
-    // Reorder operator creation with name, context and input.
-    reorder_operator_t reorder_operator = reorder_operator_t()
-                            .set_name("outofplace_reorder_bf16_operator")
-                            .set_context(reorder_context)
-                            .create()
-                            .set_input("reorder_input", input_tensor);
-
-    // Check if reorder operation creation is successful.
-    if (reorder_operator.is_bad_object()) {
-      testlog_error("operator ", reorder_operator.get_name(), " creation failed");
-      return NOT_OK;
-    }
-
-    // Compute the size to reorder and create a buffer with size
-    size_t reorder_size = reorder_operator.get_reorder_size();
-    size_t alignment = 64;
-    reorder_size = get_aligned_size(alignment, reorder_size);
-    void *reorder_weights = aligned_alloc(alignment, reorder_size);
-
-
-    // Create a Pair of storage params [reorder size and reorder weights] and
-    // use it in tensor creation
-    StorageParam buffer_params = std::make_pair(reorder_size, reorder_weights);
-
-    // Create output tensor with blocked layout.
-    auto output_tensor = tensor_factory.copy_tensor({ROWS, COLS},
-                         data_type_t::bf16,
-                         buffer_params,
-                         false, false, "reorder_output");
-
-    // Reorder operator execution.
-    status = reorder_operator
-             .set_output("reorder_output", output_tensor)
-             .execute();
-
-    if (status == status_t::success) {
-      testlog_info("operator ", reorder_operator.get_name(),
-                   " execution successful.");
-    }
-    else {
-      testlog_error("operator ", reorder_operator.get_name(), " execution failed.");
-      free(reorder_weights);
-      return NOT_OK;
-    }
-
-    // Free buffer.
-    free(reorder_weights);
-  }
-  catch (const exception_t &ex) {
-    std::cout << ex.what() << std::endl;
-    return NOT_OK;
-  }
-
-  return OK;
+    return OK;
 }
 
 int reorder_inplace_s8_kernel_blocked_contiguous_example() {
-  testlog_info("reorder operator s8 kernel example");
-  try {
-    tensor_factory_t tensor_factory;
-    status_t status;
-    float range = 5.0f;
+    testlog_info("reorder operator s8 kernel example");
+    try {
+        tensor_factory_t tensor_factory;
+        status_t status;
+        float range = 5.0f;
 
-    // Create scale and zero point tensors for quantization
-    auto src_scale  = tensor_factory.uniform_tensor({1,COLS},
-                      data_type_t::f32,
-                      0.25, "src_scale_tensor");
+        // Create scale and zero point tensors for quantization
+        auto src_scale = tensor_factory.uniform_tensor(
+                {1, COLS}, data_type_t::f32, 0.25, "src_scale_tensor");
 
-    auto src_zero_points  = tensor_factory.uniform_tensor({1,1},
-                            data_type_t::s8,
-                            126, "zero tensor");
+        auto src_zero_points = tensor_factory.uniform_tensor(
+                {1, 1}, data_type_t::s8, 126, "zero tensor");
 
-    // Create input tensor with blocked layout.
-    auto input_tensor = tensor_factory.blocked_tensor({ROWS, COLS},
-                        data_type_t::s8,
+        // Create input tensor with blocked layout.
+        auto input_tensor
+                = tensor_factory.blocked_tensor({ROWS, COLS}, data_type_t::s8,
                         range, "reorder_input", src_scale, src_zero_points);
 
-    // Reorder context creation with backend aocl.
-    const reorder_context_t reorder_context = reorder_context_t()
-                           .set_algo_format("aocl")
-                           .set_source_dtype(data_type_t::u8)
-                           .create();
+        // Reorder context creation with backend aocl.
+        const reorder_context_t reorder_context
+                = reorder_context_t()
+                          .set_algo_format("aocl")
+                          .set_source_dtype(data_type_t::u8)
+                          .create();
 
-    if (! reorder_context.check()) {
-      testlog_error("reorder context creation failed");
-      return NOT_OK;
+        if (!reorder_context.check()) {
+            testlog_error("reorder context creation failed");
+            return NOT_OK;
+        }
+
+        // Reorder operator creation with name, context and input.
+        reorder_operator_t reorder_operator
+                = reorder_operator_t()
+                          .set_name("inplace_reorder_s8_operator")
+                          .set_context(reorder_context)
+                          .create()
+                          .set_input("reorder_input", input_tensor);
+
+        // Check if reorder operation creation is successful.
+        if (reorder_operator.is_bad_object()) {
+            testlog_error("operator ", reorder_operator.get_name(),
+                    " creation failed");
+            return NOT_OK;
+        }
+
+        // Assign input_tensor to buffer_params as a tensor_t variant
+        StorageParam buffer_params = std::move(input_tensor);
+
+        // Blocked Tensor creation with seperate view for input tensor.
+        auto output_tensor = tensor_factory.copy_tensor({ROWS, COLS},
+                data_type_t::s8, buffer_params, false, false, "reorder_output",
+                std::move(src_scale), std::move(src_zero_points));
+
+        // Inplace Reorder operator execution.
+        // New tensor with same memory view is passed as output for reorder operation.
+        status = reorder_operator.set_output("reorder_output", output_tensor)
+                         .execute();
+
+        if (status == status_t::success) {
+            testlog_info("operator ", reorder_operator.get_name(),
+                    " execution successful.");
+        } else {
+            testlog_error("operator ", reorder_operator.get_name(),
+                    " execution failed.");
+            return NOT_OK;
+        }
+    } catch (const exception_t &ex) {
+        std::cout << ex.what() << std::endl;
+        return NOT_OK;
     }
 
-    // Reorder operator creation with name, context and input.
-    reorder_operator_t reorder_operator = reorder_operator_t()
-                            .set_name("inplace_reorder_s8_operator")
-                            .set_context(reorder_context)
-                            .create()
-                            .set_input("reorder_input", input_tensor);
-
-    // Check if reorder operation creation is successful.
-    if (reorder_operator.is_bad_object()) {
-      testlog_error("operator ", reorder_operator.get_name(), " creation failed");
-      return NOT_OK;
-    }
-
-    // Assign input_tensor to buffer_params as a tensor_t variant
-    StorageParam buffer_params = std::move(input_tensor);
-
-    // Blocked Tensor creation with seperate view for input tensor.
-    auto output_tensor = tensor_factory.copy_tensor({ROWS, COLS},
-                         data_type_t::s8, buffer_params,
-                         false, false, "reorder_output", std::move(src_scale), std::move(src_zero_points));
-
-    // Inplace Reorder operator execution.
-    // New tensor with same memory view is passed as output for reorder operation.
-    status = reorder_operator
-             .set_output("reorder_output", output_tensor)
-             .execute();
-
-    if (status == status_t::success) {
-      testlog_info("operator ", reorder_operator.get_name(),
-                   " execution successful.");
-    }
-    else {
-      testlog_error("operator ", reorder_operator.get_name(), " execution failed.");
-      return NOT_OK;
-    }
-  }
-  catch (const exception_t &ex) {
-    std::cout << ex.what() << std::endl;
-    return NOT_OK;
-  }
-
-  return OK;
+    return OK;
 }
 
 int reorder_unreorder_outofplace_bf16_kernel_example() {
-  testlog_info("Reorder_unreorder operator BF16 kernel example");
-  try {
-    tensor_factory_t tensor_factory;
-    status_t status;
+    testlog_info("Reorder_unreorder operator BF16 kernel example");
+    try {
+        tensor_factory_t tensor_factory;
+        status_t status;
 
-    // Create input tensor with contigious layout.
-    auto input_tensor = tensor_factory.uniform_dist_tensor({MATMUL_K, MATMUL_N},
-                        data_type_t::bf16,
-                        1.0f, "reorder_input");
+        // Create input tensor with contigious layout.
+        auto input_tensor = tensor_factory.uniform_dist_tensor(
+                {MATMUL_K, MATMUL_N}, data_type_t::bf16, 1.0f, "reorder_input");
 
-    // Reorder context creation with backend aocl.
-    const reorder_context_t reorder_context = reorder_context_t()
-                           .set_algo_format("aocl")
-                           .create();
+        // Reorder context creation with backend aocl.
+        const reorder_context_t reorder_context
+                = reorder_context_t().set_algo_format("aocl").create();
 
-    if (! reorder_context.check()) {
-      testlog_error("reorder context creation failed");
-      return NOT_OK;
+        if (!reorder_context.check()) {
+            testlog_error("reorder context creation failed");
+            return NOT_OK;
+        }
+
+        // Reorder operator creation with name, context and input.
+        reorder_operator_t reorder_operator
+                = reorder_operator_t()
+                          .set_name("outofplace_reorder_bf16_operator")
+                          .set_context(reorder_context)
+                          .create()
+                          .set_input("reorder_input", input_tensor);
+
+        // Check if reorder operation creation is successful.
+        if (reorder_operator.is_bad_object()) {
+            testlog_error("operator ", reorder_operator.get_name(),
+                    " creation failed");
+            return NOT_OK;
+        }
+
+        // Compute the reorder size and create a buffer with reorderd size
+        size_t reorder_size = reorder_operator.get_reorder_size();
+        size_t alignment = 64;
+        reorder_size = get_aligned_size(alignment, reorder_size);
+        void *reorder_weights = aligned_alloc(alignment, reorder_size);
+
+        // Create a Pair of storage params [reorder size and reorder weights] and
+        // use it in tensor creation
+        StorageParam buffer_params
+                = std::make_pair(reorder_size, reorder_weights);
+
+        // Create output tensor with blocked layout.
+        auto output_tensor = tensor_factory.copy_tensor({MATMUL_K, MATMUL_N},
+                data_type_t::bf16, buffer_params, false, true,
+                "reorder_output");
+
+        // Reorder operator execution.
+        status = reorder_operator.set_output("reorder_output", output_tensor)
+                         .execute();
+
+        if (status == status_t::success) {
+            testlog_info("operator ", reorder_operator.get_name(),
+                    " execution successful.");
+        } else {
+            testlog_error("operator ", reorder_operator.get_name(),
+                    " execution failed.");
+            free(reorder_weights);
+            return NOT_OK;
+        }
+
+        // Unreorder operator creation with name, context and input.
+        reorder_operator_t unreorder_operator
+                = reorder_operator_t()
+                          .set_name("outofplace_unreorder_bf16_operator")
+                          .set_context(reorder_context)
+                          .create()
+                          .set_input("reorder_input", output_tensor);
+
+        // Check if unreorder operation creation is successful.
+        if (unreorder_operator.is_bad_object()) {
+            testlog_error("operator ", unreorder_operator.get_name(),
+                    " creation failed");
+            free(reorder_weights);
+            return NOT_OK;
+        }
+
+        // Compute the size to unreorder and create a buffer with size
+        size_t unreorder_size = unreorder_operator.get_reorder_size();
+        unreorder_size = get_aligned_size(alignment, unreorder_size);
+        void *unreorder_weights = aligned_alloc(alignment, unreorder_size);
+
+        // Create a Pair of storage params [reorder size and reorder weights] and
+        // use it in tensor creation
+        StorageParam unre_buffer_params
+                = std::make_pair(unreorder_size, unreorder_weights);
+
+        // Create output tensor with blocked layout.
+        auto unre_output_tensor = tensor_factory.copy_tensor(
+                {MATMUL_K, MATMUL_N}, data_type_t::bf16, unre_buffer_params,
+                false, false, "unreorder_output");
+
+        // Reorder operator execution.
+        status = unreorder_operator
+                         .set_output("reorder_output", unre_output_tensor)
+                         .execute();
+        if (status == status_t::success) {
+            testlog_info("operator ", unreorder_operator.get_name(),
+                    " execution successful.");
+        } else {
+            testlog_error("operator ", unreorder_operator.get_name(),
+                    " execution failed.");
+            free(reorder_weights);
+            free(unreorder_weights);
+            return NOT_OK;
+        }
+
+        // Free buffers.
+        free(reorder_weights);
+        free(unreorder_weights);
+    } catch (const exception_t &ex) {
+        std::cout << ex.what() << std::endl;
+        return NOT_OK;
     }
 
-    // Reorder operator creation with name, context and input.
-    reorder_operator_t reorder_operator = reorder_operator_t()
-                            .set_name("outofplace_reorder_bf16_operator")
-                            .set_context(reorder_context)
-                            .create()
-                            .set_input("reorder_input", input_tensor);
-
-    // Check if reorder operation creation is successful.
-    if (reorder_operator.is_bad_object()) {
-      testlog_error("operator ", reorder_operator.get_name(), " creation failed");
-      return NOT_OK;
-    }
-
-    // Compute the reorder size and create a buffer with reorderd size
-    size_t reorder_size = reorder_operator.get_reorder_size();
-    size_t alignment = 64;
-    reorder_size = get_aligned_size(alignment, reorder_size);
-    void *reorder_weights = aligned_alloc(alignment, reorder_size);
-
-    // Create a Pair of storage params [reorder size and reorder weights] and
-    // use it in tensor creation
-    StorageParam buffer_params = std::make_pair(reorder_size, reorder_weights);
-
-    // Create output tensor with blocked layout.
-    auto output_tensor = tensor_factory.copy_tensor({MATMUL_K, MATMUL_N},
-                         data_type_t::bf16,
-                         buffer_params,
-                         false, true, "reorder_output");
-
-    // Reorder operator execution.
-    status = reorder_operator
-             .set_output("reorder_output", output_tensor)
-             .execute();
-
-    if (status == status_t::success) {
-      testlog_info("operator ", reorder_operator.get_name(),
-                   " execution successful.");
-    }
-    else {
-      testlog_error("operator ", reorder_operator.get_name(), " execution failed.");
-      free(reorder_weights);
-      return NOT_OK;
-    }
-
-    // Unreorder operator creation with name, context and input.
-    reorder_operator_t unreorder_operator = reorder_operator_t()
-                              .set_name("outofplace_unreorder_bf16_operator")
-                              .set_context(reorder_context)
-                              .create()
-                              .set_input("reorder_input", output_tensor);
-
-    // Check if unreorder operation creation is successful.
-    if (unreorder_operator.is_bad_object()) {
-      testlog_error("operator ", unreorder_operator.get_name(), " creation failed");
-      free(reorder_weights);
-      return NOT_OK;
-    }
-
-    // Compute the size to unreorder and create a buffer with size
-    size_t unreorder_size = unreorder_operator.get_reorder_size();
-    unreorder_size = get_aligned_size(alignment, unreorder_size);
-    void *unreorder_weights = aligned_alloc(alignment, unreorder_size);
-
-    // Create a Pair of storage params [reorder size and reorder weights] and
-    // use it in tensor creation
-    StorageParam unre_buffer_params = std::make_pair(unreorder_size,
-                                      unreorder_weights);
-
-    // Create output tensor with blocked layout.
-    auto unre_output_tensor = tensor_factory.copy_tensor({MATMUL_K, MATMUL_N},
-                              data_type_t::bf16,
-                              unre_buffer_params,
-                              false, false, "unreorder_output");
-
-    // Reorder operator execution.
-    status = unreorder_operator
-             .set_output("reorder_output", unre_output_tensor)
-             .execute();
-    if (status == status_t::success) {
-      testlog_info("operator ", unreorder_operator.get_name(),
-                   " execution successful.");
-    }
-    else {
-      testlog_error("operator ", unreorder_operator.get_name(), " execution failed.");
-      free(reorder_weights);
-      free(unreorder_weights);
-      return NOT_OK;
-    }
-
-    // Free buffers.
-    free(reorder_weights);
-    free(unreorder_weights);
-  }
-  catch (const exception_t &ex) {
-    std::cout << ex.what() << std::endl;
-    return NOT_OK;
-  }
-
-  return OK;
+    return OK;
 }
 
-} //examples
-} //zendnnl
+} // namespace examples
+} // namespace zendnnl

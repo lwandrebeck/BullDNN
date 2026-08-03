@@ -19,8 +19,8 @@
 
 #include <cstdint>
 #include <string>
-#include "common/zendnnl_global.hpp"
 #include "common/logging.hpp"
+#include "common/zendnnl_global.hpp"
 #include "lowoha_pooling_common.hpp"
 
 namespace zendnnl {
@@ -38,10 +38,7 @@ using namespace zendnnl::common;
  * @return status_t::success if valid, status_t::failure otherwise
  */
 status_t validate_pooling_inputs(
-    const void *input,
-    const void *output,
-    pool_params &params
-);
+        const void *input, const void *output, pool_params &params);
 
 } // namespace pooling
 } // namespace lowoha

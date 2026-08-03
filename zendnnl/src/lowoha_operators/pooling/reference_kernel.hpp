@@ -34,10 +34,7 @@ namespace pooling {
  * @return status_t::success on successful execution, status_t::failure otherwise
  */
 status_t pooling_reference_wrapper(
-    const void *input,
-    void *output,
-    pool_params &params
-);
+        const void *input, void *output, pool_params &params);
 
 } // namespace pooling
 } // namespace lowoha

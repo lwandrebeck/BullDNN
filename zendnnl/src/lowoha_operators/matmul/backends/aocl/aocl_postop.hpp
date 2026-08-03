@@ -31,28 +31,26 @@ namespace matmul {
 
 // Shared scalar constants used as pointer-targets for AOCL/DLP post-op fields
 inline constexpr float LEAKY_RELU_SLOPE_DEFAULT = 0.01f;
-inline constexpr float ONE_F32            = 1.0f;
+inline constexpr float ONE_F32 = 1.0f;
 
 // Cast a (const) float address into the non-const void* slot expected by the
 // AOCL DLP API. The kernels treat these scalars as read-only inputs, so the
 // const_cast does not introduce undefined behavior and the underlying storage
 // may safely live in read-only memory (e.g. inline constexpr globals).
 inline void *get_void_ptr(const float &v) {
-  return const_cast<void *>(static_cast<const void *>(&v));
+    return const_cast<void *>(static_cast<const void *>(&v));
 }
 
 // Helper function to compute number of elements from dimension vector.
 // Returns 1 for empty dims (per-tensor case) specific for DLP use case,
 // or product of all dims.
 inline size_t get_num_elements(const std::vector<int64_t> &dims) {
-  if (dims.empty()) {
-    return 1;
-  }
-  size_t count = 1;
-  for (auto d : dims) {
-    count *= static_cast<size_t>(d);
-  }
-  return count;
+    if (dims.empty()) { return 1; }
+    size_t count = 1;
+    for (auto d : dims) {
+        count *= static_cast<size_t>(d);
+    }
+    return count;
 }
 
 /**
@@ -103,10 +101,9 @@ inline size_t get_num_elements(const std::vector<int64_t> &dims) {
  *         the exception at the matmul boundary.
  */
 dlp_metadata_t *create_dlp_post_op(const matmul_params &lowoha_param,
-                                   const void *bias, const matmul_data_types &dtypes, int N, int K,
-                                   int M, int32_t *zp_comp_acc, int zp_comp_ndim,
-                                   zendnnl::ops::matmul_algo_t kernel,
-                                   const void *weight_ptr);
+        const void *bias, const matmul_data_types &dtypes, int N, int K, int M,
+        int32_t *zp_comp_acc, int zp_comp_ndim,
+        zendnnl::ops::matmul_algo_t kernel, const void *weight_ptr);
 
 /**
  * @brief Per-call teardown for the metadata returned by create_dlp_post_op().

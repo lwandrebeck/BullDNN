@@ -17,19 +17,19 @@
 #ifndef _GTEST_UTILS_AI_HPP_
 #define _GTEST_UTILS_AI_HPP_
 
-#include <string>
-#include <random>
 #include <algorithm>
+#include <atomic>
+#include <chrono>
+#include <omp.h>
+#include <random>
+#include <string>
 #include <variant>
 #include <vector>
-#include <chrono>
-#include <unordered_set>
-#include <atomic>
-#include <omp.h>
-#include "memory/tensor.hpp"
 #include "common/zendnnl_global.hpp"
+#include "memory/tensor.hpp"
 #include "operators/matmul/matmul_context.hpp"
 #include "operators/matmul/matmul_operator.hpp"
+#include <unordered_set>
 
 // Configurable dimension macros for easy modification
 #define AI_MIN_DIM 1
@@ -47,9 +47,9 @@
 #define AI_MATMUL_REL_TOLERANCE_S8 1e-2f
 #define AI_MATMUL_REL_TOLERANCE_DEFAULT 1e-5f
 
-#define AI_MATMUL_EPSILON_F32     1.19e-7
-#define AI_MATMUL_EPSILON_BF16    9.76e-4
-#define AI_MATMUL_EPSILON_S8      9.76e-4
+#define AI_MATMUL_EPSILON_F32 1.19e-7
+#define AI_MATMUL_EPSILON_BF16 9.76e-4
+#define AI_MATMUL_EPSILON_S8 9.76e-4
 #define AI_MATMUL_EPSILON_DEFAULT 9.76e-4
 
 using namespace zendnnl::memory;
@@ -61,15 +61,15 @@ namespace ai_gtests {
 
 /** @brief Test mode selection for different testing scenarios */
 enum class TestMode {
-  PRE_SUB,    // Minimal testing for pre-submission
-  POST_SUB,   // Comprehensive testing for post-submission
-  NIGHTLY,    // Comprehensive nightly testing
-  MINIMAL,    // Minimal test suite
-  ACCURACY,   // Accuracy-focused tests only
-  INVALID,    // Invalid input tests only
-  BOUNDARY,   // Boundary condition tests only
-  COVERAGE,   // Strategic minimal tests for maximum code coverage
-  DEFAULT     // Default comprehensive testing
+    PRE_SUB, // Minimal testing for pre-submission
+    POST_SUB, // Comprehensive testing for post-submission
+    NIGHTLY, // Comprehensive nightly testing
+    MINIMAL, // Minimal test suite
+    ACCURACY, // Accuracy-focused tests only
+    INVALID, // Invalid input tests only
+    BOUNDARY, // Boundary condition tests only
+    COVERAGE, // Strategic minimal tests for maximum code coverage
+    DEFAULT // Default comprehensive testing
 };
 
 // Global variable to store current test mode (default: DEFAULT)
@@ -80,11 +80,11 @@ extern std::string cmd_lowoha_ai;
 
 /** @brief Test categories for comprehensive coverage */
 enum class TestCategory {
-  ACCURACY,      // Standard accuracy tests
-  BOUNDARY,      // Boundary condition tests
-  EDGE_CASE,     // Edge case tests
-  INVALID,       // Invalid input tests
-  REFERENCE_KERNEL // Exhaustive reference kernel tests only
+    ACCURACY, // Standard accuracy tests
+    BOUNDARY, // Boundary condition tests
+    EDGE_CASE, // Edge case tests
+    INVALID, // Invalid input tests
+    REFERENCE_KERNEL // Exhaustive reference kernel tests only
 };
 
 // Initialize test mode from command-line string
@@ -120,38 +120,33 @@ void initialize_nightly_config();
 
 // Template function to get test suite for any parameter generator
 // Returns the appropriate test suite based on the global test mode
-template<typename ParamsType, typename GeneratorType>
+template <typename ParamsType, typename GeneratorType>
 std::vector<ParamsType> get_test_suite_for_mode() {
-  if (ai_gtest_mode == TestMode::PRE_SUB) {
-    return GeneratorType::generate_minimal_test_suite();
-  }
-  else if (ai_gtest_mode == TestMode::POST_SUB) {
+    if (ai_gtest_mode == TestMode::PRE_SUB) {
+        return GeneratorType::generate_minimal_test_suite();
+    } else if (ai_gtest_mode == TestMode::POST_SUB) {
+        return GeneratorType::generate_comprehensive_test_suite();
+    } else if (ai_gtest_mode == TestMode::NIGHTLY) {
+        initialize_nightly_config();
+        return GeneratorType::generate_comprehensive_test_suite();
+    } else if (ai_gtest_mode == TestMode::MINIMAL) {
+        return GeneratorType::generate_minimal_test_suite();
+    } else if (ai_gtest_mode == TestMode::ACCURACY) {
+        return GeneratorType::generate_category_specific_params(
+                TestCategory::ACCURACY);
+    } else if (ai_gtest_mode == TestMode::INVALID) {
+        return GeneratorType::generate_category_specific_params(
+                TestCategory::INVALID);
+    } else if (ai_gtest_mode == TestMode::BOUNDARY) {
+        return GeneratorType::generate_category_specific_params(
+                TestCategory::BOUNDARY);
+    } else if (ai_gtest_mode == TestMode::COVERAGE) {
+        return GeneratorType::generate_coverage_test_suite();
+    } else if (ai_gtest_mode == TestMode::DEFAULT) {
+        return GeneratorType::generate_comprehensive_test_suite();
+    }
+    // Final fallback to comprehensive suite (should never reach here)
     return GeneratorType::generate_comprehensive_test_suite();
-  }
-  else if (ai_gtest_mode == TestMode::NIGHTLY) {
-    initialize_nightly_config();
-    return GeneratorType::generate_comprehensive_test_suite();
-  }
-  else if (ai_gtest_mode == TestMode::MINIMAL) {
-    return GeneratorType::generate_minimal_test_suite();
-  }
-  else if (ai_gtest_mode == TestMode::ACCURACY) {
-    return GeneratorType::generate_category_specific_params(TestCategory::ACCURACY);
-  }
-  else if (ai_gtest_mode == TestMode::INVALID) {
-    return GeneratorType::generate_category_specific_params(TestCategory::INVALID);
-  }
-  else if (ai_gtest_mode == TestMode::BOUNDARY) {
-    return GeneratorType::generate_category_specific_params(TestCategory::BOUNDARY);
-  }
-  else if (ai_gtest_mode == TestMode::COVERAGE) {
-    return GeneratorType::generate_coverage_test_suite();
-  }
-  else if (ai_gtest_mode == TestMode::DEFAULT) {
-    return GeneratorType::generate_comprehensive_test_suite();
-  }
-  // Final fallback to comprehensive suite (should never reach here)
-  return GeneratorType::generate_comprehensive_test_suite();
 }
 
 // -----------------------------------------------------------------------------
@@ -164,67 +159,67 @@ std::vector<ParamsType> get_test_suite_for_mode() {
 // Uses inline static members (C++17) for cleaner code.
 // -----------------------------------------------------------------------------
 class MaxTestCases {
- public:
-  // Inline static members with default values for post-sub mode
-  inline static int TINY_MATRIX = 10;              // max(10, 5) = 10
-  inline static int SMALL_MATRIX = 10;             // max(10, 5) = 10
-  inline static int MEDIUM_LARGE_MATRIX = 30;      // max(30, 10) = 30
-  inline static int RECTANGULAR_MATRIX = 30;       // max(30, 10) = 30
-  inline static int SKINNY_MATRIX = 20;            // max(20, 8) = 20
-  inline static int DEFAULT = 5;                   // max(5, 3) = 5
+public:
+    // Inline static members with default values for post-sub mode
+    inline static int TINY_MATRIX = 10; // max(10, 5) = 10
+    inline static int SMALL_MATRIX = 10; // max(10, 5) = 10
+    inline static int MEDIUM_LARGE_MATRIX = 30; // max(30, 10) = 30
+    inline static int RECTANGULAR_MATRIX = 30; // max(30, 10) = 30
+    inline static int SKINNY_MATRIX = 20; // max(20, 8) = 20
+    inline static int DEFAULT = 5; // max(5, 3) = 5
 
-  // BatchMatMul-specific categories
-  inline static int MIN = 3;
-  inline static int MAX = 3;
-  inline static int XL_BATCH = 3;
-  inline static int XXL_BATCH = 2;
+    // BatchMatMul-specific categories
+    inline static int MIN = 3;
+    inline static int MAX = 3;
+    inline static int XL_BATCH = 3;
+    inline static int XXL_BATCH = 2;
 };
 
 enum class MatrixDimensions : uint64_t {
-  // Fixed dimensions
-  TINY_SQUARE_FIXED = 4,
-  TINY_RECT_M_FIXED = 3,
-  TINY_RECT_N_FIXED = 5,
-  TINY_RECT_K_FIXED = 4,
+    // Fixed dimensions
+    TINY_SQUARE_FIXED = 4,
+    TINY_RECT_M_FIXED = 3,
+    TINY_RECT_N_FIXED = 5,
+    TINY_RECT_K_FIXED = 4,
 
-  SMALL_SQUARE_FIXED = 32,
+    SMALL_SQUARE_FIXED = 32,
 
-  MEDIUM_SQUARE_FIXED = 64,
+    MEDIUM_SQUARE_FIXED = 64,
 
-  LARGE_SQUARE_FIXED = 128,
+    LARGE_SQUARE_FIXED = 128,
 
-  RECT1_M_FIXED = 64,
-  RECT1_N_FIXED = 32,
-  RECT1_K_FIXED = 48,
+    RECT1_M_FIXED = 64,
+    RECT1_N_FIXED = 32,
+    RECT1_K_FIXED = 48,
 
-  RECT2_M_FIXED = 32,
-  RECT2_N_FIXED = 64,
-  RECT2_K_FIXED = 48,
+    RECT2_M_FIXED = 32,
+    RECT2_N_FIXED = 64,
+    RECT2_K_FIXED = 48,
 
-  NON_POW2_FIXED = 42,
+    NON_POW2_FIXED = 42,
 
-  SKINNY_SMALL_FIXED = 4,
-  SKINNY_LARGE_FIXED = 512,
+    SKINNY_SMALL_FIXED = 4,
+    SKINNY_LARGE_FIXED = 512,
 
-  // Range values for random generation
-  TINY_MIN = 1,
-  TINY_MAX = 8,
+    // Range values for random generation
+    TINY_MIN = 1,
+    TINY_MAX = 8,
 
-  SMALL_MIN = 16,
-  SMALL_MAX = 48,
+    SMALL_MIN = 16,
+    SMALL_MAX = 48,
 
-  MEDIUM_MIN = 49,
-  MEDIUM_MAX = 96,
+    MEDIUM_MIN = 49,
+    MEDIUM_MAX = 96,
 
-  LARGE_MIN = 97,
-  LARGE_MAX = 512,
+    LARGE_MIN = 97,
+    LARGE_MAX = 512,
 
-  RECT_MIN = 32,
-  RECT_MAX = 128,
+    RECT_MIN = 32,
+    RECT_MAX = 128,
 
-  SKINNY_MIN = 4,
-  SKINNY_MAX_SMALL = 16,
-  SKINNY_MAX_LARGE = 512
+    SKINNY_MIN = 4,
+    SKINNY_MAX_SMALL = 16,
+    SKINNY_MAX_LARGE = 512
 };
 
 /** @brief Max possible values for data types used in numerical stability validation
@@ -234,206 +229,196 @@ enum class MatrixDimensions : uint64_t {
  * Used in validate_numerical_stability to calculate expected output bounds.
  */
 enum class DataTypeMaxValue : int {
-  F32 = 3,      // Based on fill_uniform_data range [-3, 3]
-  BF16 = 3,     // Based on fill_uniform_data range [-3, 3]
-  U8 = 255,     // Unsigned 8-bit max (boundary pattern: {255, 0, 128, 1})
-  S8 = 127,     // Signed 8-bit max (boundary pattern: {127, -127, 1, -1})
-  S4 = 8,       // 4-bit signed range [-8, 7]
-  DEFAULT = 255 // Safe fallback for unknown types
+    F32 = 3, // Based on fill_uniform_data range [-3, 3]
+    BF16 = 3, // Based on fill_uniform_data range [-3, 3]
+    U8 = 255, // Unsigned 8-bit max (boundary pattern: {255, 0, 128, 1})
+    S8 = 127, // Signed 8-bit max (boundary pattern: {127, -127, 1, -1})
+    S4 = 8, // 4-bit signed range [-8, 7]
+    DEFAULT = 255 // Safe fallback for unknown types
 };
 
 /** @brief Data type combinations for testing */
 enum class DataTypeCombination {
-  F32_F32_F32,   // Input, Weight, Output
-  BF16_BF16_BF16,
-  BF16_BF16_F32,  // BF16 input/weight → F32 output (GEMV / inference)
-  BF16_F32_BF16,
-  F32_BF16_F32,
-  BF16_S4_BF16,  // BF16 input with S4 quantized weights
-  BF16_S4_F32,   // BF16 input with S4 quantized weights, F32 output
-  S8_S8_S8,
-  S8_S8_S32,     // INT8 matmul with S32 accumulator
-  S4_S4_S4,
-  U8_U8_U8,
-  S32_S32_S32,
-  U8_S8_F32,     // INT8 GEMV: u8 src, s8 weight → f32 output
-  U8_S8_BF16,    // INT8 GEMV: u8 src, s8 weight → bf16 output
-  S8_S8_F32,     // INT8 GEMV: s8 src, s8 weight → f32 output
-  S8_S8_BF16,    // INT8 GEMV: s8 src, s8 weight → bf16 output
+    F32_F32_F32, // Input, Weight, Output
+    BF16_BF16_BF16,
+    BF16_BF16_F32, // BF16 input/weight → F32 output (GEMV / inference)
+    BF16_F32_BF16,
+    F32_BF16_F32,
+    BF16_S4_BF16, // BF16 input with S4 quantized weights
+    BF16_S4_F32, // BF16 input with S4 quantized weights, F32 output
+    S8_S8_S8,
+    S8_S8_S32, // INT8 matmul with S32 accumulator
+    S4_S4_S4,
+    U8_U8_U8,
+    S32_S32_S32,
+    U8_S8_F32, // INT8 GEMV: u8 src, s8 weight → f32 output
+    U8_S8_BF16, // INT8 GEMV: u8 src, s8 weight → bf16 output
+    S8_S8_F32, // INT8 GEMV: s8 src, s8 weight → f32 output
+    S8_S8_BF16, // INT8 GEMV: s8 src, s8 weight → bf16 output
 };
 
 /** @brief Post-op configuration for comprehensive testing */
 struct PostOpConfig {
-  std::vector<post_op_type_t> post_ops;
-  std::vector<std::string> binary_tensor_names;
-  std::string config_name;
+    std::vector<post_op_type_t> post_ops;
+    std::vector<std::string> binary_tensor_names;
+    std::string config_name;
 
-  PostOpConfig() {}
+    PostOpConfig() {}
 };
 
 /** @brief AI-specific matmul parameter structure */
 struct MatmulParamsAI {
-  uint64_t m, n, k;
-  DataTypeCombination data_types;
-  TestCategory category;
-  PostOpConfig post_op_config;
-  bool trans_a, trans_b;
-  bool expect_success;
-  float alpha, beta;
-  int ldb_pad;
-  std::string test_name;
+    uint64_t m, n, k;
+    DataTypeCombination data_types;
+    TestCategory category;
+    PostOpConfig post_op_config;
+    bool trans_a, trans_b;
+    bool expect_success;
+    float alpha, beta;
+    int ldb_pad;
+    std::string test_name;
 
-  MatmulParamsAI() : m(1), n(1), k(1),
-    data_types(DataTypeCombination::F32_F32_F32),
-    category(TestCategory::ACCURACY),
-    trans_a(false), trans_b(false),
-    expect_success(true),
-    alpha(1.0f), beta(0.0f), ldb_pad(0),
-    test_name("") {}
+    MatmulParamsAI()
+        : m(1)
+        , n(1)
+        , k(1)
+        , data_types(DataTypeCombination::F32_F32_F32)
+        , category(TestCategory::ACCURACY)
+        , trans_a(false)
+        , trans_b(false)
+        , expect_success(true)
+        , alpha(1.0f)
+        , beta(0.0f)
+        , ldb_pad(0)
+        , test_name("") {}
 };
-
-
-
 
 /** @brief AI-specific utility functions */
 class AITestUtils {
- private:
-  static std::mt19937 rng;
+private:
+    static std::mt19937 rng;
 
- public:
-  // Sampling and comparison utilities
-  static std::vector<size_t> get_sample_indices(size_t total_elements,
-      size_t max_samples = AI_MAX_VALIDATION_ELEMENTS);
-  static bool compare_sampled_tensors(const tensor_t &tensor1,
-                                      const tensor_t &tensor2,
-                                      float abs_tolerance = 1e-3f,
-                                      float rel_tolerance = 1e-3f);
-  static bool compare_sampled_tensors_matmul(const tensor_t &test_tensor,
-      const tensor_t &ref_tensor,
-      uint64_t k,
-      float rel_tolerance,
-      float epsilon,
-      bool enable_f32_relaxation = false);
-  // Kernel support utilities
-  static bool is_aocl_kernel_supported(data_type_t input_dtype,
-                                       data_type_t weight_dtype,
-                                       data_type_t output_dtype,
-                                       const std::vector<post_op_type_t> &post_ops);
-  static bool is_reference_implementation_supported(data_type_t input_dtype,
-      data_type_t weight_dtype,
-      data_type_t output_dtype,
-      const std::vector<post_op_type_t> &post_ops);
+public:
+    // Sampling and comparison utilities
+    static std::vector<size_t> get_sample_indices(size_t total_elements,
+            size_t max_samples = AI_MAX_VALIDATION_ELEMENTS);
+    static bool compare_sampled_tensors(const tensor_t &tensor1,
+            const tensor_t &tensor2, float abs_tolerance = 1e-3f,
+            float rel_tolerance = 1e-3f);
+    static bool compare_sampled_tensors_matmul(const tensor_t &test_tensor,
+            const tensor_t &ref_tensor, uint64_t k, float rel_tolerance,
+            float epsilon, bool enable_f32_relaxation = false);
+    // Kernel support utilities
+    static bool is_aocl_kernel_supported(data_type_t input_dtype,
+            data_type_t weight_dtype, data_type_t output_dtype,
+            const std::vector<post_op_type_t> &post_ops);
+    static bool is_reference_implementation_supported(data_type_t input_dtype,
+            data_type_t weight_dtype, data_type_t output_dtype,
+            const std::vector<post_op_type_t> &post_ops);
 
-  // Data type utilities
-  static data_type_t get_input_dtype(DataTypeCombination combo);
-  static data_type_t get_weight_dtype(DataTypeCombination combo);
-  static data_type_t get_output_dtype(DataTypeCombination combo);
-  static bool is_valid_data_type_combination(DataTypeCombination combo);
+    // Data type utilities
+    static data_type_t get_input_dtype(DataTypeCombination combo);
+    static data_type_t get_weight_dtype(DataTypeCombination combo);
+    static data_type_t get_output_dtype(DataTypeCombination combo);
+    static bool is_valid_data_type_combination(DataTypeCombination combo);
 
-  // Post-op configuration utilities
-  static std::vector<PostOpConfig> get_all_post_op_configs();
-  static PostOpConfig create_binary_add_config();
-  static PostOpConfig create_binary_mul_config();
-  static PostOpConfig create_relu_config();
-  static PostOpConfig create_silu_config();
-  static PostOpConfig create_mixed_post_op_config();
-  static PostOpConfig create_softmax_config();
-  static PostOpConfig create_abs_config();
-  static PostOpConfig create_square_config();
-  static PostOpConfig create_sqrt_config();
-  static PostOpConfig create_exp_config();
-  static PostOpConfig create_log_config();
-  static PostOpConfig create_leaky_relu_config();
-  static PostOpConfig create_elu_config();
-  static PostOpConfig create_relu_clip_config();
-  static PostOpConfig create_binary_add_mul_config();
-  static PostOpConfig create_gelu_tanh_config();
-  static PostOpConfig create_gelu_erf_config();
-  static PostOpConfig create_sigmoid_config();
-  static PostOpConfig create_tanh_config();
-  static PostOpConfig create_clip_config();
+    // Post-op configuration utilities
+    static std::vector<PostOpConfig> get_all_post_op_configs();
+    static PostOpConfig create_binary_add_config();
+    static PostOpConfig create_binary_mul_config();
+    static PostOpConfig create_relu_config();
+    static PostOpConfig create_silu_config();
+    static PostOpConfig create_mixed_post_op_config();
+    static PostOpConfig create_softmax_config();
+    static PostOpConfig create_abs_config();
+    static PostOpConfig create_square_config();
+    static PostOpConfig create_sqrt_config();
+    static PostOpConfig create_exp_config();
+    static PostOpConfig create_log_config();
+    static PostOpConfig create_leaky_relu_config();
+    static PostOpConfig create_elu_config();
+    static PostOpConfig create_relu_clip_config();
+    static PostOpConfig create_binary_add_mul_config();
+    static PostOpConfig create_gelu_tanh_config();
+    static PostOpConfig create_gelu_erf_config();
+    static PostOpConfig create_sigmoid_config();
+    static PostOpConfig create_tanh_config();
+    static PostOpConfig create_clip_config();
 
-  // Validation utilities
-  static bool validate_dimensions(uint64_t m, uint64_t n, uint64_t k);
+    // Validation utilities
+    static bool validate_dimensions(uint64_t m, uint64_t n, uint64_t k);
 
-  // Reference implementation utilities
-  static status_t run_reference_matmul(tensor_t &input,
-                                       tensor_t &weights,
-                                       tensor_t &bias,
-                                       tensor_t &output,
-                                       const PostOpConfig &post_op_config,
-                                       std::vector<tensor_t> &binary_postop_tensors,
-                                       bool mask_libxsmm_postops = false,
-                                       bool skip_libxsmm_bf16_bias = false);
+    // Reference implementation utilities
+    static status_t run_reference_matmul(tensor_t &input, tensor_t &weights,
+            tensor_t &bias, tensor_t &output,
+            const PostOpConfig &post_op_config,
+            std::vector<tensor_t> &binary_postop_tensors,
+            bool mask_libxsmm_postops = false,
+            bool skip_libxsmm_bf16_bias = false);
 
-  // Debug and logging utilities
-  static void log_tensor_info(const tensor_t &tensor, const std::string &name);
+    // Debug and logging utilities
+    static void log_tensor_info(
+            const tensor_t &tensor, const std::string &name);
 
-  // Debug print utility
-  static void debug_print(const std::string &msg);
+    // Debug print utility
+    static void debug_print(const std::string &msg);
 
-  // Unique name generation
-  static std::string generate_unique_name(const std::string &prefix);
+    // Unique name generation
+    static std::string generate_unique_name(const std::string &prefix);
 
-  // Data type max value utility for numerical stability validation
-  // Returns the max possible value for a given data type based on fill patterns
-  static float get_dtype_max_value(data_type_t dtype) {
-    switch (dtype) {
-    case data_type_t::f32:
-      return static_cast<float>(DataTypeMaxValue::F32);
-    case data_type_t::bf16:
-      return static_cast<float>(DataTypeMaxValue::BF16);
-    case data_type_t::u8:
-      return static_cast<float>(DataTypeMaxValue::U8);
-    case data_type_t::s8:
-      return static_cast<float>(DataTypeMaxValue::S8);
-    case data_type_t::s4:
-      return static_cast<float>(DataTypeMaxValue::S4);
-    default:
-      return static_cast<float>(DataTypeMaxValue::DEFAULT);
+    // Data type max value utility for numerical stability validation
+    // Returns the max possible value for a given data type based on fill patterns
+    static float get_dtype_max_value(data_type_t dtype) {
+        switch (dtype) {
+            case data_type_t::f32:
+                return static_cast<float>(DataTypeMaxValue::F32);
+            case data_type_t::bf16:
+                return static_cast<float>(DataTypeMaxValue::BF16);
+            case data_type_t::u8:
+                return static_cast<float>(DataTypeMaxValue::U8);
+            case data_type_t::s8:
+                return static_cast<float>(DataTypeMaxValue::S8);
+            case data_type_t::s4:
+                return static_cast<float>(DataTypeMaxValue::S4);
+            default: return static_cast<float>(DataTypeMaxValue::DEFAULT);
+        }
     }
-  }
 };
 
 /** @brief WoQ (Weight-Only Quantization) tensor bundle for S4 quantized weights */
 struct WoQTensors {
-  tensor_t weights;  // S4 quantized weight tensor
-  tensor_t scale;    // Per-channel scale tensor (F32 or BF16)
-  tensor_t zp;       // Zero-point tensor (S8)
+    tensor_t weights; // S4 quantized weight tensor
+    tensor_t scale; // Per-channel scale tensor (F32 or BF16)
+    tensor_t zp; // Zero-point tensor (S8)
 };
 
 /** @brief AI-specific tensor factory for comprehensive testing */
 class AITensorFactory {
- private:
-  static std::mt19937 rng;
-  static std::atomic<uint64_t> tensor_counter;
+private:
+    static std::mt19937 rng;
+    static std::atomic<uint64_t> tensor_counter;
 
-  static void fill_uniform_data(void *ptr, size_t nelem, data_type_t dtype);
-  // Fills a raw data buffer with boundary values for stress-testing matmul numerical stability.
-  // The values alternate between large, small, positive, and negative values for each supported type.
-  // Used by create_boundary_tensor to populate tensor data.
-  static void fill_boundary_data(void *ptr, size_t nelem, data_type_t dtype);
+    static void fill_uniform_data(void *ptr, size_t nelem, data_type_t dtype);
+    // Fills a raw data buffer with boundary values for stress-testing matmul numerical stability.
+    // The values alternate between large, small, positive, and negative values for each supported type.
+    // Used by create_boundary_tensor to populate tensor data.
+    static void fill_boundary_data(void *ptr, size_t nelem, data_type_t dtype);
 
- public:
-  static tensor_t create_uniform_tensor(const std::vector<uint64_t> &dims,
-                                        data_type_t dtype,
-                                        const std::string &name = "");
+public:
+    static tensor_t create_uniform_tensor(const std::vector<uint64_t> &dims,
+            data_type_t dtype, const std::string &name = "");
 
-  static tensor_t create_zero_tensor(const std::vector<uint64_t> &dims,
-                                     data_type_t dtype,
-                                     const std::string &name = "");
+    static tensor_t create_zero_tensor(const std::vector<uint64_t> &dims,
+            data_type_t dtype, const std::string &name = "");
 
-  static tensor_t create_boundary_tensor(const std::vector<uint64_t> &dims,
-                                         data_type_t dtype,
-                                         const std::string &name = "");
+    static tensor_t create_boundary_tensor(const std::vector<uint64_t> &dims,
+            data_type_t dtype, const std::string &name = "");
 
-  static tensor_t create_quantized_embedding_tensor(
-    const std::vector<uint64_t> &dims,
-    data_type_t dtype,
-    const std::string &name = "",
-    bool fp16_scale_bias = true);
+    static tensor_t create_quantized_embedding_tensor(
+            const std::vector<uint64_t> &dims, data_type_t dtype,
+            const std::string &name = "", bool fp16_scale_bias = true);
 
-  /** @brief Create WoQ (Weight-Only Quantization) weight tensor with scale and zero-point
+    /** @brief Create WoQ (Weight-Only Quantization) weight tensor with scale and zero-point
    *
    * Creates an S4 quantized weight tensor with proper scale and zero-point tensors
    * for Weight-Only Quantization (WoQ) matmul operations.
@@ -443,44 +428,46 @@ class AITensorFactory {
    * @param name Optional tensor name prefix
    * @return WoQTensors struct containing weights, scale, and zp tensors
    */
-  static WoQTensors create_woq_weight_tensor(
-    const std::vector<uint64_t> &dims,
-    data_type_t scale_dtype = data_type_t::f32,
-    const std::string &name = "");
+    static WoQTensors create_woq_weight_tensor(
+            const std::vector<uint64_t> &dims,
+            data_type_t scale_dtype = data_type_t::f32,
+            const std::string &name = "");
 };
 
 /** @brief Comprehensive test parameter generator */
 class ParameterGenerator {
- public:
-  static std::vector<DataTypeCombination> supported_combinations;
-  static std::vector<MatmulParamsAI> generate_comprehensive_test_suite();
-  static std::vector<MatmulParamsAI> generate_minimal_test_suite();
-  static std::vector<MatmulParamsAI> generate_coverage_test_suite();
-  static std::vector<MatmulParamsAI> generate_category_specific_params(
-    TestCategory category);
- private:
-  static void add_coverage_accuracy_params(std::vector<MatmulParamsAI> &params);
-  static void add_coverage_boundary_params(std::vector<MatmulParamsAI> &params);
-  static void add_coverage_edge_case_params(std::vector<MatmulParamsAI> &params);
-  static void add_coverage_invalid_params(std::vector<MatmulParamsAI> &params);
-  static MatmulParamsAI generate_random_params_for_accuracy_subcategory(
-    const std::string &category,
-    DataTypeCombination data_combo,
-    const PostOpConfig &post_op_config,
-    bool expect_success);
-  static void generate_reference_kernel_exhaustive_params(
-    std::vector<MatmulParamsAI> &params);
-  static void add_minimal_accuracy_params(std::vector<MatmulParamsAI> &params);
-  static void add_accuracy_params(std::vector<MatmulParamsAI> &params);
-  static void add_boundary_params(std::vector<MatmulParamsAI> &params);
-  static void add_edge_case_params(std::vector<MatmulParamsAI> &params);
-  static void add_invalid_params(std::vector<MatmulParamsAI> &params);
-  static MatmulParamsAI create_param(uint64_t m, uint64_t n, uint64_t k,
-                                     DataTypeCombination data_types,
-                                     TestCategory category,
-                                     const PostOpConfig &post_op_config,
-                                     bool expect_success = true,
-                                     const std::string &suite_name = "");
+public:
+    static std::vector<DataTypeCombination> supported_combinations;
+    static std::vector<MatmulParamsAI> generate_comprehensive_test_suite();
+    static std::vector<MatmulParamsAI> generate_minimal_test_suite();
+    static std::vector<MatmulParamsAI> generate_coverage_test_suite();
+    static std::vector<MatmulParamsAI> generate_category_specific_params(
+            TestCategory category);
+
+private:
+    static void add_coverage_accuracy_params(
+            std::vector<MatmulParamsAI> &params);
+    static void add_coverage_boundary_params(
+            std::vector<MatmulParamsAI> &params);
+    static void add_coverage_edge_case_params(
+            std::vector<MatmulParamsAI> &params);
+    static void add_coverage_invalid_params(
+            std::vector<MatmulParamsAI> &params);
+    static MatmulParamsAI generate_random_params_for_accuracy_subcategory(
+            const std::string &category, DataTypeCombination data_combo,
+            const PostOpConfig &post_op_config, bool expect_success);
+    static void generate_reference_kernel_exhaustive_params(
+            std::vector<MatmulParamsAI> &params);
+    static void add_minimal_accuracy_params(
+            std::vector<MatmulParamsAI> &params);
+    static void add_accuracy_params(std::vector<MatmulParamsAI> &params);
+    static void add_boundary_params(std::vector<MatmulParamsAI> &params);
+    static void add_edge_case_params(std::vector<MatmulParamsAI> &params);
+    static void add_invalid_params(std::vector<MatmulParamsAI> &params);
+    static MatmulParamsAI create_param(uint64_t m, uint64_t n, uint64_t k,
+            DataTypeCombination data_types, TestCategory category,
+            const PostOpConfig &post_op_config, bool expect_success = true,
+            const std::string &suite_name = "");
 };
 
 } // namespace ai_gtests

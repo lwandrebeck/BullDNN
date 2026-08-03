@@ -18,187 +18,196 @@
 namespace zendnnl {
 namespace ops {
 
-matmul_context_t::matmul_context_t() : op_context_t(), _alpha(1.0f),
-  _beta(0.0f) {
-}
+matmul_context_t::matmul_context_t()
+    : op_context_t(), _alpha(1.0f), _beta(0.0f) {}
 
 matmul_context_t &matmul_context_t::set_alpha(float alpha_) {
-  LOG_DEBUG_INFO("Setting alpha param op_context_t");
-  _alpha = alpha_;
-  hash_key = 0;  // Invalidate hash when parameter changes
-  return *this;
+    LOG_DEBUG_INFO("Setting alpha param op_context_t");
+    _alpha = alpha_;
+    hash_key = 0; // Invalidate hash when parameter changes
+    return *this;
 }
 float matmul_context_t::get_alpha() const {
-  LOG_DEBUG_INFO("Getting alpha param op_context_t");
-  return _alpha;
+    LOG_DEBUG_INFO("Getting alpha param op_context_t");
+    return _alpha;
 }
 
 matmul_context_t &matmul_context_t::set_beta(float beta_) {
-  LOG_DEBUG_INFO("Setting beta param op_context_t");
-  _beta = beta_;
-  hash_key = 0;  // Invalidate hash when parameter changes
-  return *this;
+    LOG_DEBUG_INFO("Setting beta param op_context_t");
+    _beta = beta_;
+    hash_key = 0; // Invalidate hash when parameter changes
+    return *this;
 }
 float matmul_context_t::get_beta() const {
-  LOG_DEBUG_INFO("Getting beta param op_context_t");
-  return _beta;
+    LOG_DEBUG_INFO("Getting beta param op_context_t");
+    return _beta;
 }
 
 status_t matmul_context_t::validate() {
-  LOG_DEBUG_INFO("Validating matmul_context_t");
-  if (parent_type::validate() != status_t::success) {
-    return status_t::failure;
-  }
-
-  auto weights = get_param("weights");
-  auto bias    = get_param("bias");
-
-  if (!weights) {
-    apilog_error("Weights parameter is null");
-    return status_t::failure;
-  }
-
-  auto weights_size = weights->get_size();
-  if (weights_size.size() != 2 && weights_size.size() != 3) {
-    apilog_error("Weights size is not valid");
-    return status_t::failure;
-  }
-
-  data_type_t weight_data_type = weights->get_data_type();
-  if (weight_data_type == data_type_t::u4 &&
-      weights->get_quant_subtype() != quant_subtype_t::asymmetric) {
-    apilog_error("U4 weights must be quantized with asymmetric zero point");
-    return status_t::failure;
-  }
-  if (weights->is_quantized()) {
-    unsigned long scale_nelems = compute_product(weights->get_quant_scale_size());
-    unsigned long N = weights_size.at(weights_size.size()-1);
-    unsigned long K = weights_size.at(weights_size.size()-2);
-    
-    // Supported quantization granularities:
-    // - Per-tensor:  scale_nelems == 1
-    // - Per-channel: scale_nelems == N
-    // - Per-group:   scale_nelems == G * N, where G divides K evenly
-    bool is_per_tensor = (scale_nelems == 1);
-    bool is_per_channel = (scale_nelems == N);
-    bool is_per_group = (scale_nelems > N) && (scale_nelems % N == 0) && 
-                        (K % (scale_nelems / N) == 0);
-    
-    if (!(is_per_tensor || is_per_channel || is_per_group)) {
-      apilog_error("Weights quant scale supports per tensor, per channel, or per group quantization");
-      return status_t::failure;
-    }
-    
-    if (weights->get_quant_subtype() == quant_subtype_t::asymmetric) {
-      unsigned long zero_nelems = compute_product(weights->get_quant_zero_size());
-      data_type_t zero_data_type = weights->get_quant_zero_data_type();
-      // Zero point supports same granularities as scale
-      bool zp_is_per_tensor = (zero_nelems == 1);
-      bool zp_is_per_channel = (zero_nelems == N);
-      bool zp_is_per_group = (zero_nelems > N) && (zero_nelems % N == 0) && 
-                              (K % (zero_nelems / N) == 0);
-      
-      if (!(zp_is_per_tensor || zp_is_per_channel || zp_is_per_group)) {
-        apilog_error("Weights quant zero supports per tensor, per channel, or per group quantization");
+    LOG_DEBUG_INFO("Validating matmul_context_t");
+    if (parent_type::validate() != status_t::success) {
         return status_t::failure;
-      }
-      // WOQ: U4 requires bf16 or s8 zero point
-      if (weight_data_type == data_type_t::u4) {
-        if (zero_data_type != data_type_t::bf16 && zero_data_type != data_type_t::s8) {
-          apilog_error("Weights quant zero supports only bf16 or s8 data type for u4 tensor");
-          return status_t::failure;
+    }
+
+    auto weights = get_param("weights");
+    auto bias = get_param("bias");
+
+    if (!weights) {
+        apilog_error("Weights parameter is null");
+        return status_t::failure;
+    }
+
+    auto weights_size = weights->get_size();
+    if (weights_size.size() != 2 && weights_size.size() != 3) {
+        apilog_error("Weights size is not valid");
+        return status_t::failure;
+    }
+
+    data_type_t weight_data_type = weights->get_data_type();
+    if (weight_data_type == data_type_t::u4
+            && weights->get_quant_subtype() != quant_subtype_t::asymmetric) {
+        apilog_error("U4 weights must be quantized with asymmetric zero point");
+        return status_t::failure;
+    }
+    if (weights->is_quantized()) {
+        unsigned long scale_nelems
+                = compute_product(weights->get_quant_scale_size());
+        unsigned long N = weights_size.at(weights_size.size() - 1);
+        unsigned long K = weights_size.at(weights_size.size() - 2);
+
+        // Supported quantization granularities:
+        // - Per-tensor:  scale_nelems == 1
+        // - Per-channel: scale_nelems == N
+        // - Per-group:   scale_nelems == G * N, where G divides K evenly
+        bool is_per_tensor = (scale_nelems == 1);
+        bool is_per_channel = (scale_nelems == N);
+        bool is_per_group = (scale_nelems > N) && (scale_nelems % N == 0)
+                && (K % (scale_nelems / N) == 0);
+
+        if (!(is_per_tensor || is_per_channel || is_per_group)) {
+            apilog_error(
+                    "Weights quant scale supports per tensor, per channel, or "
+                    "per group quantization");
+            return status_t::failure;
         }
-      }
-      else if (zero_data_type != data_type_t::s32 && zero_data_type != data_type_t::s8 &&
-               zero_data_type != data_type_t::u8) {
-        apilog_error("Weights quant zero supports only s32, s8, or u8 data type for weights tensor");
-        return status_t::failure;
-      }
-    }
-  }
 
-  if (bias) {
-    auto bias_size = bias->get_size();
-    if (weights_size.at(weights_size.size()-1) != bias_size.at(
-          bias_size.size()-1)) {
-      apilog_error("Bias size mismatch with weights. weights size=",
-                   weights_size.at(weights_size.size()-1), " bias size=",
-                   bias_size.at(bias_size.size()-1));
-      return status_t::failure;
+        if (weights->get_quant_subtype() == quant_subtype_t::asymmetric) {
+            unsigned long zero_nelems
+                    = compute_product(weights->get_quant_zero_size());
+            data_type_t zero_data_type = weights->get_quant_zero_data_type();
+            // Zero point supports same granularities as scale
+            bool zp_is_per_tensor = (zero_nelems == 1);
+            bool zp_is_per_channel = (zero_nelems == N);
+            bool zp_is_per_group = (zero_nelems > N) && (zero_nelems % N == 0)
+                    && (K % (zero_nelems / N) == 0);
+
+            if (!(zp_is_per_tensor || zp_is_per_channel || zp_is_per_group)) {
+                apilog_error(
+                        "Weights quant zero supports per tensor, per channel, "
+                        "or per group quantization");
+                return status_t::failure;
+            }
+            // WOQ: U4 requires bf16 or s8 zero point
+            if (weight_data_type == data_type_t::u4) {
+                if (zero_data_type != data_type_t::bf16
+                        && zero_data_type != data_type_t::s8) {
+                    apilog_error(
+                            "Weights quant zero supports only bf16 or s8 data "
+                            "type for u4 tensor");
+                    return status_t::failure;
+                }
+            } else if (zero_data_type != data_type_t::s32
+                    && zero_data_type != data_type_t::s8
+                    && zero_data_type != data_type_t::u8) {
+                apilog_error(
+                        "Weights quant zero supports only s32, s8, or u8 data "
+                        "type for weights tensor");
+                return status_t::failure;
+            }
+        }
     }
 
-    if (bias->get_nelem() != bias_size.at(bias_size.size()-1)) {
-      apilog_error("Bias size does not match the expected number of elements");
-      return status_t::failure;
+    if (bias) {
+        auto bias_size = bias->get_size();
+        if (weights_size.at(weights_size.size() - 1)
+                != bias_size.at(bias_size.size() - 1)) {
+            apilog_error("Bias size mismatch with weights. weights size=",
+                    weights_size.at(weights_size.size() - 1),
+                    " bias size=", bias_size.at(bias_size.size() - 1));
+            return status_t::failure;
+        }
+
+        if (bias->get_nelem() != bias_size.at(bias_size.size() - 1)) {
+            apilog_error(
+                    "Bias size does not match the expected number of elements");
+            return status_t::failure;
+        }
     }
-  }
-  return status_t::success;
+    return status_t::success;
 }
 
 status_t matmul_context_t::preprocess() {
-  LOG_DEBUG_INFO("Preprocessing matmul_context_t");
+    LOG_DEBUG_INFO("Preprocessing matmul_context_t");
 #if ZENDNNL_DEPENDS_AOCLDLP
-  //aocl context pointer
-  aocl_dlp_utils_ptr = std::make_shared<aocl_dlp_utils_t>();
+    //aocl context pointer
+    aocl_dlp_utils_ptr = std::make_shared<aocl_dlp_utils_t>();
 #endif
-  return status_t::success;
+    return status_t::success;
 }
 
 std::string matmul_context_t::context_info() {
-  std::stringstream ss;
-  auto weights = get_param("weights").value();
-  auto bias    = get_param("bias");
+    std::stringstream ss;
+    auto weights = get_param("weights").value();
+    auto bias = get_param("bias");
 
-  auto post_op_count = get_post_op_count();
-  ss << "MatMul context create - " << weights.tensor_info();
+    auto post_op_count = get_post_op_count();
+    ss << "MatMul context create - " << weights.tensor_info();
 
-  if (bias) {
-    ss << "," <<bias.value().tensor_info();
-  }
-  ss << ",alpha:" << get_alpha() << ",beta:" << get_beta();
-  if (post_op_count) {
-    ss <<",post-op";
+    if (bias) { ss << "," << bias.value().tensor_info(); }
+    ss << ",alpha:" << get_alpha() << ",beta:" << get_beta();
+    if (post_op_count) {
+        ss << ",post-op";
 
-    for (uint32_t i = 0; i < post_op_count; ++i) {
-      post_op_t zen_po = get_post_op(i);
-      ss << ":" << zen_po.post_op_info(zen_po);
+        for (uint32_t i = 0; i < post_op_count; ++i) {
+            post_op_t zen_po = get_post_op(i);
+            ss << ":" << zen_po.post_op_info(zen_po);
+        }
     }
-  }
 
-  return ss.str();
+    return ss.str();
 }
 
 #if ZENDNNL_DEPENDS_AOCLDLP
 dlp_metadata_t *matmul_context_t::get_aocl_dlp_post_op_ptr_unsafe() const {
-  LOG_DEBUG_INFO("Getting aocl_dlp_post_op_ptr from matmul_context_t");
-  return aocl_dlp_utils_ptr->get_aocl_dlp_post_op_ptr_unsafe();
+    LOG_DEBUG_INFO("Getting aocl_dlp_post_op_ptr from matmul_context_t");
+    return aocl_dlp_utils_ptr->get_aocl_dlp_post_op_ptr_unsafe();
 }
 
 void *matmul_context_t::get_aocl_dlp_reordered_weights_ptr_unsafe() const {
-  LOG_DEBUG_INFO("Getting aocl_dlp_reordered_weights_ptr from matmul_context_t");
-  return aocl_dlp_utils_ptr->get_aocl_dlp_reordered_weights_ptr_unsafe();
+    LOG_DEBUG_INFO(
+            "Getting aocl_dlp_reordered_weights_ptr from matmul_context_t");
+    return aocl_dlp_utils_ptr->get_aocl_dlp_reordered_weights_ptr_unsafe();
 }
 #endif
 
 std::size_t matmul_context_t::hash() {
-  LOG_DEBUG_INFO("Creating hash for matmul_context_t");
+    LOG_DEBUG_INFO("Creating hash for matmul_context_t");
 
-  if (status == status_t::success) {
-    if (hash_key) {
-      return hash_key;  // Return cached hash if already computed
+    if (status == status_t::success) {
+        if (hash_key) {
+            return hash_key; // Return cached hash if already computed
+        }
+
+        // First compute the base class hash (includes params and post_ops)
+        hash_key = parent_type::hash();
+
+        // Include matmul-specific parameters in the hash
+        hash_key = hash_combine(hash_key, _alpha);
+        hash_key = hash_combine(hash_key, _beta);
     }
 
-    // First compute the base class hash (includes params and post_ops)
-    hash_key = parent_type::hash();
-
-    // Include matmul-specific parameters in the hash
-    hash_key = hash_combine(hash_key, _alpha);
-    hash_key = hash_combine(hash_key, _beta);
-  }
-
-  return hash_key;
+    return hash_key;
 }
 
 } //namespace ops
 } //namespace zendnnl
-

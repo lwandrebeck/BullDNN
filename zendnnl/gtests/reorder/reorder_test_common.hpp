@@ -37,60 +37,59 @@
 #ifndef ZENDNNL_GTESTS_REORDER_REORDER_TEST_COMMON_HPP
 #define ZENDNNL_GTESTS_REORDER_REORDER_TEST_COMMON_HPP
 
-#include <gtest/gtest.h>
 #include <cmath>
 #include "gtest_utils.hpp"
+#include <gtest/gtest.h>
 // `ReorderType` + the reorder kernel/compare/shape helpers used by every
 // reorder TEST_P body live here (lifted out of gtest_utils.hpp).
 #include "reorder_test_helpers.hpp"
 
 /** @brief TestReorder is a test class to handle parameters */
 class TestReorder : public ::testing::TestWithParam<ReorderType> {
- protected:
-  /** @brief SetUp is to initialize test parameters
+protected:
+    /** @brief SetUp is to initialize test parameters
    *
    *  This method is a standard and is used in googletests to initialize parameters
    *  for each test and also acts as fixtures i.e. handling the common part of
    *  each test.
    *
    * */
-  virtual void SetUp() {
-    ReorderType params = GetParam();
-    use_LOWOHA = params.is_lowoha_test;
+    virtual void SetUp() {
+        ReorderType params = GetParam();
+        use_LOWOHA = params.is_lowoha_test;
 
-    // LOWOHA-only mode: tests are masked when the user explicitly selects the
-    // regular (non-LOWOHA) API. Skip with a message asking the user to use the
-    // LOA (LOWOHA) API. GTEST_SKIP() returns from SetUp(), so the LOWOHA
-    // initialization below only executes on the LOWOHA path.
-    if (!use_LOWOHA) {
-      GTEST_SKIP() << "Skipping: please use LOA (LOWOHA) API. "
-                   << "Omit --lowoha or pass --lowoha true to run these tests.";
+        // LOWOHA-only mode: tests are masked when the user explicitly selects the
+        // regular (non-LOWOHA) API. Skip with a message asking the user to use the
+        // LOA (LOWOHA) API. GTEST_SKIP() returns from SetUp(), so the LOWOHA
+        // initialization below only executes on the LOWOHA path.
+        if (!use_LOWOHA) {
+            GTEST_SKIP() << "Skipping: please use LOA (LOWOHA) API. "
+                         << "Omit --lowoha or pass --lowoha true to run these "
+                            "tests.";
+        }
+        // Reseed per test so the in-body data fills are reproducible and
+        // order-independent for a fixed --seed. Sub-mode selections live on the
+        // ReorderType param, so this does not reduce their diversity. After the
+        // skip guard so a skipped test doesn't perturb the RNG for later tests.
+        srand(static_cast<unsigned int>(seed));
+        lowoha_params = params;
+        omp_set_num_threads(lowoha_params.num_threads);
     }
-    // Reseed per test so the in-body data fills are reproducible and
-    // order-independent for a fixed --seed. Sub-mode selections live on the
-    // ReorderType param, so this does not reduce their diversity. After the
-    // skip guard so a skipped test doesn't perturb the RNG for later tests.
-    srand(static_cast<unsigned int>(seed));
-    lowoha_params = params;
-    omp_set_num_threads(lowoha_params.num_threads);
-  }
 
-  /** @brief TearDown is used to free resource used in test */
-  virtual void TearDown() {
-    clear_matmul_test_caches();
-  }
+    /** @brief TearDown is used to free resource used in test */
+    virtual void TearDown() { clear_matmul_test_caches(); }
 
-  uint64_t m, k, n;
-  bool transA, transB;
-  std::vector<post_op_type_t> po_types;
-  bool inplace_reorder;
-  data_type_t source_dtype;
-  bool use_LOWOHA;
-  matmul_algo_t algo;
-  int32_t num_threads;
-  tensor_factory_t tensor_factory{};
+    uint64_t m, k, n;
+    bool transA, transB;
+    std::vector<post_op_type_t> po_types;
+    bool inplace_reorder;
+    data_type_t source_dtype;
+    bool use_LOWOHA;
+    matmul_algo_t algo;
+    int32_t num_threads;
+    tensor_factory_t tensor_factory {};
 
-  ReorderType lowoha_params;
+    ReorderType lowoha_params;
 };
 
-#endif  // ZENDNNL_GTESTS_REORDER_REORDER_TEST_COMMON_HPP
+#endif // ZENDNNL_GTESTS_REORDER_REORDER_TEST_COMMON_HPP

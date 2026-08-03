@@ -1,5 +1,5 @@
 /********************************************************************************
-# * Copyright (c) 2023-2024 Advanced Micro Devices, Inc. All rights reserved.
+# * Copyright (c) 2023-2026 Advanced Micro Devices, Inc. All rights reserved.
 # *
 # * Licensed under the Apache License, Version 2.0 (the "License");
 # * you may not use this file except in compliance with the License.
@@ -16,11 +16,11 @@
 #ifndef _COMPARE_EXECUTE_HPP_
 #define _COMPARE_EXECUTE_HPP_
 
-#include <vector>
+#include <cstdlib>
+#include <cstring>
 #include <iostream>
 #include <memory>
-#include <cstring>
-#include <cstdlib>
+#include <vector>
 #include "compare_context.hpp"
 #include "operators/common/operator_kernel.hpp"
 
@@ -30,21 +30,20 @@ namespace ops {
 using namespace zendnnl::error_handling;
 
 class compare_ref_kernel_t final : public op_kernel_t<compare_context_t> {
- public:
-  status_t execute(const context_type &context_,
-                   tensor_map_type &inputs_,
-                   tensor_map_type &outputs_) override;
+public:
+    status_t execute(const context_type &context_, tensor_map_type &inputs_,
+            tensor_map_type &outputs_) override;
 
- private:
-  template <typename T>
-  status_t compare_ref_kernel_execute_templated(
-    const op_kernel_t<compare_context_t>::context_type& context_,
-    op_kernel_t<compare_context_t>::tensor_map_type &input_,
-    op_kernel_t<compare_context_t>::tensor_map_type &output_);
+private:
+    template <typename T>
+    status_t compare_ref_kernel_execute_templated(
+            const op_kernel_t<compare_context_t>::context_type &context_,
+            op_kernel_t<compare_context_t>::tensor_map_type &input_,
+            op_kernel_t<compare_context_t>::tensor_map_type &output_);
 };
 
 extern "C" {
-  zendnnl::ops::compare_ref_kernel_t *get_compare_kernel();
+zendnnl::ops::compare_ref_kernel_t *get_compare_kernel();
 }
 
 } //namespace ops

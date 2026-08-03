@@ -18,8 +18,8 @@
 #define LOWOHA_FLASH_SDPA_UTILS_HPP
 
 #include <cstdint>
-#include "common/zendnnl_global.hpp"
 #include "common/logging.hpp"
+#include "common/zendnnl_global.hpp"
 #include "lowoha_operators/sdpa/lowoha_sdpa_common.hpp"
 
 namespace zendnnl {
@@ -39,14 +39,9 @@ using namespace zendnnl::common;
  * @param params       Flash SDPA parameters
  * @return status_t::success if valid, status_t::failure otherwise
  */
-status_t validate_flash_sdpa_inputs(
-  const void *query,
-  const void *key,
-  const void *value,
-  void *output,
-  const void *attn_mask,
-  const sdpa_params &params
-);
+status_t validate_flash_sdpa_inputs(const void *query, const void *key,
+        const void *value, void *output, const void *attn_mask,
+        const sdpa_params &params);
 
 } // namespace sdpa
 } // namespace lowoha

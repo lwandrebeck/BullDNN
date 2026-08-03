@@ -58,44 +58,45 @@
  *  set of LOWOHA-specific fields used when `is_lowoha_test == true`.
  */
 struct ReorderType {
-  bool inplace_reorder = false;
-  MatmulType mat{};
+    bool inplace_reorder = false;
+    MatmulType mat {};
 
-  // LOWOHA-specific parameters (used when is_lowoha_test = true)
-  // Flag to distinguish LOWOHA reorder tests
-  bool is_lowoha_test = false;
-  // Rows dimension (LOWOHA)
-  uint64_t M = 0;
-  //  Columns dimension (LOWOHA)
-  uint64_t N = 0;
-  //  Batch dimension (0=1D, 1=2D, >1=3D) (LOWOHA)
-  uint64_t batch = 0;
-  //  Source data type (LOWOHA, set by TEST_P)
-  data_type_t src_dtype = data_type_t::f32;
-  //  Destination data type (LOWOHA, set by TEST_P)
-  data_type_t dst_dtype = data_type_t::s8;
-  //  Quantization granularity (LOWOHA)
-  quant_granularity_t granularity = quant_granularity_t::tensor;
-  //  Number of groups for per-group quant (LOWOHA)
-  uint64_t num_groups = 0;
-  //  Use strided source memory (LOWOHA, set by TEST_P)
-  bool use_strided_src = false;
-  //  LOWOHA algorithm selection (LOWOHA, set by TEST_P)
-  reorder_algo_t lowoha_algo = reorder_algo_t::native;
-  //  Number of threads (LOWOHA)
-  int32_t num_threads = 1;
+    // LOWOHA-specific parameters (used when is_lowoha_test = true)
+    // Flag to distinguish LOWOHA reorder tests
+    bool is_lowoha_test = false;
+    // Rows dimension (LOWOHA)
+    uint64_t M = 0;
+    //  Columns dimension (LOWOHA)
+    uint64_t N = 0;
+    //  Batch dimension (0=1D, 1=2D, >1=3D) (LOWOHA)
+    uint64_t batch = 0;
+    //  Source data type (LOWOHA, set by TEST_P)
+    data_type_t src_dtype = data_type_t::f32;
+    //  Destination data type (LOWOHA, set by TEST_P)
+    data_type_t dst_dtype = data_type_t::s8;
+    //  Quantization granularity (LOWOHA)
+    quant_granularity_t granularity = quant_granularity_t::tensor;
+    //  Number of groups for per-group quant (LOWOHA)
+    uint64_t num_groups = 0;
+    //  Use strided source memory (LOWOHA, set by TEST_P)
+    bool use_strided_src = false;
+    //  LOWOHA algorithm selection (LOWOHA, set by TEST_P)
+    reorder_algo_t lowoha_algo = reorder_algo_t::native;
+    //  Number of threads (LOWOHA)
+    int32_t num_threads = 1;
 
-  // Per-instance sub-mode selections, fixed at construction so coverage stays
-  // diverse yet reproducible and order-independent for a fixed --seed.
-  bool is_symmetric = true;        // quant: S8 (symmetric) vs U8 (asymmetric)
-  bool cvt_direction_swap = false; // type conversion: which dtype is the source
-  bool use_col_variant = false;    // quant scale/zp shape: per-col vs per-row
-  uint64_t row_padding = 0;        // strided: extra row padding (0 = contiguous)
+    // Per-instance sub-mode selections, fixed at construction so coverage stays
+    // diverse yet reproducible and order-independent for a fixed --seed.
+    bool is_symmetric = true; // quant: S8 (symmetric) vs U8 (asymmetric)
+    bool cvt_direction_swap
+            = false; // type conversion: which dtype is the source
+    bool use_col_variant = false; // quant scale/zp shape: per-col vs per-row
+    uint64_t row_padding = 0; // strided: extra row padding (0 = contiguous)
 
-  /// @param test_index Index of current test (for partitioning)
-  /// @param total_tests Total number of tests
-  ReorderType(const ReorderInput &reorder_input = ReorderInput(),
-              uint32_t test_index = 0, uint32_t total_tests = 1);
+    /// @param test_index Index of current test (for partitioning)
+    /// @param total_tests Total number of tests
+    ReorderType(const ReorderInput &reorder_input = ReorderInput(),
+            uint32_t test_index = 0, uint32_t total_tests = 1);
 };
 
 /// Global vector populated once by `gtest_main.cpp::main()`; consumed by
@@ -113,8 +114,8 @@ void PrintTo(const ReorderType &value, ::std::ostream *os);
  *
  * */
 std::pair<tensor_t, status_t> reorder_kernel_test(tensor_t &input_tensor,
-    bool inplace_reorder, void **reorder_weights,
-    data_type_t source_dtype = data_type_t::f32);
+        bool inplace_reorder, void **reorder_weights,
+        data_type_t source_dtype = data_type_t::f32);
 
 /** @fn lowoha_reorder_kernel_test
  *  @brief Test function for LOWOHA reorder kernel (quantization/dequantization)
@@ -129,12 +130,9 @@ std::pair<tensor_t, status_t> reorder_kernel_test(tensor_t &input_tensor,
  *  @param dynamic_quant If true, enables dynamic quantization (default: false)
  *  @return status_t Success or failure status
  */
-status_t lowoha_reorder_kernel_test(tensor_t &src_tensor,
-                                    tensor_t &dst_tensor,
-                                    tensor_t &scale_tensor,
-                                    tensor_t &zp_tensor,
-                                    const ReorderType &params,
-                                    bool dynamic_quant = false);
+status_t lowoha_reorder_kernel_test(tensor_t &src_tensor, tensor_t &dst_tensor,
+        tensor_t &scale_tensor, tensor_t &zp_tensor, const ReorderType &params,
+        bool dynamic_quant = false);
 
 /** @fn compare_lowoha_reorder_output
  *  @brief Compare LOWOHA reorder output with reference
@@ -147,9 +145,8 @@ status_t lowoha_reorder_kernel_test(tensor_t &src_tensor,
  *  @param is_comparison_successful Output flag indicating comparison result
  */
 void compare_lowoha_reorder_output(tensor_t &output_tensor,
-                                   tensor_t &ref_tensor,
-                                   const ReorderType &params,
-                                   bool &is_comparison_successful);
+        tensor_t &ref_tensor, const ReorderType &params,
+        bool &is_comparison_successful);
 
 /** @fn lowoha_granularity_to_str
  *  @brief Convert quantization granularity enum to string
@@ -177,7 +174,7 @@ std::string lowoha_reorder_algo_to_str(reorder_algo_t algo);
  *  @param use_scale_zp Whether scale/zero-point is used
  */
 void log_lowoha_test_info(const ReorderType &params, data_type_t src_dt,
-                          data_type_t dst_dt, bool strided, bool use_scale_zp);
+        data_type_t dst_dt, bool strided, bool use_scale_zp);
 
 /** @fn get_lowoha_shape
  *  @brief Get LOWOHA tensor shape based on batch dimension
@@ -225,9 +222,7 @@ std::vector<size_t> get_lowoha_quant_shape(const ReorderType &params);
  *  @param is_comparison_successful Output flag indicating comparison result
  */
 void compare_lowoha_quant_output(tensor_t &original_tensor,
-                                 tensor_t &dequant_tensor,
-                                 tensor_t &scale_tensor,
-                                 const ReorderType &params,
-                                 bool &is_comparison_successful);
+        tensor_t &dequant_tensor, tensor_t &scale_tensor,
+        const ReorderType &params, bool &is_comparison_successful);
 
-#endif  // ZENDNNL_GTESTS_REORDER_REORDER_TEST_HELPERS_HPP
+#endif // ZENDNNL_GTESTS_REORDER_REORDER_TEST_HELPERS_HPP

@@ -1,5 +1,5 @@
 /********************************************************************************
-# * Copyright (c) 2023-2024 Advanced Micro Devices, Inc. All rights reserved.
+# * Copyright (c) 2023-2026 Advanced Micro Devices, Inc. All rights reserved.
 # *
 # * Licensed under the Apache License, Version 2.0 (the "License");
 # * you may not use this file except in compliance with the License.
@@ -20,19 +20,18 @@ namespace zendnnl {
 namespace ops {
 using namespace zendnnl::error_handling;
 status_t sample_bf16_avx512_kernel_t::execute(const context_type &context_,
-    tensor_map_type &inputs_,
-    tensor_map_type &outputs_) {
+        tensor_map_type &inputs_, tensor_map_type &outputs_) {
 
-  log_info("sample_bf16_avx512_kernel");
+    log_info("sample_bf16_avx512_kernel");
 
-  return status_t::success;
+    return status_t::success;
 }
 
 } //namespace ops
 } //namespace zendnnl
 
 extern "C" {
-  zendnnl::ops::sample_bf16_avx512_kernel_t *get_sample_bf16_avx512_kernel() {
+zendnnl::ops::sample_bf16_avx512_kernel_t *get_sample_bf16_avx512_kernel() {
     return new zendnnl::ops::sample_bf16_avx512_kernel_t();
-  }
+}
 }

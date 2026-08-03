@@ -48,12 +48,12 @@
 namespace {
 
 class TestWeightCacheInplace : public ::testing::Test {
- protected:
-  void TearDown() override { clear_matmul_test_caches(); }
-  tensor_factory_t tensor_factory{};
+protected:
+    void TearDown() override { clear_matmul_test_caches(); }
+    tensor_factory_t tensor_factory {};
 };
 
-}  // namespace
+} // namespace
 
 // Common case: u8 activations (nonzero src_zp) x symmetric s8 weights
 // (wei_zp == 0) -> 1D zero-point compensation. Run under WEIGHT_CACHE=2 (in-place
@@ -61,77 +61,79 @@ class TestWeightCacheInplace : public ::testing::Test {
 // against the reference kernel. The 1D compensation is computed from the plain
 // weights and cached, so the in-place reorder cannot corrupt it.
 TEST_F(TestWeightCacheInplace, Cached1D_InPlaceWeightMutation) {
-  const uint64_t m = 32, k = 256, n = 256;
-  const bool use_LOWOHA = true;
-  const auto algo = matmul_algo_t::aocl_dlp_blocked;
-  const std::vector<post_op_type_t> po_types{};
-  const std::vector<tensor_t> binary_tensors{};
+    const uint64_t m = 32, k = 256, n = 256;
+    const bool use_LOWOHA = true;
+    const auto algo = matmul_algo_t::aocl_dlp_blocked;
+    const std::vector<post_op_type_t> po_types {};
+    const std::vector<tensor_t> binary_tensors {};
 
-  // Symmetric s8 weights (per-tensor scale, wei_zp == 0).
-  auto wei_ref = tensor_factory.uniform_dist_tensor({k, n}, data_type_t::bf16,
-                 25.0, /*transB=*/false);
-  tensor_t weight_tensor, wei_scale, wei_zp;
-  ASSERT_EQ(quant_params_compute(tensor_factory, wei_ref, data_type_t::bf16,
-                                 data_type_t::s8, {1, 1}, data_type_t::f32,
-                                 wei_scale, wei_zp, &weight_tensor),
+    // Symmetric s8 weights (per-tensor scale, wei_zp == 0).
+    auto wei_ref = tensor_factory.uniform_dist_tensor(
+            {k, n}, data_type_t::bf16, 25.0, /*transB=*/false);
+    tensor_t weight_tensor, wei_scale, wei_zp;
+    ASSERT_EQ(quant_params_compute(tensor_factory, wei_ref, data_type_t::bf16,
+                      data_type_t::s8, {1, 1}, data_type_t::f32, wei_scale,
+                      wei_zp, &weight_tensor),
             status_t::success)
-      << "weight quantization failed";
+            << "weight quantization failed";
 
-  // u8 activations -> asymmetric -> nonzero src_zp.
-  auto src_ref = tensor_factory.uniform_dist_tensor({m, k}, data_type_t::bf16,
-                 25.0, /*transA=*/false);
-  tensor_t input_tensor, src_scale, src_zp;
-  ASSERT_EQ(quant_params_compute(tensor_factory, src_ref, data_type_t::bf16,
-                                 data_type_t::u8, {1, 1}, data_type_t::f32,
-                                 src_scale, src_zp, &input_tensor),
+    // u8 activations -> asymmetric -> nonzero src_zp.
+    auto src_ref = tensor_factory.uniform_dist_tensor(
+            {m, k}, data_type_t::bf16, 25.0, /*transA=*/false);
+    tensor_t input_tensor, src_scale, src_zp;
+    ASSERT_EQ(quant_params_compute(tensor_factory, src_ref, data_type_t::bf16,
+                      data_type_t::u8, {1, 1}, data_type_t::f32, src_scale,
+                      src_zp, &input_tensor),
             status_t::success)
-      << "source quantization failed";
+            << "source quantization failed";
 
-  auto bias_tensor = tensor_factory.uniform_dist_tensor({1, n},
-                     data_type_t::f32, 2.0);
-  auto output_tensor = tensor_factory.uniform_dist_tensor({m, n},
-                       data_type_t::bf16, 2.0);
-  auto output_tensor_ref = tensor_factory.uniform_dist_tensor({m, n},
-                           data_type_t::bf16, 2.0);
+    auto bias_tensor
+            = tensor_factory.uniform_dist_tensor({1, n}, data_type_t::f32, 2.0);
+    auto output_tensor = tensor_factory.uniform_dist_tensor(
+            {m, n}, data_type_t::bf16, 2.0);
+    auto output_tensor_ref = tensor_factory.uniform_dist_tensor(
+            {m, n}, data_type_t::bf16, 2.0);
 
-  // Reference FIRST, on the pristine weight buffer: the WEIGHT_CACHE=2 run below
-  // reorders those weights IN PLACE, so computing the reference afterwards would
-  // read the mutated (blocked) bytes and produce a wrong baseline.
-  status_t ref_status = matmul_forced_ref_kernel_test(input_tensor,
-                        weight_tensor, bias_tensor, output_tensor_ref, po_types,
-                        binary_tensors, use_LOWOHA, algo, 1.0, 0.0);
-  ASSERT_EQ(ref_status, status_t::success) << "reference kernel failed";
-  clear_matmul_test_caches();
+    // Reference FIRST, on the pristine weight buffer: the WEIGHT_CACHE=2 run below
+    // reorders those weights IN PLACE, so computing the reference afterwards would
+    // read the mutated (blocked) bytes and produce a wrong baseline.
+    status_t ref_status = matmul_forced_ref_kernel_test(input_tensor,
+            weight_tensor, bias_tensor, output_tensor_ref, po_types,
+            binary_tensors, use_LOWOHA, algo, 1.0, 0.0);
+    ASSERT_EQ(ref_status, status_t::success) << "reference kernel failed";
+    clear_matmul_test_caches();
 
-  // Pin WEIGHT_CACHE=2 (in-place reorder + weight-buffer reuse) and force the
-  // 1D ZP-comp cache ON so the assertion below is not perturbed by an external
-  // ZENDNNL_ZP_COMP_CACHE=0 in the environment. Both are restored on scope exit.
-  WeightCacheGuard wc_guard(2);
-  ZpCompCacheGuard zp_guard(true);
+    // Pin WEIGHT_CACHE=2 (in-place reorder + weight-buffer reuse) and force the
+    // 1D ZP-comp cache ON so the assertion below is not perturbed by an external
+    // ZENDNNL_ZP_COMP_CACHE=0 in the environment. Both are restored on scope exit.
+    WeightCacheGuard wc_guard(2);
+    ZpCompCacheGuard zp_guard(true);
 
-  // Run the matmul repeatedly on the SAME weight buffer. matmul_kernel_test
-  // warms up (reordering the weights in place on the first touch) and runs the
-  // real matmul; subsequent iterations reuse the in-place-reordered weights and
-  // the cached 1D compensation. Every iteration must match the reference — if
-  // the compensation were derived from the reordered bytes, reuse would diverge.
-  constexpr int kIterations = 3;
-  for (int iter = 0; iter < kIterations; ++iter) {
-    status_t status = matmul_kernel_test(input_tensor, weight_tensor,
-                                         bias_tensor, output_tensor, po_types,
-                                         binary_tensors, use_LOWOHA, algo, 1.0,
-                                         0.0);
-    if (status == status_t::isa_unsupported) {
-      GTEST_SKIP() << "AOCL-DLP blocked INT8 not supported on this ISA";
+    // Run the matmul repeatedly on the SAME weight buffer. matmul_kernel_test
+    // warms up (reordering the weights in place on the first touch) and runs the
+    // real matmul; subsequent iterations reuse the in-place-reordered weights and
+    // the cached 1D compensation. Every iteration must match the reference — if
+    // the compensation were derived from the reordered bytes, reuse would diverge.
+    constexpr int kIterations = 3;
+    for (int iter = 0; iter < kIterations; ++iter) {
+        status_t status = matmul_kernel_test(input_tensor, weight_tensor,
+                bias_tensor, output_tensor, po_types, binary_tensors,
+                use_LOWOHA, algo, 1.0, 0.0);
+        if (status == status_t::isa_unsupported) {
+            GTEST_SKIP() << "AOCL-DLP blocked INT8 not supported on this ISA";
+        }
+        ASSERT_EQ(status, status_t::success)
+                << "matmul failed on iteration " << iter;
+
+        bool ok = true;
+        compare_tensor_2D_matrix(output_tensor, output_tensor_ref, m, n, k,
+                rtol_bf16, epsilon_bf16, ok, false, 1.0f,
+                /*is_quant=*/true);
+        EXPECT_TRUE(ok)
+                << "WEIGHT_CACHE=2 output diverged from the reference on "
+                   "iteration "
+                << iter
+                << " — in-place reorder corrupted "
+                   "the zero-point compensation";
     }
-    ASSERT_EQ(status, status_t::success)
-        << "matmul failed on iteration " << iter;
-
-    bool ok = true;
-    compare_tensor_2D_matrix(output_tensor, output_tensor_ref, m, n, k,
-                             rtol_bf16, epsilon_bf16, ok, false, 1.0f,
-                             /*is_quant=*/true);
-    EXPECT_TRUE(ok) << "WEIGHT_CACHE=2 output diverged from the reference on "
-                       "iteration " << iter << " — in-place reorder corrupted "
-                       "the zero-point compensation";
-  }
 }

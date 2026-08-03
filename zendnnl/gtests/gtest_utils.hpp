@@ -16,33 +16,33 @@
 
 #ifndef _GTEST_UTILS_HPP_
 #define _GTEST_UTILS_HPP_
-#include <optional>
-#include <string>
-#include <vector>
-#include <random>
 #include <algorithm>
-#include <variant>
 #include <omp.h>
-#include "memory/tensor.hpp"
+#include <optional>
+#include <random>
+#include <string>
+#include <variant>
+#include <vector>
 #include "common/zendnnl_global.hpp"
-#include "operators/matmul/matmul_context.hpp"
-#include "operators/matmul/matmul_operator.hpp"
-#include "operators/reorder/reorder_context.hpp"
-#include "operators/reorder/reorder_operator.hpp"
-#include "operators/embag/embag_context.hpp"
-#include "operators/embag/embag_operator.hpp"
-#include "lowoha_operators/matmul/lowoha_matmul.hpp"
-#include "lowoha_operators/reorder/lowoha_reorder.hpp"
+#include "lowoha_operators/embedding_bag/lowoha_embag_ref_kernel.hpp"
 #include "lowoha_operators/embedding_bag/lowoha_embedding_bag.hpp"
+#include "lowoha_operators/matmul/lowoha_matmul.hpp"
+#include "lowoha_operators/normalization/kernel/reference_kernel.hpp"
 #include "lowoha_operators/normalization/lowoha_normalization.hpp"
 #include "lowoha_operators/normalization/lowoha_normalization_utils.hpp"
-#include "lowoha_operators/normalization/kernel/reference_kernel.hpp"
+#include "lowoha_operators/reorder/lowoha_reorder.hpp"
 #include "lowoha_operators/sdpa/lowoha_sdpa.hpp"
 #include "lowoha_operators/sdpa/lowoha_sdpa_common.hpp"
 #include "lowoha_operators/sdpa/reference/lowoha_sdpa_ref_kernel.hpp"
 #include "lowoha_operators/softmax/lowoha_softmax.hpp"
 #include "lowoha_operators/softmax/reference_kernel.hpp"
-#include "lowoha_operators/embedding_bag/lowoha_embag_ref_kernel.hpp"
+#include "memory/tensor.hpp"
+#include "operators/embag/embag_context.hpp"
+#include "operators/embag/embag_operator.hpp"
+#include "operators/matmul/matmul_context.hpp"
+#include "operators/matmul/matmul_operator.hpp"
+#include "operators/reorder/reorder_context.hpp"
+#include "operators/reorder/reorder_operator.hpp"
 
 #define MATMUL_SIZE_START 1
 #define MATMUL_SIZE_END 3000
@@ -78,112 +78,110 @@ using namespace zendnnl::lowoha::softmax;
 // the requested mode, and restores the previous value on scope exit so a test
 // pinning a mode does not leak into sibling tests running in the same process.
 class WeightCacheGuard {
- public:
-  explicit WeightCacheGuard(int32_t mode)
-      : prev_(matmul_config_t::instance().get_weight_cache()) {
-    matmul_config_t::instance().set_weight_cache(mode);
-  }
-  ~WeightCacheGuard() {
-    matmul_config_t::instance().set_weight_cache(prev_);
-  }
-  WeightCacheGuard(const WeightCacheGuard &) = delete;
-  WeightCacheGuard &operator=(const WeightCacheGuard &) = delete;
+public:
+    explicit WeightCacheGuard(int32_t mode)
+        : prev_(matmul_config_t::instance().get_weight_cache()) {
+        matmul_config_t::instance().set_weight_cache(mode);
+    }
+    ~WeightCacheGuard() { matmul_config_t::instance().set_weight_cache(prev_); }
+    WeightCacheGuard(const WeightCacheGuard &) = delete;
+    WeightCacheGuard &operator=(const WeightCacheGuard &) = delete;
 
- private:
-  int32_t prev_;
+private:
+    int32_t prev_;
 };
 
 // RAII guard for the process-wide INT8 zero-point compensation cache toggle
 // (ZENDNNL_ZP_COMP_CACHE): saves/sets on construction, restores on scope exit.
 class ZpCompCacheGuard {
- public:
-  explicit ZpCompCacheGuard(bool enable)
-      : prev_(matmul_config_t::instance().get_zp_comp_cache()) {
-    matmul_config_t::instance().set_zp_comp_cache(enable);
-  }
-  ~ZpCompCacheGuard() {
-    matmul_config_t::instance().set_zp_comp_cache(prev_);
-  }
-  ZpCompCacheGuard(const ZpCompCacheGuard &) = delete;
-  ZpCompCacheGuard &operator=(const ZpCompCacheGuard &) = delete;
+public:
+    explicit ZpCompCacheGuard(bool enable)
+        : prev_(matmul_config_t::instance().get_zp_comp_cache()) {
+        matmul_config_t::instance().set_zp_comp_cache(enable);
+    }
+    ~ZpCompCacheGuard() {
+        matmul_config_t::instance().set_zp_comp_cache(prev_);
+    }
+    ZpCompCacheGuard(const ZpCompCacheGuard &) = delete;
+    ZpCompCacheGuard &operator=(const ZpCompCacheGuard &) = delete;
 
- private:
-  bool prev_;
+private:
+    bool prev_;
 };
 
 using StorageParam = std::variant<std::pair<size_t, void *>, tensor_t>;
 
 struct MatmulInput {
-  std::optional<uint64_t> batch_size;
-  std::optional<uint64_t> m;
-  std::optional<uint64_t> k;
-  std::optional<uint64_t> n;
-  /** When set, length must be <= POST_OPS_LIMIT (enforced again in MatmulType). */
-  std::optional<std::vector<post_op_type_t>> po_types;
-  std::optional<matmul_algo_t> algo;
-  std::optional<bool> transA;
-  std::optional<bool> transB;
-  std::optional<float> alpha;
-  std::optional<float> beta;
-  std::optional<data_type_t> src_dtype;
-  std::optional<data_type_t> dst_dtype;
-  std::optional<quant_granularity_t> weight_granularity;
+    std::optional<uint64_t> batch_size;
+    std::optional<uint64_t> m;
+    std::optional<uint64_t> k;
+    std::optional<uint64_t> n;
+    /** When set, length must be <= POST_OPS_LIMIT (enforced again in MatmulType). */
+    std::optional<std::vector<post_op_type_t>> po_types;
+    std::optional<matmul_algo_t> algo;
+    std::optional<bool> transA;
+    std::optional<bool> transB;
+    std::optional<float> alpha;
+    std::optional<float> beta;
+    std::optional<data_type_t> src_dtype;
+    std::optional<data_type_t> dst_dtype;
+    std::optional<quant_granularity_t> weight_granularity;
 };
 
 struct ReorderInput {
-  std::optional<bool> inplace_reorder;
-  MatmulInput matmul_input;
-  std::optional<uint64_t> num_groups;
-  std::optional<uint32_t> dim_choice;
+    std::optional<bool> inplace_reorder;
+    MatmulInput matmul_input;
+    std::optional<uint64_t> num_groups;
+    std::optional<uint32_t> dim_choice;
 };
 
 struct NormalizationInput {
-  std::optional<norm_type_t> norm_type;
-  std::optional<std::vector<uint64_t>> norm_shape;
-  std::optional<bool> use_scale;
-  std::optional<bool> use_shift;
-  std::optional<data_type_t> gamma_dt;
-  std::optional<data_type_t> beta_dt;
+    std::optional<norm_type_t> norm_type;
+    std::optional<std::vector<uint64_t>> norm_shape;
+    std::optional<bool> use_scale;
+    std::optional<bool> use_shift;
+    std::optional<data_type_t> gamma_dt;
+    std::optional<data_type_t> beta_dt;
 };
 
 struct EmbeddingInput {
-  std::optional<uint64_t> num_embeddings;
-  std::optional<uint64_t> embedding_dim;
-  std::optional<uint64_t> num_indices;
-  std::optional<int64_t> padding_index;
-  std::optional<bool> is_weights;
-  std::optional<data_type_t> indices_dtype;
-  std::optional<bool> fp16_scale_bias;
-  std::optional<bool> strided;
+    std::optional<uint64_t> num_embeddings;
+    std::optional<uint64_t> embedding_dim;
+    std::optional<uint64_t> num_indices;
+    std::optional<int64_t> padding_index;
+    std::optional<bool> is_weights;
+    std::optional<data_type_t> indices_dtype;
+    std::optional<bool> fp16_scale_bias;
+    std::optional<bool> strided;
 };
 
 struct EmbagInput {
-  std::optional<uint64_t> num_bags;
-  std::optional<embag_algo_t> embag_algo;
-  std::optional<bool> include_last_offset;
-  EmbeddingInput embedding_input;
+    std::optional<uint64_t> num_bags;
+    std::optional<embag_algo_t> embag_algo;
+    std::optional<bool> include_last_offset;
+    EmbeddingInput embedding_input;
 };
 
 /** @brief Matmul Op Parameters Structure */
 struct MatmulType {
-  uint64_t matmul_m;
-  uint64_t matmul_k;
-  uint64_t matmul_n;
-  std::vector<post_op_type_t> po_types;
-  bool     transA;
-  bool     transB;
-  //TODO: Add support for other data_types as well
-  float    alpha;
-  float    beta;
-  bool     use_LOWOHA;
-  matmul_algo_t algo = matmul_algo_t::none;
-  data_type_t source_dtype;
-  data_type_t output_dtype;
-  quant_granularity_t weight_granularity;
-  int32_t num_threads;
-  MatmulType(const MatmulInput &matmul_input = MatmulInput(),
-             uint32_t test_index = 0, uint32_t total_tests = 1,
-             bool is_bmm = false);
+    uint64_t matmul_m;
+    uint64_t matmul_k;
+    uint64_t matmul_n;
+    std::vector<post_op_type_t> po_types;
+    bool transA;
+    bool transB;
+    //TODO: Add support for other data_types as well
+    float alpha;
+    float beta;
+    bool use_LOWOHA;
+    matmul_algo_t algo = matmul_algo_t::none;
+    data_type_t source_dtype;
+    data_type_t output_dtype;
+    quant_granularity_t weight_granularity;
+    int32_t num_threads;
+    MatmulType(const MatmulInput &matmul_input = MatmulInput(),
+            uint32_t test_index = 0, uint32_t total_tests = 1,
+            bool is_bmm = false);
 };
 
 // `GroupQuantMatmulType` (group-matmul-quant fixture parameter) was
@@ -192,63 +190,63 @@ struct MatmulType {
 
 /** @brief BatchMatmul Op Parameters Structure */
 struct BatchMatmulType {
-  uint64_t batch_size;
-  MatmulType mat{};
-  BatchMatmulType(const MatmulInput &matmul_input = MatmulInput(),
-                  uint32_t test_index = 0, uint32_t total_tests = 1);
+    uint64_t batch_size;
+    MatmulType mat {};
+    BatchMatmulType(const MatmulInput &matmul_input = MatmulInput(),
+            uint32_t test_index = 0, uint32_t total_tests = 1);
 };
 
 // `ReorderType` was lifted into `reorder/reorder_test_helpers.hpp` (`ReorderInput` stays — it's a `CLIParams` member).
 
 /** @brief Embag Op Parameters Structure */
 struct EmbagType {
-  uint64_t num_embeddings;
-  uint64_t embedding_dim;
-  uint64_t num_bags;
-  uint64_t num_indices;
-  embag_algo_t algo;
-  int64_t padding_index;
-  bool include_last_offset;
-  bool is_weights;
-  data_type_t indices_dtype;
-  data_type_t offsets_dtype;
-  bool fp16_scale_bias;
-  bool strided;
-  bool use_LOWOHA;
-  int32_t num_threads;
-  EmbagType(const EmbagInput &embag_input = EmbagInput());
+    uint64_t num_embeddings;
+    uint64_t embedding_dim;
+    uint64_t num_bags;
+    uint64_t num_indices;
+    embag_algo_t algo;
+    int64_t padding_index;
+    bool include_last_offset;
+    bool is_weights;
+    data_type_t indices_dtype;
+    data_type_t offsets_dtype;
+    bool fp16_scale_bias;
+    bool strided;
+    bool use_LOWOHA;
+    int32_t num_threads;
+    EmbagType(const EmbagInput &embag_input = EmbagInput());
 };
 
 /** @brief Embedding Op Parameters Structure */
 struct EmbeddingType {
-  uint64_t num_embeddings;
-  uint64_t embedding_dim;
-  uint64_t num_indices;
-  int64_t padding_index;
-  bool is_weights;
-  data_type_t indices_dtype;
-  bool fp16_scale_bias;
-  bool strided;
-  bool use_LOWOHA;
-  int32_t num_threads;
-  EmbeddingType(const EmbeddingInput &embedding_input = EmbeddingInput());
+    uint64_t num_embeddings;
+    uint64_t embedding_dim;
+    uint64_t num_indices;
+    int64_t padding_index;
+    bool is_weights;
+    data_type_t indices_dtype;
+    bool fp16_scale_bias;
+    bool strided;
+    bool use_LOWOHA;
+    int32_t num_threads;
+    EmbeddingType(const EmbeddingInput &embedding_input = EmbeddingInput());
 };
 
 /** @brief Normalization Op Parameters Structure */
 struct NormalizationType {
-  norm_type_t norm_type;
-  uint64_t batch;
-  uint64_t norm_size;
-  uint64_t num_channels;
-  std::vector<uint64_t> shape;
-  float epsilon;
-  bool use_scale;
-  bool use_shift;
-  data_type_t gamma_dt;
-  data_type_t beta_dt;
-  uint32_t num_threads;
-  NormalizationType(const NormalizationInput &normalization_input =
-                      NormalizationInput());
+    norm_type_t norm_type;
+    uint64_t batch;
+    uint64_t norm_size;
+    uint64_t num_channels;
+    std::vector<uint64_t> shape;
+    float epsilon;
+    bool use_scale;
+    bool use_shift;
+    data_type_t gamma_dt;
+    data_type_t beta_dt;
+    uint32_t num_threads;
+    NormalizationType(const NormalizationInput &normalization_input
+            = NormalizationInput());
 };
 
 /** @brief SDPA Op Parameters Structure
@@ -259,39 +257,39 @@ struct NormalizationType {
  *  the FP32 and BF16 reference kernels for matched per-shape coverage.
  */
 struct SdpaType {
-  uint64_t batch;
-  uint64_t num_heads;
-  uint64_t seq_len;       // Q sequence length (S_q)
-  uint64_t kv_seq_len;    // K/V sequence length (S_kv); == seq_len for self-attn
-  uint64_t head_dim;
-  float scale;
-  bool is_causal;
-  bool has_mask;
-  int32_t num_threads;
-  SdpaType();
+    uint64_t batch;
+    uint64_t num_heads;
+    uint64_t seq_len; // Q sequence length (S_q)
+    uint64_t kv_seq_len; // K/V sequence length (S_kv); == seq_len for self-attn
+    uint64_t head_dim;
+    float scale;
+    bool is_causal;
+    bool has_mask;
+    int32_t num_threads;
+    SdpaType();
 };
 
 /** @brief Softmax Op Parameters Structure */
 struct SoftmaxType {
-  int ndims;
-  uint64_t shape[SOFTMAX_MAX_NDIMS];
-  int axis;
-  bool log_softmax;
-  bool softmin;
-  int32_t num_threads;
-  SoftmaxType();
+    int ndims;
+    uint64_t shape[SOFTMAX_MAX_NDIMS];
+    int axis;
+    bool log_softmax;
+    bool softmin;
+    int32_t num_threads;
+    SoftmaxType();
 };
 
 /** Optional CLI overrides for matmul/BMM/reorder, embag/embedding, and norm tests. Unset std::optional members are ignored; set values override defaults in the corresponding *Type constructors. */
 struct CLIParams {
-  /* Matmul, BatchMatmul and Reorder CLI params*/
-  MatmulInput matmul_input;
-  ReorderInput reorder_input;
-  /* Embag and Embedding CLI params*/
-  EmbagInput embag_input;
-  EmbeddingInput embedding_input;
-  /* Normalization CLI params*/
-  NormalizationInput normalization_input;
+    /* Matmul, BatchMatmul and Reorder CLI params*/
+    MatmulInput matmul_input;
+    ReorderInput reorder_input;
+    /* Embag and Embedding CLI params*/
+    EmbagInput embag_input;
+    EmbeddingInput embedding_input;
+    /* Normalization CLI params*/
+    NormalizationInput normalization_input;
 };
 
 extern int gtest_argc;
@@ -342,57 +340,57 @@ extern std::vector<SoftmaxType> softmax_test;
 // TODO: Unify the tensor_factory in examples and gtest
 //To generate random tensor
 class tensor_factory_t {
- public:
-  /** @brief Index type */
-  using index_type = tensor_t::index_type;
-  using data_type  = data_type_t;
+public:
+    /** @brief Index type */
+    using index_type = tensor_t::index_type;
+    using data_type = data_type_t;
 
-  /** @brief zero tensor */
-  tensor_t zero_tensor(const std::vector<index_type> size_, data_type dtype_,
-                       tensor_t scale = tensor_t(), tensor_t zp = tensor_t(),
-                       bool strided = false, bool trans = false);
+    /** @brief zero tensor */
+    tensor_t zero_tensor(const std::vector<index_type> size_, data_type dtype_,
+            tensor_t scale = tensor_t(), tensor_t zp = tensor_t(),
+            bool strided = false, bool trans = false);
 
-  /** @brief uniformly distributed tensor */
+    /** @brief uniformly distributed tensor */
 
-  tensor_t uniform_dist_tensor(const std::vector<index_type> size_,
-                               data_type dtype_,
-                               float val, bool trans = false,
-                               tensor_t scale = tensor_t(), tensor_t zp = tensor_t());
+    tensor_t uniform_dist_tensor(const std::vector<index_type> size_,
+            data_type dtype_, float val, bool trans = false,
+            tensor_t scale = tensor_t(), tensor_t zp = tensor_t());
 
-  /** @brief uniformly distributed strided tensor */
-  tensor_t uniform_dist_strided_tensor(const std::vector<index_type> size_,
-                                       const std::vector<index_type> stride_,
-                                       data_type dtype_, float range_, bool trans = false,
-                                       tensor_t scale = tensor_t(), tensor_t zp = tensor_t());
+    /** @brief uniformly distributed strided tensor */
+    tensor_t uniform_dist_strided_tensor(const std::vector<index_type> size_,
+            const std::vector<index_type> stride_, data_type dtype_,
+            float range_, bool trans = false, tensor_t scale = tensor_t(),
+            tensor_t zp = tensor_t());
 
-  /** @brief uniform tensor with optional transpose and quantization support */
-  tensor_t uniform_tensor(const std::vector<index_type> size_, data_type dtype_,
-                          float val_, std::string tensor_name_="uniform",
-                          bool trans = false,
-                          tensor_t scale = tensor_t(), tensor_t zp = tensor_t());
+    /** @brief uniform tensor with optional transpose and quantization support */
+    tensor_t uniform_tensor(const std::vector<index_type> size_,
+            data_type dtype_, float val_, std::string tensor_name_ = "uniform",
+            bool trans = false, tensor_t scale = tensor_t(),
+            tensor_t zp = tensor_t());
 
-  /** @brief blocked tensor */
-  tensor_t blocked_tensor(const std::vector<index_type> size_, data_type dtype_,
-                          float val);
+    /** @brief blocked tensor */
+    tensor_t blocked_tensor(
+            const std::vector<index_type> size_, data_type dtype_, float val);
 
-  /** @brief copy tensor */
-  tensor_t copy_tensor(const std::vector<index_type> size_, data_type dtype_,
-                       StorageParam param, bool trans, bool is_blocked);
+    /** @brief copy tensor */
+    tensor_t copy_tensor(const std::vector<index_type> size_, data_type dtype_,
+            StorageParam param, bool trans, bool is_blocked);
 
-  /** @brief Generate random indices tensor with optional padding index */
-  tensor_t random_indices_tensor(const std::vector<index_type> size_,
-                                 uint64_t num_embeddings_, data_type_t indices_dtype_);
+    /** @brief Generate random indices tensor with optional padding index */
+    tensor_t random_indices_tensor(const std::vector<index_type> size_,
+            uint64_t num_embeddings_, data_type_t indices_dtype_);
 
-  /** @brief Generate random offsets tensor for bag boundaries */
-  tensor_t random_offsets_tensor(const std::vector<index_type> size_,
-                                 uint64_t num_indices_, data_type_t offsets_dtype_,
-                                 bool include_last_offset_ = true);
+    /** @brief Generate random offsets tensor for bag boundaries */
+    tensor_t random_offsets_tensor(const std::vector<index_type> size_,
+            uint64_t num_indices_, data_type_t offsets_dtype_,
+            bool include_last_offset_ = true);
 
-  /** @brief Generate quantized random table tensor for embedding & embag */
-  tensor_t quantized_embedding_tensor_random(const std::vector<index_type> size_,
-      data_type dtype_, std::string tensor_name_="quant random",
-      bool fp16_scale_bias = true, float scale_min = 0.10,
-      float scale_max = 0.19, float bias_min = 0, float bias_max = 7);
+    /** @brief Generate quantized random table tensor for embedding & embag */
+    tensor_t quantized_embedding_tensor_random(
+            const std::vector<index_type> size_, data_type dtype_,
+            std::string tensor_name_ = "quant random",
+            bool fp16_scale_bias = true, float scale_min = 0.10,
+            float scale_max = 0.19, float bias_min = 0, float bias_max = 7);
 };
 
 /**
@@ -404,60 +402,55 @@ class tensor_factory_t {
  *
  */
 class Parser {
-  /** @brief Map to store command line arguments as {key,val} pair */
-  std::unordered_map<std::string, std::string> umap {};
-  /** @brief check if string is numeric or not */
-  bool isInteger(const std::string &s);
-  /** @brief read from key if valid or invalid key is given */
-  void read_from_umap(const std::string &key, int64_t &num);
-  void read_from_umap(const std::string &key, uint32_t &num);
-  void read_from_umap(const std::string &key, std::string &num);
-  void read_from_umap(const std::string &key,
-                      std::optional<std::vector<post_op_type_t>> &out);
-  void read_from_umap(const std::string &key, std::optional<matmul_algo_t> &out);
-  void read_from_umap(const std::string &key, std::optional<uint64_t> &out);
-  void read_from_umap(const std::string &key, std::optional<int64_t> &out);
-  void read_from_umap(const std::string &key, std::optional<bool> &out);
-  void read_from_umap(const std::string &key, std::optional<float> &out);
-  void read_from_umap(const std::string &key, std::optional<data_type_t> &out);
-  void read_from_umap(const std::string &key,
-                      std::optional<quant_granularity_t> &out);
-  void read_from_umap(const std::string &key, std::optional<uint32_t> &out);
-  void read_from_umap(const std::string &key, std::optional<embag_algo_t> &out);
-  void read_from_umap(const std::string &key, std::optional<norm_type_t> &out);
-  void read_from_umap(const std::string &key,
-                      std::optional<std::vector<uint64_t>> &out);
- public:
-  /** @brief to make object callable */
-  void operator()(const int &argc,
-                  char *argv[],
-                  int64_t &seed, uint32_t &test_num,
-                  std::string &ai_test_mode,
-                  std::string &lowoha, uint32_t &num_threads, std::string &input_file,
-                  std::string &op, uint32_t &ndims,
-                  CLIParams &cli_params);
+    /** @brief Map to store command line arguments as {key,val} pair */
+    std::unordered_map<std::string, std::string> umap {};
+    /** @brief check if string is numeric or not */
+    bool isInteger(const std::string &s);
+    /** @brief read from key if valid or invalid key is given */
+    void read_from_umap(const std::string &key, int64_t &num);
+    void read_from_umap(const std::string &key, uint32_t &num);
+    void read_from_umap(const std::string &key, std::string &num);
+    void read_from_umap(const std::string &key,
+            std::optional<std::vector<post_op_type_t>> &out);
+    void read_from_umap(
+            const std::string &key, std::optional<matmul_algo_t> &out);
+    void read_from_umap(const std::string &key, std::optional<uint64_t> &out);
+    void read_from_umap(const std::string &key, std::optional<int64_t> &out);
+    void read_from_umap(const std::string &key, std::optional<bool> &out);
+    void read_from_umap(const std::string &key, std::optional<float> &out);
+    void read_from_umap(
+            const std::string &key, std::optional<data_type_t> &out);
+    void read_from_umap(
+            const std::string &key, std::optional<quant_granularity_t> &out);
+    void read_from_umap(const std::string &key, std::optional<uint32_t> &out);
+    void read_from_umap(
+            const std::string &key, std::optional<embag_algo_t> &out);
+    void read_from_umap(
+            const std::string &key, std::optional<norm_type_t> &out);
+    void read_from_umap(
+            const std::string &key, std::optional<std::vector<uint64_t>> &out);
+
+public:
+    /** @brief to make object callable */
+    void operator()(const int &argc, char *argv[], int64_t &seed,
+            uint32_t &test_num, std::string &ai_test_mode, std::string &lowoha,
+            uint32_t &num_threads, std::string &input_file, std::string &op,
+            uint32_t &ndims, CLIParams &cli_params);
 };
 
 bool is_binary_postop(post_op_type_t post_op);
 
-std::vector<tensor_t> make_binary_postop_tensors(
-  tensor_factory_t &factory, const std::vector<post_op_type_t> &po_types,
-  const std::vector<tensor_factory_t::index_type> &output_shape,
-  data_type_t binary_dtype = data_type_t::f32, float uniform_range = 2.0f);
+std::vector<tensor_t> make_binary_postop_tensors(tensor_factory_t &factory,
+        const std::vector<post_op_type_t> &po_types,
+        const std::vector<tensor_factory_t::index_type> &output_shape,
+        data_type_t binary_dtype = data_type_t::f32,
+        float uniform_range = 2.0f);
 // Array of supported post operations
-const post_op_type_t post_op_arr[] = {
-  post_op_type_t::relu,
-  post_op_type_t::gelu_tanh,
-  post_op_type_t::gelu_erf,
-  post_op_type_t::sigmoid,
-  post_op_type_t::swish,
-  post_op_type_t::tanh,
-  post_op_type_t::clip,
-  post_op_type_t::binary_add,
-  post_op_type_t::binary_mul,
-  post_op_type_t::mish,
-  post_op_type_t::none
-};
+const post_op_type_t post_op_arr[] = {post_op_type_t::relu,
+        post_op_type_t::gelu_tanh, post_op_type_t::gelu_erf,
+        post_op_type_t::sigmoid, post_op_type_t::swish, post_op_type_t::tanh,
+        post_op_type_t::clip, post_op_type_t::binary_add,
+        post_op_type_t::binary_mul, post_op_type_t::mish, post_op_type_t::none};
 
 //Supported Dtype declaration
 extern std::vector<data_type_t> dtype_arr;
@@ -568,8 +561,8 @@ void neutralize_mish_quant_int8(std::vector<post_op_type_t> &po_types);
  *  @param ndims Dimension of matmul operation (2 for matmul, 3 for batch matmul). Default is 2.
  *  @return std::vector<MatmulInput> Vector of parsed matmul configurations
  */
-std::vector<MatmulInput> read_matmul_inputs(const std::string &file,
-    uint32_t ndims = 2);
+std::vector<MatmulInput> read_matmul_inputs(
+        const std::string &file, uint32_t ndims = 2);
 /** @fn read_reorder_inputs
  *  @brief Read and parse reorder test configurations from a file
  *
@@ -593,8 +586,8 @@ std::vector<MatmulInput> read_matmul_inputs(const std::string &file,
  *  @param is_lowoha_test When true, parse LOWOHA reorder lines; when false, regular reorder lines
  *  @return std::vector<ReorderInput> Vector of parsed reorder configurations
  */
-std::vector<ReorderInput> read_reorder_inputs(const std::string &file,
-    bool is_lowoha_test);
+std::vector<ReorderInput> read_reorder_inputs(
+        const std::string &file, bool is_lowoha_test);
 
 /** @fn read_normalization_inputs
  *  @brief Read and parse normalization test configurations from a file
@@ -612,7 +605,7 @@ std::vector<ReorderInput> read_reorder_inputs(const std::string &file,
  *  @return std::vector<NormalizationInput> Vector of parsed normalization configurations
  */
 std::vector<NormalizationInput> read_normalization_inputs(
-  const std::string &file);
+        const std::string &file);
 
 /** @fn read_embag_inputs
  *  @brief Read and parse embedding-bag test configurations from a file
@@ -665,8 +658,8 @@ std::vector<uint64_t> parse_norm_shape_field(const std::string &shape_str);
  *  When @p column is non-empty, logs "Invalid <column>: <flag>". Otherwise logs a
  *  generic boolean error.
  */
-std::optional<bool> parse_bool_field(const std::string &flag,
-                                     const std::string &column = {});
+std::optional<bool> parse_bool_field(
+        const std::string &flag, const std::string &column = {});
 
 /** @brief Parse a positive uint64 from a CSV field (digits only, no sign). */
 std::optional<uint64_t> parse_positive_uint64_field(const std::string &field);
@@ -702,13 +695,11 @@ std::vector<std::string> split(const std::string &s, char delimiter);
  *  @return matmul status
  * */
 status_t matmul_kernel_test(tensor_t &input_tensor, tensor_t &weights,
-                            tensor_t &bias, tensor_t &output_tensor,
-                            const std::vector<post_op_type_t> &po_types,
-                            const std::vector<tensor_t> &binary_tensors, bool use_LOWOHA,
-                            matmul_algo_t algo,
-                            float alpha = 1.0f,
-                            float beta = 0.0f,
-                            int pack_format_b = 0);
+        tensor_t &bias, tensor_t &output_tensor,
+        const std::vector<post_op_type_t> &po_types,
+        const std::vector<tensor_t> &binary_tensors, bool use_LOWOHA,
+        matmul_algo_t algo, float alpha = 1.0f, float beta = 0.0f,
+        int pack_format_b = 0);
 
 // `group_matmul_kernel_test` was lifted into
 // `group_matmul/group_matmul_test_helpers.hpp` during the gtests folder
@@ -724,14 +715,10 @@ status_t matmul_kernel_test(tensor_t &input_tensor, tensor_t &weights,
  *  @return matmul status
  * */
 status_t matmul_forced_ref_kernel_test(tensor_t &input_tensor,
-                                       tensor_t &weights,
-                                       tensor_t &bias, tensor_t &output_tensor,
-                                       const std::vector<post_op_type_t> &po_types,
-                                       const std::vector<tensor_t> &binary_tensors,
-                                       bool use_LOWOHA,
-                                       matmul_algo_t algo,
-                                       float alpha = 1.0f,
-                                       float beta = 0.0f);
+        tensor_t &weights, tensor_t &bias, tensor_t &output_tensor,
+        const std::vector<post_op_type_t> &po_types,
+        const std::vector<tensor_t> &binary_tensors, bool use_LOWOHA,
+        matmul_algo_t algo, float alpha = 1.0f, float beta = 0.0f);
 
 // `reorder_kernel_test` was lifted into `reorder/reorder_test_helpers.hpp`.
 
@@ -744,18 +731,11 @@ status_t matmul_forced_ref_kernel_test(tensor_t &input_tensor,
  *
  * @return status_t Success or failure status
  */
-status_t embag_kernel_test(tensor_t &table_tensor,
-                           tensor_t &indices_tensor,
-                           tensor_t &offsets_tensor,
-                           tensor_t &weights_tensor,
-                           tensor_t &output_tensor,
-                           embag_algo_t algo,
-                           int64_t padding_index,
-                           bool include_last_offset,
-                           bool is_weights,
-                           bool fp16_scale_bias,
-                           embag_kernel_t kernel,
-                           bool use_LOWOHA=false);
+status_t embag_kernel_test(tensor_t &table_tensor, tensor_t &indices_tensor,
+        tensor_t &offsets_tensor, tensor_t &weights_tensor,
+        tensor_t &output_tensor, embag_algo_t algo, int64_t padding_index,
+        bool include_last_offset, bool is_weights, bool fp16_scale_bias,
+        embag_kernel_t kernel, bool use_LOWOHA = false);
 
 /** @fn embedding_kernel_test
  *  @brief Test function for embedding kernel
@@ -766,15 +746,10 @@ status_t embag_kernel_test(tensor_t &table_tensor,
  *
  * @return status_t Success or failure status
  */
-status_t embedding_kernel_test(tensor_t &table_tensor,
-                               tensor_t &indices_tensor,
-                               tensor_t &weights_tensor,
-                               tensor_t &output_tensor,
-                               int64_t padding_index,
-                               bool is_weights,
-                               bool fp16_scale_bias,
-                               embag_kernel_t kernel,
-                               bool use_LOWOHA=false);
+status_t embedding_kernel_test(tensor_t &table_tensor, tensor_t &indices_tensor,
+        tensor_t &weights_tensor, tensor_t &output_tensor,
+        int64_t padding_index, bool is_weights, bool fp16_scale_bias,
+        embag_kernel_t kernel, bool use_LOWOHA = false);
 
 /**
  * @brief Repack separate int8 weights and fp32 scales into GGML Q8_0 blocked format.
@@ -788,10 +763,8 @@ status_t embedding_kernel_test(tensor_t &table_tensor,
  * @param K              Number of columns (must be divisible by 32)
  * @param out_blocks     Output buffer, must be at least M * (K/32) * 34 bytes
  */
-void repack_weights_q8_0(const int8_t *weight_buffer,
-                         const float *scale_buffer,
-                         int64_t M, int64_t K,
-                         void *out_blocks);
+void repack_weights_q8_0(const int8_t *weight_buffer, const float *scale_buffer,
+        int64_t M, int64_t K, void *out_blocks);
 
 /**
  * @brief Repack signed-int8 weights and fp32 scales into GGML Q4_0 blocked
@@ -807,10 +780,8 @@ void repack_weights_q8_0(const int8_t *weight_buffer,
  * @param K              Number of columns (must be divisible by 32)
  * @param out_blocks     Output buffer, must be at least M * (K/32) * 18 bytes
  */
-void repack_weights_q4_0(const int8_t *weight_buffer,
-                         const float *scale_buffer,
-                         int64_t M, int64_t K,
-                         void *out_blocks);
+void repack_weights_q4_0(const int8_t *weight_buffer, const float *scale_buffer,
+        int64_t M, int64_t K, void *out_blocks);
 
 /** @fn compare_tensor_2D
  *  @brief Function to compare two 2D tensor
@@ -821,8 +792,8 @@ void repack_weights_q4_0(const int8_t *weight_buffer,
  * */
 // ToDO: Replace with comparator operator
 void compare_tensor_2D(tensor_t &output_tensor, tensor_t &output_tensor_ref,
-                       uint64_t m,
-                       uint64_t n, const float tol, bool &is_comparison_successful);
+        uint64_t m, uint64_t n, const float tol,
+        bool &is_comparison_successful);
 
 /** @fn compare_tensor_2D_matrix
  *  @brief Function to compare two matrix result after matrix matmul
@@ -834,12 +805,10 @@ void compare_tensor_2D(tensor_t &output_tensor, tensor_t &output_tensor_ref,
  *
  * */
 void compare_tensor_2D_matrix(tensor_t &output_tensor,
-                              tensor_t &output_tensor_ref, uint64_t m,
-                              uint64_t n, uint64_t k, const float rtol,
-                              const float epsilon, bool &flag,
-                              bool enable_f32_relaxation = false,
-                              float alpha = 1.0f,
-                              bool is_quant = false);
+        tensor_t &output_tensor_ref, uint64_t m, uint64_t n, uint64_t k,
+        const float rtol, const float epsilon, bool &flag,
+        bool enable_f32_relaxation = false, float alpha = 1.0f,
+        bool is_quant = false);
 
 /** @fn compare_tensor_3D_matrix
  *  @brief Function to compare two matrix result after batch-matrix matmul
@@ -851,11 +820,9 @@ void compare_tensor_2D_matrix(tensor_t &output_tensor,
  *
  * */
 void compare_tensor_3D_matrix(tensor_t &output_tensor,
-                              tensor_t &output_tensor_ref, uint64_t batch_size,
-                              uint64_t m, uint64_t n, uint64_t k, const float rtol,
-                              const float epsilon, bool &flag,
-                              bool enable_f32_relaxation = false,
-                              float alpha = 1.0f);
+        tensor_t &output_tensor_ref, uint64_t batch_size, uint64_t m,
+        uint64_t n, uint64_t k, const float rtol, const float epsilon,
+        bool &flag, bool enable_f32_relaxation = false, float alpha = 1.0f);
 
 /** @fn get_aligned_size
  *  @brief Function to align the given size_ according to the alignment
@@ -886,16 +853,10 @@ size_t get_aligned_size(size_t alignment, size_t size_);
  *  @param dst_out     [out] Optional: if non-null, also quantizes and writes result
  *  @return status_t::success or status_t::failure
  */
-status_t quant_params_compute(
-  tensor_factory_t &factory,
-  const tensor_t &src_ref,
-  data_type_t src_dtype,
-  data_type_t dst_dtype,
-  const std::vector<int64_t> &scale_dims,
-  data_type_t scale_dt,
-  tensor_t &scale_out,
-  tensor_t &zp_out,
-  tensor_t *dst_out = nullptr);
+status_t quant_params_compute(tensor_factory_t &factory,
+        const tensor_t &src_ref, data_type_t src_dtype, data_type_t dst_dtype,
+        const std::vector<int64_t> &scale_dims, data_type_t scale_dt,
+        tensor_t &scale_out, tensor_t &zp_out, tensor_t *dst_out = nullptr);
 /** @fn normalization_kernel_test
  *  @brief Test function for normalization kernel (native path)
  *
@@ -907,15 +868,10 @@ status_t quant_params_compute(
  *  is used on a host without AVX-512-FP16 (unless the library was built
  *  with -DZENDNNL_NATIVE_F32_ACCUM=ON), or status_t::failure otherwise.
  */
-status_t normalization_kernel_test(
-  tensor_t &input_tensor,
-  tensor_t &output_tensor,
-  tensor_t &gamma_tensor,
-  tensor_t &beta_tensor,
-  tensor_t &running_mean_tensor,
-  tensor_t &running_var_tensor,
-  tensor_t &residual_tensor,
-  norm_params &params);
+status_t normalization_kernel_test(tensor_t &input_tensor,
+        tensor_t &output_tensor, tensor_t &gamma_tensor, tensor_t &beta_tensor,
+        tensor_t &running_mean_tensor, tensor_t &running_var_tensor,
+        tensor_t &residual_tensor, norm_params &params);
 
 /** @fn normalization_forced_ref_kernel_test
  *  @brief Test function for normalization reference kernel (forced)
@@ -926,15 +882,10 @@ status_t normalization_kernel_test(
  *
  *  @return status_t::success or status_t::failure.
  */
-status_t normalization_forced_ref_kernel_test(
-  tensor_t &input_tensor,
-  tensor_t &output_tensor,
-  tensor_t &gamma_tensor,
-  tensor_t &beta_tensor,
-  tensor_t &running_mean_tensor,
-  tensor_t &running_var_tensor,
-  tensor_t &residual_tensor,
-  norm_params &params);
+status_t normalization_forced_ref_kernel_test(tensor_t &input_tensor,
+        tensor_t &output_tensor, tensor_t &gamma_tensor, tensor_t &beta_tensor,
+        tensor_t &running_mean_tensor, tensor_t &running_var_tensor,
+        tensor_t &residual_tensor, norm_params &params);
 
 /** @fn compare_norm_tensors
  *  @brief Compare two tensors element-by-element for any dimensionality
@@ -950,9 +901,8 @@ status_t normalization_forced_ref_kernel_test(
  *  @param is_comparison_successful Output flag indicating comparison result
  */
 void compare_norm_tensors(tensor_t &output, tensor_t &output_ref,
-                          const std::vector<uint64_t> &shape,
-                          uint64_t total_elements,
-                          float tol, bool &is_comparison_successful);
+        const std::vector<uint64_t> &shape, uint64_t total_elements, float tol,
+        bool &is_comparison_successful);
 
 /** @fn clear_matmul_test_caches
  *  @brief Clear all matmul weight caches used by gtests.
@@ -1001,19 +951,10 @@ void reset_grp_matmul_caches();
  *  @return status_t::success or status_t::failure
  */
 status_t build_sdpa_params_from_tensors(tensor_t &query_tensor,
-                                        tensor_t &key_tensor,
-                                        tensor_t &value_tensor,
-                                        tensor_t &mask_tensor,
-                                        tensor_t &output_tensor,
-                                        float scale,
-                                        bool is_causal,
-                                        bool has_mask,
-                                        sdpa_params &params,
-                                        void *&q_data,
-                                        void *&k_data,
-                                        void *&v_data,
-                                        void *&o_data,
-                                        const void *&mask_ptr);
+        tensor_t &key_tensor, tensor_t &value_tensor, tensor_t &mask_tensor,
+        tensor_t &output_tensor, float scale, bool is_causal, bool has_mask,
+        sdpa_params &params, void *&q_data, void *&k_data, void *&v_data,
+        void *&o_data, const void *&mask_ptr);
 
 /** @fn sdpa_kernel_test
  *  @brief Compute SDPA via @c sdpa_direct with the selected LOWOHA kernel.
@@ -1036,15 +977,9 @@ status_t build_sdpa_params_from_tensors(tensor_t &query_tensor,
  *                       @c sdpa_kernel_t::reference)
  *  @return status_t::success or status_t::failure
  */
-status_t sdpa_kernel_test(tensor_t &query_tensor,
-                          tensor_t &key_tensor,
-                          tensor_t &value_tensor,
-                          tensor_t &mask_tensor,
-                          tensor_t &output_tensor,
-                          float scale,
-                          bool is_causal,
-                          bool has_mask,
-                          sdpa_kernel_t kernel);
+status_t sdpa_kernel_test(tensor_t &query_tensor, tensor_t &key_tensor,
+        tensor_t &value_tensor, tensor_t &mask_tensor, tensor_t &output_tensor,
+        float scale, bool is_causal, bool has_mask, sdpa_kernel_t kernel);
 
 /** @fn compare_tensor_4D_sdpa
  *  @brief Compare two 4D SDPA output tensors element-by-element.
@@ -1066,12 +1001,9 @@ status_t sdpa_kernel_test(tensor_t &query_tensor,
  *  @param is_comparison_successful Flag set to false on first mismatch
  */
 void compare_tensor_4D_sdpa(tensor_t &output_tensor,
-                            tensor_t &output_tensor_ref,
-                            uint64_t batch, uint64_t num_heads,
-                            uint64_t seq_len_q, uint64_t seq_len_kv,
-                            uint64_t head_dim,
-                            const float rtol, const float epsilon,
-                            bool &is_comparison_successful);
+        tensor_t &output_tensor_ref, uint64_t batch, uint64_t num_heads,
+        uint64_t seq_len_q, uint64_t seq_len_kv, uint64_t head_dim,
+        const float rtol, const float epsilon, bool &is_comparison_successful);
 /** @fn softmax_kernel_test
  *  @brief Test function for softmax kernel (OneDNN path)
  *
@@ -1080,9 +1012,7 @@ void compare_tensor_4D_sdpa(tensor_t &output_tensor,
  *  @return status_t Success or failure status
  */
 status_t softmax_kernel_test(
-  const void *input,
-  void *output,
-  softmax_params &params);
+        const void *input, void *output, softmax_params &params);
 
 /** @fn softmax_forced_ref_kernel_test
  *  @brief Test function for softmax reference kernel (forced)
@@ -1093,9 +1023,7 @@ status_t softmax_kernel_test(
  *  @return status_t Success or failure status
  */
 status_t softmax_forced_ref_kernel_test(
-  const void *input,
-  void *output,
-  softmax_params &params);
+        const void *input, void *output, softmax_params &params);
 
 /** @fn compare_softmax_tensors
  *  @brief Compare two tensors element-by-element for any dimensionality
@@ -1111,8 +1039,7 @@ status_t softmax_forced_ref_kernel_test(
  *  @param is_comparison_successful Output flag indicating comparison result
  */
 void compare_softmax_tensors(tensor_t &output, tensor_t &output_ref,
-                             const std::vector<uint64_t> &shape,
-                             uint64_t total_elements,
-                             float tol, bool &is_comparison_successful);
+        const std::vector<uint64_t> &shape, uint64_t total_elements, float tol,
+        bool &is_comparison_successful);
 
 #endif

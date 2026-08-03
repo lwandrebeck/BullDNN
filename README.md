@@ -147,7 +147,27 @@ This distribution includes third party software governed by separate license ter
 
 This third party software, even if included with the distribution of the Advanced Micro Devices software, may be governed by separate license terms, including without limitation, third party license terms,  and open source software license terms. These separate license terms govern your use of the third party programs as set forth in the **THIRD-PARTY-PROGRAMS** file.
 
-# 6. Technical Support
+# 6. Code Formatting
+
+ZenDNN uses [clang-format](https://clang.llvm.org/docs/ClangFormat.html) (version >= 18.1.8) for consistent code style. The style rules are defined in `.clang-format` at the repository root.
+
+### Setup
+
+```bash
+pip install clang-format==18.1.8
+```
+
+### Usage
+
+```bash
+# Check a file (dry-run, reports errors)
+scripts/check_format.sh --check src/main.cpp
+
+# Auto-format a file in-place
+scripts/check_format.sh --fix src/main.cpp
+```
+
+# 7. Technical Support
 Please email Zendnn.Maintainers@amd.com for questions, issues, and feedback on ZenDNN.
 
 Please submit your questions, feature requests, and bug reports on the

@@ -19,8 +19,8 @@
 
 #include <cstdint>
 #include <string>
-#include "common/zendnnl_global.hpp"
 #include "common/logging.hpp"
+#include "common/zendnnl_global.hpp"
 #include "lowoha_operators/softmax/lowoha_softmax_common.hpp"
 
 namespace zendnnl {
@@ -38,10 +38,7 @@ using namespace zendnnl::common;
  * @return status_t::success if valid, status_t::failure otherwise
  */
 status_t validate_softmax_inputs(
-    const void *input,
-    const void *output,
-    softmax_params &params
-);
+        const void *input, const void *output, softmax_params &params);
 
 /**
  * @brief Initialize softmax_params with N-dimensional tensor shape
@@ -58,11 +55,7 @@ status_t validate_softmax_inputs(
  * @return status_t::success if valid, status_t::failure otherwise
  */
 status_t setup_softmax_shape(
-    softmax_params &params,
-    const uint64_t *shape,
-    int ndims,
-    int axis
-);
+        softmax_params &params, const uint64_t *shape, int ndims, int axis);
 
 } // namespace softmax
 } // namespace lowoha

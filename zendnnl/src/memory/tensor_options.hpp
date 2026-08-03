@@ -1,5 +1,5 @@
 /********************************************************************************
-# * Copyright (c) 2025-2028 Advanced Micro Devices, Inc. All rights reserved.
+# * Copyright (c) 2025-2026 Advanced Micro Devices, Inc. All rights reserved.
 # *
 # * Licensed under the Apache License, Version 2.0 (the "License");
 # * you may not use this file except in compliance with the License.
@@ -17,13 +17,13 @@
 #define _TENSOR_OPTIONS_HPP_
 
 #include <cstdint>
-#include <vector>
 #include <string>
+#include <vector>
 
-#include "common/zendnnl_global.hpp"
 #include "common/bfloat16.hpp"
 #include "common/data_types.hpp"
 #include "common/hash_object.hpp"
+#include "common/zendnnl_global.hpp"
 
 namespace zendnnl {
 namespace memory {
@@ -38,16 +38,16 @@ using namespace zendnnl::error_handling;
  * the tensor memory (contiguous, blocked or strided etc.).
  */
 enum class tensor_layout_t : uint16_t {
-  contiguous      = 0,   /*!< Contiguous layout */
-  aligned         = 1,   /*!< Memory aligned layout */
-  broadcast       = 2,   /*!< Broadcast tensor */
-  transpose       = 4,   /*!< Transpose tensor */
-  quantized       = 8,   /*!< A quantized tensor */
-  blocked         = 16,  /*!< Blocked layout */
-  blocked_aocl    = 32,  /*!< Blocked layout for AOCL */
-  blocked_onednn  = 64,  /*!< Blocked layout for OneDNN */
-  blocked_libxsmm = 128, /*!< Blocked layout for LibXSMM */
-  oblique         = 256  /*!< Oblique layout */
+    contiguous = 0, /*!< Contiguous layout */
+    aligned = 1, /*!< Memory aligned layout */
+    broadcast = 2, /*!< Broadcast tensor */
+    transpose = 4, /*!< Transpose tensor */
+    quantized = 8, /*!< A quantized tensor */
+    blocked = 16, /*!< Blocked layout */
+    blocked_aocl = 32, /*!< Blocked layout for AOCL */
+    blocked_onednn = 64, /*!< Blocked layout for OneDNN */
+    blocked_libxsmm = 128, /*!< Blocked layout for LibXSMM */
+    oblique = 256 /*!< Oblique layout */
 };
 
 /** @class tensor_option_t
@@ -61,94 +61,93 @@ enum class tensor_layout_t : uint16_t {
  * @sa tensor_t, tensor_format_t.
  */
 class tensor_option_t final : public hash_object_t {
-  friend class tensor_t;
-  friend class tensor_quant_t;
+    friend class tensor_t;
+    friend class tensor_quant_t;
 
-  /** @brief Parent type */
-  using parent_type    = hash_object_t;
+    /** @brief Parent type */
+    using parent_type = hash_object_t;
 
-  /** @brief Index type */
-  using index_type     = uint64_t;
+    /** @brief Index type */
+    using index_type = uint64_t;
 
-  /** @brief Index vector type */
-  using index_vec_type = std::vector<index_type>;
+    /** @brief Index vector type */
+    using index_vec_type = std::vector<index_type>;
 
 public:
-  /** @name Constructors, Destructors and Assignment
+    /** @name Constructors, Destructors and Assignment
    */
-  /**@{*/
-  /** @brief Default constructor */
-  tensor_option_t();
-  /**@}*/
+    /**@{*/
+    /** @brief Default constructor */
+    tensor_option_t();
+    /**@}*/
 
-  /** @name Reset and Hash
+    /** @name Reset and Hash
    */
-  /**@{*/
-  /** @brief Reset the object.
+    /**@{*/
+    /** @brief Reset the object.
    *
    * Resets all meta data. Used by @c tensor_t::reset().
    */
-  void        reset();
+    void reset();
 
-  /** @brief Genarate hash value.
+    /** @brief Genarate hash value.
    *
    * Hash generated is used by @c tensor_t::hash() to generate tensor hash.
    * @return Generated hash.
    */
-  std::size_t hash() override;
-  /**@}*/
+    std::size_t hash() override;
+    /**@}*/
 
 private:
-  /** @brief check if the tensor is contiguous */
-  bool is_contiguous() const;
+    /** @brief check if the tensor is contiguous */
+    bool is_contiguous() const;
 
-  /** @brief check if the tensor is aligned */
-  bool is_aligned() const;
+    /** @brief check if the tensor is aligned */
+    bool is_aligned() const;
 
-  /** @brief check if the tensor is broadcast */
-  bool is_broadcast() const;
+    /** @brief check if the tensor is broadcast */
+    bool is_broadcast() const;
 
-  /** @brief check if the tensor is broadcast */
-  bool is_transpose() const;
+    /** @brief check if the tensor is broadcast */
+    bool is_transpose() const;
 
-  /** @brief check if the tensor is broadcast */
-  bool is_quantized() const;
+    /** @brief check if the tensor is broadcast */
+    bool is_quantized() const;
 
-  /** @brief check if the tensor is a blocked tensor */
-  bool is_blocked() const;
+    /** @brief check if the tensor is a blocked tensor */
+    bool is_blocked() const;
 
-  /** @brief check if the tensor is a blocked tensor */
-  bool is_oblique() const;
+    /** @brief check if the tensor is a blocked tensor */
+    bool is_oblique() const;
 
 private:
-  index_vec_type     size;           /**< Tensor size. Tensor dimensions are
+    index_vec_type size; /**< Tensor size. Tensor dimensions are
                                         decided by length of size vector. */
-  index_vec_type     aligned_size;   /**< Tensor aligned size. */
-  index_vec_type     stride;         /**< Tensor stride that defines access
+    index_vec_type aligned_size; /**< Tensor aligned size. */
+    index_vec_type stride; /**< Tensor stride that defines access
                                         pattern */
-  index_vec_type     base;           /**< Index of the element to be consider
+    index_vec_type base; /**< Index of the element to be consider
                                         first element. */
-  uint64_t           nelem;          /**< Number of elements, computed from
+    uint64_t nelem; /**< Number of elements, computed from
                                         size */
-  uint64_t           aligned_nelem;  /**< Memory buffer size in terms of
+    uint64_t aligned_nelem; /**< Memory buffer size in terms of
                                         elements computed from aligned_size */
-  uint64_t           base_offset;    /**< Base offset, computed from @c base
+    uint64_t base_offset; /**< Base offset, computed from @c base
                                         and @c stride */
-  data_type_t        data_type;      /**< Tensor data type */
-  uint16_t           layout;         /**< Tensor layout */
-  bool               is_const;       /**< Tensor constness */
-  std::string        order;          /**< Tensor channel order(for example
+    data_type_t data_type; /**< Tensor data type */
+    uint16_t layout; /**< Tensor layout */
+    bool is_const; /**< Tensor constness */
+    std::string order; /**< Tensor channel order(for example
                                         NCHW or NHCW) */
 };
 
-
-} //memory
+} // namespace memory
 
 namespace interface {
 using tensor_layout_t = zendnnl::memory::tensor_layout_t;
 // using tensor_option_t = zendnnl::memory::tensor_option_t;
 // using tensor_quant_t  = zendnnl::memory::tensor_quant_t;
-} //export
+} // namespace interface
 
-} //zendnnl
+} // namespace zendnnl
 #endif

@@ -17,8 +17,8 @@
 #define _POST_OP_HPP_
 
 #include <string>
-#include <initializer_list>
 #include "common/zendnnl_global.hpp"
+#include <initializer_list>
 
 namespace zendnnl {
 namespace ops {
@@ -34,71 +34,71 @@ namespace ops {
  *  @brief Supported post_op types.
  */
 enum class post_op_type_t {
-  none, /*!< none*/
-  elu, /*!< eltwise elu*/
-  relu,/*!< eltwise relu */
-  leaky_relu,/*!< eltwise leaky relu */
-  gelu_tanh,/*!< eltwise gelu_tanh */
-  gelu_erf,/*!< eltwise gelu_erf */
-  sigmoid,/*!< sigmoid */
-  swish,/*!< swish */
-  tanh,/*!< tanh */
-  softmax,/*!< softmax */
-  pooling,/*!< pooling */
-  square,/*!< eltwise square */
-  abs,/*!< eltwise abs */
-  sqrt,/*!< eltwise sqrt */
-  exp,/*!< eltwise exp */
-  log,/*!< eltwise log */
-  clip,/*!< eltwise clip */
-  binary_add,/*!< eltwise add with another tensor */
-  binary_mul,/*!< eltwise mul with another tensor */
-  mish/*!< eltwise mish */
+    none, /*!< none*/
+    elu, /*!< eltwise elu*/
+    relu, /*!< eltwise relu */
+    leaky_relu, /*!< eltwise leaky relu */
+    gelu_tanh, /*!< eltwise gelu_tanh */
+    gelu_erf, /*!< eltwise gelu_erf */
+    sigmoid, /*!< sigmoid */
+    swish, /*!< swish */
+    tanh, /*!< tanh */
+    softmax, /*!< softmax */
+    pooling, /*!< pooling */
+    square, /*!< eltwise square */
+    abs, /*!< eltwise abs */
+    sqrt, /*!< eltwise sqrt */
+    exp, /*!< eltwise exp */
+    log, /*!< eltwise log */
+    clip, /*!< eltwise clip */
+    binary_add, /*!< eltwise add with another tensor */
+    binary_mul, /*!< eltwise mul with another tensor */
+    mish /*!< eltwise mish */
 };
 
 /** @struct elu_params_t
  *  @brief elu parameters.
  */
 struct elu_params_t {
-  float alpha;
+    float alpha;
 };
 
 /** @struct leaky_relu_params_t
  *  @brief Leaky ReLU parameters.
  */
 struct leaky_relu_params_t {
-  float nslope;
+    float nslope;
 };
 
 /** @struct swish_params_t
  *  @brief swish parameters.
  */
 struct swish_params_t {
-  float scale;
+    float scale;
 };
 
 /** @struct clip_params_t
  *  @brief Clip parameters.
  */
 struct clip_params_t {
-  float lower;
-  float upper;
+    float lower;
+    float upper;
 };
 
 /** @struct binary_add_params_t
  *  @brief Eltwise add with another tensor parameters.
  */
 struct binary_add_params_t {
-  float scale;
-  std::string tensor_name;
+    float scale;
+    std::string tensor_name;
 };
 
 /** @struct binary_mul_params_t
  *  @brief Eltwise add with another tensor parameters.
  */
 struct binary_mul_params_t {
-  float scale;
-  std::string tensor_name;
+    float scale;
+    std::string tensor_name;
 };
 
 /** @struct post_op_t
@@ -111,43 +111,43 @@ struct binary_mul_params_t {
  * operator.
  */
 struct post_op_t {
-  /** @brief Constructor for a type without parameters */
-  post_op_t(post_op_type_t type_);
-  /** @brief Constructor for elu */
-  post_op_t(elu_params_t params_);
-  /** @brief Constructor for leaky ReLU */
-  post_op_t(leaky_relu_params_t params_);
-  /** @brief Constructor for swish */
-  post_op_t(swish_params_t params_);
-  /** @brief Constructor for clip */
-  post_op_t(clip_params_t params_);
-  /** @brief Constructor for binary add with a tensor */
-  post_op_t(binary_add_params_t params_);
-  /** @brief Constructor for binary mul with a tensor */
-  post_op_t(binary_mul_params_t params_);
+    /** @brief Constructor for a type without parameters */
+    post_op_t(post_op_type_t type_);
+    /** @brief Constructor for elu */
+    post_op_t(elu_params_t params_);
+    /** @brief Constructor for leaky ReLU */
+    post_op_t(leaky_relu_params_t params_);
+    /** @brief Constructor for swish */
+    post_op_t(swish_params_t params_);
+    /** @brief Constructor for clip */
+    post_op_t(clip_params_t params_);
+    /** @brief Constructor for binary add with a tensor */
+    post_op_t(binary_add_params_t params_);
+    /** @brief Constructor for binary mul with a tensor */
+    post_op_t(binary_mul_params_t params_);
 
-  post_op_type_t      type;
-  elu_params_t        elu_params;
-  swish_params_t      swish_params;
-  leaky_relu_params_t leaky_relu_params;
-  clip_params_t       clip_params;
-  binary_add_params_t binary_add_params;
-  binary_mul_params_t binary_mul_params;
+    post_op_type_t type;
+    elu_params_t elu_params;
+    swish_params_t swish_params;
+    leaky_relu_params_t leaky_relu_params;
+    clip_params_t clip_params;
+    binary_add_params_t binary_add_params;
+    binary_mul_params_t binary_mul_params;
 
-  std::string post_op_info(post_op_t post_op);
+    std::string post_op_info(post_op_t post_op);
 };
 
 } //namespace ops
 
 namespace interface {
-using post_op_type_t      = zendnnl::ops::post_op_type_t;
-using elu_params_t        = zendnnl::ops::elu_params_t;
+using post_op_type_t = zendnnl::ops::post_op_type_t;
+using elu_params_t = zendnnl::ops::elu_params_t;
 using leaky_relu_params_t = zendnnl::ops::leaky_relu_params_t;
-using swish_params_t      = zendnnl::ops::swish_params_t;
-using clip_params_t       = zendnnl::ops::clip_params_t;
+using swish_params_t = zendnnl::ops::swish_params_t;
+using clip_params_t = zendnnl::ops::clip_params_t;
 using binary_add_params_t = zendnnl::ops::binary_add_params_t;
 using binary_mul_params_t = zendnnl::ops::binary_mul_params_t;
-using post_op_t           = zendnnl::ops::post_op_t;
-} //interface
+using post_op_t = zendnnl::ops::post_op_t;
+} // namespace interface
 } //namespace zendnnl
 #endif

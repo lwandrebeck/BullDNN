@@ -17,8 +17,8 @@
 #define _SDPA_LOWOHA_HPP_
 
 #include "benchdnn.hpp"
-#include "sdpa_utils.hpp"
 #include "sdpa_tensor_factory.hpp"
+#include "sdpa_utils.hpp"
 
 #include "lowoha_operators/sdpa/lowoha_sdpa.hpp"
 #include "lowoha_operators/sdpa/lowoha_sdpa_common.hpp"
@@ -43,9 +43,9 @@ namespace sdpa {
 // translation unit that compiles `sdpa_lowoha.cpp` directly.
 struct SdpaConfig;
 
+using zendnnl::lowoha::sdpa::mask_type_t;
 using zendnnl::lowoha::sdpa::sdpa_direct;
 using zendnnl::lowoha::sdpa::sdpa_params;
-using zendnnl::lowoha::sdpa::mask_type_t;
 
 /**
  * @brief Benchmarks Low Overhead API SDPA (sdpa_direct).
@@ -73,11 +73,9 @@ using zendnnl::lowoha::sdpa::mask_type_t;
  * @return int OK (0) on success, NOT_OK (1) on fatal failure (per-config
  *             failures are logged and skipped, not propagated).
  */
-int sdpa_lowoha_benchdnn(
-  std::vector<SdpaConfig> configs,
-  std::vector<std::pair<SdpaConfig, TimingStats>> &sdpa_results,
-  const global_options &options,
-  size_t cache_size);
+int sdpa_lowoha_benchdnn(std::vector<SdpaConfig> configs,
+        std::vector<std::pair<SdpaConfig, TimingStats>> &sdpa_results,
+        const global_options &options, size_t cache_size);
 
 } // namespace sdpa
 } // namespace benchdnn

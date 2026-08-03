@@ -51,20 +51,12 @@ namespace normalization {
  *
  * @return status_t::success on successful execution, status_t::failure otherwise
  */
-status_t normalization_reference_wrapper(
-  const void *input,
-  void *output,
-  const void *gamma,
-  const void *beta,
-  const void *running_mean,
-  const void *running_var,
-  void       *residual,
-  norm_params &params
-);
+status_t normalization_reference_wrapper(const void *input, void *output,
+        const void *gamma, const void *beta, const void *running_mean,
+        const void *running_var, void *residual, norm_params &params);
 
 } // namespace normalization
 } // namespace lowoha
 } // namespace zendnnl
 
 #endif // _LOWOHA_NORMALIZATION_REFERENCE_KERNEL_HPP
-

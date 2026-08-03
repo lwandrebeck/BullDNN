@@ -15,20 +15,20 @@
  ******************************************************************************/
 
 #include "lowoha_operators/matmul/matmul_native/brgemm/looper/fp32_brgemm_looper.hpp"
-#include "lowoha_operators/matmul/matmul_native/gemm/looper/fp32_gemm_looper.hpp"
-#include "lowoha_operators/matmul/matmul_native/brgemm/planner/brgemm_planner.hpp"
-#include "lowoha_operators/matmul/matmul_native/brgemm/kernel/fp32/fp32_brgemm_ukernel.hpp"
-#include "lowoha_operators/matmul/matmul_native/common/kernel_cache.hpp"
-#include "lowoha_operators/matmul/matmul_native/common/avx512_math.hpp"
-#include "lowoha_operators/matmul/matmul_native/common/postop.hpp"
-#include "operators/matmul/matmul_config.hpp"
 #include "common/zendnnl_global.hpp"
+#include "lowoha_operators/matmul/matmul_native/brgemm/kernel/fp32/fp32_brgemm_ukernel.hpp"
+#include "lowoha_operators/matmul/matmul_native/brgemm/planner/brgemm_planner.hpp"
+#include "lowoha_operators/matmul/matmul_native/common/avx512_math.hpp"
+#include "lowoha_operators/matmul/matmul_native/common/kernel_cache.hpp"
+#include "lowoha_operators/matmul/matmul_native/common/postop.hpp"
+#include "lowoha_operators/matmul/matmul_native/gemm/looper/fp32_gemm_looper.hpp"
+#include "operators/matmul/matmul_config.hpp"
 
-#include <omp.h>
+#include <algorithm>
 #include <cstdlib>
 #include <cstring>
-#include <algorithm>
 #include <immintrin.h>
+#include <omp.h>
 
 namespace zendnnl {
 namespace lowoha {
@@ -39,37 +39,36 @@ using namespace zendnnl::error_handling;
 using zendnnl::ops::matmul_config_t;
 using zendnnl::ops::post_op_type_t;
 
-__attribute__((target("avx512f")))
-static void scale_tile(float *C, int ldc, int m_count, int n_count, float alpha) {
+__attribute__((target("avx512f"))) static void scale_tile(
+        float *C, int ldc, int m_count, int n_count, float alpha) {
     __m512 av = _mm512_set1_ps(alpha);
     for (int m = 0; m < m_count; ++m) {
         float *row = C + m * ldc;
         int n = 0;
         for (; n + 15 < n_count; n += 16)
-            _mm512_storeu_ps(row + n, _mm512_mul_ps(_mm512_loadu_ps(row + n), av));
+            _mm512_storeu_ps(
+                    row + n, _mm512_mul_ps(_mm512_loadu_ps(row + n), av));
         for (; n < n_count; ++n)
             row[n] *= alpha;
     }
 }
 
-static void brgemm_thread_loop(
-    const GemmDescriptor &desc,
-    const BrgemmPlan &plan,
-    const UarchParams &uarch,
-    const void *src, const void *weight, void *dst,
-    const void *bias, matmul_params &params,
-    const PrepackedWeight *prepacked_b) {
+static void brgemm_thread_loop(const GemmDescriptor &desc,
+        const BrgemmPlan &plan, const UarchParams &uarch, const void *src,
+        const void *weight, void *dst, const void *bias, matmul_params &params,
+        const PrepackedWeight *prepacked_b) {
 
     const float *A = static_cast<const float *>(src);
     const float *B = static_cast<const float *>(weight);
-    float *C       = static_cast<float *>(dst);
+    float *C = static_cast<float *>(dst);
     const float *bias_f = static_cast<const float *>(bias);
 
     const int M = desc.M, N = desc.N, K = desc.K;
     const int lda = desc.lda, ldb = desc.ldb, ldc = desc.ldc;
     const float alpha = desc.alpha;
-    const float beta  = (desc.alpha != 1.0f && desc.beta != 0.0f)
-                        ? (desc.beta / desc.alpha) : desc.beta;
+    const float beta = (desc.alpha != 1.0f && desc.beta != 0.0f)
+            ? (desc.beta / desc.alpha)
+            : desc.beta;
     const int MB = plan.MB, NB = plan.NB, BK = plan.BK;
     const int MR = plan.MR, NR = plan.NR;
     const int num_threads = plan.num_threads;
@@ -78,7 +77,7 @@ static void brgemm_thread_loop(
     const bool b_prepacked = (prepacked_b != nullptr);
 
     // Template kernel for full MR×NR tiles
-    brgemm_fn_t hot_kernel = use_avx512 ? brgemm_ukernel<6,1> : nullptr;
+    brgemm_fn_t hot_kernel = use_avx512 ? brgemm_ukernel<6, 1> : nullptr;
 
     // Postop fusion
     fused_postop_t fused_op = fused_postop_t::none;
@@ -87,14 +86,22 @@ static void brgemm_thread_loop(
         auto pt = params.postop_[i].po_type;
         if (pt == post_op_type_t::relu) {
             if (params.postop_[i].alpha == 0.0f) {
-                fused_op = fused_postop_t::relu; fused_idx = i; break;
+                fused_op = fused_postop_t::relu;
+                fused_idx = i;
+                break;
             }
         } else if (pt == post_op_type_t::gelu_tanh) {
-            fused_op = fused_postop_t::gelu_tanh; fused_idx = i; break;
+            fused_op = fused_postop_t::gelu_tanh;
+            fused_idx = i;
+            break;
         } else if (pt == post_op_type_t::gelu_erf) {
-            fused_op = fused_postop_t::gelu_erf; fused_idx = i; break;
+            fused_op = fused_postop_t::gelu_erf;
+            fused_idx = i;
+            break;
         } else if (pt == post_op_type_t::sigmoid) {
-            fused_op = fused_postop_t::sigmoid; fused_idx = i; break;
+            fused_op = fused_postop_t::sigmoid;
+            fused_idx = i;
+            break;
         } else if (pt == post_op_type_t::tanh) {
             // Don't fuse tanh in BRGEMM kernel — GCC generates incorrect
             // code when avx512_tanh is inlined into the BRGEMM template.
@@ -136,16 +143,17 @@ static void brgemm_thread_loop(
                     if (b_prepacked) {
                         int panel_idx = col / NR_PACK;
                         int in_panel_off = col % NR_PACK;
-                        pb = prepacked_b->get_panel(0, panel_idx) + in_panel_off;
+                        pb = prepacked_b->get_panel(0, panel_idx)
+                                + in_panel_off;
                         pb_stride = NR_PACK;
                     } else {
                         pb = B + col;
                         pb_stride = ldb;
                     }
-                    const float *tile_bias =
-                        (has_bias && can_fuse) ? (bias_f + col) : nullptr;
-                    const fused_postop_t tile_fop =
-                        can_fuse ? fused_op : fused_postop_t::none;
+                    const float *tile_bias
+                            = (has_bias && can_fuse) ? (bias_f + col) : nullptr;
+                    const fused_postop_t tile_fop
+                            = can_fuse ? fused_op : fused_postop_t::none;
 
                     for (int ip = 0; ip < m_panels; ++ip) {
                         const int ir = ip * MR;
@@ -154,16 +162,13 @@ static void brgemm_thread_loop(
                         float *Ct = C + (ic + ir) * ldc + col;
 
                         if (hot_kernel && full_nr && mr_act == MR) {
-                            hot_kernel(At, lda, pb, pb_stride,
-                                       Ct, ldc, K, BK, beta,
-                                       tile_bias, tile_fop);
+                            hot_kernel(At, lda, pb, pb_stride, Ct, ldc, K, BK,
+                                    beta, tile_bias, tile_fop);
                         } else if (use_avx512) {
-                            brgemm_tail_kernel(At, lda, pb, pb_stride,
-                                               Ct, ldc, K, BK,
-                                               mr_act, nr_act, beta,
-                                               tile_bias, tile_fop);
+                            brgemm_tail_kernel(At, lda, pb, pb_stride, Ct, ldc,
+                                    K, BK, mr_act, nr_act, beta, tile_bias,
+                                    tile_fop);
                         }
-
                     }
                 }
 
@@ -172,23 +177,22 @@ static void brgemm_thread_loop(
                 if (alpha != 1.0f) {
                     scale_tile(Ctile, ldc, mb_act, nb_act, alpha);
                     if (has_bias)
-                        apply_postops_tile(Ctile, ldc, mb_act, nb_act,
-                                           jc, ic, bias_f, {});
+                        apply_postops_tile(
+                                Ctile, ldc, mb_act, nb_act, jc, ic, bias_f, {});
                     if (fused_op != fused_postop_t::none && fused_idx >= 0)
-                        apply_postops_tile(Ctile, ldc, mb_act, nb_act,
-                                           jc, ic, nullptr,
-                                           {params.postop_[fused_idx]});
+                        apply_postops_tile(Ctile, ldc, mb_act, nb_act, jc, ic,
+                                nullptr, {params.postop_[fused_idx]});
                 }
                 if (has_remaining_postops) {
-                    apply_postops_tile(Ctile, ldc, mb_act, nb_act,
-                                       jc, ic, nullptr, remaining_postops);
+                    apply_postops_tile(Ctile, ldc, mb_act, nb_act, jc, ic,
+                            nullptr, remaining_postops);
                 }
             }
         }
     } else {
-        #pragma omp parallel num_threads(num_threads)
+#pragma omp parallel num_threads(num_threads)
         {
-            #pragma omp for schedule(dynamic, 1)
+#pragma omp for schedule(dynamic, 1)
             for (int tile_idx = 0; tile_idx < total_tiles; ++tile_idx) {
                 const int ic_idx = tile_idx / jc_tiles;
                 const int jc_idx = tile_idx % jc_tiles;
@@ -209,16 +213,17 @@ static void brgemm_thread_loop(
                     if (b_prepacked) {
                         int panel_idx = col / NR_PACK;
                         int in_panel_off = col % NR_PACK;
-                        pb = prepacked_b->get_panel(0, panel_idx) + in_panel_off;
+                        pb = prepacked_b->get_panel(0, panel_idx)
+                                + in_panel_off;
                         pb_stride = NR_PACK;
                     } else {
                         pb = B + col;
                         pb_stride = ldb;
                     }
-                    const float *tile_bias =
-                        (has_bias && can_fuse) ? (bias_f + col) : nullptr;
-                    const fused_postop_t tile_fop =
-                        can_fuse ? fused_op : fused_postop_t::none;
+                    const float *tile_bias
+                            = (has_bias && can_fuse) ? (bias_f + col) : nullptr;
+                    const fused_postop_t tile_fop
+                            = can_fuse ? fused_op : fused_postop_t::none;
 
                     for (int ip = 0; ip < m_panels; ++ip) {
                         const int ir = ip * MR;
@@ -227,14 +232,12 @@ static void brgemm_thread_loop(
                         float *Ct = C + (ic + ir) * ldc + col;
 
                         if (hot_kernel && full_nr && mr_act == MR) {
-                            hot_kernel(At, lda, pb, pb_stride,
-                                       Ct, ldc, K, BK, beta,
-                                       tile_bias, tile_fop);
+                            hot_kernel(At, lda, pb, pb_stride, Ct, ldc, K, BK,
+                                    beta, tile_bias, tile_fop);
                         } else if (use_avx512) {
-                            brgemm_tail_kernel(At, lda, pb, pb_stride,
-                                               Ct, ldc, K, BK,
-                                               mr_act, nr_act, beta,
-                                               tile_bias, tile_fop);
+                            brgemm_tail_kernel(At, lda, pb, pb_stride, Ct, ldc,
+                                    K, BK, mr_act, nr_act, beta, tile_bias,
+                                    tile_fop);
                         }
                     }
                 }
@@ -243,34 +246,28 @@ static void brgemm_thread_loop(
                 if (alpha != 1.0f) {
                     scale_tile(Ctile, ldc, mb_act, nb_act, alpha);
                     if (has_bias)
-                        apply_postops_tile(Ctile, ldc, mb_act, nb_act,
-                                           jc, ic, bias_f, {});
+                        apply_postops_tile(
+                                Ctile, ldc, mb_act, nb_act, jc, ic, bias_f, {});
                     if (fused_op != fused_postop_t::none && fused_idx >= 0)
-                        apply_postops_tile(Ctile, ldc, mb_act, nb_act,
-                                           jc, ic, nullptr,
-                                           {params.postop_[fused_idx]});
+                        apply_postops_tile(Ctile, ldc, mb_act, nb_act, jc, ic,
+                                nullptr, {params.postop_[fused_idx]});
                 }
                 if (has_remaining_postops) {
-                    apply_postops_tile(Ctile, ldc, mb_act, nb_act,
-                                       jc, ic, nullptr, remaining_postops);
+                    apply_postops_tile(Ctile, ldc, mb_act, nb_act, jc, ic,
+                            nullptr, remaining_postops);
                 }
             }
         } // omp parallel
     }
-
 }
 
 // ============================================================================
 // BRGEMM execute: plan + B prepacking + thread loop
 // ============================================================================
 
-
-
-void brgemm_execute(
-    const GemmDescriptor &desc,
-    const UarchParams &uarch,
-    const void *src, const void *weight, void *dst,
-    const void *bias, matmul_params &params) {
+void brgemm_execute(const GemmDescriptor &desc, const UarchParams &uarch,
+        const void *src, const void *weight, void *dst, const void *bias,
+        matmul_params &params) {
 
     const int N = desc.N, K = desc.K;
     const bool transB = desc.transB;
@@ -286,17 +283,16 @@ void brgemm_execute(
     //   (b) !can_cache + transB=true: per-call packing into NR_PACK panels.
     //   (c) !can_cache + transB=false: prepacked_b = nullptr, direct access.
     //
-    static int32_t s_weight_cache =
-        matmul_config_t::instance().get_weight_cache();
-    static int32_t s_otf_bpack =
-        matmul_config_t::instance().get_otf_bpack();
+    static int32_t s_weight_cache
+            = matmul_config_t::instance().get_weight_cache();
+    static int32_t s_otf_bpack = matmul_config_t::instance().get_otf_bpack();
     const PrepackedWeight *prepacked_b = nullptr;
     const bool can_cache = is_weights_const && (s_weight_cache != 0);
 
     if (can_cache) {
-        PrepackedWeightKey bk{weight, K, N, desc.ldb, transB};
+        PrepackedWeightKey bk {weight, K, N, desc.ldb, transB};
         prepacked_b = PrepackedWeightCache::instance().get_or_prepack(
-            bk, static_cast<const float *>(weight));
+                bk, static_cast<const float *>(weight));
     } else if (transB) {
         static thread_local float *s_tb = nullptr;
         static thread_local size_t s_tb_cap = 0;
@@ -308,7 +304,7 @@ void brgemm_execute(
         if (s_tb_cap < total) {
             std::free(s_tb);
             s_tb = static_cast<float *>(std::aligned_alloc(
-                64, ((total * sizeof(float) + 63) & ~size_t(63))));
+                    64, ((total * sizeof(float) + 63) & ~size_t(63))));
             s_tb_cap = total;
         }
 
@@ -337,13 +333,13 @@ void brgemm_execute(
 
     const bool do_otf = (!prepacked_b && s_otf_bpack != 0);
     if (!prepacked_b && !do_otf) {
-    gemm_execute(desc, uarch, src, weight, dst, bias, params);
+        gemm_execute(desc, uarch, src, weight, dst, bias, params);
         return;
     }
 
     // ── 3. Thread loop ──
-    brgemm_thread_loop(desc, bplan, uarch, src, weight, dst, bias, params,
-                       prepacked_b);
+    brgemm_thread_loop(
+            desc, bplan, uarch, src, weight, dst, bias, params, prepacked_b);
 }
 
 } // namespace native

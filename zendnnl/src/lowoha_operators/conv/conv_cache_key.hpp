@@ -52,14 +52,13 @@ struct Key_conv {
     Key_conv() = default;
 
     // Equality operator for unordered_map
-    bool operator==(const Key_conv& other) const {
-        return filter_ptr == other.filter_ptr &&
-               in_channels == other.in_channels &&
-               out_channels == other.out_channels &&
-               filter_height == other.filter_height &&
-               filter_width == other.filter_width &&
-               dtype == other.dtype &&
-               blocking_hash == other.blocking_hash;
+    bool operator==(const Key_conv &other) const {
+        return filter_ptr == other.filter_ptr
+                && in_channels == other.in_channels
+                && out_channels == other.out_channels
+                && filter_height == other.filter_height
+                && filter_width == other.filter_width && dtype == other.dtype
+                && blocking_hash == other.blocking_hash;
     }
 };
 
@@ -69,20 +68,20 @@ struct Key_conv {
 
 // Hash function for Key_conv
 namespace std {
-    template<>
-    struct hash<zendnnl::lowoha::conv::Key_conv> {
-        size_t operator()(const zendnnl::lowoha::conv::Key_conv& key) const {
-            std::size_t seed = 0;
-            seed = zendnnl::common::hash_combine(seed, key.filter_ptr);
-            seed = zendnnl::common::hash_combine(seed, key.in_channels);
-            seed = zendnnl::common::hash_combine(seed, key.out_channels);
-            seed = zendnnl::common::hash_combine(seed, key.filter_height);
-            seed = zendnnl::common::hash_combine(seed, key.filter_width);
-            seed = zendnnl::common::hash_combine(seed, key.dtype);
-            seed = zendnnl::common::hash_combine(seed, key.blocking_hash);
-            return seed;
-        }
-    };
-}
+template <>
+struct hash<zendnnl::lowoha::conv::Key_conv> {
+    size_t operator()(const zendnnl::lowoha::conv::Key_conv &key) const {
+        std::size_t seed = 0;
+        seed = zendnnl::common::hash_combine(seed, key.filter_ptr);
+        seed = zendnnl::common::hash_combine(seed, key.in_channels);
+        seed = zendnnl::common::hash_combine(seed, key.out_channels);
+        seed = zendnnl::common::hash_combine(seed, key.filter_height);
+        seed = zendnnl::common::hash_combine(seed, key.filter_width);
+        seed = zendnnl::common::hash_combine(seed, key.dtype);
+        seed = zendnnl::common::hash_combine(seed, key.blocking_hash);
+        return seed;
+    }
+};
+} // namespace std
 
 #endif // _LOWOHA_CONV_CACHE_KEY_HPP

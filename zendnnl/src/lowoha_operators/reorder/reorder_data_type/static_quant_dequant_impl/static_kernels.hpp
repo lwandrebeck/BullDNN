@@ -17,45 +17,45 @@
 #ifndef _STATIC_KERNELS_HPP
 #define _STATIC_KERNELS_HPP
 
-#include <cstdint>
 #include <cstddef>
+#include <cstdint>
 
 namespace zendnnl {
 namespace lowoha {
 namespace reorder {
 
-void bf16_to_float32_avx512(const uint16_t *input, float *output,
-                            size_t nelems);
-void float32_to_bf16_avx512(const float *input, uint16_t *output,
-                            size_t nelems);
+void bf16_to_float32_avx512(
+        const uint16_t *input, float *output, size_t nelems);
+void float32_to_bf16_avx512(
+        const float *input, uint16_t *output, size_t nelems);
 void quantize_bf16_to_int8_avx512(const uint16_t *input, int8_t *output,
-                                  size_t nelems, float scale, int zero_point);
+        size_t nelems, float scale, int zero_point);
 void dequantize_int8_to_bf16_avx512(const int8_t *input, uint16_t *output,
-                                    size_t nelems, float scale, int zero_point);
+        size_t nelems, float scale, int zero_point);
 void quantize_bf16_to_uint8_avx512(const uint16_t *input, uint8_t *output,
-                                   size_t nelems, float scale, int zero_point);
+        size_t nelems, float scale, int zero_point);
 void dequantize_uint8_to_bf16_avx512(const uint8_t *input, uint16_t *output,
-                                     size_t nelems, float scale, int zero_point);
+        size_t nelems, float scale, int zero_point);
 void quantize_f32_to_int8_avx512(const float *input, int8_t *output,
-                                 size_t nelems, float scale, int zero_point);
+        size_t nelems, float scale, int zero_point);
 void dequantize_int8_to_f32_avx512(const int8_t *input, float *output,
-                                   size_t nelems, float scale, int zero_point);
+        size_t nelems, float scale, int zero_point);
 void quantize_f32_to_uint8_avx512(const float *input, uint8_t *output,
-                                  size_t nelems, float scale, int zero_point);
+        size_t nelems, float scale, int zero_point);
 void dequantize_uint8_to_f32_avx512(const uint8_t *input, float *output,
-                                    size_t nelems, float scale, int zero_point);
+        size_t nelems, float scale, int zero_point);
 void convert_f32_to_bf16_avx512(const float *input, uint16_t *output,
-                                size_t nelems, float scale, int zero_point);
+        size_t nelems, float scale, int zero_point);
 void convert_bf16_to_f32_avx512(const uint16_t *input, float *output,
-                                size_t nelems, float scale, int zero_point);
+        size_t nelems, float scale, int zero_point);
 void convert_f32_to_f16_avx512(const float *input, uint16_t *output,
-                               size_t nelems, float scale, int zero_point);
+        size_t nelems, float scale, int zero_point);
 void convert_f16_to_f32_avx512(const uint16_t *input, float *output,
-                               size_t nelems, float scale, int zero_point);
+        size_t nelems, float scale, int zero_point);
 void convert_bf16_to_f16_avx512(const uint16_t *input, uint16_t *output,
-                                size_t nelems, float scale, int zero_point);
+        size_t nelems, float scale, int zero_point);
 void convert_f16_to_bf16_avx512(const uint16_t *input, uint16_t *output,
-                                size_t nelems, float scale, int zero_point);
+        size_t nelems, float scale, int zero_point);
 
 // FP16 AVX-512 kernels — F32-FMA backend (F16C load/store + __m512 math).
 // Requires AVX-512F and F16C. These are architecturally independent CPUID
@@ -64,25 +64,25 @@ void convert_f16_to_bf16_avx512(const uint16_t *input, uint16_t *output,
 // via the GCC target attribute and the dispatcher does not add a separate
 // runtime ISA probe.
 void quantize_f16_to_int8_avx512(const uint16_t *input, int8_t *output,
-                                  size_t nelems, float scale, int zero_point);
+        size_t nelems, float scale, int zero_point);
 void dequantize_int8_to_f16_avx512(const int8_t *input, uint16_t *output,
-                                    size_t nelems, float scale, int zero_point);
+        size_t nelems, float scale, int zero_point);
 void quantize_f16_to_uint8_avx512(const uint16_t *input, uint8_t *output,
-                                   size_t nelems, float scale, int zero_point);
+        size_t nelems, float scale, int zero_point);
 void dequantize_uint8_to_f16_avx512(const uint8_t *input, uint16_t *output,
-                                     size_t nelems, float scale, int zero_point);
+        size_t nelems, float scale, int zero_point);
 
 // FP16 AVX-512 kernels — FP16-FMA backend (__m512h native, AVX512-FP16 ISA).
 // On toolchains older than GCC 12, the implementations compile to no-op
 // stubs and the dispatcher must select the F32-FMA backend instead.
 void quantize_f16_to_int8_avx512fp16(const uint16_t *input, int8_t *output,
-                                      size_t nelems, float scale, int zero_point);
+        size_t nelems, float scale, int zero_point);
 void dequantize_int8_to_f16_avx512fp16(const int8_t *input, uint16_t *output,
-                                        size_t nelems, float scale, int zero_point);
+        size_t nelems, float scale, int zero_point);
 void quantize_f16_to_uint8_avx512fp16(const uint16_t *input, uint8_t *output,
-                                       size_t nelems, float scale, int zero_point);
+        size_t nelems, float scale, int zero_point);
 void dequantize_uint8_to_f16_avx512fp16(const uint8_t *input, uint16_t *output,
-                                         size_t nelems, float scale, int zero_point);
+        size_t nelems, float scale, int zero_point);
 
 } // namespace reorder
 } // namespace lowoha

@@ -147,8 +147,8 @@
 #include "common/error_status.hpp"
 #include "lowoha_operators/matmul/group_matmul/group_matmul_direct.hpp"
 #include "ukernel/bf16_microkernel.hpp"
-#include "ukernel/int8_microkernel.hpp"
 #include "ukernel/f16_microkernel.hpp"
+#include "ukernel/int8_microkernel.hpp"
 
 namespace zendnnl {
 namespace lowoha {
@@ -156,8 +156,8 @@ namespace matmul {
 namespace custom_kernel {
 
 using zendnnl::common::bfloat16_t;
-using zendnnl::common::float16_t;
 using zendnnl::common::data_type_t;
+using zendnnl::common::float16_t;
 using zendnnl::error_handling::status_t;
 using zendnnl::lowoha::matmul::grp_matmul_gated_act_t;
 
@@ -193,15 +193,19 @@ bool dispatch_supported();
 // `kF16_F16_F32` (native AVX-512-FP16).  Any tuple outside these
 // eight resolves to `kUnsupported` and the caller falls back to DLP.
 enum class KernelVariant : uint8_t {
-  kUnsupported       = 0,  ///< Not supported by the custom kernel; caller falls back to DLP.
-  kBF16_BF16_BF16    = 1,  ///< `bf16:bf16:bf16`.
-  kBF16_BF16_F32     = 2,  ///< `bf16:bf16:f32`.
-  kS8_S8_BF16_SYM    = 3,  ///< DQ-INT8 symmetric: src(hoisted s8) × wei(s8) → bf16.
-  kU8_S8_BF16_ASYM   = 4,  ///< DQ-INT8 asymmetric: src(hoisted u8) × wei(s8) → bf16.
-  kS8_S8_F32_SYM     = 5,  ///< DQ-INT8 symmetric: src(hoisted s8) × wei(s8) → f32.
-  kU8_S8_F32_ASYM    = 6,  ///< DQ-INT8 asymmetric: src(hoisted u8) × wei(s8) → f32.
-  kF16_F16_F16       = 7,  ///< `f16:f16:f16` (native AVX-512-FP16).
-  kF16_F16_F32       = 8,  ///< `f16:f16:f32` (native AVX-512-FP16, act=none only).
+    kUnsupported
+    = 0, ///< Not supported by the custom kernel; caller falls back to DLP.
+    kBF16_BF16_BF16 = 1, ///< `bf16:bf16:bf16`.
+    kBF16_BF16_F32 = 2, ///< `bf16:bf16:f32`.
+    kS8_S8_BF16_SYM
+    = 3, ///< DQ-INT8 symmetric: src(hoisted s8) × wei(s8) → bf16.
+    kU8_S8_BF16_ASYM
+    = 4, ///< DQ-INT8 asymmetric: src(hoisted u8) × wei(s8) → bf16.
+    kS8_S8_F32_SYM = 5, ///< DQ-INT8 symmetric: src(hoisted s8) × wei(s8) → f32.
+    kU8_S8_F32_ASYM
+    = 6, ///< DQ-INT8 asymmetric: src(hoisted u8) × wei(s8) → f32.
+    kF16_F16_F16 = 7, ///< `f16:f16:f16` (native AVX-512-FP16).
+    kF16_F16_F32 = 8, ///< `f16:f16:f32` (native AVX-512-FP16, act=none only).
 };
 
 /// Predicate: is this variant in the DQ-INT8 family?
@@ -213,10 +217,10 @@ enum class KernelVariant : uint8_t {
 /// leaving them `nullptr` on the bf16 path).  Kept `noexcept` so the
 /// optimiser folds it into a single `cmp + or` at every callsite.
 inline bool is_int8_variant(KernelVariant v) noexcept {
-  return v == KernelVariant::kS8_S8_BF16_SYM
-      || v == KernelVariant::kU8_S8_BF16_ASYM
-      || v == KernelVariant::kS8_S8_F32_SYM
-      || v == KernelVariant::kU8_S8_F32_ASYM;
+    return v == KernelVariant::kS8_S8_BF16_SYM
+            || v == KernelVariant::kU8_S8_BF16_ASYM
+            || v == KernelVariant::kS8_S8_F32_SYM
+            || v == KernelVariant::kU8_S8_F32_ASYM;
 }
 
 /// Predicate: is this variant in the FP16 family?
@@ -228,8 +232,7 @@ inline bool is_int8_variant(KernelVariant v) noexcept {
 /// `src_scale` / `src_zp` / `wei_scale` exactly like the bf16 path.
 /// Kept `noexcept` so the optimiser folds it into a `cmp + or`.
 inline bool is_f16_variant(KernelVariant v) noexcept {
-  return v == KernelVariant::kF16_F16_F16
-      || v == KernelVariant::kF16_F16_F32;
+    return v == KernelVariant::kF16_F16_F16 || v == KernelVariant::kF16_F16_F32;
 }
 
 /// Map a (src, wei, dst, dynamic_quant, compute_dtype) tuple to a
@@ -271,21 +274,19 @@ inline bool is_f16_variant(KernelVariant v) noexcept {
 ///
 /// `noexcept` because it's a pure switch over POD enums — no
 /// allocation, no I/O.
-KernelVariant resolve_variant(data_type_t src, data_type_t wei,
-                              data_type_t dst,
-                              bool        dynamic_quant,
-                              data_type_t compute_dtype) noexcept;
+KernelVariant resolve_variant(data_type_t src, data_type_t wei, data_type_t dst,
+        bool dynamic_quant, data_type_t compute_dtype) noexcept;
 
 /// BF16-only legacy overload — kept for callers that have not been
 /// updated to thread the `dynamic_quant` / `compute_dtype`
 /// discriminators yet.  Internally calls the 5-arg form with
 /// `dynamic_quant = false` and `compute_dtype = none`, which
 /// reduces to the original two-row truth table.
-inline KernelVariant resolve_variant(data_type_t src, data_type_t wei,
-                                     data_type_t dst) noexcept {
-  return resolve_variant(src, wei, dst,
-                         /*dynamic_quant=*/false,
-                         /*compute_dtype=*/data_type_t::none);
+inline KernelVariant resolve_variant(
+        data_type_t src, data_type_t wei, data_type_t dst) noexcept {
+    return resolve_variant(src, wei, dst,
+            /*dynamic_quant=*/false,
+            /*compute_dtype=*/data_type_t::none);
 }
 
 /// Pick the pack/microkernel NR for one (K, N) shape.  Returns either
@@ -301,174 +302,174 @@ int plan_pack_nr(int K, int N);
 /// The caller stack-allocates one of these and passes it to every
 /// dispatch inside its OMP region.
 struct CallContext {
-  /// True only if `prepare_for_call()` succeeded — the caller reads
-  /// this to decide whether to call `dispatch_tile()` or fall back.
-  bool enabled = false;
+    /// True only if `prepare_for_call()` succeeded — the caller reads
+    /// this to decide whether to call `dispatch_tile()` or fall back.
+    bool enabled = false;
 
-  /// Resolved kernel variant for this call.  Set by
-  /// `prepare_for_call()` via `resolve_variant()`.  On the success
-  /// path it is one of the eight served variants: the two BF16 family
-  /// variants (bf16/f32 dst), the four DQ-INT8 variants (sym/asym ×
-  /// bf16/f32 dst), or one of the two FP16 family variants
-  /// (`kF16_F16_F16` / `kF16_F16_F32`).  `dispatch_tile()` reads this
-  /// to route to the correct kernel instantiation.
-  KernelVariant variant = KernelVariant::kUnsupported;
+    /// Resolved kernel variant for this call.  Set by
+    /// `prepare_for_call()` via `resolve_variant()`.  On the success
+    /// path it is one of the eight served variants: the two BF16 family
+    /// variants (bf16/f32 dst), the four DQ-INT8 variants (sym/asym ×
+    /// bf16/f32 dst), or one of the two FP16 family variants
+    /// (`kF16_F16_F16` / `kF16_F16_F32`).  `dispatch_tile()` reads this
+    /// to route to the correct kernel instantiation.
+    KernelVariant variant = KernelVariant::kUnsupported;
 
-  /// Pack/microkernel NR (32 or 64).  The caller reads this for the
-  /// `aligned_n_split()` column-split alignment so each per-thread
-  /// N-tile is a whole number of NR-blocks.
-  int pack_nr = 0;
+    /// Pack/microkernel NR (32 or 64).  The caller reads this for the
+    /// `aligned_n_split()` column-split alignment so each per-thread
+    /// N-tile is a whole number of NR-blocks.
+    int pack_nr = 0;
 
-  // ── Internal — fields below are written by `prepare_for_call()`
-  // and read only by `dispatch_tile()`.  Callers should not touch.
-  int            NV            = 0;          // = pack_nr / 16
-  int            max_mr        = 0;          // = max_mr_for_nv(NV)
-  // Representative L2-friendly N-chunk width (worst case, sized from
-  // the call's m_max).  Kept as a single value for APILOG / debug
-  // output; the actual per-expert values live in `subtile_cols_per_expert`
-  // below.  Dispatch reads per-expert, not this field.
-  int            subtile_cols  = 0;
-  ActKind        act_kind      = ActKind::none;
-  BiasKind       bias_kind     = BiasKind::none;  // resolved from bias_dtype
-  /// DQ-INT8 quant flavour — set by `prepare_for_call()` to
-  /// `kU8_Asym` for the asymmetric variants (bf16- or f32-dst) and
-  /// `kS8_Sym` otherwise; ignored on the bf16 path.  Baked into the
-  /// single `kfn_table_int8` per-MR table by `fill_kfn_table_int8`
-  /// (there is one table, not separate sym/asym tables), so the
-  /// inner loop does not re-touch the variant discriminator.
-  IntCompute     compute_int   = IntCompute::kS8_Sym;
-  /// Dtype of the src/wei scale buffers the microkernel will read.
-  /// Set by the N-tile hoist (the dispatcher cannot see the scale
-  /// dtype): `kBf16` when the raw bf16 scales are passed straight
-  /// through (swiglu_oai_mul / none — the common non-interleaved path,
-  /// kernel converts on load), `kF32` when the scales are already f32 OR were
-  /// converted+permuted to f32 by the silu/gelu interleave pre-pass.
-  /// Ignored on the bf16 (non-quant) path.
-  ScaleKind      scale_kind    = ScaleKind::kF32;
-  // Per-MR microkernel function pointers.  Slot 0 is unused (MR=0
-  // would be a no-op); slots 1..kMaxMR hold the selected specializations.
-  // Sized via `kMaxMR` so any future max_mr bump only needs a constant
-  // update in `ukernel/bf16_microkernel.hpp`.
-  //
-  // Three per-family tables, one per served ISA family:
-  //   * BF16 family    → `kfn_table`.
-  //   * DQ-INT8 family → `kfn_table_int8` (one entry per MR, already
-  //       specialised on `compute_int` + `act_kind` at
-  //       `prepare_for_call` time).
-  //   * FP16 family    → `kfn_table_f16`.
-  // Only ONE of the three tables is populated per call (the other two
-  // stay zero-initialised); `dispatch_tile()` reads the right table
-  // off `variant`.
-  ukernel_fn_t       kfn_table[kMaxMR + 1]      = {};
-  int8_ukernel_fn_t  kfn_table_int8[kMaxMR + 1] = {};
-  /// FP16 family per-MR table.  Populated only when the variant is
-  /// `kF16_F16_F16` / `kF16_F16_F32`; stays zero otherwise.
-  /// `dispatch_tile()` reads it off `is_f16_variant(variant)`.
-  f16_ukernel_fn_t   kfn_table_f16[kMaxMR + 1]  = {};
+    // ── Internal — fields below are written by `prepare_for_call()`
+    // and read only by `dispatch_tile()`.  Callers should not touch.
+    int NV = 0; // = pack_nr / 16
+    int max_mr = 0; // = max_mr_for_nv(NV)
+    // Representative L2-friendly N-chunk width (worst case, sized from
+    // the call's m_max).  Kept as a single value for APILOG / debug
+    // output; the actual per-expert values live in `subtile_cols_per_expert`
+    // below.  Dispatch reads per-expert, not this field.
+    int subtile_cols = 0;
+    ActKind act_kind = ActKind::none;
+    BiasKind bias_kind = BiasKind::none; // resolved from bias_dtype
+    /// DQ-INT8 quant flavour — set by `prepare_for_call()` to
+    /// `kU8_Asym` for the asymmetric variants (bf16- or f32-dst) and
+    /// `kS8_Sym` otherwise; ignored on the bf16 path.  Baked into the
+    /// single `kfn_table_int8` per-MR table by `fill_kfn_table_int8`
+    /// (there is one table, not separate sym/asym tables), so the
+    /// inner loop does not re-touch the variant discriminator.
+    IntCompute compute_int = IntCompute::kS8_Sym;
+    /// Dtype of the src/wei scale buffers the microkernel will read.
+    /// Set by the N-tile hoist (the dispatcher cannot see the scale
+    /// dtype): `kBf16` when the raw bf16 scales are passed straight
+    /// through (swiglu_oai_mul / none — the common non-interleaved path,
+    /// kernel converts on load), `kF32` when the scales are already f32 OR were
+    /// converted+permuted to f32 by the silu/gelu interleave pre-pass.
+    /// Ignored on the bf16 (non-quant) path.
+    ScaleKind scale_kind = ScaleKind::kF32;
+    // Per-MR microkernel function pointers.  Slot 0 is unused (MR=0
+    // would be a no-op); slots 1..kMaxMR hold the selected specializations.
+    // Sized via `kMaxMR` so any future max_mr bump only needs a constant
+    // update in `ukernel/bf16_microkernel.hpp`.
+    //
+    // Three per-family tables, one per served ISA family:
+    //   * BF16 family    → `kfn_table`.
+    //   * DQ-INT8 family → `kfn_table_int8` (one entry per MR, already
+    //       specialised on `compute_int` + `act_kind` at
+    //       `prepare_for_call` time).
+    //   * FP16 family    → `kfn_table_f16`.
+    // Only ONE of the three tables is populated per call (the other two
+    // stay zero-initialised); `dispatch_tile()` reads the right table
+    // off `variant`.
+    ukernel_fn_t kfn_table[kMaxMR + 1] = {};
+    int8_ukernel_fn_t kfn_table_int8[kMaxMR + 1] = {};
+    /// FP16 family per-MR table.  Populated only when the variant is
+    /// `kF16_F16_F16` / `kF16_F16_F32`; stays zero otherwise.
+    /// `dispatch_tile()` reads it off `is_f16_variant(variant)`.
+    f16_ukernel_fn_t kfn_table_f16[kMaxMR + 1] = {};
 
-  /// Maximum experts per call we cache packed pointers for.  Must
-  /// match (or exceed) each caller's own expert-count cap.
-  static constexpr int kMaxExperts = 256;
-  std::array<const bfloat16_t *, kMaxExperts> packed_ptrs{};
-  /// DQ-INT8 packed-weight pointers (signed `int8_t *`).  Populated
-  /// when the variant is `kS8_S8_BF16_SYM` / `kU8_S8_BF16_ASYM`;
-  /// stays all-null on the bf16 path.  Layout per o-block is
-  /// `[K_pad/4][pack_nr][4]` weight bytes followed by `[pack_nr]
-  /// int32` per-column compensation (see pack.hpp); `dispatch_tile()`
-  /// passes the raw `int8_t *` to the microkernel which reads the
-  /// compensation row by byte arithmetic.
-  std::array<const int8_t *, kMaxExperts> packed_ptrs_int8{};
-  /// FP16 packed-weight pointers (`float16_t *`).  Populated when the
-  /// variant is `kF16_F16_F16` / `kF16_F16_F32`; stays all-null on the
-  /// bf16 / int8 paths.  Layout per o-block is the plain
-  /// `[K][pack_nr]` FP16 slab (no K-interleave / compensation; see
-  /// pack.hpp).  `dispatch_tile()` passes the raw `float16_t *` to the
-  /// FP16 microkernel.
-  std::array<const float16_t *, kMaxExperts> packed_ptrs_f16{};
+    /// Maximum experts per call we cache packed pointers for.  Must
+    /// match (or exceed) each caller's own expert-count cap.
+    static constexpr int kMaxExperts = 256;
+    std::array<const bfloat16_t *, kMaxExperts> packed_ptrs {};
+    /// DQ-INT8 packed-weight pointers (signed `int8_t *`).  Populated
+    /// when the variant is `kS8_S8_BF16_SYM` / `kU8_S8_BF16_ASYM`;
+    /// stays all-null on the bf16 path.  Layout per o-block is
+    /// `[K_pad/4][pack_nr][4]` weight bytes followed by `[pack_nr]
+    /// int32` per-column compensation (see pack.hpp); `dispatch_tile()`
+    /// passes the raw `int8_t *` to the microkernel which reads the
+    /// compensation row by byte arithmetic.
+    std::array<const int8_t *, kMaxExperts> packed_ptrs_int8 {};
+    /// FP16 packed-weight pointers (`float16_t *`).  Populated when the
+    /// variant is `kF16_F16_F16` / `kF16_F16_F32`; stays all-null on the
+    /// bf16 / int8 paths.  Layout per o-block is the plain
+    /// `[K][pack_nr]` FP16 slab (no K-interleave / compensation; see
+    /// pack.hpp).  `dispatch_tile()` passes the raw `float16_t *` to the
+    /// FP16 microkernel.
+    std::array<const float16_t *, kMaxExperts> packed_ptrs_f16 {};
 
-  /// Per-expert L2-friendly N-chunk width (cols).  Sized individually
-  /// so small-M experts (low A footprint) get a wider subtile with
-  /// better B reuse, while large-M experts (higher A footprint) stay
-  /// conservative.  Formula: same L2-budget arithmetic as the global
-  /// `subtile_cols`, but using the expert's own M.  Populated in
-  /// `prepare_for_call`; read directly in `dispatch_tile` via
-  /// `packed_ptrs`-indexed `expert_idx`.  Zero for inactive experts.
-  std::array<int, kMaxExperts> subtile_cols_per_expert{};
+    /// Per-expert L2-friendly N-chunk width (cols).  Sized individually
+    /// so small-M experts (low A footprint) get a wider subtile with
+    /// better B reuse, while large-M experts (higher A footprint) stay
+    /// conservative.  Formula: same L2-budget arithmetic as the global
+    /// `subtile_cols`, but using the expert's own M.  Populated in
+    /// `prepare_for_call`; read directly in `dispatch_tile` via
+    /// `packed_ptrs`-indexed `expert_idx`.  Zero for inactive experts.
+    std::array<int, kMaxExperts> subtile_cols_per_expert {};
 
-  /// Caller-owned packed-weight pointers — populated only when the
-  /// library-wide weight-cache toggle is OFF
-  /// (`matmul_config_t::get_weight_cache() == 0`, i.e. `cache_off`).  In
-  /// that mode `prepare_for_call()` routes each per-expert pack through
-  /// `get_or_pack_weight_bf16(..., disable_cache=true)`, which
-  /// allocates a fresh aligned buffer per call and skips the LRU
-  /// singleton; the resulting raw pointer is stored here AND
-  /// aliased into `packed_ptrs[i]` so `dispatch_tile()` reads it
-  /// transparently (the dispatcher cannot distinguish a cache-
-  /// served pointer from a caller-owned one — that's by design).
-  ///
-  /// Lifetime: owned by this `CallContext` instance.
-  /// `release_owned_buffers()` frees every non-null slot via
-  /// `free_owned_packed_weight()` and zeroes the array; the
-  /// destructor calls it unconditionally, and `prepare_for_call()`
-  /// calls it before its `out = CallContext{}` reset so a context
-  /// reused across calls does not leak the previous call's
-  /// buffers.  In the cache-enabled mode (the default) every slot
-  /// stays `nullptr` and `release_owned_buffers()` is a cheap no-op.
-  std::array<const bfloat16_t *, kMaxExperts> owned_packed_ptrs{};
-  /// DQ-INT8 sibling of `owned_packed_ptrs` — caller-owned int8
-  /// packed-weight pointers, used in the `weight_cache_type == 0`
-  /// (cache-off) branch.  Freed via `free_owned_packed_weight_int8()`.  Same
-  /// lifetime contract as the bf16 array; the destructor /
-  /// `release_owned_buffers()` zero both on exit.
-  std::array<const int8_t *, kMaxExperts> owned_packed_ptrs_int8{};
-  /// FP16 sibling of `owned_packed_ptrs` — caller-owned FP16 packed-
-  /// weight pointers, used in the `weight_cache_type == 0` (cache-off
-  /// mode) branch ONLY.  Unlike the bf16 array this is NOT reused for
-  /// WC=2: the FP16 pack family has no in-place (WC=2) mode (see
-  /// `get_or_pack_weight_f16` in pack.hpp), so WC=2 falls through to
-  /// the out-of-place LRU and never populates this array.
-  /// Freed via `free_owned_packed_weight_f16()`.  Same lifetime
-  /// contract as the bf16 array; the destructor /
-  /// `release_owned_buffers()` zero it on exit.
-  std::array<const float16_t *, kMaxExperts> owned_packed_ptrs_f16{};
+    /// Caller-owned packed-weight pointers — populated only when the
+    /// library-wide weight-cache toggle is OFF
+    /// (`matmul_config_t::get_weight_cache() == 0`, i.e. `cache_off`).  In
+    /// that mode `prepare_for_call()` routes each per-expert pack through
+    /// `get_or_pack_weight_bf16(..., disable_cache=true)`, which
+    /// allocates a fresh aligned buffer per call and skips the LRU
+    /// singleton; the resulting raw pointer is stored here AND
+    /// aliased into `packed_ptrs[i]` so `dispatch_tile()` reads it
+    /// transparently (the dispatcher cannot distinguish a cache-
+    /// served pointer from a caller-owned one — that's by design).
+    ///
+    /// Lifetime: owned by this `CallContext` instance.
+    /// `release_owned_buffers()` frees every non-null slot via
+    /// `free_owned_packed_weight()` and zeroes the array; the
+    /// destructor calls it unconditionally, and `prepare_for_call()`
+    /// calls it before its `out = CallContext{}` reset so a context
+    /// reused across calls does not leak the previous call's
+    /// buffers.  In the cache-enabled mode (the default) every slot
+    /// stays `nullptr` and `release_owned_buffers()` is a cheap no-op.
+    std::array<const bfloat16_t *, kMaxExperts> owned_packed_ptrs {};
+    /// DQ-INT8 sibling of `owned_packed_ptrs` — caller-owned int8
+    /// packed-weight pointers, used in the `weight_cache_type == 0`
+    /// (cache-off) branch.  Freed via `free_owned_packed_weight_int8()`.  Same
+    /// lifetime contract as the bf16 array; the destructor /
+    /// `release_owned_buffers()` zero both on exit.
+    std::array<const int8_t *, kMaxExperts> owned_packed_ptrs_int8 {};
+    /// FP16 sibling of `owned_packed_ptrs` — caller-owned FP16 packed-
+    /// weight pointers, used in the `weight_cache_type == 0` (cache-off
+    /// mode) branch ONLY.  Unlike the bf16 array this is NOT reused for
+    /// WC=2: the FP16 pack family has no in-place (WC=2) mode (see
+    /// `get_or_pack_weight_f16` in pack.hpp), so WC=2 falls through to
+    /// the out-of-place LRU and never populates this array.
+    /// Freed via `free_owned_packed_weight_f16()`.  Same lifetime
+    /// contract as the bf16 array; the destructor /
+    /// `release_owned_buffers()` zero it on exit.
+    std::array<const float16_t *, kMaxExperts> owned_packed_ptrs_f16 {};
 
-  /// Free every caller-owned packed buffer this context holds and
-  /// zero the `owned_packed_ptrs` array.  Idempotent and safe to
-  /// call at any time (frees only non-null slots).  Does NOT touch
-  /// `packed_ptrs` — when a slot in `owned_packed_ptrs` is non-null
-  /// the matching `packed_ptrs[i]` aliases it and becomes dangling
-  /// after this call, which is the expected post-condition: the
-  /// dispatcher must not read `packed_ptrs` after a successful
-  /// `release_owned_buffers()` unless `prepare_for_call()` has
-  /// repopulated the context.
-  void release_owned_buffers();
+    /// Free every caller-owned packed buffer this context holds and
+    /// zero the `owned_packed_ptrs` array.  Idempotent and safe to
+    /// call at any time (frees only non-null slots).  Does NOT touch
+    /// `packed_ptrs` — when a slot in `owned_packed_ptrs` is non-null
+    /// the matching `packed_ptrs[i]` aliases it and becomes dangling
+    /// after this call, which is the expected post-condition: the
+    /// dispatcher must not read `packed_ptrs` after a successful
+    /// `release_owned_buffers()` unless `prepare_for_call()` has
+    /// repopulated the context.
+    void release_owned_buffers();
 
-  /// Reset every field to its post-construction default WITHOUT
-  /// leaking caller-owned packed buffers from a previous use of
-  /// the same context.  Order is important: free first (via
-  /// `release_owned_buffers()`), THEN zero the rest of the state.
-  /// Used by `prepare_for_call()` to start each call from a clean
-  /// slate when a single `CallContext` is reused across multiple
-  /// `group_matmul_direct(...)` invocations.  Replaces the
-  /// previous `out = CallContext{}` idiom that relied on a default
-  /// move-assignment operator — that operator is now deleted to
-  /// prevent silent double-frees on the owning pointer array.
-  void reset();
+    /// Reset every field to its post-construction default WITHOUT
+    /// leaking caller-owned packed buffers from a previous use of
+    /// the same context.  Order is important: free first (via
+    /// `release_owned_buffers()`), THEN zero the rest of the state.
+    /// Used by `prepare_for_call()` to start each call from a clean
+    /// slate when a single `CallContext` is reused across multiple
+    /// `group_matmul_direct(...)` invocations.  Replaces the
+    /// previous `out = CallContext{}` idiom that relied on a default
+    /// move-assignment operator — that operator is now deleted to
+    /// prevent silent double-frees on the owning pointer array.
+    void reset();
 
-  /// Non-copyable / non-movable.  `release_owned_buffers()` runs in
-  /// the destructor and freeing the same pointer twice would crash
-  /// the process; defaulting copy/move would silently duplicate
-  /// the owning pointers.  Callers stack-allocate a single
-  /// `CallContext` per `prepare_for_call() + dispatch_tile()`
-  /// scope (the typical idiom for both `group_matmul_direct` and
-  /// `group_matmul_fused_moe`); state reuse across calls goes
-  /// through `reset()` above.
-  CallContext() = default;
-  ~CallContext() { release_owned_buffers(); }
-  CallContext(const CallContext &)            = delete;
-  CallContext &operator=(const CallContext &) = delete;
-  CallContext(CallContext &&)                 = delete;
-  CallContext &operator=(CallContext &&)      = delete;
+    /// Non-copyable / non-movable.  `release_owned_buffers()` runs in
+    /// the destructor and freeing the same pointer twice would crash
+    /// the process; defaulting copy/move would silently duplicate
+    /// the owning pointers.  Callers stack-allocate a single
+    /// `CallContext` per `prepare_for_call() + dispatch_tile()`
+    /// scope (the typical idiom for both `group_matmul_direct` and
+    /// `group_matmul_fused_moe`); state reuse across calls goes
+    /// through `reset()` above.
+    CallContext() = default;
+    ~CallContext() { release_owned_buffers(); }
+    CallContext(const CallContext &) = delete;
+    CallContext &operator=(const CallContext &) = delete;
+    CallContext(CallContext &&) = delete;
+    CallContext &operator=(CallContext &&) = delete;
 };
 
 /// One-shot per-call prep (single-threaded).  See header doc for what
@@ -585,37 +586,27 @@ struct CallContext {
 ///      `dispatch_tile()`).
 /// Any other (dynamic_quant=true) tuple falls through to
 /// `kUnsupported` and the caller's standard path takes over.
-status_t prepare_for_call(
-    grp_matmul_gated_act_t act,
-    data_type_t src_dtype,
-    data_type_t wei_dtype,
-    data_type_t dst_dtype,
-    data_type_t act_dtype,
-    data_type_t bias_dtype,
-    const std::vector<bool>          &transA,
-    const std::vector<bool>          &transB,
-    const std::vector<int>           &M,
-    const std::vector<int>           &N,
-    const std::vector<int>           &K,
-    const std::vector<int>           &ldb,
-    const std::vector<float>         &alpha,
-    const std::vector<float>         &beta,
-    const std::vector<const void *>  &weight,
-    const std::vector<bool>          &is_weights_const,
-    CallContext &out,
-    bool         dynamic_quant   = false,
-    data_type_t  compute_dtype   = data_type_t::none,
-    // Per-expert "weight is already CK-VNNI-packed" signal (from the
-    // matmul caller's `mem_format_b == 'r'`).  When non-empty and
-    // `weights_prepacked[i] == true`, `weight[i]` is NOT a raw weight
-    // but the exact VNNI-packed buffer the microkernel consumes (as
-    // produced by the moe_custom_kernel weight-prepack, e.g. via
-    // `group_reorder` -> `prepack_weight_into_*`).  Those experts skip
-    // the pack entirely: `packed_ptrs[i]` (or `packed_ptrs_int8[i]`) is
-    // aliased to the caller's buffer and the LRU cache is NOT touched
-    // (caller owns the buffer lifetime).  Empty vector ⇒ no expert is
-    // prepacked (the default — every weight is packed as before).
-    const std::vector<bool>          &weights_prepacked = {});
+status_t prepare_for_call(grp_matmul_gated_act_t act, data_type_t src_dtype,
+        data_type_t wei_dtype, data_type_t dst_dtype, data_type_t act_dtype,
+        data_type_t bias_dtype, const std::vector<bool> &transA,
+        const std::vector<bool> &transB, const std::vector<int> &M,
+        const std::vector<int> &N, const std::vector<int> &K,
+        const std::vector<int> &ldb, const std::vector<float> &alpha,
+        const std::vector<float> &beta, const std::vector<const void *> &weight,
+        const std::vector<bool> &is_weights_const, CallContext &out,
+        bool dynamic_quant = false,
+        data_type_t compute_dtype = data_type_t::none,
+        // Per-expert "weight is already CK-VNNI-packed" signal (from the
+        // matmul caller's `mem_format_b == 'r'`).  When non-empty and
+        // `weights_prepacked[i] == true`, `weight[i]` is NOT a raw weight
+        // but the exact VNNI-packed buffer the microkernel consumes (as
+        // produced by the moe_custom_kernel weight-prepack, e.g. via
+        // `group_reorder` -> `prepack_weight_into_*`).  Those experts skip
+        // the pack entirely: `packed_ptrs[i]` (or `packed_ptrs_int8[i]`) is
+        // aliased to the caller's buffer and the LRU cache is NOT touched
+        // (caller owns the buffer lifetime).  Empty vector ⇒ no expert is
+        // prepacked (the default — every weight is packed as before).
+        const std::vector<bool> &weights_prepacked = {});
 
 // (`PackProbeStats` and `warm_pack_all_custom_kernel_experts` moved
 // to `group_matmul/prepack/prepack_custom_kernel.{hpp,cpp}` so the
@@ -656,18 +647,11 @@ status_t prepare_for_call(
 ///   * `wei_scale` — `N` floats (one per output column).  The
 ///                   dispatcher slices to the per-(o-block) NR
 ///                   window before invoking the microkernel.
-void dispatch_tile(
-    const CallContext &ctx,
-    int   expert_idx,
-    int   M, int K,
-    int   n_tile, int col_start,
-    const void *src,  int lda,
-    const void *bias,           // per `ctx.bias_kind`; nullptr when BiasKind::none
-    void       *tight_dst, int tight_ldc,
-    const void    *src_scale  = nullptr,
-    const int32_t *src_zp     = nullptr,
-    const void    *wei_scale  = nullptr);
-
+void dispatch_tile(const CallContext &ctx, int expert_idx, int M, int K,
+        int n_tile, int col_start, const void *src, int lda,
+        const void *bias, // per `ctx.bias_kind`; nullptr when BiasKind::none
+        void *tight_dst, int tight_ldc, const void *src_scale = nullptr,
+        const int32_t *src_zp = nullptr, const void *wei_scale = nullptr);
 
 } // namespace custom_kernel
 } // namespace matmul

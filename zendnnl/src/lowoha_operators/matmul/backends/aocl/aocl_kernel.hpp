@@ -17,34 +17,36 @@
 #ifndef _AOCL_KERNEL_HPP
 #define _AOCL_KERNEL_HPP
 
-#include "lowoha_operators/matmul/lowoha_common.hpp"
 #include "common/float16.hpp"
+#include "lowoha_operators/matmul/lowoha_common.hpp"
 
 #if ZENDNNL_DEPENDS_AOCLDLP
-  #include "aocl_dlp.h"
+#include "aocl_dlp.h"
 #else
-  #include <cstdint>
-  using md_t =
-  std::int64_t;  // matches aocl-dlp md_t (int64_t); previously dim_t from blis.h
+#include <cstdint>
+using md_t = std::
+        int64_t; // matches aocl-dlp md_t (int64_t); previously dim_t from blis.h
 #endif
 namespace zendnnl {
 namespace lowoha {
 namespace matmul {
 
-using get_reorder_buff_size_func_ptr = long unsigned int (*)(const char,
-                                       const char, const char, const md_t, const md_t
+using get_reorder_buff_size_func_ptr = long unsigned int (*)(
+        const char, const char, const char, const md_t, const md_t
 #if ZENDNNL_DEPENDS_AOCLDLP
-  ,dlp_metadata_t *
+        ,
+        dlp_metadata_t *
 #endif
-                                                            );
+);
 
 template <typename T>
 using reorder_func_ptr = void (*)(const char, const char, const char, const T *,
-                                  T *, const md_t, const md_t, const md_t
+        T *, const md_t, const md_t, const md_t
 #if ZENDNNL_DEPENDS_AOCLDLP
-  ,dlp_metadata_t *
+        ,
+        dlp_metadata_t *
 #endif
-                                 );
+);
 
 /**
  * @brief Reorders and caches weight matrices for optimized memory access patterns
@@ -84,29 +86,28 @@ using reorder_func_ptr = void (*)(const char, const char, const char, const T *,
  */
 template <typename T>
 bool reorderAndCacheWeights(Key_matmul key, const void *weights,
-                            void *&reorder_weights, const int k, const int n, const int ldb,
-                            const char order, const char trans, char mem_format_b,
-                            get_reorder_buff_size_func_ptr get_reorder_buf_size,
-                            reorder_func_ptr<T> reorder_func, int weight_cache_type);
+        void *&reorder_weights, const int k, const int n, const int ldb,
+        const char order, const char trans, char mem_format_b,
+        get_reorder_buff_size_func_ptr get_reorder_buf_size,
+        reorder_func_ptr<T> reorder_func, int weight_cache_type);
 
 #if ZENDNNL_DEPENDS_AOCLDLP
-using get_reorder_buf_size_sym_quant_func_ptr = long unsigned int (*)(
-      const char,
-      const char, const char, const md_t, const md_t,
-      DLP_SYMM_STAT_QUANT *, dlp_metadata_t *);
+using get_reorder_buf_size_sym_quant_func_ptr
+        = long unsigned int (*)(const char, const char, const char, const md_t,
+                const md_t, DLP_SYMM_STAT_QUANT *, dlp_metadata_t *);
 
 template <typename T>
 using reorder_sym_quant_func_ptr = void (*)(const char, const char, const char,
-                                   const T *, T *, const md_t, const md_t, const md_t,
-                                   DLP_SYMM_STAT_QUANT *, dlp_metadata_t *);
+        const T *, T *, const md_t, const md_t, const md_t,
+        DLP_SYMM_STAT_QUANT *, dlp_metadata_t *);
 
 template <typename T>
 bool reorderAndCacheWeightsSymQuant(Key_matmul key, const void *weights,
-                                    void *&reorder_weights, const int k, const int n, const int ldb,
-                                    const char order, const char trans, char mem_format_b,
-                                    get_reorder_buf_size_sym_quant_func_ptr get_reorder_buf_size,
-                                    reorder_sym_quant_func_ptr<T> reorder_func,
-                                    DLP_SYMM_STAT_QUANT *symq_meta, int weight_cache_type);
+        void *&reorder_weights, const int k, const int n, const int ldb,
+        const char order, const char trans, char mem_format_b,
+        get_reorder_buf_size_sym_quant_func_ptr get_reorder_buf_size,
+        reorder_sym_quant_func_ptr<T> reorder_func,
+        DLP_SYMM_STAT_QUANT *symq_meta, int weight_cache_type);
 #endif
 
 /**
@@ -123,8 +124,8 @@ bool reorderAndCacheWeightsSymQuant(Key_matmul key, const void *weights,
  * @param ldb           Leading dimension of the packed source (in elements).
  * @param is_transposed true when the packed source is column-major (ba).
  */
-void cvt_s4_to_s8(const int8_t *weights, int8_t *wei_s8, int k, int n,
-                  int ldb, bool is_transposed);
+void cvt_s4_to_s8(const int8_t *weights, int8_t *wei_s8, int k, int n, int ldb,
+        bool is_transposed);
 
 /** Clear AOCL matmul weight caches and zero-point compensation LRU cache. */
 void clear_aocl_matmul_weight_caches();
@@ -136,8 +137,7 @@ void clear_aocl_matmul_weight_caches();
 /// @param[out] s8_plain  Set to the cached plain s8 buffer on success,
 ///                       nullptr on failure.
 void w4a8_cvt_and_cache_plain_s8(Key_matmul key, const int8_t *weights,
-                            void *&s8_plain, int k, int n, int ldb,
-                            bool is_transposed);
+        void *&s8_plain, int k, int n, int ldb, bool is_transposed);
 
 /// High-level plain-s8 materialization: for every W4A8 expert in the group,
 /// populates the plain-s8 LRU (cvt_s4_to_s8 cached) and fills
@@ -146,34 +146,26 @@ void w4a8_cvt_and_cache_plain_s8(Key_matmul key, const int8_t *weights,
 /// first-fire conversion spike.  Does NOT mutate `weight[]` or `params`.
 /// @param[out] w4a8_s8_out  Resized to num_ops; non-W4A8 slots are nullptr.
 /// @param[out] any_w4a8     Set to true if at least one expert was W4A8.
-void w4a8_populate_plain_s8_cache(
-    const std::vector<const void *> &weight,
-    const std::vector<int> &K,
-    const std::vector<int> &N,
-    const std::vector<int> &ldb,
-    const std::vector<bool> &transB,
-    const std::vector<matmul_params> &params,
-    int num_ops,
-    std::vector<void *> &w4a8_s8_out,
-    bool &any_w4a8);
+void w4a8_populate_plain_s8_cache(const std::vector<const void *> &weight,
+        const std::vector<int> &K, const std::vector<int> &N,
+        const std::vector<int> &ldb, const std::vector<bool> &transB,
+        const std::vector<matmul_params> &params, int num_ops,
+        std::vector<void *> &w4a8_s8_out, bool &any_w4a8);
 
 /// W4A8 weight reorder + cache: converts s4→s8 then packs through the
 /// AOCL sym-quant s8s8s32os32 path into the dedicated W4A8 LRU cache.
 /// Called by run_dlp at GEMM time; also callable from prepack to eagerly
 /// warm the cache for all experts before inference begins.
 void w4a8ReorderAndCacheWeightsAocl(Key_matmul key, const int8_t *weights,
-                                    void *&reorder_weights, const int k,
-                                    const int n, const int ldb,
-                                    const bool is_weights_const,
-                                    const char order, const char trans,
-                                    data_type_t wei_dt, data_type_t src_dt,
-                                    int weight_cache_type,
-                                    int sym_quant_group_size);
+        void *&reorder_weights, const int k, const int n, const int ldb,
+        const bool is_weights_const, const char order, const char trans,
+        data_type_t wei_dt, data_type_t src_dt, int weight_cache_type,
+        int sym_quant_group_size);
 
 /// Broadcast per-token/per-tensor src_scale to per-group {M, G} shape
 /// so AOCL sym-quant derives the correct group_size = K/G.
-status_t broadcast_w4a8_src_scale(matmul_params &params, int M,
-                                  std::vector<uint8_t> &expanded_src_scale);
+status_t broadcast_w4a8_src_scale(
+        matmul_params &params, int M, std::vector<uint8_t> &expanded_src_scale);
 
 /**
  * @brief Execute single matrix multiplication using AOCL DLP backend
@@ -204,14 +196,12 @@ status_t broadcast_w4a8_src_scale(matmul_params &params, int M,
  * @param kernel Algorithm selection for GEMM execution
  * @param is_weights_const Flag indicating if weights are constant (enables caching)
  */
-void run_dlp(char layout, char transA, char transB, int M, int N,
-             int K,
-             float alpha, float beta, int lda, int ldb, int ldc,
-             char mem_format_a, char mem_format_b, const void *A,
-             const void *B, void *C, const matmul_data_types &dtypes,
-             const matmul_params &lowoha_param, const void *bias,
-             zendnnl::ops::matmul_algo_t kernel,
-             bool is_weights_const);
+void run_dlp(char layout, char transA, char transB, int M, int N, int K,
+        float alpha, float beta, int lda, int ldb, int ldc, char mem_format_a,
+        char mem_format_b, const void *A, const void *B, void *C,
+        const matmul_data_types &dtypes, const matmul_params &lowoha_param,
+        const void *bias, zendnnl::ops::matmul_algo_t kernel,
+        bool is_weights_const);
 
 /**
  * @brief Execute batched matrix multiplication using AOCL backend
@@ -243,13 +233,12 @@ void run_dlp(char layout, char transA, char transB, int M, int N,
  * @param bias Optional bias vector pointer applied to all batches (can be nullptr)
  */
 void matmul_batch_gemm_wrapper(char layout, char transA, char transB, int M,
-                               int N, int K, float alpha, const void *A, int lda, const void *B, int ldb,
-                               float beta,
-                               void *C, int ldc, matmul_data_types &dtypes, int batch_count,
-                               int Batch_A, int Batch_B, char mem_format_a,
-                               char mem_format_b, size_t src_stride, size_t weight_stride,
-                               size_t dst_stride, const matmul_params &lowoha_param, const void *bias,
-                               int num_threads);
+        int N, int K, float alpha, const void *A, int lda, const void *B,
+        int ldb, float beta, void *C, int ldc, matmul_data_types &dtypes,
+        int batch_count, int Batch_A, int Batch_B, char mem_format_a,
+        char mem_format_b, size_t src_stride, size_t weight_stride,
+        size_t dst_stride, const matmul_params &lowoha_param, const void *bias,
+        int num_threads);
 
 } // namespace matmul
 } // namespace lowoha

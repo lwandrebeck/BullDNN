@@ -88,149 +88,134 @@ using zendnnl::ops::matmul_config_t;
 // active-set dispatcher independently re-validates anything it
 // processes.
 // ─────────────────────────────────────────────────────────────────────
-status_t warm_pack_all_aocl_dlp_experts(
-  const std::vector<const void *> &weight,
-  const std::vector<int>          &K,
-  const std::vector<int>          &N,
-  const std::vector<int>          &ldb,
-  const std::vector<bool>         &transB,
-  const std::vector<bool>         &is_weights_const,
-  int                              total_count,
-  data_type_t                      wei_dtype,
-  AoclDlpPackProbeStats           &stats) {
+status_t warm_pack_all_aocl_dlp_experts(const std::vector<const void *> &weight,
+        const std::vector<int> &K, const std::vector<int> &N,
+        const std::vector<int> &ldb, const std::vector<bool> &transB,
+        const std::vector<bool> &is_weights_const, int total_count,
+        data_type_t wei_dtype, AoclDlpPackProbeStats &stats) {
 
-  if (total_count <= 0) {
-    return status_t::success;
-  }
+    if (total_count <= 0) { return status_t::success; }
 
-  // ── Production-cache gate ────────────────────────────────────────
-  // `run_dlp(...)` reads `matmul_config_t::instance().get_weight_cache()`
-  // (driven by `ZENDNNL_MATMUL_WEIGHT_CACHE`) and routes through the
-  // no-cache branch (`weight_cache_type=0`) when it returns 0.
-  // Warming the LRU here would put entries in a cache that the
-  // dispatcher will not consult — wasted CPU + memory.
-  // Short-circuit at entry; `stats` stays zeroed so the PREPACK
-  // log line surfaces "no work attempted" rather than "all skipped".
-  const int32_t weight_cache_type =
-    matmul_config_t::instance().get_weight_cache();
-  // Warm the full-weight AOCL DLP cache when the runtime consults it:
-  // WC==1 (out-of-place), OR WC==2 under the grouped AUTO mixed-in-place
-  // mode.  In mixed mode this full-weight (prompt) reorder is THE single
-  // in-place mutator of the weight buffer — it runs LAST in the prepack
-  // sequence (after the out-of-place CK / per-tile decode warms), so by
-  // the time it mutates W every other layout has already been packed from
-  // the raw weights.  `warm_wct` selects in-place (2) vs out-of-place (1)
-  // for `reorderAndCacheWeights` accordingly.
-  if (!should_warm_weight_cache(weight_cache_type)) {
-    return status_t::success;
-  }
+    // ── Production-cache gate ────────────────────────────────────────
+    // `run_dlp(...)` reads `matmul_config_t::instance().get_weight_cache()`
+    // (driven by `ZENDNNL_MATMUL_WEIGHT_CACHE`) and routes through the
+    // no-cache branch (`weight_cache_type=0`) when it returns 0.
+    // Warming the LRU here would put entries in a cache that the
+    // dispatcher will not consult — wasted CPU + memory.
+    // Short-circuit at entry; `stats` stays zeroed so the PREPACK
+    // log line surfaces "no work attempted" rather than "all skipped".
+    const int32_t weight_cache_type
+            = matmul_config_t::instance().get_weight_cache();
+    // Warm the full-weight AOCL DLP cache when the runtime consults it:
+    // WC==1 (out-of-place), OR WC==2 under the grouped AUTO mixed-in-place
+    // mode.  In mixed mode this full-weight (prompt) reorder is THE single
+    // in-place mutator of the weight buffer — it runs LAST in the prepack
+    // sequence (after the out-of-place CK / per-tile decode warms), so by
+    // the time it mutates W every other layout has already been packed from
+    // the raw weights.  `warm_wct` selects in-place (2) vs out-of-place (1)
+    // for `reorderAndCacheWeights` accordingly.
+    if (!should_warm_weight_cache(weight_cache_type)) {
+        return status_t::success;
+    }
 
-  // Reachable-entry bound: `[0, bound)` is the largest range every
-  // metadata vector covers.  Compute it once up front so the
-  // dtype-skip path and the normal path agree on what `total_attempted`
-  // and `skipped_invalid` should sum to.  Bounding by only
-  // `weight.size()` (or only `total_count`) in the dtype-skip path
-  // would overcount skips when one of K / N / ldb / transB happens
-  // to be shorter than weight.
-  const size_t bound = std::min<size_t>({
-    static_cast<size_t>(total_count),
-    weight.size(),
-    K.size(),
-    N.size(),
-    ldb.size(),
-    transB.size()});
+    // Reachable-entry bound: `[0, bound)` is the largest range every
+    // metadata vector covers.  Compute it once up front so the
+    // dtype-skip path and the normal path agree on what `total_attempted`
+    // and `skipped_invalid` should sum to.  Bounding by only
+    // `weight.size()` (or only `total_count`) in the dtype-skip path
+    // would overcount skips when one of K / N / ldb / transB happens
+    // to be shorter than weight.
+    const size_t bound = std::min<size_t>({static_cast<size_t>(total_count),
+            weight.size(), K.size(), N.size(), ldb.size(), transB.size()});
 
 #if ZENDNNL_DEPENDS_AOCLDLP
-  const int32_t warm_wct = warm_wct_for_full_weight_bf16(weight_cache_type);
+    const int32_t warm_wct = warm_wct_for_full_weight_bf16(weight_cache_type);
 
-  // Only BF16 wired today (matches the current target envelope and
-  // our active bench config).  Other dtypes return success with every reachable
-  // entry counted as `skipped_invalid` so the caller's PROBE line
-  // still surfaces accurate counts, and we can extend in-place with
-  // one `else if` per dtype when a workload needs it.  Mirrors the
-  // normal path's `total_attempted` accounting so the two regimes
-  // are comparable across runs.
-  if (wei_dtype != data_type_t::bf16) {
+    // Only BF16 wired today (matches the current target envelope and
+    // our active bench config).  Other dtypes return success with every reachable
+    // entry counted as `skipped_invalid` so the caller's PROBE line
+    // still surfaces accurate counts, and we can extend in-place with
+    // one `else if` per dtype when a workload needs it.  Mirrors the
+    // normal path's `total_attempted` accounting so the two regimes
+    // are comparable across runs.
+    if (wei_dtype != data_type_t::bf16) {
+        stats.total_attempted += static_cast<int>(bound);
+        stats.skipped_invalid += static_cast<int>(bound);
+        return status_t::success;
+    }
+
+    for (size_t i = 0; i < bound; ++i) {
+        ++stats.total_attempted;
+
+        if (weight[i] == nullptr || K[i] <= 0 || N[i] <= 0 || ldb[i] <= 0) {
+            ++stats.skipped_invalid;
+            continue;
+        }
+
+        // Minimum-row-stride gate: mirrors the same check the dispatch
+        // path applies in `group_matmul_direct.cpp` /
+        // `group_matmul_fused_moe.cpp`, the CK dispatcher
+        // (`custom_kernel/dispatch.cpp`) and the CK warm-pack
+        // (`prepack_custom_kernel.cpp`).  Without this guard, an
+        // undersized `ldb[i]` (e.g. a caller setting `ldb` below
+        // `transB ? K : N` for a non-firing prepack-extras slot) would
+        // make `aocl_reorder_bf16bf16f32of32` read past the row stride
+        // and silently alias adjacent rows.  The warm-pack must apply
+        // the same minimum-ldb rule the runtime applies, so a tail-slot
+        // that the dispatcher would refuse cannot be silently warmed
+        // with a corrupted reorder.
+        const int min_ldb = transB[i] ? K[i] : N[i];
+        if (ldb[i] < min_ldb) {
+            ++stats.skipped_invalid;
+            continue;
+        }
+
+        // Mirror `run_dlp(...)`'s `is_weights_const` gate
+        // (aocl_kernel.cpp:1700-1702): when the caller flags an expert
+        // as variable-weight, the dispatcher takes the no-cache path
+        // for that expert, so warming would be wasted.  An empty
+        // `is_weights_const` vector means "treat every entry as const"
+        // (legacy behaviour for callers that don't pass the field).
+        if (!is_weights_const.empty() && i < is_weights_const.size()
+                && !is_weights_const[i]) {
+            ++stats.skipped_invalid;
+            continue;
+        }
+
+        // Cache key matches `run_dlp(...)` in aocl_kernel.cpp:1696 so
+        // the warmer's MISS populates the same slot a subsequent
+        // dispatcher will look up.
+        Key_matmul key(transB[i], K[i], N[i], ldb[i], weight[i],
+                static_cast<uint32_t>(matmul_algo_t::aocl_dlp_blocked),
+                /*extra_input_hash=*/0);
+
+        void *reordered_unused = nullptr;
+        // Honour the return.  The out-of-place (weight_cache_type=1) path
+        // returns true, but the mixed-mode in-place path (warm_wct=2) can
+        // return false (e.g. interim + fallback aligned_alloc both OOM).  Count
+        // a failed reorder as skipped_invalid — matching the sym-quant warmers
+        // and the prepack counter contract — instead of silently as packed_ok.
+        const bool warmed = reorderAndCacheWeights<int16_t>(key, weight[i],
+                reordered_unused, K[i], N[i], ldb[i],
+                /*order=*/'r',
+                /*trans=*/(transB[i] ? 't' : 'n'),
+                /*mem_format_b=*/'n', aocl_get_reorder_buf_size_bf16bf16f32of32,
+                aocl_reorder_bf16bf16f32of32,
+                /*weight_cache_type=*/warm_wct);
+        if (warmed) {
+            ++stats.packed_ok;
+        } else {
+            ++stats.skipped_invalid;
+        }
+    }
+#else
+    // AOCL DLP not compiled in — count every reachable entry as skipped.
+    (void)wei_dtype;
     stats.total_attempted += static_cast<int>(bound);
     stats.skipped_invalid += static_cast<int>(bound);
-    return status_t::success;
-  }
-
-  for (size_t i = 0; i < bound; ++i) {
-    ++stats.total_attempted;
-
-    if (weight[i] == nullptr || K[i] <= 0 || N[i] <= 0 || ldb[i] <= 0) {
-      ++stats.skipped_invalid;
-      continue;
-    }
-
-    // Minimum-row-stride gate: mirrors the same check the dispatch
-    // path applies in `group_matmul_direct.cpp` /
-    // `group_matmul_fused_moe.cpp`, the CK dispatcher
-    // (`custom_kernel/dispatch.cpp`) and the CK warm-pack
-    // (`prepack_custom_kernel.cpp`).  Without this guard, an
-    // undersized `ldb[i]` (e.g. a caller setting `ldb` below
-    // `transB ? K : N` for a non-firing prepack-extras slot) would
-    // make `aocl_reorder_bf16bf16f32of32` read past the row stride
-    // and silently alias adjacent rows.  The warm-pack must apply
-    // the same minimum-ldb rule the runtime applies, so a tail-slot
-    // that the dispatcher would refuse cannot be silently warmed
-    // with a corrupted reorder.
-    const int min_ldb = transB[i] ? K[i] : N[i];
-    if (ldb[i] < min_ldb) {
-      ++stats.skipped_invalid;
-      continue;
-    }
-
-    // Mirror `run_dlp(...)`'s `is_weights_const` gate
-    // (aocl_kernel.cpp:1700-1702): when the caller flags an expert
-    // as variable-weight, the dispatcher takes the no-cache path
-    // for that expert, so warming would be wasted.  An empty
-    // `is_weights_const` vector means "treat every entry as const"
-    // (legacy behaviour for callers that don't pass the field).
-    if (!is_weights_const.empty()
-        && i < is_weights_const.size()
-        && !is_weights_const[i]) {
-      ++stats.skipped_invalid;
-      continue;
-    }
-
-    // Cache key matches `run_dlp(...)` in aocl_kernel.cpp:1696 so
-    // the warmer's MISS populates the same slot a subsequent
-    // dispatcher will look up.
-    Key_matmul key(transB[i], K[i], N[i], ldb[i], weight[i],
-                   static_cast<uint32_t>(matmul_algo_t::aocl_dlp_blocked),
-                   /*extra_input_hash=*/0);
-
-    void *reordered_unused = nullptr;
-    // Honour the return.  The out-of-place (weight_cache_type=1) path
-    // returns true, but the mixed-mode in-place path (warm_wct=2) can
-    // return false (e.g. interim + fallback aligned_alloc both OOM).  Count
-    // a failed reorder as skipped_invalid — matching the sym-quant warmers
-    // and the prepack counter contract — instead of silently as packed_ok.
-    const bool warmed = reorderAndCacheWeights<int16_t>(
-                          key, weight[i], reordered_unused, K[i], N[i], ldb[i],
-                          /*order=*/'r',
-                          /*trans=*/(transB[i] ? 't' : 'n'),
-                          /*mem_format_b=*/'n',
-                          aocl_get_reorder_buf_size_bf16bf16f32of32,
-                          aocl_reorder_bf16bf16f32of32,
-                          /*weight_cache_type=*/warm_wct);
-    if (warmed) {
-      ++stats.packed_ok;
-    }
-    else {
-      ++stats.skipped_invalid;
-    }
-  }
-#else
-  // AOCL DLP not compiled in — count every reachable entry as skipped.
-  (void)wei_dtype;
-  stats.total_attempted += static_cast<int>(bound);
-  stats.skipped_invalid += static_cast<int>(bound);
 #endif
 
-  return status_t::success;
+    return status_t::success;
 }
 
 // ─────────────────────────────────────────────────────────────────────
@@ -251,126 +236,109 @@ status_t warm_pack_all_aocl_dlp_experts(
 // (sym vs asym share it), so this single warmer covers both.
 // ─────────────────────────────────────────────────────────────────────
 status_t warm_pack_all_aocl_dlp_experts_sym_quant(
-  const std::vector<const void *> &weight,
-  const std::vector<int>          &K,
-  const std::vector<int>          &N,
-  const std::vector<int>          &ldb,
-  const std::vector<bool>         &transB,
-  const std::vector<bool>         &is_weights_const,
-  int                              total_count,
-  data_type_t                      wei_dtype,
-  AoclDlpPackProbeStats           &stats,
-  int                              group_size) {
+        const std::vector<const void *> &weight, const std::vector<int> &K,
+        const std::vector<int> &N, const std::vector<int> &ldb,
+        const std::vector<bool> &transB,
+        const std::vector<bool> &is_weights_const, int total_count,
+        data_type_t wei_dtype, AoclDlpPackProbeStats &stats, int group_size) {
 
-  if (total_count <= 0) {
-    return status_t::success;
-  }
+    if (total_count <= 0) { return status_t::success; }
 
-  // Production-cache gate — same as the bf16 full-weight warmer.
-  const int32_t weight_cache_type =
-    matmul_config_t::instance().get_weight_cache();
-  // Out-of-place warmer: also run under WC==2 in the grouped AUTO
-  // mixed-in-place mode so this layout is pre-warmed from the RAW weights
-  // before the bf16 full-weight AOCL in-place mutation.  Stays
-  // OUT-OF-PLACE (the reorderAndCacheWeights call below keeps
-  // weight_cache_type=1); only the bf16 full-weight warmer mutates W.
-  if (weight_cache_type == 0) {
-    return status_t::success;
-  }
+    // Production-cache gate — same as the bf16 full-weight warmer.
+    const int32_t weight_cache_type
+            = matmul_config_t::instance().get_weight_cache();
+    // Out-of-place warmer: also run under WC==2 in the grouped AUTO
+    // mixed-in-place mode so this layout is pre-warmed from the RAW weights
+    // before the bf16 full-weight AOCL in-place mutation.  Stays
+    // OUT-OF-PLACE (the reorderAndCacheWeights call below keeps
+    // weight_cache_type=1); only the bf16 full-weight warmer mutates W.
+    if (weight_cache_type == 0) { return status_t::success; }
 
-  const size_t bound = std::min<size_t>({
-    static_cast<size_t>(total_count),
-    weight.size(),
-    K.size(),
-    N.size(),
-    ldb.size(),
-    transB.size()});
+    const size_t bound = std::min<size_t>({static_cast<size_t>(total_count),
+            weight.size(), K.size(), N.size(), ldb.size(), transB.size()});
 
 #if ZENDNNL_DEPENDS_AOCLDLP
-  // Only the s8 sym-quant family is wired here; any other dtype counts
-  // every reachable entry as skipped so the PROBE line stays accurate.
-  if (wei_dtype != data_type_t::s8) {
+    // Only the s8 sym-quant family is wired here; any other dtype counts
+    // every reachable entry as skipped so the PROBE line stays accurate.
+    if (wei_dtype != data_type_t::s8) {
+        stats.total_attempted += static_cast<int>(bound);
+        stats.skipped_invalid += static_cast<int>(bound);
+        return status_t::success;
+    }
+
+    for (size_t i = 0; i < bound; ++i) {
+        ++stats.total_attempted;
+
+        if (weight[i] == nullptr || K[i] <= 0 || N[i] <= 0 || ldb[i] <= 0) {
+            ++stats.skipped_invalid;
+            continue;
+        }
+
+        // Minimum-row-stride gate — same rationale as the bf16 warmer.
+        const int min_ldb = transB[i] ? K[i] : N[i];
+        if (ldb[i] < min_ldb) {
+            ++stats.skipped_invalid;
+            continue;
+        }
+
+        // is_weights_const gate — sym-quant caching only engages for const
+        // weights (aocl_kernel.cpp:631-632).
+        if (!is_weights_const.empty() && i < is_weights_const.size()
+                && !is_weights_const[i]) {
+            ++stats.skipped_invalid;
+            continue;
+        }
+
+        // Cache key matches `run_dlp(...)` (aocl_kernel.cpp:869-877, 913-923).
+        // The sym-quant reorder keys on the SOURCE quant-group span `src_grp`:
+        //   * per-token  (group_size == 0): src_grp = K[i];
+        //   * per-group  (group_size  > 0): src_grp = group_size (= K/G).
+        // `extra_input_hash = hash(src_grp)` and `DLP_SYMM_STAT_QUANT.group_size
+        // = src_grp` — byte-identical to the runtime key, so the warmed slot is
+        // the one the runtime per-group / per-token call reads.
+        const int64_t src_grp = (group_size > 0)
+                ? static_cast<int64_t>(group_size)
+                : static_cast<int64_t>(K[i]);
+        const size_t cache_extra_hash = std::hash<int64_t> {}(src_grp);
+        Key_matmul key(transB[i], K[i], N[i], ldb[i], weight[i],
+                static_cast<uint32_t>(matmul_algo_t::aocl_dlp_blocked),
+                cache_extra_hash);
+
+        DLP_SYMM_STAT_QUANT symq_meta;
+        symq_meta.group_size = static_cast<int>(src_grp);
+
+        void *reordered_unused = nullptr;
+        // `reorderAndCacheWeightsSymQuant` returns `true` when the entry was
+        // warmed (cache miss → reorder+insert; or a cache hit, which under
+        // `weight_cache_type=1` also falls through to `return true`).  It
+        // only returns `false` on an `aligned_alloc` failure in the
+        // weight_cache_type 0/2 branches — paths this warmer does not take
+        // (it always passes `weight_cache_type=1`), so today this is always
+        // `true`.  Honour the return anyway so a transient reorder failure
+        // (or a future cache-mode change) is reported as `skipped_invalid`
+        // instead of being silently counted as a successful pack.
+        const bool warmed = reorderAndCacheWeightsSymQuant<int8_t>(key,
+                weight[i], reordered_unused, K[i], N[i], ldb[i],
+                /*order=*/'r',
+                /*trans=*/(transB[i] ? 't' : 'n'),
+                /*mem_format_b=*/'n',
+                aocl_get_reorder_buf_size_s8s8s32os32_sym_quant,
+                aocl_reorder_s8s8s32os32_sym_quant, &symq_meta,
+                /*weight_cache_type=*/1);
+        if (warmed) {
+            ++stats.packed_ok;
+        } else {
+            ++stats.skipped_invalid;
+        }
+    }
+#else
+    // AOCL DLP not compiled in — count every reachable entry as skipped.
+    (void)wei_dtype;
     stats.total_attempted += static_cast<int>(bound);
     stats.skipped_invalid += static_cast<int>(bound);
-    return status_t::success;
-  }
-
-  for (size_t i = 0; i < bound; ++i) {
-    ++stats.total_attempted;
-
-    if (weight[i] == nullptr || K[i] <= 0 || N[i] <= 0 || ldb[i] <= 0) {
-      ++stats.skipped_invalid;
-      continue;
-    }
-
-    // Minimum-row-stride gate — same rationale as the bf16 warmer.
-    const int min_ldb = transB[i] ? K[i] : N[i];
-    if (ldb[i] < min_ldb) {
-      ++stats.skipped_invalid;
-      continue;
-    }
-
-    // is_weights_const gate — sym-quant caching only engages for const
-    // weights (aocl_kernel.cpp:631-632).
-    if (!is_weights_const.empty()
-        && i < is_weights_const.size()
-        && !is_weights_const[i]) {
-      ++stats.skipped_invalid;
-      continue;
-    }
-
-    // Cache key matches `run_dlp(...)` (aocl_kernel.cpp:869-877, 913-923).
-    // The sym-quant reorder keys on the SOURCE quant-group span `src_grp`:
-    //   * per-token  (group_size == 0): src_grp = K[i];
-    //   * per-group  (group_size  > 0): src_grp = group_size (= K/G).
-    // `extra_input_hash = hash(src_grp)` and `DLP_SYMM_STAT_QUANT.group_size
-    // = src_grp` — byte-identical to the runtime key, so the warmed slot is
-    // the one the runtime per-group / per-token call reads.
-    const int64_t src_grp =
-        (group_size > 0) ? static_cast<int64_t>(group_size)
-                         : static_cast<int64_t>(K[i]);
-    const size_t cache_extra_hash =
-      std::hash<int64_t>{}(src_grp);
-    Key_matmul key(transB[i], K[i], N[i], ldb[i], weight[i],
-                   static_cast<uint32_t>(matmul_algo_t::aocl_dlp_blocked),
-                   cache_extra_hash);
-
-    DLP_SYMM_STAT_QUANT symq_meta;
-    symq_meta.group_size = static_cast<int>(src_grp);
-
-    void *reordered_unused = nullptr;
-    // `reorderAndCacheWeightsSymQuant` returns `true` when the entry was
-    // warmed (cache miss → reorder+insert; or a cache hit, which under
-    // `weight_cache_type=1` also falls through to `return true`).  It
-    // only returns `false` on an `aligned_alloc` failure in the
-    // weight_cache_type 0/2 branches — paths this warmer does not take
-    // (it always passes `weight_cache_type=1`), so today this is always
-    // `true`.  Honour the return anyway so a transient reorder failure
-    // (or a future cache-mode change) is reported as `skipped_invalid`
-    // instead of being silently counted as a successful pack.
-    const bool warmed = reorderAndCacheWeightsSymQuant<int8_t>(
-                          key, weight[i], reordered_unused, K[i], N[i], ldb[i],
-                          /*order=*/'r',
-                          /*trans=*/(transB[i] ? 't' : 'n'),
-                          /*mem_format_b=*/'n',
-                          aocl_get_reorder_buf_size_s8s8s32os32_sym_quant,
-                          aocl_reorder_s8s8s32os32_sym_quant,
-                          &symq_meta, /*weight_cache_type=*/1);
-    if (warmed) {
-      ++stats.packed_ok;
-    }
-    else {
-      ++stats.skipped_invalid;
-    }
-  }
-#else
-  // AOCL DLP not compiled in — count every reachable entry as skipped.
-  (void)wei_dtype;
-  stats.total_attempted += static_cast<int>(bound);
-  stats.skipped_invalid += static_cast<int>(bound);
 #endif
 
-  return status_t::success;
+    return status_t::success;
 }
 
 // ─────────────────────────────────────────────────────────────────────
@@ -407,177 +375,161 @@ status_t warm_pack_all_aocl_dlp_experts_sym_quant(
 //
 // ─────────────────────────────────────────────────────────────────────
 status_t warm_pack_all_aocl_dlp_experts_n_tile(
-  const std::vector<const void *> &weight,
-  const std::vector<int>          &K,
-  const std::vector<int>          &N,
-  const std::vector<int>          &ldb,
-  const std::vector<bool>         &transB,
-  const std::vector<bool>         &is_weights_const,
-  int                              total_count,
-  data_type_t                      wei_dtype,
-  int                              num_threads,
-  int                              stable,
-  int                              nr_align,
-  AoclDlpPackProbeStats           &stats) {
+        const std::vector<const void *> &weight, const std::vector<int> &K,
+        const std::vector<int> &N, const std::vector<int> &ldb,
+        const std::vector<bool> &transB,
+        const std::vector<bool> &is_weights_const, int total_count,
+        data_type_t wei_dtype, int num_threads, int stable, int nr_align,
+        AoclDlpPackProbeStats &stats) {
 
-  if (total_count <= 0 || num_threads <= 0
-      || stable <= 0 || nr_align <= 0) {
-    return status_t::success;
-  }
+    if (total_count <= 0 || num_threads <= 0 || stable <= 0 || nr_align <= 0) {
+        return status_t::success;
+    }
 
-  // Production-cache gate — same as the full-weight warmer above.
-  // If `ZENDNNL_MATMUL_WEIGHT_CACHE != 1`, `run_dlp(...)` won't
-  // consult the LRU cache, so warming would be wasted CPU + memory.
-  const int32_t weight_cache_type =
-    matmul_config_t::instance().get_weight_cache();
-  // Out-of-place warmer: also run under WC==2 in the grouped AUTO
-  // mixed-in-place mode so this layout is pre-warmed from the RAW weights
-  // before the bf16 full-weight AOCL in-place mutation.  Stays
-  // OUT-OF-PLACE (the reorderAndCacheWeights call below keeps
-  // weight_cache_type=1); only the bf16 full-weight warmer mutates W.
-  if (!should_warm_weight_cache(weight_cache_type)) {
-    return status_t::success;
-  }
+    // Production-cache gate — same as the full-weight warmer above.
+    // If `ZENDNNL_MATMUL_WEIGHT_CACHE != 1`, `run_dlp(...)` won't
+    // consult the LRU cache, so warming would be wasted CPU + memory.
+    const int32_t weight_cache_type
+            = matmul_config_t::instance().get_weight_cache();
+    // Out-of-place warmer: also run under WC==2 in the grouped AUTO
+    // mixed-in-place mode so this layout is pre-warmed from the RAW weights
+    // before the bf16 full-weight AOCL in-place mutation.  Stays
+    // OUT-OF-PLACE (the reorderAndCacheWeights call below keeps
+    // weight_cache_type=1); only the bf16 full-weight warmer mutates W.
+    if (!should_warm_weight_cache(weight_cache_type)) {
+        return status_t::success;
+    }
 
-  // Reachable-entry bound: `[0, bound)` is the largest range every
-  // metadata vector covers.  Compute it once up front so the
-  // dtype-skip path and the normal path agree on what `total_attempted`
-  // and `skipped_invalid` should sum to.  Bounding by only
-  // `weight.size()` (or only `total_count`) in the dtype-skip path
-  // would overcount skips when K / N / ldb / transB happen to be
-  // shorter than weight.  Mirrors the full-weight warmer above.
-  const size_t bound = std::min<size_t>({
-    static_cast<size_t>(total_count),
-    weight.size(),
-    K.size(),
-    N.size(),
-    ldb.size(),
-    transB.size()});
+    // Reachable-entry bound: `[0, bound)` is the largest range every
+    // metadata vector covers.  Compute it once up front so the
+    // dtype-skip path and the normal path agree on what `total_attempted`
+    // and `skipped_invalid` should sum to.  Bounding by only
+    // `weight.size()` (or only `total_count`) in the dtype-skip path
+    // would overcount skips when K / N / ldb / transB happen to be
+    // shorter than weight.  Mirrors the full-weight warmer above.
+    const size_t bound = std::min<size_t>({static_cast<size_t>(total_count),
+            weight.size(), K.size(), N.size(), ldb.size(), transB.size()});
 
 #if ZENDNNL_DEPENDS_AOCLDLP
-  // BF16 only today (the production envelope); other dtypes count
-  // every reachable entry as `skipped_invalid` so the PROBE line still
-  // surfaces accurate counts.  Note this counts at the EXPERT level
-  // (not per tile) since we never enter the per-thread loop on the
-  // skip path — `total_attempted` matches the same per-expert
-  // granularity to keep the dtype-skip branch comparable to a
-  // hypothetical extended (non-BF16) path.  Same rationale as the
-  // full-weight warmer.
-  if (wei_dtype != data_type_t::bf16) {
+    // BF16 only today (the production envelope); other dtypes count
+    // every reachable entry as `skipped_invalid` so the PROBE line still
+    // surfaces accurate counts.  Note this counts at the EXPERT level
+    // (not per tile) since we never enter the per-thread loop on the
+    // skip path — `total_attempted` matches the same per-expert
+    // granularity to keep the dtype-skip branch comparable to a
+    // hypothetical extended (non-BF16) path.  Same rationale as the
+    // full-weight warmer.
+    if (wei_dtype != data_type_t::bf16) {
+        stats.total_attempted += static_cast<int>(bound);
+        stats.skipped_invalid += static_cast<int>(bound);
+        return status_t::success;
+    }
+
+    // Element size for slice pointer arithmetic.  BF16 is the only
+    // dtype that reaches the per-tile loop today (early-return above);
+    // 2 bytes per element regardless of transB.
+    const size_t wei_elem = sizeof(int16_t);
+
+    for (size_t i = 0; i < bound; ++i) {
+        if (weight[i] == nullptr || K[i] <= 0 || N[i] <= 0 || ldb[i] <= 0) {
+            ++stats.total_attempted;
+            ++stats.skipped_invalid;
+            continue;
+        }
+
+        // Minimum-row-stride gate — same rationale as the full-weight
+        // warmer above.  The per-tile path slices the weight pointer by
+        // `col_start * ldb * elem` (transB) or `col_start * elem`
+        // (non-transposed) and then calls `aocl_reorder_bf16bf16f32of32`
+        // with the original `ldb`; an undersized `ldb[i]` would make the
+        // reorder read past the row stride and alias neighbouring rows.
+        // Counted as `skipped_invalid` at the expert level (no per-tile
+        // total_attempted increments here), matching how the basic
+        // validity skip above accounts for the same class of failure.
+        const int min_ldb = transB[i] ? K[i] : N[i];
+        if (ldb[i] < min_ldb) {
+            ++stats.total_attempted;
+            ++stats.skipped_invalid;
+            continue;
+        }
+
+        // `is_weights_const` gate: same as full-weight warmer.
+        if (!is_weights_const.empty() && i < is_weights_const.size()
+                && !is_weights_const[i]) {
+            ++stats.total_attempted;
+            ++stats.skipped_invalid;
+            continue;
+        }
+
+        // Per-expert participating-thread count, mirroring
+        // `do_tile`'s `participating_n_thr` for the strict-stable plan
+        // (the planner forces team_size == stable, so the team_size
+        // clamp is implicit).  See the function-header comment for the
+        // formula.
+        const int align_cap = std::max(1, N[i] / std::max(1, nr_align));
+        const int n_thr_e = std::max(1, std::min(stable, align_cap));
+
+        for (int tid = 0; tid < n_thr_e; ++tid) {
+            const auto split = aligned_n_split(N[i], n_thr_e, tid, nr_align);
+            const int col_start = split.first;
+            const int col_end = split.second;
+            const int n_tile = col_end - col_start;
+
+            ++stats.total_attempted;
+
+            if (n_tile <= 0) {
+                ++stats.skipped_invalid;
+                continue;
+            }
+
+            // Weight pointer offset matches `do_tile()`
+            // (group_matmul_n_tile.cpp:444-447):
+            //   transB == 't': transposed weight has shape [N, K] in
+            //                  row-major, ldb=K → col_start advances
+            //                  `col_start * ldb` rows of K elements each.
+            //   transB == 'n': weight has shape [K, N], ldb=N → col_start
+            //                  advances `col_start` columns within a row.
+            const size_t wei_off = transB[i]
+                    ? static_cast<size_t>(col_start) * ldb[i] * wei_elem
+                    : static_cast<size_t>(col_start) * wei_elem;
+            const void *w_tile = static_cast<const char *>(weight[i]) + wei_off;
+
+            // Cache key matches what `run_dlp(...)` builds at runtime
+            // (aocl_kernel.cpp:1696) when called from `do_tile()` with
+            // sliced (M, n_tile, K, w_tile, ldb).  Symmetric-quant
+            // `extra_input_hash` is 0 because the strict-stable plan is
+            // BF16/BF16/BF16 (no symmetric-quant code path engaged).
+            Key_matmul key(transB[i], K[i], n_tile, ldb[i], w_tile,
+                    static_cast<uint32_t>(matmul_algo_t::aocl_dlp_blocked),
+                    /*extra_input_hash=*/0);
+
+            void *reordered_unused = nullptr;
+            // `reorderAndCacheWeights<int16_t>` returns `true` on the out-of-place
+            // (weight_cache_type=1) path this per-tile warmer always takes; the
+            // dead `else ++skipped` branch was dropped — see file-level counter
+            // semantics block.
+            (void)reorderAndCacheWeights<int16_t>(key, w_tile, reordered_unused,
+                    K[i], n_tile, ldb[i],
+                    /*order=*/'r',
+                    /*trans=*/(transB[i] ? 't' : 'n'),
+                    /*mem_format_b=*/'n',
+                    aocl_get_reorder_buf_size_bf16bf16f32of32,
+                    aocl_reorder_bf16bf16f32of32,
+                    /*weight_cache_type=*/1);
+            ++stats.packed_ok;
+        }
+    }
+#else
+    // AOCL DLP not compiled in — count every reachable entry as skipped.
+    (void)wei_dtype;
+    (void)num_threads;
+    (void)stable;
+    (void)nr_align;
     stats.total_attempted += static_cast<int>(bound);
     stats.skipped_invalid += static_cast<int>(bound);
-    return status_t::success;
-  }
-
-  // Element size for slice pointer arithmetic.  BF16 is the only
-  // dtype that reaches the per-tile loop today (early-return above);
-  // 2 bytes per element regardless of transB.
-  const size_t wei_elem = sizeof(int16_t);
-
-  for (size_t i = 0; i < bound; ++i) {
-    if (weight[i] == nullptr || K[i] <= 0 || N[i] <= 0 || ldb[i] <= 0) {
-      ++stats.total_attempted;
-      ++stats.skipped_invalid;
-      continue;
-    }
-
-    // Minimum-row-stride gate — same rationale as the full-weight
-    // warmer above.  The per-tile path slices the weight pointer by
-    // `col_start * ldb * elem` (transB) or `col_start * elem`
-    // (non-transposed) and then calls `aocl_reorder_bf16bf16f32of32`
-    // with the original `ldb`; an undersized `ldb[i]` would make the
-    // reorder read past the row stride and alias neighbouring rows.
-    // Counted as `skipped_invalid` at the expert level (no per-tile
-    // total_attempted increments here), matching how the basic
-    // validity skip above accounts for the same class of failure.
-    const int min_ldb = transB[i] ? K[i] : N[i];
-    if (ldb[i] < min_ldb) {
-      ++stats.total_attempted;
-      ++stats.skipped_invalid;
-      continue;
-    }
-
-    // `is_weights_const` gate: same as full-weight warmer.
-    if (!is_weights_const.empty()
-        && i < is_weights_const.size()
-        && !is_weights_const[i]) {
-      ++stats.total_attempted;
-      ++stats.skipped_invalid;
-      continue;
-    }
-
-    // Per-expert participating-thread count, mirroring
-    // `do_tile`'s `participating_n_thr` for the strict-stable plan
-    // (the planner forces team_size == stable, so the team_size
-    // clamp is implicit).  See the function-header comment for the
-    // formula.
-    const int align_cap =
-      std::max(1, N[i] / std::max(1, nr_align));
-    const int n_thr_e =
-      std::max(1, std::min(stable, align_cap));
-
-    for (int tid = 0; tid < n_thr_e; ++tid) {
-      const auto split = aligned_n_split(N[i], n_thr_e, tid, nr_align);
-      const int col_start = split.first;
-      const int col_end   = split.second;
-      const int n_tile    = col_end - col_start;
-
-      ++stats.total_attempted;
-
-      if (n_tile <= 0) {
-        ++stats.skipped_invalid;
-        continue;
-      }
-
-      // Weight pointer offset matches `do_tile()`
-      // (group_matmul_n_tile.cpp:444-447):
-      //   transB == 't': transposed weight has shape [N, K] in
-      //                  row-major, ldb=K → col_start advances
-      //                  `col_start * ldb` rows of K elements each.
-      //   transB == 'n': weight has shape [K, N], ldb=N → col_start
-      //                  advances `col_start` columns within a row.
-      const size_t wei_off = transB[i]
-                             ? static_cast<size_t>(col_start) * ldb[i] * wei_elem
-                             : static_cast<size_t>(col_start) * wei_elem;
-      const void *w_tile =
-        static_cast<const char *>(weight[i]) + wei_off;
-
-      // Cache key matches what `run_dlp(...)` builds at runtime
-      // (aocl_kernel.cpp:1696) when called from `do_tile()` with
-      // sliced (M, n_tile, K, w_tile, ldb).  Symmetric-quant
-      // `extra_input_hash` is 0 because the strict-stable plan is
-      // BF16/BF16/BF16 (no symmetric-quant code path engaged).
-      Key_matmul key(transB[i], K[i], n_tile, ldb[i], w_tile,
-                     static_cast<uint32_t>(matmul_algo_t::aocl_dlp_blocked),
-                     /*extra_input_hash=*/0);
-
-      void *reordered_unused = nullptr;
-      // `reorderAndCacheWeights<int16_t>` returns `true` on the out-of-place
-      // (weight_cache_type=1) path this per-tile warmer always takes; the
-      // dead `else ++skipped` branch was dropped — see file-level counter
-      // semantics block.
-      (void)reorderAndCacheWeights<int16_t>(
-        key, w_tile, reordered_unused, K[i], n_tile, ldb[i],
-        /*order=*/'r',
-        /*trans=*/(transB[i] ? 't' : 'n'),
-        /*mem_format_b=*/'n',
-        aocl_get_reorder_buf_size_bf16bf16f32of32,
-        aocl_reorder_bf16bf16f32of32,
-        /*weight_cache_type=*/1);
-      ++stats.packed_ok;
-    }
-  }
-#else
-  // AOCL DLP not compiled in — count every reachable entry as skipped.
-  (void)wei_dtype;
-  (void)num_threads;
-  (void)stable;
-  (void)nr_align;
-  stats.total_attempted += static_cast<int>(bound);
-  stats.skipped_invalid += static_cast<int>(bound);
 #endif
 
-  return status_t::success;
+    return status_t::success;
 }
 
 // ─────────────────────────────────────────────────────────────────────
@@ -603,153 +555,134 @@ status_t warm_pack_all_aocl_dlp_experts_n_tile(
 // to the bf16 per-tile key, so it lines up with what `do_tile()` /
 // `run_dlp()` build at run time for the sliced sym-quant reorder.
 status_t warm_pack_all_aocl_dlp_experts_n_tile_sym_quant(
-  const std::vector<const void *> &weight,
-  const std::vector<int>          &K,
-  const std::vector<int>          &N,
-  const std::vector<int>          &ldb,
-  const std::vector<bool>         &transB,
-  const std::vector<bool>         &is_weights_const,
-  int                              total_count,
-  data_type_t                      wei_dtype,
-  int                              num_threads,
-  int                              stable,
-  int                              nr_align,
-  AoclDlpPackProbeStats           &stats,
-  int                              group_size) {
+        const std::vector<const void *> &weight, const std::vector<int> &K,
+        const std::vector<int> &N, const std::vector<int> &ldb,
+        const std::vector<bool> &transB,
+        const std::vector<bool> &is_weights_const, int total_count,
+        data_type_t wei_dtype, int num_threads, int stable, int nr_align,
+        AoclDlpPackProbeStats &stats, int group_size) {
 
-  if (total_count <= 0 || num_threads <= 0
-      || stable <= 0 || nr_align <= 0) {
-    return status_t::success;
-  }
+    if (total_count <= 0 || num_threads <= 0 || stable <= 0 || nr_align <= 0) {
+        return status_t::success;
+    }
 
-  const int32_t weight_cache_type =
-    matmul_config_t::instance().get_weight_cache();
-  // Out-of-place warmer: also run under WC==2 in the grouped AUTO
-  // mixed-in-place mode so this layout is pre-warmed from the RAW weights
-  // before the bf16 full-weight AOCL in-place mutation.  Stays
-  // OUT-OF-PLACE (the reorderAndCacheWeights call below keeps
-  // weight_cache_type=1); only the bf16 full-weight warmer mutates W.
-  if (!should_warm_weight_cache(weight_cache_type)) {
-    return status_t::success;
-  }
+    const int32_t weight_cache_type
+            = matmul_config_t::instance().get_weight_cache();
+    // Out-of-place warmer: also run under WC==2 in the grouped AUTO
+    // mixed-in-place mode so this layout is pre-warmed from the RAW weights
+    // before the bf16 full-weight AOCL in-place mutation.  Stays
+    // OUT-OF-PLACE (the reorderAndCacheWeights call below keeps
+    // weight_cache_type=1); only the bf16 full-weight warmer mutates W.
+    if (!should_warm_weight_cache(weight_cache_type)) {
+        return status_t::success;
+    }
 
-  const size_t bound = std::min<size_t>({
-    static_cast<size_t>(total_count),
-    weight.size(),
-    K.size(),
-    N.size(),
-    ldb.size(),
-    transB.size()});
+    const size_t bound = std::min<size_t>({static_cast<size_t>(total_count),
+            weight.size(), K.size(), N.size(), ldb.size(), transB.size()});
 
 #if ZENDNNL_DEPENDS_AOCLDLP
-  // s8 sym-quant family only; any other dtype counts every reachable
-  // entry as skipped so the PROBE line stays accurate (per-expert
-  // granularity, matching the bf16 `..._n_tile` skip path).
-  if (wei_dtype != data_type_t::s8) {
+    // s8 sym-quant family only; any other dtype counts every reachable
+    // entry as skipped so the PROBE line stays accurate (per-expert
+    // granularity, matching the bf16 `..._n_tile` skip path).
+    if (wei_dtype != data_type_t::s8) {
+        stats.total_attempted += static_cast<int>(bound);
+        stats.skipped_invalid += static_cast<int>(bound);
+        return status_t::success;
+    }
+
+    // s8 weight is 1 byte/elem (vs 2 for the bf16 per-tile warmer).
+    const size_t wei_elem = sizeof(int8_t);
+
+    for (size_t i = 0; i < bound; ++i) {
+        if (weight[i] == nullptr || K[i] <= 0 || N[i] <= 0 || ldb[i] <= 0) {
+            ++stats.total_attempted;
+            ++stats.skipped_invalid;
+            continue;
+        }
+        const int min_ldb = transB[i] ? K[i] : N[i];
+        if (ldb[i] < min_ldb) {
+            ++stats.total_attempted;
+            ++stats.skipped_invalid;
+            continue;
+        }
+        if (!is_weights_const.empty() && i < is_weights_const.size()
+                && !is_weights_const[i]) {
+            ++stats.total_attempted;
+            ++stats.skipped_invalid;
+            continue;
+        }
+
+        // Per-expert participating-thread count — identical decomposition
+        // to the bf16 `..._n_tile` warmer (planner strict-stable split).
+        const int align_cap = std::max(1, N[i] / std::max(1, nr_align));
+        const int n_thr_e = std::max(1, std::min(stable, align_cap));
+
+        for (int tid = 0; tid < n_thr_e; ++tid) {
+            const auto split = aligned_n_split(N[i], n_thr_e, tid, nr_align);
+            const int col_start = split.first;
+            const int col_end = split.second;
+            const int n_tile = col_end - col_start;
+
+            ++stats.total_attempted;
+
+            if (n_tile <= 0) {
+                ++stats.skipped_invalid;
+                continue;
+            }
+
+            const size_t wei_off = transB[i]
+                    ? static_cast<size_t>(col_start) * ldb[i] * wei_elem
+                    : static_cast<size_t>(col_start) * wei_elem;
+            const void *w_tile = static_cast<const char *>(weight[i]) + wei_off;
+
+            // Sym-quant per-tile key: same (transB, K, n_tile, ldb, w_tile)
+            // as the bf16 per-tile key, plus `extra_input_hash = hash(src_grp)`
+            // matching the runtime `run_dlp(...)` sym-quant key.  `src_grp` is
+            // the SOURCE quant-group span, which is N-independent, so it is the
+            // same per-token (K[i]) / per-group (group_size = K/G) value the
+            // full-weight sym-quant warmer uses — the N-tile slicing only
+            // changes n_tile / w_tile, never src_grp.
+            const int64_t src_grp = (group_size > 0)
+                    ? static_cast<int64_t>(group_size)
+                    : static_cast<int64_t>(K[i]);
+            const size_t cache_extra_hash = std::hash<int64_t> {}(src_grp);
+            Key_matmul key(transB[i], K[i], n_tile, ldb[i], w_tile,
+                    static_cast<uint32_t>(matmul_algo_t::aocl_dlp_blocked),
+                    cache_extra_hash);
+
+            DLP_SYMM_STAT_QUANT symq_meta;
+            symq_meta.group_size = static_cast<int>(src_grp);
+
+            void *reordered_unused = nullptr;
+            // See the full-weight sym-quant warmer above: `false` is only
+            // reachable on the alloc-failure paths of weight_cache_type 0/2
+            // (unused here), so this is always `true` today.  Honour it so a
+            // future failure is counted as `skipped_invalid`, not packed_ok.
+            const bool warmed = reorderAndCacheWeightsSymQuant<int8_t>(key,
+                    w_tile, reordered_unused, K[i], n_tile, ldb[i],
+                    /*order=*/'r',
+                    /*trans=*/(transB[i] ? 't' : 'n'),
+                    /*mem_format_b=*/'n',
+                    aocl_get_reorder_buf_size_s8s8s32os32_sym_quant,
+                    aocl_reorder_s8s8s32os32_sym_quant, &symq_meta,
+                    /*weight_cache_type=*/1);
+            if (warmed) {
+                ++stats.packed_ok;
+            } else {
+                ++stats.skipped_invalid;
+            }
+        }
+    }
+#else
+    (void)wei_dtype;
+    (void)num_threads;
+    (void)stable;
+    (void)nr_align;
     stats.total_attempted += static_cast<int>(bound);
     stats.skipped_invalid += static_cast<int>(bound);
-    return status_t::success;
-  }
-
-  // s8 weight is 1 byte/elem (vs 2 for the bf16 per-tile warmer).
-  const size_t wei_elem = sizeof(int8_t);
-
-  for (size_t i = 0; i < bound; ++i) {
-    if (weight[i] == nullptr || K[i] <= 0 || N[i] <= 0 || ldb[i] <= 0) {
-      ++stats.total_attempted;
-      ++stats.skipped_invalid;
-      continue;
-    }
-    const int min_ldb = transB[i] ? K[i] : N[i];
-    if (ldb[i] < min_ldb) {
-      ++stats.total_attempted;
-      ++stats.skipped_invalid;
-      continue;
-    }
-    if (!is_weights_const.empty()
-        && i < is_weights_const.size()
-        && !is_weights_const[i]) {
-      ++stats.total_attempted;
-      ++stats.skipped_invalid;
-      continue;
-    }
-
-    // Per-expert participating-thread count — identical decomposition
-    // to the bf16 `..._n_tile` warmer (planner strict-stable split).
-    const int align_cap =
-      std::max(1, N[i] / std::max(1, nr_align));
-    const int n_thr_e =
-      std::max(1, std::min(stable, align_cap));
-
-    for (int tid = 0; tid < n_thr_e; ++tid) {
-      const auto split = aligned_n_split(N[i], n_thr_e, tid, nr_align);
-      const int col_start = split.first;
-      const int col_end   = split.second;
-      const int n_tile    = col_end - col_start;
-
-      ++stats.total_attempted;
-
-      if (n_tile <= 0) {
-        ++stats.skipped_invalid;
-        continue;
-      }
-
-      const size_t wei_off = transB[i]
-                             ? static_cast<size_t>(col_start) * ldb[i] * wei_elem
-                             : static_cast<size_t>(col_start) * wei_elem;
-      const void *w_tile =
-        static_cast<const char *>(weight[i]) + wei_off;
-
-      // Sym-quant per-tile key: same (transB, K, n_tile, ldb, w_tile)
-      // as the bf16 per-tile key, plus `extra_input_hash = hash(src_grp)`
-      // matching the runtime `run_dlp(...)` sym-quant key.  `src_grp` is
-      // the SOURCE quant-group span, which is N-independent, so it is the
-      // same per-token (K[i]) / per-group (group_size = K/G) value the
-      // full-weight sym-quant warmer uses — the N-tile slicing only
-      // changes n_tile / w_tile, never src_grp.
-      const int64_t src_grp =
-          (group_size > 0) ? static_cast<int64_t>(group_size)
-                           : static_cast<int64_t>(K[i]);
-      const size_t cache_extra_hash =
-        std::hash<int64_t>{}(src_grp);
-      Key_matmul key(transB[i], K[i], n_tile, ldb[i], w_tile,
-                     static_cast<uint32_t>(matmul_algo_t::aocl_dlp_blocked),
-                     cache_extra_hash);
-
-      DLP_SYMM_STAT_QUANT symq_meta;
-      symq_meta.group_size = static_cast<int>(src_grp);
-
-      void *reordered_unused = nullptr;
-      // See the full-weight sym-quant warmer above: `false` is only
-      // reachable on the alloc-failure paths of weight_cache_type 0/2
-      // (unused here), so this is always `true` today.  Honour it so a
-      // future failure is counted as `skipped_invalid`, not packed_ok.
-      const bool warmed = reorderAndCacheWeightsSymQuant<int8_t>(
-                            key, w_tile, reordered_unused, K[i], n_tile, ldb[i],
-                            /*order=*/'r',
-                            /*trans=*/(transB[i] ? 't' : 'n'),
-                            /*mem_format_b=*/'n',
-                            aocl_get_reorder_buf_size_s8s8s32os32_sym_quant,
-                            aocl_reorder_s8s8s32os32_sym_quant,
-                            &symq_meta, /*weight_cache_type=*/1);
-      if (warmed) {
-        ++stats.packed_ok;
-      }
-      else {
-        ++stats.skipped_invalid;
-      }
-    }
-  }
-#else
-  (void)wei_dtype;
-  (void)num_threads;
-  (void)stable;
-  (void)nr_align;
-  stats.total_attempted += static_cast<int>(bound);
-  stats.skipped_invalid += static_cast<int>(bound);
 #endif
 
-  return status_t::success;
+    return status_t::success;
 }
 
 // ─────────────────────────────────────────────────────────────────────
@@ -764,100 +697,85 @@ status_t warm_pack_all_aocl_dlp_experts_n_tile_sym_quant(
 // Used by ALGOs 1/2/4/5 (full-weight) and optionally ALGO 3 (which
 // can also use per-tile variant).
 status_t warm_pack_all_aocl_dlp_experts_w4a8(
-  const std::vector<const void *> &weight,
-  const std::vector<int>          &K,
-  const std::vector<int>          &N,
-  const std::vector<int>          &ldb,
-  const std::vector<bool>         &transB,
-  const std::vector<bool>         &is_weights_const,
-  int                              total_count,
-  data_type_t                      wei_dtype,
-  int                              group_size,
-  AoclDlpPackProbeStats           &stats) {
+        const std::vector<const void *> &weight, const std::vector<int> &K,
+        const std::vector<int> &N, const std::vector<int> &ldb,
+        const std::vector<bool> &transB,
+        const std::vector<bool> &is_weights_const, int total_count,
+        data_type_t wei_dtype, int group_size, AoclDlpPackProbeStats &stats) {
 
-  if (total_count <= 0) {
-    return status_t::success;
-  }
+    if (total_count <= 0) { return status_t::success; }
 
-  // W4A8 always uses out-of-place caching: the runtime unconditionally
-  // downgrades WC=2 to WC=1 because s4→s8 expansion can't be in-place.
-  // Skip warming only when caching is completely disabled (WC=0).
-  const int32_t weight_cache_type =
-    matmul_config_t::instance().get_weight_cache();
-  if (weight_cache_type == 0) {
-    return status_t::success;
-  }
+    // W4A8 always uses out-of-place caching: the runtime unconditionally
+    // downgrades WC=2 to WC=1 because s4→s8 expansion can't be in-place.
+    // Skip warming only when caching is completely disabled (WC=0).
+    const int32_t weight_cache_type
+            = matmul_config_t::instance().get_weight_cache();
+    if (weight_cache_type == 0) { return status_t::success; }
 
-  const size_t bound = std::min<size_t>({
-    static_cast<size_t>(total_count),
-    weight.size(), K.size(), N.size(),
-    ldb.size(), transB.size()});
+    const size_t bound = std::min<size_t>({static_cast<size_t>(total_count),
+            weight.size(), K.size(), N.size(), ldb.size(), transB.size()});
 
 #if ZENDNNL_DEPENDS_AOCLDLP
-  if (wei_dtype != data_type_t::s4) {
+    if (wei_dtype != data_type_t::s4) {
+        stats.total_attempted += static_cast<int>(bound);
+        stats.skipped_invalid += static_cast<int>(bound);
+        return status_t::success;
+    }
+
+    for (size_t i = 0; i < bound; ++i) {
+        ++stats.total_attempted;
+        if (weight[i] == nullptr || K[i] <= 0 || N[i] <= 0 || ldb[i] <= 0) {
+            ++stats.skipped_invalid;
+            continue;
+        }
+        if (!is_weights_const.empty() && i < is_weights_const.size()
+                && !is_weights_const[i]) {
+            ++stats.skipped_invalid;
+            continue;
+        }
+
+        const int k = K[i], n = N[i];
+        const int sym_group_size = (group_size > 0) ? group_size : k;
+
+        // Build the same cache key the runtime uses in run_dlp's W4A8 path.
+        const int64_t src_grp = static_cast<int64_t>(sym_group_size);
+        Key_matmul key(transB[i], k, n, ldb[i], weight[i],
+                static_cast<uint32_t>(matmul_algo_t::aocl_dlp_blocked),
+                std::hash<int64_t> {}(src_grp));
+
+        // Plain cache: populate the plain-s8 LRU first so that
+        // w4a8ReorderAndCacheWeightsAocl below gets a plain cache HIT and
+        // skips the internal temp alloc + cvt_s4_to_s8.  This also ensures
+        // the plain cache is warm for ALGO 3 cross-warm / runtime if needed.
+        void *s8_unused = nullptr;
+        w4a8_cvt_and_cache_plain_s8(key, static_cast<const int8_t *>(weight[i]),
+                s8_unused, k, n, ldb[i], transB[i] == true);
+
+        // Blocked cache: full blocked sym-quant reorder into the W4A8 reorder
+        // cache.  w4a8ReorderAndCacheWeightsAocl will get a plain cache HIT
+        // (just populated above) and build the blocked layout from the cached
+        // plain s8.
+        void *reordered = nullptr;
+        w4a8ReorderAndCacheWeightsAocl(key,
+                static_cast<const int8_t *>(weight[i]), reordered, k, n, ldb[i],
+                /*is_weights_const=*/true, /*order=*/'r', transB[i] ? 't' : 'n',
+                wei_dtype, data_type_t::s8,
+                /*weight_cache_type=*/1, sym_group_size);
+
+        if (reordered != nullptr) {
+            ++stats.packed_ok;
+        } else {
+            ++stats.skipped_invalid;
+        }
+    }
+#else
+    (void)wei_dtype;
+    (void)group_size;
     stats.total_attempted += static_cast<int>(bound);
     stats.skipped_invalid += static_cast<int>(bound);
-    return status_t::success;
-  }
-
-  for (size_t i = 0; i < bound; ++i) {
-    ++stats.total_attempted;
-    if (weight[i] == nullptr || K[i] <= 0 || N[i] <= 0 || ldb[i] <= 0) {
-      ++stats.skipped_invalid;
-      continue;
-    }
-    if (!is_weights_const.empty() && i < is_weights_const.size()
-        && !is_weights_const[i]) {
-      ++stats.skipped_invalid;
-      continue;
-    }
-
-    const int k = K[i], n = N[i];
-    const int sym_group_size = (group_size > 0) ? group_size : k;
-
-    // Build the same cache key the runtime uses in run_dlp's W4A8 path.
-    const int64_t src_grp = static_cast<int64_t>(sym_group_size);
-    Key_matmul key(transB[i], k, n, ldb[i], weight[i],
-                   static_cast<uint32_t>(matmul_algo_t::aocl_dlp_blocked),
-                   std::hash<int64_t> {}(src_grp));
-
-    // Plain cache: populate the plain-s8 LRU first so that
-    // w4a8ReorderAndCacheWeightsAocl below gets a plain cache HIT and
-    // skips the internal temp alloc + cvt_s4_to_s8.  This also ensures
-    // the plain cache is warm for ALGO 3 cross-warm / runtime if needed.
-    void *s8_unused = nullptr;
-    w4a8_cvt_and_cache_plain_s8(
-      key, static_cast<const int8_t *>(weight[i]),
-      s8_unused, k, n, ldb[i], transB[i] == true);
-
-    // Blocked cache: full blocked sym-quant reorder into the W4A8 reorder
-    // cache.  w4a8ReorderAndCacheWeightsAocl will get a plain cache HIT
-    // (just populated above) and build the blocked layout from the cached
-    // plain s8.
-    void *reordered = nullptr;
-    w4a8ReorderAndCacheWeightsAocl(
-      key, static_cast<const int8_t *>(weight[i]),
-      reordered, k, n, ldb[i],
-      /*is_weights_const=*/true, /*order=*/'r',
-      transB[i] ? 't' : 'n',
-      wei_dtype, data_type_t::s8,
-      /*weight_cache_type=*/1, sym_group_size);
-
-    if (reordered != nullptr) {
-      ++stats.packed_ok;
-    }
-    else {
-      ++stats.skipped_invalid;
-    }
-  }
-#else
-  (void)wei_dtype;
-  (void)group_size;
-  stats.total_attempted += static_cast<int>(bound);
-  stats.skipped_invalid += static_cast<int>(bound);
 #endif
 
-  return status_t::success;
+    return status_t::success;
 }
 
 // ─────────────────────────────────────────────────────────────────────
@@ -878,140 +796,125 @@ status_t warm_pack_all_aocl_dlp_experts_w4a8(
 // (HIT → blocked reorder).
 // ─────────────────────────────────────────────────────────────────────
 status_t warm_pack_all_aocl_dlp_experts_n_tile_w4a8(
-  const std::vector<const void *> &weight,
-  const std::vector<int>          &K,
-  const std::vector<int>          &N,
-  const std::vector<int>          &ldb,
-  const std::vector<bool>         &transB,
-  const std::vector<bool>         &is_weights_const,
-  int                              total_count,
-  data_type_t                      wei_dtype,
-  int                              num_threads,
-  int                              stable,
-  int                              nr_align,
-  int                              group_size,
-  AoclDlpPackProbeStats           &stats) {
+        const std::vector<const void *> &weight, const std::vector<int> &K,
+        const std::vector<int> &N, const std::vector<int> &ldb,
+        const std::vector<bool> &transB,
+        const std::vector<bool> &is_weights_const, int total_count,
+        data_type_t wei_dtype, int num_threads, int stable, int nr_align,
+        int group_size, AoclDlpPackProbeStats &stats) {
 
-  if (total_count <= 0 || num_threads <= 0
-      || stable <= 0 || nr_align <= 0 || group_size <= 0) {
-    return status_t::success;
-  }
+    if (total_count <= 0 || num_threads <= 0 || stable <= 0 || nr_align <= 0
+            || group_size <= 0) {
+        return status_t::success;
+    }
 
-  const int32_t weight_cache_type =
-    matmul_config_t::instance().get_weight_cache();
-  if (weight_cache_type == 0) {
-    return status_t::success;
-  }
+    const int32_t weight_cache_type
+            = matmul_config_t::instance().get_weight_cache();
+    if (weight_cache_type == 0) { return status_t::success; }
 
-  const size_t bound = std::min<size_t>({
-    static_cast<size_t>(total_count),
-    weight.size(), K.size(), N.size(),
-    ldb.size(), transB.size()});
+    const size_t bound = std::min<size_t>({static_cast<size_t>(total_count),
+            weight.size(), K.size(), N.size(), ldb.size(), transB.size()});
 
 #if ZENDNNL_DEPENDS_AOCLDLP
-  if (wei_dtype != data_type_t::s4) {
+    if (wei_dtype != data_type_t::s4) {
+        stats.total_attempted += static_cast<int>(bound);
+        stats.skipped_invalid += static_cast<int>(bound);
+        return status_t::success;
+    }
+
+    for (size_t i = 0; i < bound; ++i) {
+        if (weight[i] == nullptr || K[i] <= 0 || N[i] <= 0 || ldb[i] <= 0) {
+            ++stats.total_attempted;
+            ++stats.skipped_invalid;
+            continue;
+        }
+        if (!is_weights_const.empty() && i < is_weights_const.size()
+                && !is_weights_const[i]) {
+            ++stats.total_attempted;
+            ++stats.skipped_invalid;
+            continue;
+        }
+
+        const int k = K[i], n = N[i];
+
+        // ── Plain cache: s4→s8 plain expansion into dedicated plain-s8 LRU ─
+        const int64_t src_grp = static_cast<int64_t>(group_size);
+        Key_matmul w4a8_key(transB[i], k, n, ldb[i], weight[i],
+                static_cast<uint32_t>(matmul_algo_t::aocl_dlp_blocked),
+                std::hash<int64_t> {}(src_grp));
+
+        void *s8_buf = nullptr;
+        w4a8_cvt_and_cache_plain_s8(w4a8_key,
+                static_cast<const int8_t *>(weight[i]), s8_buf, k, n, ldb[i],
+                transB[i] == true);
+
+        if (s8_buf == nullptr) {
+            ++stats.total_attempted;
+            ++stats.skipped_invalid;
+            continue;
+        }
+
+        // ── Blocked cache: per-tile sym-quant reorder of the s8 buffer ────
+        // The s8 buffer from the plain cache is K×N row-major (ldb_s8 = n).
+        const int ldb_s8 = n;
+        const int align_cap = std::max(1, n / std::max(1, nr_align));
+        const int n_thr_e = std::max(1, std::min(stable, align_cap));
+
+        for (int tid = 0; tid < n_thr_e; ++tid) {
+            const auto split = aligned_n_split(n, n_thr_e, tid, nr_align);
+            const int col_start = split.first;
+            const int col_end = split.second;
+            const int n_tile = col_end - col_start;
+
+            ++stats.total_attempted;
+
+            if (n_tile <= 0) {
+                ++stats.skipped_invalid;
+                continue;
+            }
+
+            const void *w_tile = static_cast<const char *>(s8_buf)
+                    + static_cast<size_t>(col_start) * sizeof(int8_t);
+
+            Key_matmul tile_key(false, k, n_tile, ldb_s8, w_tile,
+                    static_cast<uint32_t>(matmul_algo_t::aocl_dlp_blocked),
+                    std::hash<int64_t> {}(src_grp));
+
+            DLP_SYMM_STAT_QUANT symq_meta;
+            symq_meta.group_size = group_size;
+
+            apilog_verbose("[W4A8.prepack.blocked] expert=", i, " tid=", tid,
+                    " col_start=", col_start, " n_tile=", n_tile, " K=", k,
+                    " ldb_s8=", ldb_s8, " group_size=", group_size,
+                    " w_tile_ptr=", static_cast<const void *>(w_tile));
+
+            void *reordered_unused = nullptr;
+            const bool warmed = reorderAndCacheWeightsSymQuant<int8_t>(tile_key,
+                    w_tile, reordered_unused, k, n_tile, ldb_s8,
+                    /*order=*/'r',
+                    /*trans=*/'n',
+                    /*mem_format_b=*/'n',
+                    aocl_get_reorder_buf_size_s8s8s32os32_sym_quant,
+                    aocl_reorder_s8s8s32os32_sym_quant, &symq_meta,
+                    /*weight_cache_type=*/1);
+            if (warmed) {
+                ++stats.packed_ok;
+            } else {
+                ++stats.skipped_invalid;
+            }
+        }
+    }
+#else
+    (void)wei_dtype;
+    (void)num_threads;
+    (void)stable;
+    (void)nr_align;
+    (void)group_size;
     stats.total_attempted += static_cast<int>(bound);
     stats.skipped_invalid += static_cast<int>(bound);
-    return status_t::success;
-  }
-
-  for (size_t i = 0; i < bound; ++i) {
-    if (weight[i] == nullptr || K[i] <= 0 || N[i] <= 0 || ldb[i] <= 0) {
-      ++stats.total_attempted;
-      ++stats.skipped_invalid;
-      continue;
-    }
-    if (!is_weights_const.empty()
-        && i < is_weights_const.size()
-        && !is_weights_const[i]) {
-      ++stats.total_attempted;
-      ++stats.skipped_invalid;
-      continue;
-    }
-
-    const int k = K[i], n = N[i];
-
-    // ── Plain cache: s4→s8 plain expansion into dedicated plain-s8 LRU ─
-    const int64_t src_grp = static_cast<int64_t>(group_size);
-    Key_matmul w4a8_key(transB[i], k, n, ldb[i], weight[i],
-                        static_cast<uint32_t>(matmul_algo_t::aocl_dlp_blocked),
-                        std::hash<int64_t>{}(src_grp));
-
-    void *s8_buf = nullptr;
-    w4a8_cvt_and_cache_plain_s8(
-      w4a8_key, static_cast<const int8_t *>(weight[i]),
-      s8_buf, k, n, ldb[i], transB[i] == true);
-
-    if (s8_buf == nullptr) {
-      ++stats.total_attempted;
-      ++stats.skipped_invalid;
-      continue;
-    }
-
-    // ── Blocked cache: per-tile sym-quant reorder of the s8 buffer ────
-    // The s8 buffer from the plain cache is K×N row-major (ldb_s8 = n).
-    const int ldb_s8 = n;
-    const int align_cap = std::max(1, n / std::max(1, nr_align));
-    const int n_thr_e = std::max(1, std::min(stable, align_cap));
-
-    for (int tid = 0; tid < n_thr_e; ++tid) {
-      const auto split = aligned_n_split(n, n_thr_e, tid, nr_align);
-      const int col_start = split.first;
-      const int col_end   = split.second;
-      const int n_tile    = col_end - col_start;
-
-      ++stats.total_attempted;
-
-      if (n_tile <= 0) {
-        ++stats.skipped_invalid;
-        continue;
-      }
-
-      const void *w_tile =
-        static_cast<const char *>(s8_buf)
-          + static_cast<size_t>(col_start) * sizeof(int8_t);
-
-      Key_matmul tile_key(false, k, n_tile, ldb_s8, w_tile,
-                          static_cast<uint32_t>(matmul_algo_t::aocl_dlp_blocked),
-                          std::hash<int64_t>{}(src_grp));
-
-      DLP_SYMM_STAT_QUANT symq_meta;
-      symq_meta.group_size = group_size;
-
-      apilog_verbose("[W4A8.prepack.blocked] expert=", i,
-                     " tid=", tid, " col_start=", col_start,
-                     " n_tile=", n_tile, " K=", k, " ldb_s8=", ldb_s8,
-                     " group_size=", group_size,
-                     " w_tile_ptr=", static_cast<const void*>(w_tile));
-
-      void *reordered_unused = nullptr;
-      const bool warmed = reorderAndCacheWeightsSymQuant<int8_t>(
-                            tile_key, w_tile, reordered_unused, k, n_tile,
-                            ldb_s8,
-                            /*order=*/'r',
-                            /*trans=*/'n',
-                            /*mem_format_b=*/'n',
-                            aocl_get_reorder_buf_size_s8s8s32os32_sym_quant,
-                            aocl_reorder_s8s8s32os32_sym_quant,
-                            &symq_meta, /*weight_cache_type=*/1);
-      if (warmed) {
-        ++stats.packed_ok;
-      } else {
-        ++stats.skipped_invalid;
-      }
-    }
-  }
-#else
-  (void)wei_dtype;
-  (void)num_threads;
-  (void)stable;
-  (void)nr_align;
-  (void)group_size;
-  stats.total_attempted += static_cast<int>(bound);
-  stats.skipped_invalid += static_cast<int>(bound);
 #endif
 
-  return status_t::success;
+    return status_t::success;
 }
 
 } // namespace aocl_dlp

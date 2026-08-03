@@ -15,12 +15,12 @@
  ******************************************************************************/
 
 #include "lowoha_operators/matmul/matmul_native/brgemm/kernel/int8/int8_brgemm_ukernel.hpp"
-#include "lowoha_operators/matmul/matmul_native/common/kernel_cache.hpp"
 #include "lowoha_operators/matmul/matmul_native/common/avx512_math.hpp"
+#include "lowoha_operators/matmul/matmul_native/common/kernel_cache.hpp"
 
+#include <algorithm>
 #include <cstdint>
 #include <cstring>
-#include <algorithm>
 #include <immintrin.h>
 
 namespace zendnnl {
@@ -35,19 +35,16 @@ namespace native {
 //
 // B is in INT8 VNNI layout: groups of 4 consecutive K elements per column.
 // b_stride = NR_PACK * INT8_VNNI_GRP = 64 * 4 = 256 bytes per k-quad row.
-template<int MR, int NV>
-__attribute__((target("avx512f,avx512bf16,avx512bw,avx512vl,avx512vnni,fma"), noinline))
-void int8_brgemm_ukernel(
-    const uint8_t *__restrict__ A, int lda,
-    const int8_t  *__restrict__ B_vnni, int b_stride,
-    float *__restrict__ C_fp32, int ldc,
-    int K, int BK,
-    const int32_t *__restrict__ col_sum,
-    int32_t src_zp, float src_scale,
-    const float *__restrict__ wei_scale, int wei_scale_count,
-    const float *__restrict__ bias,
-    fused_postop_t fused_op,
-    uint16_t *__restrict__ C_bf16, int ldc_bf16) {
+template <int MR, int NV>
+__attribute__((target("avx512f,avx512bf16,avx512bw,avx512vl,avx512vnni,fma"),
+        noinline)) void
+int8_brgemm_ukernel(const uint8_t *__restrict__ A, int lda,
+        const int8_t *__restrict__ B_vnni, int b_stride,
+        float *__restrict__ C_fp32, int ldc, int K, int BK,
+        const int32_t *__restrict__ col_sum, int32_t src_zp, float src_scale,
+        const float *__restrict__ wei_scale, int wei_scale_count,
+        const float *__restrict__ bias, fused_postop_t fused_op,
+        uint16_t *__restrict__ C_bf16, int ldc_bf16) {
 
     __m512i acc[MR][NV];
     for (int m = 0; m < MR; ++m)
@@ -60,14 +57,13 @@ void int8_brgemm_ukernel(
         const int kb_padded = (kb + 3) & ~3;
         const int k_quads = kb_padded / 4;
         const uint8_t *a_off = A + pc;
-        const int8_t  *b_off = B_vnni + (pc / 4) * b_stride;
+        const int8_t *b_off = B_vnni + (pc / 4) * b_stride;
 
         for (int kq = 0; kq < k_quads; ++kq) {
             const int8_t *b_kq = b_off + kq * b_stride;
             __m512i bv[NV];
             for (int v = 0; v < NV; ++v)
-                bv[v] = _mm512_loadu_si512(
-                    b_kq + v * 16 * INT8_VNNI_GRP);
+                bv[v] = _mm512_loadu_si512(b_kq + v * 16 * INT8_VNNI_GRP);
 
             for (int m = 0; m < MR; ++m) {
                 uint32_t a_quad;
@@ -97,14 +93,13 @@ void int8_brgemm_ukernel(
             __m512 vacc = _mm512_cvtepi32_ps(acc[m][v]);
 
             // Zero-point correction: acc - zp * col_sum
-            __m512 vcs = _mm512_cvtepi32_ps(
-                _mm512_loadu_si512(col_sum + v * 16));
+            __m512 vcs
+                    = _mm512_cvtepi32_ps(_mm512_loadu_si512(col_sum + v * 16));
             vacc = _mm512_fnmadd_ps(v_zp, vcs, vacc);
 
             // Dequantize: * src_scale * wei_scale
-            __m512 ws = per_channel
-                ? _mm512_loadu_ps(wei_scale + v * 16)
-                : _mm512_set1_ps(wei_scale[0]);
+            __m512 ws = per_channel ? _mm512_loadu_ps(wei_scale + v * 16)
+                                    : _mm512_set1_ps(wei_scale[0]);
             vacc = _mm512_mul_ps(vacc, _mm512_mul_ps(v_src_scale, ws));
 
             // Bias
@@ -118,10 +113,9 @@ void int8_brgemm_ukernel(
             // Store
             if (C_bf16) {
                 __m256bh bf = _mm512_cvtneps_pbh(vacc);
-                _mm256_storeu_si256(
-                    reinterpret_cast<__m256i *>(
-                        C_bf16 + m * ldc_bf16 + v * 16),
-                    (__m256i)bf);
+                _mm256_storeu_si256(reinterpret_cast<__m256i *>(
+                                            C_bf16 + m * ldc_bf16 + v * 16),
+                        (__m256i)bf);
             } else {
                 _mm512_storeu_ps(C_fp32 + m * ldc + v * 16, vacc);
             }
@@ -136,63 +130,61 @@ void int8_brgemm_ukernel(
 // NR=32 (NV=2): MR=1..6
 // NR=16 (NV=1): MR=1..6
 #define INST(MR, NV) \
-    template void int8_brgemm_ukernel<MR,NV>( \
-        const uint8_t*, int, const int8_t*, int, float*, int, \
-        int, int, const int32_t*, int32_t, float, \
-        const float*, int, const float*, fused_postop_t, uint16_t*, int);
+    template void int8_brgemm_ukernel<MR, NV>(const uint8_t *, int, \
+            const int8_t *, int, float *, int, int, int, const int32_t *, \
+            int32_t, float, const float *, int, const float *, fused_postop_t, \
+            uint16_t *, int);
 
-INST(1,4) INST(2,4) INST(3,4) INST(4,4) INST(6,4)
-INST(1,2) INST(2,2) INST(3,2) INST(4,2) INST(6,2)
-INST(1,1) INST(2,1) INST(3,1) INST(4,1) INST(6,1)
+INST(1, 4)
+INST(2, 4) INST(3, 4) INST(4, 4) INST(6, 4) INST(1, 2) INST(2, 2) INST(
+        3, 2) INST(4, 2) INST(6, 2) INST(1, 1) INST(2, 1) INST(3, 1) INST(4,
+        1) INST(6, 1)
 #undef INST
 
-__attribute__((target("avx512f,avx512vnni,fma")))
-int8_brgemm_fn_t select_int8_brgemm_kernel(int MR, int NR) {
+        __attribute__((target("avx512f,avx512vnni,fma"))) int8_brgemm_fn_t
+        select_int8_brgemm_kernel(int MR, int NR) {
     switch (NR) {
-    case 64:
-        switch (MR) {
-        case 1: return int8_brgemm_ukernel<1, 4>;
-        case 2: return int8_brgemm_ukernel<2, 4>;
-        case 3: return int8_brgemm_ukernel<3, 4>;
-        case 4: return int8_brgemm_ukernel<4, 4>;
-        case 6: return int8_brgemm_ukernel<6, 4>;
-        }
-        break;
-    case 32:
-        switch (MR) {
-        case 1: return int8_brgemm_ukernel<1, 2>;
-        case 2: return int8_brgemm_ukernel<2, 2>;
-        case 3: return int8_brgemm_ukernel<3, 2>;
-        case 4: return int8_brgemm_ukernel<4, 2>;
-        case 6: return int8_brgemm_ukernel<6, 2>;
-        }
-        break;
-    case 16:
-        switch (MR) {
-        case 1: return int8_brgemm_ukernel<1, 1>;
-        case 2: return int8_brgemm_ukernel<2, 1>;
-        case 3: return int8_brgemm_ukernel<3, 1>;
-        case 4: return int8_brgemm_ukernel<4, 1>;
-        case 6: return int8_brgemm_ukernel<6, 1>;
-        }
-        break;
+        case 64:
+            switch (MR) {
+                case 1: return int8_brgemm_ukernel<1, 4>;
+                case 2: return int8_brgemm_ukernel<2, 4>;
+                case 3: return int8_brgemm_ukernel<3, 4>;
+                case 4: return int8_brgemm_ukernel<4, 4>;
+                case 6: return int8_brgemm_ukernel<6, 4>;
+            }
+            break;
+        case 32:
+            switch (MR) {
+                case 1: return int8_brgemm_ukernel<1, 2>;
+                case 2: return int8_brgemm_ukernel<2, 2>;
+                case 3: return int8_brgemm_ukernel<3, 2>;
+                case 4: return int8_brgemm_ukernel<4, 2>;
+                case 6: return int8_brgemm_ukernel<6, 2>;
+            }
+            break;
+        case 16:
+            switch (MR) {
+                case 1: return int8_brgemm_ukernel<1, 1>;
+                case 2: return int8_brgemm_ukernel<2, 1>;
+                case 3: return int8_brgemm_ukernel<3, 1>;
+                case 4: return int8_brgemm_ukernel<4, 1>;
+                case 6: return int8_brgemm_ukernel<6, 1>;
+            }
+            break;
     }
     return nullptr;
 }
 
 // ── Tail kernel (dynamic MR/NR for edge tiles) ──────────────────────
-__attribute__((target("avx512f,avx512bf16,avx512bw,avx512vl,avx512vnni,fma")))
-void int8_brgemm_tail_kernel(
-    const uint8_t *__restrict__ A, int lda,
-    const int8_t  *__restrict__ B_vnni, int b_stride,
-    float *__restrict__ C_fp32, int ldc,
-    int K, int BK, int mr_act, int nr_act,
-    const int32_t *__restrict__ col_sum,
-    int32_t src_zp, float src_scale,
-    const float *__restrict__ wei_scale, int wei_scale_count,
-    const float *__restrict__ bias,
-    fused_postop_t fused_op,
-    uint16_t *__restrict__ C_bf16, int ldc_bf16) {
+__attribute__((
+        target("avx512f,avx512bf16,avx512bw,avx512vl,avx512vnni,fma"))) void
+int8_brgemm_tail_kernel(const uint8_t *__restrict__ A, int lda,
+        const int8_t *__restrict__ B_vnni, int b_stride,
+        float *__restrict__ C_fp32, int ldc, int K, int BK, int mr_act,
+        int nr_act, const int32_t *__restrict__ col_sum, int32_t src_zp,
+        float src_scale, const float *__restrict__ wei_scale,
+        int wei_scale_count, const float *__restrict__ bias,
+        fused_postop_t fused_op, uint16_t *__restrict__ C_bf16, int ldc_bf16) {
 
     constexpr int MAX_MR = 6;
     constexpr int MAX_NV = 4;
@@ -208,7 +200,7 @@ void int8_brgemm_tail_kernel(
         const int kb_padded = (kb + 3) & ~3;
         const int k_quads = kb_padded / 4;
         const uint8_t *a_off = A + pc;
-        const int8_t  *b_off = B_vnni + (pc / 4) * b_stride;
+        const int8_t *b_off = B_vnni + (pc / 4) * b_stride;
 
         for (int kq = 0; kq < k_quads; ++kq) {
             const int8_t *b_kq = b_off + kq * b_stride;
@@ -244,22 +236,22 @@ void int8_brgemm_tail_kernel(
             const int elems = std::min(16, nr_act - n_off);
             if (elems <= 0) break;
             __mmask16 mask = (elems == 16)
-                ? __mmask16(0xFFFF)
-                : static_cast<__mmask16>((1u << elems) - 1);
+                    ? __mmask16(0xFFFF)
+                    : static_cast<__mmask16>((1u << elems) - 1);
 
             __m512 vacc = _mm512_cvtepi32_ps(acc[m][v]);
             __m512 vcs = _mm512_cvtepi32_ps(
-                _mm512_maskz_loadu_epi32(mask, col_sum + n_off));
+                    _mm512_maskz_loadu_epi32(mask, col_sum + n_off));
             vacc = _mm512_fnmadd_ps(v_zp, vcs, vacc);
 
             __m512 ws = per_channel
-                ? _mm512_maskz_loadu_ps(mask, wei_scale + n_off)
-                : _mm512_set1_ps(wei_scale[0]);
+                    ? _mm512_maskz_loadu_ps(mask, wei_scale + n_off)
+                    : _mm512_set1_ps(wei_scale[0]);
             vacc = _mm512_mul_ps(vacc, _mm512_mul_ps(v_src_scale, ws));
 
             if (bias)
-                vacc = _mm512_add_ps(vacc,
-                    _mm512_maskz_loadu_ps(mask, bias + n_off));
+                vacc = _mm512_add_ps(
+                        vacc, _mm512_maskz_loadu_ps(mask, bias + n_off));
 
             if (fused_op != fused_postop_t::none)
                 vacc = apply_fused_postop(vacc, fused_op);
@@ -267,10 +259,9 @@ void int8_brgemm_tail_kernel(
             if (C_bf16) {
                 __m256bh bf = _mm512_cvtneps_pbh(vacc);
                 _mm256_mask_storeu_epi16(
-                    C_bf16 + m * ldc_bf16 + n_off, mask, (__m256i)bf);
+                        C_bf16 + m * ldc_bf16 + n_off, mask, (__m256i)bf);
             } else {
-                _mm512_mask_storeu_ps(
-                    C_fp32 + m * ldc + n_off, mask, vacc);
+                _mm512_mask_storeu_ps(C_fp32 + m * ldc + n_off, mask, vacc);
             }
         }
     }

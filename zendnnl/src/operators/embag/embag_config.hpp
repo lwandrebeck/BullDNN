@@ -20,8 +20,8 @@
 #include <algorithm>
 #include <string>
 #include "common/data_types.hpp"
-#include "operators/common/operator_config.hpp"
 #include "common/zendnnl_global.hpp"
+#include "operators/common/operator_config.hpp"
 
 namespace zendnnl {
 namespace ops {
@@ -34,13 +34,13 @@ using zendnnl::common::data_type_t;
  * Defines all available embedding bag kernel backends.
  */
 enum class embag_kernel_t : int32_t {
-  none = -1,             /*!< No kernel selected */
-  dynamic_dispatch = 0,  /*!< Dynamic dispatch */
-  native = 1,            /*!< Native kernel */
-  fbgemm = 2,            /*!< FBGEMM kernel */
-  reference = 3,         /*!< Reference kernel */
-  auto_tuner = 4,        /*!< Auto-tuner */
-  kernel_count           /*!< Kernel count */
+    none = -1, /*!< No kernel selected */
+    dynamic_dispatch = 0, /*!< Dynamic dispatch */
+    native = 1, /*!< Native kernel */
+    fbgemm = 2, /*!< FBGEMM kernel */
+    reference = 3, /*!< Reference kernel */
+    auto_tuner = 4, /*!< Auto-tuner */
+    kernel_count /*!< Kernel count */
 };
 
 /** @enum eb_thread_algo_t
@@ -50,14 +50,14 @@ enum class embag_kernel_t : int32_t {
  * processing multiple embedding tables in parallel.
  */
 enum class eb_thread_algo_t : int32_t {
-  none = -1,               /*!< No thread algorithm selected */
-  dynamic_dispatch = 0,    /*!< Dynamic dispatch */
-  table_threaded = 1,      /*!< Thread-per-table parallelism */
-  batch_threaded = 2,      /*!< Sequential tables with batch-level threading */
-  ccd_threaded = 3,        /*!< CCD-aware threading with nested parallelism */
-  hybrid_threaded = 4,     /*!< Hybrid threading when tables < threads */
-  auto_tuner = 5,          /*!< Auto-tuner thread algorithm */
-  thread_algo_count        /*!< Thread algorithm count */
+    none = -1, /*!< No thread algorithm selected */
+    dynamic_dispatch = 0, /*!< Dynamic dispatch */
+    table_threaded = 1, /*!< Thread-per-table parallelism */
+    batch_threaded = 2, /*!< Sequential tables with batch-level threading */
+    ccd_threaded = 3, /*!< CCD-aware threading with nested parallelism */
+    hybrid_threaded = 4, /*!< Hybrid threading when tables < threads */
+    auto_tuner = 5, /*!< Auto-tuner thread algorithm */
+    thread_algo_count /*!< Thread algorithm count */
 };
 
 /**
@@ -86,24 +86,24 @@ enum class eb_thread_algo_t : int32_t {
 * @sa embag_operator_t
 */
 class embag_config_t final : public op_config_t {
- public:
-  void set_default_config() override;
-  status_t set_user_config(json config_json) override;
-  void set_env_config() override;
+public:
+    void set_default_config() override;
+    status_t set_user_config(json config_json) override;
+    void set_env_config() override;
 
-  /** @brief Sets embedding bag kernel.
+    /** @brief Sets embedding bag kernel.
   *
   * @param kernel The Embedding Bag kernel to set.
   */
-  void set_kernel(int32_t kernel);
+    void set_kernel(int32_t kernel);
 
-  /** @brief Get embedding bag kernel.
+    /** @brief Get embedding bag kernel.
    *
    * @return embedding bag kernel.
    */
-  int32_t get_kernel();
+    int32_t get_kernel();
 
-  /** @brief Sets the accumulation type for the reference kernel.
+    /** @brief Sets the accumulation type for the reference kernel.
    *
    * Communicates which accumulation precision the reference kernel should
    * use when validating the output of a given embedding-bag backend. The
@@ -134,60 +134,62 @@ class embag_config_t final : public op_config_t {
    *
    * @param type The accumulation data type (data_type_t::f32 or data_type_t::f16).
    */
-  void set_accum_type(data_type_t type);
+    void set_accum_type(data_type_t type);
 
-  /** @brief Get the accumulation type for the reference kernel.
+    /** @brief Get the accumulation type for the reference kernel.
    *
    * @return The current accumulation data type.
    */
-  data_type_t get_accum_type();
+    data_type_t get_accum_type();
 
-  /** @brief Sets thread algorithm for group embedding bag.
+    /** @brief Sets thread algorithm for group embedding bag.
   *
   * @param algo The thread algorithm to set.
   */
-  void set_thread_algo(int32_t algo);
+    void set_thread_algo(int32_t algo);
 
-  /** @brief Get thread algorithm for group embedding bag.
+    /** @brief Get thread algorithm for group embedding bag.
    *
    * @return thread algorithm.
    */
-  eb_thread_algo_t get_thread_algo();
+    eb_thread_algo_t get_thread_algo();
 
-  static embag_config_t &instance();
+    static embag_config_t &instance();
 
-  /** @brief Convert from string to embag_kernel.
+    /** @brief Convert from string to embag_kernel.
   *
   *  @param str_ : string contains embag kernel name.
   *  @return embag kernel for appropriate string.
   *          embag_kernel_t::kernel_count if string is not
   *          appropriate.
   */
-  embag_kernel_t str_to_embag_kernel(std::string kernel);
+    embag_kernel_t str_to_embag_kernel(std::string kernel);
 
-  /** @brief Convert from string to thread algorithm.
+    /** @brief Convert from string to thread algorithm.
   *
   *  @param str_ : string contains thread algo name.
   *  @return thread algorithm for appropriate string.
   */
-  eb_thread_algo_t str_to_thread_algo(std::string algo);
+    eb_thread_algo_t str_to_thread_algo(std::string algo);
 
- private:
-  /**
+private:
+    /**
   * @brief Private constructor for singleton pattern.
   *
   * The constructor is private to prevent direct instantiation of the class.
   * Use the @c instance() method to access the single global instance.
   */
-  embag_config_t() = default;
+    embag_config_t() = default;
 
-  embag_kernel_t embag_kernel{embag_kernel_t::none};  /**< Embag runtime kernel. */
-  eb_thread_algo_t thread_algo{eb_thread_algo_t::table_threaded}; /**< Thread algorithm. */
-  data_type_t embag_accum_type{data_type_t::f32}; /**< Accumulation type for reference kernel. Default F32. */
+    embag_kernel_t embag_kernel {
+            embag_kernel_t::none}; /**< Embag runtime kernel. */
+    eb_thread_algo_t thread_algo {
+            eb_thread_algo_t::table_threaded}; /**< Thread algorithm. */
+    data_type_t embag_accum_type {data_type_t::
+                    f32}; /**< Accumulation type for reference kernel. Default F32. */
 };
 
-}
-}
+} // namespace ops
+} // namespace zendnnl
 
 #endif
-

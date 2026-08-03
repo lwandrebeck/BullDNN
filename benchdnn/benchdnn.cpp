@@ -42,154 +42,152 @@
  * @return int Status code (0 for success, non-zero for error).
  */
 int main(int argc, char **argv) {
-  // Parse command-line arguments for operator type and input file
-  std::string op, input_file;
-  benchdnn::global_options options;
-  options.ndims = 2;
-  bool isLOWOHA = true;
-  benchdnn::InputMode inputMode = benchdnn::InputMode::COMMAND_LINE;
-  for (int i = 1; i < argc; ++i) {
-    std::string arg = argv[i];
-    // Parse operator argument
-    if (arg.find("--op=") == 0) {
-      op = arg.substr(5);
+    // Parse command-line arguments for operator type and input file
+    std::string op, input_file;
+    benchdnn::global_options options;
+    options.ndims = 2;
+    bool isLOWOHA = true;
+    benchdnn::InputMode inputMode = benchdnn::InputMode::COMMAND_LINE;
+    for (int i = 1; i < argc; ++i) {
+        std::string arg = argv[i];
+        // Parse operator argument
+        if (arg.find("--op=") == 0) {
+            op = arg.substr(5);
+        }
+        // Parse input file argument
+        else if (arg.find("--input_file=") == 0) {
+            input_file = arg.substr(13);
+            if (inputMode == benchdnn::InputMode::COMMAND_LINE) {
+                inputMode = benchdnn::InputMode::FILE;
+            } else {
+                commonlog_error(
+                        "Multiple input modes specified. Please specify only "
+                        "one input mode.");
+                return NOT_OK;
+            }
+        } else if (arg == "--perf-counters"
+                || arg.find("--perf-counters=") == 0) {
+            options.perf_counters = true;
+            if (arg.find("--perf-counters=") == 0) {
+                options.perf_profile_str = arg.substr(16);
+            }
+        } else if (arg.find("--lowoha=") == 0) {
+            std::string value = arg.substr(9);
+            std::transform(
+                    value.begin(), value.end(), value.begin(), ::tolower);
+            if (value == "true" || value == "1") {
+                isLOWOHA = true;
+            } else if (value == "false" || value == "0") {
+                isLOWOHA = false;
+            } else {
+                commonlog_error(
+                        "Invalid value for --lowoha. Use true/false or 1/0.");
+                return NOT_OK;
+            }
+        } else if (arg.find("--input_model_file=") == 0) {
+            input_file = arg.substr(19);
+            if (inputMode == benchdnn::InputMode::COMMAND_LINE) {
+                inputMode = benchdnn::InputMode::MODEL;
+            } else {
+                commonlog_error(
+                        "Multiple input modes specified. Please specify only "
+                        "one input mode.");
+                return NOT_OK;
+            }
+        } else {
+            int status = benchdnn::parseCLArgs(options, arg);
+            if (status != OK) { return NOT_OK; }
+        }
     }
-    // Parse input file argument
-    else if (arg.find("--input_file=") == 0) {
-      input_file = arg.substr(13);
-      if (inputMode == benchdnn::InputMode::COMMAND_LINE) {
-        inputMode = benchdnn::InputMode::FILE;
-      }
-      else {
-        commonlog_error("Multiple input modes specified. Please specify only one input mode.");
-        return NOT_OK;
-      }
-    }
-    else if (arg == "--perf-counters" || arg.find("--perf-counters=") == 0) {
-      options.perf_counters = true;
-      if (arg.find("--perf-counters=") == 0) {
-        options.perf_profile_str = arg.substr(16);
-      }
-    }
-    else if (arg.find("--lowoha=") == 0) {
-      std::string value = arg.substr(9);
-      std::transform(value.begin(), value.end(), value.begin(), ::tolower);
-      if (value == "true" || value == "1") {
-        isLOWOHA = true;
-      }
-      else if (value == "false" || value == "0") {
-        isLOWOHA = false;
-      }
-      else {
-        commonlog_error("Invalid value for --lowoha. Use true/false or 1/0.");
-        return NOT_OK;
-      }
-    }
-    else if (arg.find("--input_model_file=") == 0) {
-      input_file = arg.substr(19);
-      if (inputMode == benchdnn::InputMode::COMMAND_LINE) {
-        inputMode = benchdnn::InputMode::MODEL;
-      }
-      else {
-        commonlog_error("Multiple input modes specified. Please specify only one input mode.");
-        return NOT_OK;
-      }
-    }
-    else {
-      int status = benchdnn::parseCLArgs(options, arg);
-      if (status != OK) {
-        return NOT_OK;
-      }
-    }
-  }
 
-  // Validate required arguments
-  if (op.empty()) {
-    commonlog_error("Usage: ", argv[0],
-                    " --op=<matmul|reorder|embag|normalization|grp_matmul|sdpa> ...");
-    return NOT_OK;
-  }
-
-  if (options.cache_mode == benchdnn::CacheMode::WARM && op != "matmul") {
-    commonlog_error(
-      "--cache_mode=warm is only implemented for --op=matmul. Use --cache_mode=hot or --cache_mode=cold instead.");
-    return NOT_OK;
-  }
-
-  if ((inputMode == benchdnn::InputMode::MODEL ||
-       inputMode == benchdnn::InputMode::FILE) && input_file.empty()) {
-    commonlog_error("Input file is required for MODEL or FILE mode.");
-    return NOT_OK;
-  }
-
-  if (inputMode == benchdnn::InputMode::COMMAND_LINE) {
-    if (op == "matmul") {
-      if ((options.ndims > 2 && options.bs == 0) || options.m == 0 ||
-          options.k == 0 || options.n_values.size() < 1) {
-        commonlog_error("For COMMAND_LINE mode, ", (options.ndims > 2) ? "--bs, " : "",
-                        "--m, --k, and --n must be specified.");
+    // Validate required arguments
+    if (op.empty()) {
+        commonlog_error("Usage: ", argv[0],
+                " --op=<matmul|reorder|embag|normalization|grp_matmul|sdpa> "
+                "...");
         return NOT_OK;
-      }
     }
-    else if (op == "sdpa") {
-      if (options.bs == 0 || options.num_heads == 0 ||
-          options.seq_len == 0 || options.head_dim == 0) {
+
+    if (options.cache_mode == benchdnn::CacheMode::WARM && op != "matmul") {
         commonlog_error(
-          "For COMMAND_LINE mode with --op=sdpa, --bs, --num_heads, --seq_len, "
-          "and --head_dim must be specified (use --kv_seq_len=0 for self-attention).");
+                "--cache_mode=warm is only implemented for --op=matmul. Use "
+                "--cache_mode=hot or --cache_mode=cold instead.");
         return NOT_OK;
-      }
     }
-    else {
-      commonlog_error("--op=", op,
-                      " requires --input_file=<...>. COMMAND_LINE mode is supported "
-                      "only for --op=matmul and --op=sdpa.");
-      return NOT_OK;
+
+    if ((inputMode == benchdnn::InputMode::MODEL
+                || inputMode == benchdnn::InputMode::FILE)
+            && input_file.empty()) {
+        commonlog_error("Input file is required for MODEL or FILE mode.");
+        return NOT_OK;
     }
-  }
 
-  size_t cache_size = benchdnn::get_cache_size();
-  // Generate output filename based on current timestamp for CSV results
-  auto now = std::chrono::system_clock::now();
-  auto ms = std::chrono::duration_cast<std::chrono::milliseconds>(
-              now.time_since_epoch()) % 1000;
-  std::time_t t = std::chrono::system_clock::to_time_t(now);
-  std::stringstream ss;
-  ss << "timings_"
-     << std::put_time(std::localtime(&t), "%Y%m%d_%H%M%S")
-     << "_" << std::setfill('0') << std::setw(3) << ms.count() << ".csv";
+    if (inputMode == benchdnn::InputMode::COMMAND_LINE) {
+        if (op == "matmul") {
+            if ((options.ndims > 2 && options.bs == 0) || options.m == 0
+                    || options.k == 0 || options.n_values.size() < 1) {
+                commonlog_error("For COMMAND_LINE mode, ",
+                        (options.ndims > 2) ? "--bs, " : "",
+                        "--m, --k, and --n must be specified.");
+                return NOT_OK;
+            }
+        } else if (op == "sdpa") {
+            if (options.bs == 0 || options.num_heads == 0
+                    || options.seq_len == 0 || options.head_dim == 0) {
+                commonlog_error(
+                        "For COMMAND_LINE mode with --op=sdpa, --bs, "
+                        "--num_heads, --seq_len, "
+                        "and --head_dim must be specified (use --kv_seq_len=0 "
+                        "for self-attention).");
+                return NOT_OK;
+            }
+        } else {
+            commonlog_error("--op=", op,
+                    " requires --input_file=<...>. COMMAND_LINE mode is "
+                    "supported "
+                    "only for --op=matmul and --op=sdpa.");
+            return NOT_OK;
+        }
+    }
 
-  std::string out_filename = ss.str();
-  std::string in_filename = input_file;
+    size_t cache_size = benchdnn::get_cache_size();
+    // Generate output filename based on current timestamp for CSV results
+    auto now = std::chrono::system_clock::now();
+    auto ms = std::chrono::duration_cast<std::chrono::milliseconds>(
+                      now.time_since_epoch())
+            % 1000;
+    std::time_t t = std::chrono::system_clock::to_time_t(now);
+    std::stringstream ss;
+    ss << "timings_" << std::put_time(std::localtime(&t), "%Y%m%d_%H%M%S")
+       << "_" << std::setfill('0') << std::setw(3) << ms.count() << ".csv";
 
-  // Dispatch to the appropriate benchmark based on operator type
-  if (op == "matmul") {
-    return benchdnn::matmul::bench(in_filename, out_filename, inputMode,
-                                   options, isLOWOHA, cache_size); ///< Run matmul benchmark
-  }
-  else if (op == "reorder") {
-    return benchdnn::reorder::bench(in_filename, out_filename,
-                                    options, isLOWOHA, cache_size); ///< Run reorder benchmark
-  }
-  else if (op == "embag") {
-    return benchdnn::embag::bench(in_filename, out_filename,
-                                  options, isLOWOHA, cache_size); ///< Run embag benchmark
-  }
-  else if (op == "normalization") {
-    return benchdnn::normalization::bench(in_filename, out_filename,
-                                          options, isLOWOHA, cache_size);
-  }
-  else if (op == "grp_matmul") {
-    return benchdnn::grp_matmul::bench(in_filename, out_filename,
-                                       options, cache_size);
-  }
-  else if (op == "sdpa") {
-    return benchdnn::sdpa::bench(in_filename, out_filename, inputMode,
-                                 options, isLOWOHA, cache_size);
-  }
-  else {
-    commonlog_error("Unsupported operator: ", op);
-    commonlog_error("Supported operators: matmul, reorder, embag, normalization, grp_matmul, sdpa");
-    return NOT_OK;
-  }
+    std::string out_filename = ss.str();
+    std::string in_filename = input_file;
+
+    // Dispatch to the appropriate benchmark based on operator type
+    if (op == "matmul") {
+        return benchdnn::matmul::bench(in_filename, out_filename, inputMode,
+                options, isLOWOHA, cache_size); ///< Run matmul benchmark
+    } else if (op == "reorder") {
+        return benchdnn::reorder::bench(in_filename, out_filename, options,
+                isLOWOHA, cache_size); ///< Run reorder benchmark
+    } else if (op == "embag") {
+        return benchdnn::embag::bench(in_filename, out_filename, options,
+                isLOWOHA, cache_size); ///< Run embag benchmark
+    } else if (op == "normalization") {
+        return benchdnn::normalization::bench(
+                in_filename, out_filename, options, isLOWOHA, cache_size);
+    } else if (op == "grp_matmul") {
+        return benchdnn::grp_matmul::bench(
+                in_filename, out_filename, options, cache_size);
+    } else if (op == "sdpa") {
+        return benchdnn::sdpa::bench(in_filename, out_filename, inputMode,
+                options, isLOWOHA, cache_size);
+    } else {
+        commonlog_error("Unsupported operator: ", op);
+        commonlog_error(
+                "Supported operators: matmul, reorder, embag, normalization, "
+                "grp_matmul, sdpa");
+        return NOT_OK;
+    }
 }

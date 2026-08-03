@@ -39,10 +39,7 @@ namespace softmax {
  * @return status_t::success on successful execution, status_t::failure otherwise
  */
 status_t softmax_onednn_wrapper(
-    const void *input,
-    void *output,
-    const softmax_params &params
-);
+        const void *input, void *output, const softmax_params &params);
 
 } // namespace softmax
 } // namespace lowoha

@@ -20,62 +20,58 @@ namespace zendnnl {
 namespace profile {
 
 void profiler_t::tbp_set_default_res(time_res_t res) {
-  resolution = res;
-  switch (res) {
-  case time_res_t::milliseconds: res_str = "ms";  break;
-  case time_res_t::microseconds: res_str = "us";  break;
-  case time_res_t::seconds:      res_str = "sec"; break;
-  default:                       res_str = "ms";  break;
-  }
+    resolution = res;
+    switch (res) {
+        case time_res_t::milliseconds: res_str = "ms"; break;
+        case time_res_t::microseconds: res_str = "us"; break;
+        case time_res_t::seconds: res_str = "sec"; break;
+        default: res_str = "ms"; break;
+    }
 }
 
 status_t profiler_t::tbp_start() {
-  if(timer_started) {
-    return status_t::failure;
-  }
-  start_time = std::chrono::high_resolution_clock::now();
-  timer_started = true;
+    if (timer_started) { return status_t::failure; }
+    start_time = std::chrono::high_resolution_clock::now();
+    timer_started = true;
 
-  return status_t::success;
+    return status_t::success;
 }
 
 status_t profiler_t::tbp_stop() {
-  if(!timer_started) {
-    return status_t::failure;
-  }
-  stop_time = std::chrono::high_resolution_clock::now();
-  calculate_elapsed();
-  timer_started = false;
+    if (!timer_started) { return status_t::failure; }
+    stop_time = std::chrono::high_resolution_clock::now();
+    calculate_elapsed();
+    timer_started = false;
 
-  return status_t::success;
+    return status_t::success;
 }
 
 double profiler_t::tbp_elapsedtime() const {
-  return elapsed_time;
+    return elapsed_time;
 }
 
 const char *profiler_t::get_res_str() const {
-  return res_str;
+    return res_str;
 }
 
 void profiler_t::calculate_elapsed() {
-  using namespace std::chrono;
-  auto time_duration = stop_time - start_time;
-  switch (resolution) {
-  case time_res_t::milliseconds:
-    elapsed_time = duration<double, std::milli>(time_duration).count();
-    break;
-  case time_res_t::microseconds:
-    elapsed_time = duration<double, std::micro>(time_duration).count();
-    break;
-  case time_res_t::seconds:
-    elapsed_time = duration<double>(time_duration).count();
-    break;
-  default:
-    elapsed_time = duration<double, std::milli>(time_duration).count();
-    break;
-  }
+    using namespace std::chrono;
+    auto time_duration = stop_time - start_time;
+    switch (resolution) {
+        case time_res_t::milliseconds:
+            elapsed_time = duration<double, std::milli>(time_duration).count();
+            break;
+        case time_res_t::microseconds:
+            elapsed_time = duration<double, std::micro>(time_duration).count();
+            break;
+        case time_res_t::seconds:
+            elapsed_time = duration<double>(time_duration).count();
+            break;
+        default:
+            elapsed_time = duration<double, std::milli>(time_duration).count();
+            break;
+    }
 }
 
-} // profile
-} // zendnnl
+} // namespace profile
+} // namespace zendnnl

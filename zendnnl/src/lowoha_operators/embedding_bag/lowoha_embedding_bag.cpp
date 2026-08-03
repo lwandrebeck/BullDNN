@@ -17,8 +17,8 @@
 #include "lowoha_embedding_bag.hpp"
 #include "dispatch_kernel.hpp"
 #include "lowoha_embag_ref_kernel.hpp"
-#include "lowoha_operators/matmul/lowoha_matmul_utils.hpp"
 #include "lowoha_operators/common/omp_thread_control.hpp"
+#include "lowoha_operators/matmul/lowoha_matmul_utils.hpp"
 
 #include <cstdint>
 #include <sstream>
@@ -31,253 +31,238 @@ namespace embag {
 using namespace ::zendnnl::common;
 using namespace ::zendnnl::profile;
 
-status_t embedding_bag_direct(
-  const void *table,
-  const void *indices,
-  const void *offsets,
-  const float *weights,
-  void *dst,
-  embag_params_t params) {
-  // Create profiler instance for timing
-  profiler_t profiler;
-  bool is_profile = is_profile_enabled();
-  if (is_profile) {
-    profiler.tbp_start();
-  }
+status_t embedding_bag_direct(const void *table, const void *indices,
+        const void *offsets, const float *weights, void *dst,
+        embag_params_t params) {
+    // Create profiler instance for timing
+    profiler_t profiler;
+    bool is_profile = is_profile_enabled();
+    if (is_profile) { profiler.tbp_start(); }
 
-  status_t status = status_t::success;
-  int32_t num_threads = params.num_threads;
-  // Reference kernel implementation
-  if (params.kernel == embag_kernel_t::reference) {
-    if (params.algo != embag_algo_t::none && offsets == nullptr) {
-      log_error("embedding_bag_direct: offsets required for reduction operations");
-      return status_t::failure;
+    status_t status = status_t::success;
+    int32_t num_threads = params.num_threads;
+    // Reference kernel implementation
+    if (params.kernel == embag_kernel_t::reference) {
+        if (params.algo != embag_algo_t::none && offsets == nullptr) {
+            log_error(
+                    "embedding_bag_direct: offsets required for reduction "
+                    "operations");
+            return status_t::failure;
+        }
+        status = embedding_bag_ref_direct(
+                table, indices, offsets, weights, dst, params);
+    } else {
+        if (validate_embag_inputs(table, indices, dst, params)
+                != status_t::success) {
+            return status_t::failure;
+        }
+
+        const bool is_f16 = (params.dtypes.table == data_type_t::f16
+                || params.dtypes.output == data_type_t::f16);
+        if (is_f16 && !zendnnl_platform_info().get_avx512_f16_status()) {
+            log_error(
+                    "F16 data type is not supported on this platform "
+                    "(requires AVX512-FP16).");
+            return status_t::isa_unsupported;
+        }
+
+        if (params.algo != embag_algo_t::none && offsets == nullptr) {
+            log_error(
+                    "embedding_bag_direct: offsets required for reduction "
+                    "operations");
+            return status_t::failure;
+        }
+
+        const int32_t omp_mt = thread_guard::max_threads();
+        num_threads = resolve_num_threads(num_threads, omp_mt);
+        thread_guard tg(num_threads, omp_mt);
+
+        // Dispatch to the appropriate kernel
+        dispatch_avx512_kernel(table, indices, offsets, weights, dst, params);
     }
-    status = embedding_bag_ref_direct(table, indices, offsets, weights, dst, params);
-  }
-  else {
-    if (validate_embag_inputs(table, indices, dst, params) != status_t::success) {
-      return status_t::failure;
+
+    if (is_profile) { profiler.tbp_stop(); }
+
+    if (apilog_info_enabled() || is_profile) {
+        [[maybe_unused]] std::ostringstream ss;
+        ss << "LOWOHA embedding_bag_direct: "
+           << "num_embeddings=" << params.num_embeddings
+           << ", embedding_dim=" << params.embedding_dim
+           << ", num_indices=" << params.num_indices
+           << ", num_bags=" << params.num_bags
+           << ", algo=" << algo_to_string(params.algo)
+           << ", table_dtype=" << dtype_to_string(params.dtypes.table)
+           << ", output_dtype=" << dtype_to_string(params.dtypes.output)
+           << ", num_threads=" << num_threads
+           << ", kernel=" << kernel_to_string(params.kernel);
+        apilog_info(ss.str());
+        if (is_profile) {
+            profilelog_verbose(ss.str(), ", time=", profiler.tbp_elapsedtime(),
+                    profiler.get_res_str());
+        }
     }
-
-    const bool is_f16 = (params.dtypes.table == data_type_t::f16 ||
-                         params.dtypes.output == data_type_t::f16);
-    if (is_f16 && !zendnnl_platform_info().get_avx512_f16_status()) {
-      log_error("F16 data type is not supported on this platform "
-                "(requires AVX512-FP16).");
-      return status_t::isa_unsupported;
-    }
-
-    if (params.algo != embag_algo_t::none && offsets == nullptr) {
-      log_error("embedding_bag_direct: offsets required for reduction operations");
-      return status_t::failure;
-    }
-
-    const int32_t omp_mt = thread_guard::max_threads();
-    num_threads = resolve_num_threads(num_threads, omp_mt);
-    thread_guard tg(num_threads, omp_mt);
-
-    // Dispatch to the appropriate kernel
-    dispatch_avx512_kernel(table, indices, offsets, weights, dst, params);
-  }
-
-  if (is_profile) {
-    profiler.tbp_stop();
-  }
-
-  if (apilog_info_enabled() || is_profile) {
-    [[maybe_unused]] std::ostringstream ss;
-    ss << "LOWOHA embedding_bag_direct: "
-       << "num_embeddings=" << params.num_embeddings
-       << ", embedding_dim=" << params.embedding_dim
-       << ", num_indices=" << params.num_indices
-       << ", num_bags=" << params.num_bags
-       << ", algo=" << algo_to_string(params.algo)
-       << ", table_dtype=" << dtype_to_string(params.dtypes.table)
-       << ", output_dtype=" << dtype_to_string(params.dtypes.output)
-       << ", num_threads=" << num_threads
-       << ", kernel=" << kernel_to_string(params.kernel);
-    apilog_info(ss.str());
-    if (is_profile) {
-      profilelog_verbose(ss.str(), ", time=", profiler.tbp_elapsedtime(),
-                         profiler.get_res_str());
-    }
-  }
-  return status;
+    return status;
 }
 
 // Embedding bag direct implementation
-status_t embedding_direct(
-  const void *table,
-  const void *indices,
-  const float *weights,
-  void *dst,
-  embag_params_t params) {
+status_t embedding_direct(const void *table, const void *indices,
+        const float *weights, void *dst, embag_params_t params) {
 
-  params.algo = embag_algo_t::none;
-  return embedding_bag_direct(table, indices, nullptr, weights, dst, params);
+    params.algo = embag_algo_t::none;
+    return embedding_bag_direct(table, indices, nullptr, weights, dst, params);
 }
 
 // Group embedding bag direct implementation
-status_t group_embedding_bag_direct(
-  const std::vector<const void *> &tables,
-  const std::vector<const void *> &indices,
-  const std::vector<const void *> &offsets,
-  const std::vector<const float *> &weights,
-  const std::vector<void *> &dsts,
-  const std::vector<embag_params_t> &params) {
+status_t group_embedding_bag_direct(const std::vector<const void *> &tables,
+        const std::vector<const void *> &indices,
+        const std::vector<const void *> &offsets,
+        const std::vector<const float *> &weights,
+        const std::vector<void *> &dsts,
+        const std::vector<embag_params_t> &params) {
 
-  // Create profiler instance for timing
-  profiler_t profiler;
-  bool is_profile = is_profile_enabled();
-  if (is_profile) {
-    profiler.tbp_start();
-  }
+    // Create profiler instance for timing
+    profiler_t profiler;
+    bool is_profile = is_profile_enabled();
+    if (is_profile) { profiler.tbp_start(); }
 
-  const int num_tables = static_cast<int>(tables.size());
+    const int num_tables = static_cast<int>(tables.size());
 
-  // Validate that all vectors have the same size
-  if (indices.size() != static_cast<size_t>(num_tables) ||
-      offsets.size() != static_cast<size_t>(num_tables) ||
-      weights.size() != static_cast<size_t>(num_tables) ||
-      dsts.size() != static_cast<size_t>(num_tables) ||
-      params.size() != static_cast<size_t>(num_tables)) {
-    log_error("group_embedding_bag_direct: all input vectors must have the same size");
-    return status_t::failure;
-  }
-
-  const bool has_f16_isa = zendnnl_platform_info().get_avx512_f16_status();
-  for (int i = 0; i < num_tables; ++i) {
-    const bool is_f16 = (params[i].dtypes.table == data_type_t::f16 ||
-                         params[i].dtypes.output == data_type_t::f16);
-    if (is_f16 && !has_f16_isa) {
-      log_error("group_embedding_bag_direct: F16 data type is not supported "
-                "on this platform (requires AVX512-FP16). Failing table index = ",
-                i);
-      return status_t::isa_unsupported;
+    // Validate that all vectors have the same size
+    if (indices.size() != static_cast<size_t>(num_tables)
+            || offsets.size() != static_cast<size_t>(num_tables)
+            || weights.size() != static_cast<size_t>(num_tables)
+            || dsts.size() != static_cast<size_t>(num_tables)
+            || params.size() != static_cast<size_t>(num_tables)) {
+        log_error(
+                "group_embedding_bag_direct: all input vectors must have the "
+                "same size");
+        return status_t::failure;
     }
-  }
 
-  // Read environment configuration
-  using namespace zendnnl::ops;
-  embag_config_t &embag_config = embag_config_t::instance();
-  embag_config.set_env_config();
-
-  const int32_t omp_mt = thread_guard::max_threads();
-  const int32_t eb_thread_qty = resolve_num_threads(params[0].num_threads,
-                                omp_mt);
-  thread_guard tg(eb_thread_qty, omp_mt);
-  eb_thread_algo_t thread_algo = thread_algo_select();
-  const char *thread_type = thread_algo_to_string(thread_algo);
-
-  // Make a mutable copy of params for dispatch
-  std::vector<embag_params_t> mutable_params = params;
-
-  // Thread algorithm dispatch
-  if (thread_algo == eb_thread_algo_t::ccd_threaded) {
-    // CCD-aware threading with nested parallelism
-    scoped_active_levels active_levels_guard(2);
-    int ccd_num_threads = CCD_NUM_THREADS;
-    int32_t outer_threads = (eb_thread_qty % ccd_num_threads) == 0 ?
-                            eb_thread_qty / ccd_num_threads :
-                            ((eb_thread_qty / ccd_num_threads) + 1);
-    int32_t rem = (eb_thread_qty % ccd_num_threads) == 0 ?
-                  ccd_num_threads :
-                  eb_thread_qty % ccd_num_threads;
-    int32_t loopCount = (num_tables % outer_threads) == 0 ?
-                        num_tables / outer_threads :
-                        ((num_tables / outer_threads) + 1);
-
-    #pragma omp parallel num_threads(outer_threads)
-    {
-      int32_t inner_threads = ccd_num_threads;
-      int32_t thid = omp_get_thread_num();
-      if (thid == outer_threads - 1) {
-        inner_threads = rem;
-      }
-
-      const int32_t task_max = omp_get_max_threads();
-      for (int32_t i = 0; i < loopCount; i++) {
-        int threadOffset = thid + (i * outer_threads);
-        if (threadOffset >= num_tables) {
-          break;
+    const bool has_f16_isa = zendnnl_platform_info().get_avx512_f16_status();
+    for (int i = 0; i < num_tables; ++i) {
+        const bool is_f16 = (params[i].dtypes.table == data_type_t::f16
+                || params[i].dtypes.output == data_type_t::f16);
+        if (is_f16 && !has_f16_isa) {
+            log_error(
+                    "group_embedding_bag_direct: F16 data type is not "
+                    "supported "
+                    "on this platform (requires AVX512-FP16). Failing table "
+                    "index = ",
+                    i);
+            return status_t::isa_unsupported;
         }
-
-        thread_guard inner_guard(inner_threads, task_max);
-        dispatch_avx512_kernel(
-          tables[threadOffset], indices[threadOffset], offsets[threadOffset],
-          weights[threadOffset], dsts[threadOffset], mutable_params[threadOffset]);
-      }
     }
-  }
-  else if (num_tables < eb_thread_qty &&
-           thread_algo == eb_thread_algo_t::hybrid_threaded) {
-    // Hybrid threading when tables < threads
-    int32_t outer_threads = num_tables;
-    int32_t rem = eb_thread_qty % num_tables;
 
-    #pragma omp parallel num_threads(outer_threads)
-    {
-      int32_t inner_threads = eb_thread_qty / num_tables;
-      int32_t threadOffset = omp_get_thread_num();
-      if (threadOffset < rem) {
-        inner_threads++;
-      }
+    // Read environment configuration
+    using namespace zendnnl::ops;
+    embag_config_t &embag_config = embag_config_t::instance();
+    embag_config.set_env_config();
 
-      thread_guard inner_guard(inner_threads);
-      dispatch_avx512_kernel(
-        tables[threadOffset], indices[threadOffset], offsets[threadOffset],
-        weights[threadOffset], dsts[threadOffset], mutable_params[threadOffset]);
-    }
-  }
-  else if (thread_algo == eb_thread_algo_t::table_threaded) {
-    // Thread-per-table parallelism
-    int32_t loopCount = (num_tables % eb_thread_qty) == 0 ?
-                        num_tables / eb_thread_qty :
-                        ((num_tables / eb_thread_qty) + 1);
+    const int32_t omp_mt = thread_guard::max_threads();
+    const int32_t eb_thread_qty
+            = resolve_num_threads(params[0].num_threads, omp_mt);
+    thread_guard tg(eb_thread_qty, omp_mt);
+    eb_thread_algo_t thread_algo = thread_algo_select();
+    const char *thread_type = thread_algo_to_string(thread_algo);
 
-    #pragma omp parallel num_threads(eb_thread_qty)
-    {
-      for (int32_t i = 0; i < loopCount; i++) {
-        int32_t threadOffset = omp_get_thread_num() + (i * eb_thread_qty);
-        if (threadOffset >= num_tables) {
-          break;
+    // Make a mutable copy of params for dispatch
+    std::vector<embag_params_t> mutable_params = params;
+
+    // Thread algorithm dispatch
+    if (thread_algo == eb_thread_algo_t::ccd_threaded) {
+        // CCD-aware threading with nested parallelism
+        scoped_active_levels active_levels_guard(2);
+        int ccd_num_threads = CCD_NUM_THREADS;
+        int32_t outer_threads = (eb_thread_qty % ccd_num_threads) == 0
+                ? eb_thread_qty / ccd_num_threads
+                : ((eb_thread_qty / ccd_num_threads) + 1);
+        int32_t rem = (eb_thread_qty % ccd_num_threads) == 0
+                ? ccd_num_threads
+                : eb_thread_qty % ccd_num_threads;
+        int32_t loopCount = (num_tables % outer_threads) == 0
+                ? num_tables / outer_threads
+                : ((num_tables / outer_threads) + 1);
+
+#pragma omp parallel num_threads(outer_threads)
+        {
+            int32_t inner_threads = ccd_num_threads;
+            int32_t thid = omp_get_thread_num();
+            if (thid == outer_threads - 1) { inner_threads = rem; }
+
+            const int32_t task_max = omp_get_max_threads();
+            for (int32_t i = 0; i < loopCount; i++) {
+                int threadOffset = thid + (i * outer_threads);
+                if (threadOffset >= num_tables) { break; }
+
+                thread_guard inner_guard(inner_threads, task_max);
+                dispatch_avx512_kernel(tables[threadOffset],
+                        indices[threadOffset], offsets[threadOffset],
+                        weights[threadOffset], dsts[threadOffset],
+                        mutable_params[threadOffset]);
+            }
         }
+    } else if (num_tables < eb_thread_qty
+            && thread_algo == eb_thread_algo_t::hybrid_threaded) {
+        // Hybrid threading when tables < threads
+        int32_t outer_threads = num_tables;
+        int32_t rem = eb_thread_qty % num_tables;
 
-        dispatch_avx512_kernel(
-          tables[threadOffset], indices[threadOffset], offsets[threadOffset],
-          weights[threadOffset], dsts[threadOffset], mutable_params[threadOffset]);
-      }
+#pragma omp parallel num_threads(outer_threads)
+        {
+            int32_t inner_threads = eb_thread_qty / num_tables;
+            int32_t threadOffset = omp_get_thread_num();
+            if (threadOffset < rem) { inner_threads++; }
+
+            thread_guard inner_guard(inner_threads);
+            dispatch_avx512_kernel(tables[threadOffset], indices[threadOffset],
+                    offsets[threadOffset], weights[threadOffset],
+                    dsts[threadOffset], mutable_params[threadOffset]);
+        }
+    } else if (thread_algo == eb_thread_algo_t::table_threaded) {
+        // Thread-per-table parallelism
+        int32_t loopCount = (num_tables % eb_thread_qty) == 0
+                ? num_tables / eb_thread_qty
+                : ((num_tables / eb_thread_qty) + 1);
+
+#pragma omp parallel num_threads(eb_thread_qty)
+        {
+            for (int32_t i = 0; i < loopCount; i++) {
+                int32_t threadOffset
+                        = omp_get_thread_num() + (i * eb_thread_qty);
+                if (threadOffset >= num_tables) { break; }
+
+                dispatch_avx512_kernel(tables[threadOffset],
+                        indices[threadOffset], offsets[threadOffset],
+                        weights[threadOffset], dsts[threadOffset],
+                        mutable_params[threadOffset]);
+            }
+        }
     }
-  }
 
-  else {
-    // Default: batch_threaded - Sequential tables with batch-level threading
-    for (int32_t i = 0; i < num_tables; i++) {
-      dispatch_avx512_kernel(
-        tables[i], indices[i], offsets[i],
-        weights[i], dsts[i], mutable_params[i]);
+    else {
+        // Default: batch_threaded - Sequential tables with batch-level threading
+        for (int32_t i = 0; i < num_tables; i++) {
+            dispatch_avx512_kernel(tables[i], indices[i], offsets[i],
+                    weights[i], dsts[i], mutable_params[i]);
+        }
     }
-  }
 
-  if (is_profile) {
-    profiler.tbp_stop();
-  }
+    if (is_profile) { profiler.tbp_stop(); }
 
-  if (apilog_info_enabled() || is_profile) {
-    [[maybe_unused]] std::ostringstream ss;
-    ss << "LOWOHA group_embedding_bag_direct: "
-       << "num_tables=" << num_tables
-       << ", eb_thread_qty=" << eb_thread_qty
-       << ", thread_algo=" << thread_type;
-    apilog_info(ss.str());
-    if (is_profile) {
-      profilelog_verbose(ss.str(), ", time=", profiler.tbp_elapsedtime(),
-                         profiler.get_res_str());
+    if (apilog_info_enabled() || is_profile) {
+        [[maybe_unused]] std::ostringstream ss;
+        ss << "LOWOHA group_embedding_bag_direct: "
+           << "num_tables=" << num_tables << ", eb_thread_qty=" << eb_thread_qty
+           << ", thread_algo=" << thread_type;
+        apilog_info(ss.str());
+        if (is_profile) {
+            profilelog_verbose(ss.str(), ", time=", profiler.tbp_elapsedtime(),
+                    profiler.get_res_str());
+        }
     }
-  }
 
-  return status_t::success;
+    return status_t::success;
 }
 
 } // namespace embag

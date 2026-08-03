@@ -53,10 +53,7 @@ using namespace zendnnl::examples;
  * `sdpa_utils.hpp <-> benchdnn.hpp <-> sdpa_benchdnn.hpp <-> sdpa_tensor_factory.hpp`
  * cycle.
  */
-enum class qkv_layout_t : int {
-  bhsd = 0,
-  bshd = 1
-};
+enum class qkv_layout_t : int { bhsd = 0, bshd = 1 };
 
 /**
  * @brief Creates a Q, K or V tensor with random uniform values in the
@@ -75,12 +72,9 @@ enum class qkv_layout_t : int {
  * @param out  Output tensor reference.
  * @return int OK (0) on success, NOT_OK (1) on failure.
  */
-int create_qkv_tensor(tensor_factory_t &tensor_factory,
-                      int64_t B, int64_t H, int64_t S, int64_t D,
-                      zendnnl::common::data_type_t dt,
-                      qkv_layout_t layout,
-                      const std::string &name,
-                      tensor_t &out);
+int create_qkv_tensor(tensor_factory_t &tensor_factory, int64_t B, int64_t H,
+        int64_t S, int64_t D, zendnnl::common::data_type_t dt,
+        qkv_layout_t layout, const std::string &name, tensor_t &out);
 
 /**
  * @brief Creates the output tensor (zero-initialised) in the same QKV layout
@@ -90,11 +84,9 @@ int create_qkv_tensor(tensor_factory_t &tensor_factory,
  *   - bhsd : shape {B, H, S_q, D}
  *   - bshd : shape {B, S_q, H, D}
  */
-int create_output_tensor(tensor_factory_t &tensor_factory,
-                         int64_t B, int64_t H, int64_t S_q, int64_t D,
-                         zendnnl::common::data_type_t dt,
-                         qkv_layout_t layout,
-                         tensor_t &out);
+int create_output_tensor(tensor_factory_t &tensor_factory, int64_t B, int64_t H,
+        int64_t S_q, int64_t D, zendnnl::common::data_type_t dt,
+        qkv_layout_t layout, tensor_t &out);
 
 /**
  * @brief Creates the attention mask tensor.
@@ -107,11 +99,9 @@ int create_output_tensor(tensor_factory_t &tensor_factory,
  * additive attention biases such as ALiBi or padding masks); causal masking is
  * applied separately by the operator via `is_causal`.
  */
-int create_mask_tensor(tensor_factory_t &tensor_factory,
-                       int64_t B, int64_t H, int64_t S_q, int64_t S_kv,
-                       int mask_ndims,
-                       zendnnl::common::data_type_t mask_dt,
-                       tensor_t &out);
+int create_mask_tensor(tensor_factory_t &tensor_factory, int64_t B, int64_t H,
+        int64_t S_q, int64_t S_kv, int mask_ndims,
+        zendnnl::common::data_type_t mask_dt, tensor_t &out);
 
 } // namespace sdpa
 } // namespace benchdnn

@@ -53,8 +53,8 @@
 #ifndef ZENDNNL_GROUP_MATMUL_CUSTOM_KERNEL_UKERNEL_BF16_MICROKERNEL_HPP
 #define ZENDNNL_GROUP_MATMUL_CUSTOM_KERNEL_UKERNEL_BF16_MICROKERNEL_HPP
 
-#include "common/bfloat16.hpp"
 #include "../pack.hpp"
+#include "common/bfloat16.hpp"
 
 namespace zendnnl {
 namespace lowoha {
@@ -91,10 +91,10 @@ namespace custom_kernel {
 ///     `mt::tol_act(/*is_bf16=*/true)` band ({rel=0.15, abs=0.02})
 ///     accepts both with margin to spare.
 enum class ActKind {
-  none,            ///< Store full NR BF16 cols.
-  swiglu_oai_mul,  ///< Apply swiglu_oai in registers, store NR/2 BF16 cols.
-  silu_and_mul,    ///< Apply silu_and_mul in registers, store NR/2 BF16 cols.
-  gelu_and_mul,    ///< Apply gelu_and_mul in registers, store NR/2 BF16 cols.
+    none, ///< Store full NR BF16 cols.
+    swiglu_oai_mul, ///< Apply swiglu_oai in registers, store NR/2 BF16 cols.
+    silu_and_mul, ///< Apply silu_and_mul in registers, store NR/2 BF16 cols.
+    gelu_and_mul, ///< Apply gelu_and_mul in registers, store NR/2 BF16 cols.
 };
 
 /// Bias data-type — resolved at `prepare_for_call()` time and stored in
@@ -114,10 +114,10 @@ enum class ActKind {
 /// once per (M, NR) tile and the branch cost is negligible vs the FMA
 /// chain.
 enum class BiasKind {
-  none,
-  bf16,
-  fp32,
-  f16,
+    none,
+    bf16,
+    fp32,
+    f16,
 };
 
 /// Destination data-type — selects the kernel's store-epilogue branch.
@@ -142,9 +142,9 @@ enum class BiasKind {
 /// branches are unaffected.  Kept in this shared enum so all three
 /// families thread store-dtype through one `DstDt` axis.
 enum class DstDt {
-  kBf16,
-  kF32,
-  kF16,
+    kBf16,
+    kF32,
+    kF16,
 };
 
 /// True when the running CPU supports AVX512_BF16 (VDPBF16PS).
@@ -165,13 +165,9 @@ bool avx512bf16_available();
 /// caller-owned buffer cast to `void *`; the kernel reinterprets it
 /// as `DstT *` internally.  `ldc` / `ldc_tight` stay in element units
 /// (not bytes) — the kernel knows the element width via `DstT`.
-using ukernel_fn_t = void (*)(
-    const bfloat16_t *A, int lda,
-    const bfloat16_t *Bpacked,
-    const void       *bias, BiasKind bias_kind,
-    void       *Cout, int ldc,
-    void       *Cout_tight, int ldc_tight,
-    int K);
+using ukernel_fn_t = void (*)(const bfloat16_t *A, int lda,
+        const bfloat16_t *Bpacked, const void *bias, BiasKind bias_kind,
+        void *Cout, int ldc, void *Cout_tight, int ldc_tight, int K);
 
 /// Upper bound on `max_mr_for_nv(NV)` across all supported NV values.
 /// Used to size the per-MR function-pointer table in `CallContext`
@@ -186,7 +182,7 @@ inline constexpr int kMaxMR = 8;
 /// budget (matches the BRGEMM ukernel instantiation set).  Must
 /// return a value ≤ `kMaxMR` above.
 inline int max_mr_for_nv(int NV) {
-  return NV == 4 ? 6 : 8;
+    return NV == 4 ? 6 : 8;
 }
 
 /// Runtime selector — returns the function pointer for the requested

@@ -17,9 +17,9 @@
 #ifndef MATMUL_NATIVE_BRGEMM_LOOPER_INT8_BRGEMM_LOOPER_HPP
 #define MATMUL_NATIVE_BRGEMM_LOOPER_INT8_BRGEMM_LOOPER_HPP
 
-#include "lowoha_operators/matmul/matmul_native/common/gemm_descriptor.hpp"
-#include "lowoha_operators/matmul/matmul_native/common/cost_model.hpp"
 #include "lowoha_operators/matmul/lowoha_common.hpp"
+#include "lowoha_operators/matmul/matmul_native/common/cost_model.hpp"
+#include "lowoha_operators/matmul/matmul_native/common/gemm_descriptor.hpp"
 
 namespace zendnnl {
 namespace lowoha {
@@ -29,11 +29,9 @@ namespace native {
 /// INT8 BRGEMM execution: Planner → Looper → Microkernel.
 /// Handles all M×N×K shapes for u8/s8 × s8 → fp32/bf16.
 /// Multi-threaded via OMP parallel over MC×NC tiles.
-void int8_brgemm_execute(
-    const GemmDescriptor &desc,
-    const UarchParams &uarch,
-    const void *src, const void *weight, void *dst,
-    const void *bias, matmul_params &params);
+void int8_brgemm_execute(const GemmDescriptor &desc, const UarchParams &uarch,
+        const void *src, const void *weight, void *dst, const void *bias,
+        matmul_params &params);
 
 } // namespace native
 } // namespace matmul

@@ -17,12 +17,12 @@
 #ifndef _LOWOHA_POOLING_EXAMPLE_HPP_
 #define _LOWOHA_POOLING_EXAMPLE_HPP_
 
-#include "zendnnl.hpp"
 #include <iostream>
 #include <vector>
+#include "zendnnl.hpp"
 
-#define  OK          (0)
-#define  NOT_OK      (1)
+#define OK (0)
+#define NOT_OK (1)
 
 namespace zendnnl {
 namespace examples {
@@ -93,7 +93,7 @@ int run_lowoha_maxpool_bf16_test();
  */
 int run_lowoha_avgpool_padding_modes_test();
 
-} // examples
-} // zendnnl
+} // namespace examples
+} // namespace zendnnl
 
 #endif

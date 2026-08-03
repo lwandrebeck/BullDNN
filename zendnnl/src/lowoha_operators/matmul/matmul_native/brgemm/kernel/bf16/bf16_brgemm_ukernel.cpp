@@ -15,13 +15,13 @@
  ******************************************************************************/
 
 #include "lowoha_operators/matmul/matmul_native/brgemm/kernel/bf16/bf16_brgemm_ukernel.hpp"
-#include "lowoha_operators/matmul/matmul_native/common/kernel_cache.hpp"
 #include "lowoha_operators/matmul/matmul_native/common/avx512_math.hpp"
+#include "lowoha_operators/matmul/matmul_native/common/kernel_cache.hpp"
 
-#include <cstdint>
-#include <cstring>
 #include <algorithm>
 #include <cassert>
+#include <cstdint>
+#include <cstring>
 #include <immintrin.h>
 
 namespace zendnnl {
@@ -29,16 +29,13 @@ namespace lowoha {
 namespace matmul {
 namespace native {
 
-template<int MR, int NV>
-__attribute__((target("avx512f,avx512bf16,fma"), noinline))
-void bf16_brgemm_ukernel(
-    const uint16_t *__restrict__ A, int lda,
-    const uint16_t *__restrict__ B_vnni, int b_stride,
-    float *__restrict__ C, int ldc,
-    int K, int BK, float beta,
-    const float *__restrict__ bias,
-    fused_postop_t fused_op,
-    uint16_t *__restrict__ C_bf16, int ldc_bf16) {
+template <int MR, int NV>
+__attribute__((target("avx512f,avx512bf16,fma"), noinline)) void
+bf16_brgemm_ukernel(const uint16_t *__restrict__ A, int lda,
+        const uint16_t *__restrict__ B_vnni, int b_stride,
+        float *__restrict__ C, int ldc, int K, int BK, float beta,
+        const float *__restrict__ bias, fused_postop_t fused_op,
+        uint16_t *__restrict__ C_bf16, int ldc_bf16) {
 
     __m512 acc[MR][NV];
 
@@ -47,7 +44,7 @@ void bf16_brgemm_ukernel(
         for (int m = 0; m < MR; ++m)
             for (int v = 0; v < NV; ++v)
                 acc[m][v] = _mm512_mul_ps(
-                    bv, _mm512_loadu_ps(C + m * ldc + v * 16));
+                        bv, _mm512_loadu_ps(C + m * ldc + v * 16));
     } else {
         for (int m = 0; m < MR; ++m)
             for (int v = 0; v < NV; ++v)
@@ -69,13 +66,13 @@ void bf16_brgemm_ukernel(
                 __m512bh bv[NV];
                 for (int v = 0; v < NV; ++v)
                     bv[v] = (__m512bh)_mm512_loadu_si512(
-                        b_kp + v * 16 * VNNI_PAIR);
+                            b_kp + v * 16 * VNNI_PAIR);
                 for (int m = 0; m < MR; ++m) {
                     uint32_t a_pair;
                     std::memcpy(&a_pair, &a_off[m * lda + 2 * (kk + u)],
-                                sizeof(a_pair));
+                            sizeof(a_pair));
                     __m512bh av = (__m512bh)_mm512_set1_epi32(
-                        static_cast<int>(a_pair));
+                            static_cast<int>(a_pair));
                     for (int v = 0; v < NV; ++v)
                         acc[m][v] = _mm512_dpbf16_ps(acc[m][v], av, bv[v]);
                 }
@@ -85,14 +82,12 @@ void bf16_brgemm_ukernel(
             const uint16_t *b_kp = b_off + kk * b_stride;
             __m512bh bv[NV];
             for (int v = 0; v < NV; ++v)
-                bv[v] = (__m512bh)_mm512_loadu_si512(
-                    b_kp + v * 16 * VNNI_PAIR);
+                bv[v] = (__m512bh)_mm512_loadu_si512(b_kp + v * 16 * VNNI_PAIR);
             for (int m = 0; m < MR; ++m) {
                 uint32_t a_pair;
-                std::memcpy(&a_pair, &a_off[m * lda + 2 * kk],
-                            sizeof(a_pair));
-                __m512bh av = (__m512bh)_mm512_set1_epi32(
-                    static_cast<int>(a_pair));
+                std::memcpy(&a_pair, &a_off[m * lda + 2 * kk], sizeof(a_pair));
+                __m512bh av
+                        = (__m512bh)_mm512_set1_epi32(static_cast<int>(a_pair));
                 for (int v = 0; v < NV; ++v)
                     acc[m][v] = _mm512_dpbf16_ps(acc[m][v], av, bv[v]);
             }
@@ -101,13 +96,12 @@ void bf16_brgemm_ukernel(
             const uint16_t *b_kp = b_off + k_full_pairs * b_stride;
             __m512bh bv[NV];
             for (int v = 0; v < NV; ++v)
-                bv[v] = (__m512bh)_mm512_loadu_si512(
-                    b_kp + v * 16 * VNNI_PAIR);
+                bv[v] = (__m512bh)_mm512_loadu_si512(b_kp + v * 16 * VNNI_PAIR);
             for (int m = 0; m < MR; ++m) {
                 uint32_t a_pair = static_cast<uint32_t>(
-                    a_off[m * lda + 2 * k_full_pairs]);
-                __m512bh av = (__m512bh)_mm512_set1_epi32(
-                    static_cast<int>(a_pair));
+                        a_off[m * lda + 2 * k_full_pairs]);
+                __m512bh av
+                        = (__m512bh)_mm512_set1_epi32(static_cast<int>(a_pair));
                 for (int v = 0; v < NV; ++v)
                     acc[m][v] = _mm512_dpbf16_ps(acc[m][v], av, bv[v]);
             }
@@ -117,15 +111,14 @@ void bf16_brgemm_ukernel(
     for (int m = 0; m < MR; ++m) {
         for (int v = 0; v < NV; ++v) {
             __m512 val = acc[m][v];
-            if (bias)
-                val = _mm512_add_ps(val, _mm512_loadu_ps(bias + v * 16));
+            if (bias) val = _mm512_add_ps(val, _mm512_loadu_ps(bias + v * 16));
             if (fused_op != fused_postop_t::none)
                 val = apply_fused_postop(val, fused_op);
             if (C_bf16) {
                 __m256bh bf = _mm512_cvtneps_pbh(val);
-                _mm256_storeu_si256(
-                    reinterpret_cast<__m256i *>(C_bf16 + m * ldc_bf16 + v * 16),
-                    (__m256i)bf);
+                _mm256_storeu_si256(reinterpret_cast<__m256i *>(
+                                            C_bf16 + m * ldc_bf16 + v * 16),
+                        (__m256i)bf);
             } else {
                 _mm512_storeu_ps(C + m * ldc + v * 16, val);
             }
@@ -153,56 +146,58 @@ void bf16_brgemm_ukernel(
 // planner.MR = 6, and is also the preferred MR for several mid-M
 // cases — see plan_bf16_brgemm() in brgemm_planner.cpp.
 #define INST(MR, NV) \
-    template void bf16_brgemm_ukernel<MR,NV>( \
-        const uint16_t*, int, const uint16_t*, int, float*, int, \
-        int, int, float, const float*, fused_postop_t, uint16_t*, int);
+    template void bf16_brgemm_ukernel<MR, NV>(const uint16_t *, int, \
+            const uint16_t *, int, float *, int, int, int, float, \
+            const float *, fused_postop_t, uint16_t *, int);
 
 // NR=64 (NV=4): MR ∈ {1..6, 8}
-INST(1,4) INST(2,4) INST(3,4) INST(4,4) INST(5,4) INST(6,4) INST(8,4)
-// NR=32 (NV=2): MR ∈ {1..6}
-INST(1,2) INST(2,2) INST(3,2) INST(4,2) INST(5,2) INST(6,2)
-// NR=16 (NV=1): MR ∈ {1..6}
-INST(1,1) INST(2,1) INST(3,1) INST(4,1) INST(5,1) INST(6,1)
+INST(1, 4)
+INST(2, 4) INST(3, 4) INST(4, 4) INST(5, 4) INST(6, 4) INST(8, 4)
+        // NR=32 (NV=2): MR ∈ {1..6}
+        INST(1, 2) INST(2, 2) INST(3, 2) INST(4, 2) INST(5, 2) INST(6, 2)
+        // NR=16 (NV=1): MR ∈ {1..6}
+        INST(1, 1) INST(2, 1) INST(3, 1) INST(4, 1) INST(5, 1) INST(6, 1)
 #undef INST
 
-using bf16_brgemm_fn_t = void (*)(const uint16_t*, int, const uint16_t*, int,
-                                   float*, int, int, int, float, const float*,
-                                   fused_postop_t, uint16_t*, int);
+                using bf16_brgemm_fn_t
+        = void(*)(const uint16_t *, int, const uint16_t *, int, float *, int,
+                int, int, float, const float *, fused_postop_t, uint16_t *,
+                int);
 
-__attribute__((target("avx512f,avx512bf16,fma")))
-bf16_brgemm_fn_t select_bf16_brgemm_kernel(int MR, int NR) {
+__attribute__((target("avx512f,avx512bf16,fma"))) bf16_brgemm_fn_t
+select_bf16_brgemm_kernel(int MR, int NR) {
     switch (NR) {
-    case 64:
-        switch (MR) {
-        case 1: return bf16_brgemm_ukernel<1, 4>;
-        case 2: return bf16_brgemm_ukernel<2, 4>;
-        case 3: return bf16_brgemm_ukernel<3, 4>;
-        case 4: return bf16_brgemm_ukernel<4, 4>;
-        case 5: return bf16_brgemm_ukernel<5, 4>;
-        case 6: return bf16_brgemm_ukernel<6, 4>;
-        case 8: return bf16_brgemm_ukernel<8, 4>;
-        }
-        break;
-    case 32:
-        switch (MR) {
-        case 1: return bf16_brgemm_ukernel<1, 2>;
-        case 2: return bf16_brgemm_ukernel<2, 2>;
-        case 3: return bf16_brgemm_ukernel<3, 2>;
-        case 4: return bf16_brgemm_ukernel<4, 2>;
-        case 5: return bf16_brgemm_ukernel<5, 2>;
-        case 6: return bf16_brgemm_ukernel<6, 2>;
-        }
-        break;
-    case 16:
-        switch (MR) {
-        case 1: return bf16_brgemm_ukernel<1, 1>;
-        case 2: return bf16_brgemm_ukernel<2, 1>;
-        case 3: return bf16_brgemm_ukernel<3, 1>;
-        case 4: return bf16_brgemm_ukernel<4, 1>;
-        case 5: return bf16_brgemm_ukernel<5, 1>;
-        case 6: return bf16_brgemm_ukernel<6, 1>;
-        }
-        break;
+        case 64:
+            switch (MR) {
+                case 1: return bf16_brgemm_ukernel<1, 4>;
+                case 2: return bf16_brgemm_ukernel<2, 4>;
+                case 3: return bf16_brgemm_ukernel<3, 4>;
+                case 4: return bf16_brgemm_ukernel<4, 4>;
+                case 5: return bf16_brgemm_ukernel<5, 4>;
+                case 6: return bf16_brgemm_ukernel<6, 4>;
+                case 8: return bf16_brgemm_ukernel<8, 4>;
+            }
+            break;
+        case 32:
+            switch (MR) {
+                case 1: return bf16_brgemm_ukernel<1, 2>;
+                case 2: return bf16_brgemm_ukernel<2, 2>;
+                case 3: return bf16_brgemm_ukernel<3, 2>;
+                case 4: return bf16_brgemm_ukernel<4, 2>;
+                case 5: return bf16_brgemm_ukernel<5, 2>;
+                case 6: return bf16_brgemm_ukernel<6, 2>;
+            }
+            break;
+        case 16:
+            switch (MR) {
+                case 1: return bf16_brgemm_ukernel<1, 1>;
+                case 2: return bf16_brgemm_ukernel<2, 1>;
+                case 3: return bf16_brgemm_ukernel<3, 1>;
+                case 4: return bf16_brgemm_ukernel<4, 1>;
+                case 5: return bf16_brgemm_ukernel<5, 1>;
+                case 6: return bf16_brgemm_ukernel<6, 1>;
+            }
+            break;
     }
     return nullptr;
 }
@@ -223,27 +218,25 @@ bf16_brgemm_fn_t select_bf16_brgemm_kernel(int MR, int NR) {
 // (MR ZMMs at NV=1, which is at most 8 for MR=8) and the runtime
 // `mask` only affects loads/stores, not the FMA hot path.
 // ============================================================================
-template<int MR>
-__attribute__((target("avx512f,avx512bf16,avx512bw,avx512vl,fma"), noinline))
-void bf16_brgemm_ukernel_n_masked(
-    const uint16_t *__restrict__ A, int lda,
-    const uint16_t *__restrict__ B_vnni, int b_stride,
-    float *__restrict__ C, int ldc,
-    int K, int BK, int nr_partial, float beta,
-    const float *__restrict__ bias, fused_postop_t fused_op,
-    uint16_t *__restrict__ C_bf16, int ldc_bf16) {
+template <int MR>
+__attribute__((
+        target("avx512f,avx512bf16,avx512bw,avx512vl,fma"), noinline)) void
+bf16_brgemm_ukernel_n_masked(const uint16_t *__restrict__ A, int lda,
+        const uint16_t *__restrict__ B_vnni, int b_stride,
+        float *__restrict__ C, int ldc, int K, int BK, int nr_partial,
+        float beta, const float *__restrict__ bias, fused_postop_t fused_op,
+        uint16_t *__restrict__ C_bf16, int ldc_bf16) {
 
     assert(nr_partial >= 1 && nr_partial < 16);
-    const __mmask16 mask =
-        static_cast<__mmask16>((1u << nr_partial) - 1);
+    const __mmask16 mask = static_cast<__mmask16>((1u << nr_partial) - 1);
 
     __m512 acc[MR];
 
     if (beta != 0.0f) {
         __m512 bv = _mm512_set1_ps(beta);
         for (int m = 0; m < MR; ++m)
-            acc[m] = _mm512_mul_ps(bv,
-                _mm512_maskz_loadu_ps(mask, C + m * ldc));
+            acc[m] = _mm512_mul_ps(
+                    bv, _mm512_maskz_loadu_ps(mask, C + m * ldc));
     } else {
         for (int m = 0; m < MR; ++m)
             acc[m] = _mm512_setzero_ps();
@@ -261,37 +254,36 @@ void bf16_brgemm_ukernel_n_masked(
         for (; kk + 1 < k_full_pairs; kk += 2) {
             for (int u = 0; u < 2; ++u) {
                 const __m512bh bv = (__m512bh)_mm512_loadu_si512(
-                    b_off + (kk + u) * b_stride);
+                        b_off + (kk + u) * b_stride);
                 for (int m = 0; m < MR; ++m) {
                     uint32_t a_pair;
                     std::memcpy(&a_pair, &a_off[m * lda + 2 * (kk + u)],
-                                sizeof(a_pair));
+                            sizeof(a_pair));
                     __m512bh av = (__m512bh)_mm512_set1_epi32(
-                        static_cast<int>(a_pair));
+                            static_cast<int>(a_pair));
                     acc[m] = _mm512_dpbf16_ps(acc[m], av, bv);
                 }
             }
         }
         for (; kk < k_full_pairs; ++kk) {
-            const __m512bh bv = (__m512bh)_mm512_loadu_si512(
-                b_off + kk * b_stride);
+            const __m512bh bv
+                    = (__m512bh)_mm512_loadu_si512(b_off + kk * b_stride);
             for (int m = 0; m < MR; ++m) {
                 uint32_t a_pair;
-                std::memcpy(&a_pair, &a_off[m * lda + 2 * kk],
-                            sizeof(a_pair));
-                __m512bh av = (__m512bh)_mm512_set1_epi32(
-                    static_cast<int>(a_pair));
+                std::memcpy(&a_pair, &a_off[m * lda + 2 * kk], sizeof(a_pair));
+                __m512bh av
+                        = (__m512bh)_mm512_set1_epi32(static_cast<int>(a_pair));
                 acc[m] = _mm512_dpbf16_ps(acc[m], av, bv);
             }
         }
         if (has_odd_tail) {
             const __m512bh bv = (__m512bh)_mm512_loadu_si512(
-                b_off + k_full_pairs * b_stride);
+                    b_off + k_full_pairs * b_stride);
             for (int m = 0; m < MR; ++m) {
                 uint32_t a_pair = static_cast<uint32_t>(
-                    a_off[m * lda + 2 * k_full_pairs]);
-                __m512bh av = (__m512bh)_mm512_set1_epi32(
-                    static_cast<int>(a_pair));
+                        a_off[m * lda + 2 * k_full_pairs]);
+                __m512bh av
+                        = (__m512bh)_mm512_set1_epi32(static_cast<int>(a_pair));
                 acc[m] = _mm512_dpbf16_ps(acc[m], av, bv);
             }
         }
@@ -299,15 +291,12 @@ void bf16_brgemm_ukernel_n_masked(
 
     for (int m = 0; m < MR; ++m) {
         __m512 val = acc[m];
-        if (bias)
-            val = _mm512_add_ps(val,
-                _mm512_maskz_loadu_ps(mask, bias));
+        if (bias) val = _mm512_add_ps(val, _mm512_maskz_loadu_ps(mask, bias));
         if (fused_op != fused_postop_t::none)
             val = apply_fused_postop(val, fused_op);
         if (C_bf16) {
-            _mm256_mask_storeu_epi16(
-                C_bf16 + m * ldc_bf16, mask,
-                (__m256i)_mm512_cvtneps_pbh(val));
+            _mm256_mask_storeu_epi16(C_bf16 + m * ldc_bf16, mask,
+                    (__m256i)_mm512_cvtneps_pbh(val));
         } else {
             _mm512_mask_storeu_ps(C + m * ldc, mask, val);
         }
@@ -316,17 +305,17 @@ void bf16_brgemm_ukernel_n_masked(
 
 // Explicit instantiations + selector for the masked NV=1 kernel.
 #define INST_MASKED_NV1(MR) \
-    template void bf16_brgemm_ukernel_n_masked<MR>( \
-        const uint16_t*, int, const uint16_t*, int, float*, int, \
-        int, int, int, float, const float*, fused_postop_t, \
-        uint16_t*, int);
+    template void bf16_brgemm_ukernel_n_masked<MR>(const uint16_t *, int, \
+            const uint16_t *, int, float *, int, int, int, int, float, \
+            const float *, fused_postop_t, uint16_t *, int);
 
-INST_MASKED_NV1(1) INST_MASKED_NV1(2) INST_MASKED_NV1(3)
-INST_MASKED_NV1(4) INST_MASKED_NV1(5) INST_MASKED_NV1(6)
-INST_MASKED_NV1(8)
+INST_MASKED_NV1(1)
+INST_MASKED_NV1(2) INST_MASKED_NV1(3) INST_MASKED_NV1(4) INST_MASKED_NV1(5)
+        INST_MASKED_NV1(6) INST_MASKED_NV1(8)
 #undef INST_MASKED_NV1
 
-bf16_brgemm_n_masked_fn_t select_bf16_brgemm_n_masked_kernel(int MR) {
+                bf16_brgemm_n_masked_fn_t
+        select_bf16_brgemm_n_masked_kernel(int MR) {
     switch (MR) {
         case 1: return bf16_brgemm_ukernel_n_masked<1>;
         case 2: return bf16_brgemm_ukernel_n_masked<2>;
@@ -343,14 +332,12 @@ bf16_brgemm_n_masked_fn_t select_bf16_brgemm_n_masked_kernel(int MR) {
 // BF16 BRGEMM tail kernel (dynamic MR/NR for edge tiles)
 // Same pattern as FP32 BRGEMM tail but with dpbf16ps
 // ============================================================================
-__attribute__((target("avx512f,avx512bf16,avx512bw,avx512vl,fma")))
-void bf16_brgemm_tail_kernel(
-    const uint16_t *__restrict__ A, int lda,
-    const uint16_t *__restrict__ B_vnni, int b_stride,
-    float *__restrict__ C, int ldc,
-    int K, int BK, int mr_act, int nr_act, float beta,
-    const float *__restrict__ bias, fused_postop_t fused_op,
-    uint16_t *__restrict__ C_bf16, int ldc_bf16) {
+__attribute__((target("avx512f,avx512bf16,avx512bw,avx512vl,fma"))) void
+bf16_brgemm_tail_kernel(const uint16_t *__restrict__ A, int lda,
+        const uint16_t *__restrict__ B_vnni, int b_stride,
+        float *__restrict__ C, int ldc, int K, int BK, int mr_act, int nr_act,
+        float beta, const float *__restrict__ bias, fused_postop_t fused_op,
+        uint16_t *__restrict__ C_bf16, int ldc_bf16) {
 
     static constexpr int MAX_MR = 12;
     static constexpr int MAX_NV = 4;
@@ -358,8 +345,8 @@ void bf16_brgemm_tail_kernel(
     const int nv_full = nr_act / 16;
     const int nr_tail = nr_act % 16;
     const int nv = (nr_act + 15) / 16;
-    const __mmask16 tail_mask = nr_tail
-        ? static_cast<__mmask16>((1u << nr_tail) - 1) : 0;
+    const __mmask16 tail_mask
+            = nr_tail ? static_cast<__mmask16>((1u << nr_tail) - 1) : 0;
 
     assert(mr_act >= 1 && mr_act <= MAX_MR);
     assert(nv >= 1 && nv <= MAX_NV);
@@ -370,11 +357,11 @@ void bf16_brgemm_tail_kernel(
         for (int m = 0; m < mr_act; ++m) {
             for (int v = 0; v < nv_full; ++v)
                 acc[m][v] = _mm512_mul_ps(
-                    bv, _mm512_loadu_ps(C + m * ldc + v * 16));
+                        bv, _mm512_loadu_ps(C + m * ldc + v * 16));
             if (nr_tail)
-                acc[m][nv_full] = _mm512_mul_ps(
-                    bv, _mm512_maskz_loadu_ps(tail_mask,
-                        C + m * ldc + nv_full * 16));
+                acc[m][nv_full] = _mm512_mul_ps(bv,
+                        _mm512_maskz_loadu_ps(
+                                tail_mask, C + m * ldc + nv_full * 16));
         }
     } else {
         for (int m = 0; m < mr_act; ++m)
@@ -392,13 +379,12 @@ void bf16_brgemm_tail_kernel(
         for (int kk = 0; kk < k_full_pairs; ++kk) {
             for (int m = 0; m < mr_act; ++m) {
                 uint32_t a_pair;
-                std::memcpy(&a_pair, &a_off[m * lda + 2 * kk],
-                            sizeof(a_pair));
-                __m512bh a_bf16 = (__m512bh)_mm512_set1_epi32(
-                    static_cast<int>(a_pair));
+                std::memcpy(&a_pair, &a_off[m * lda + 2 * kk], sizeof(a_pair));
+                __m512bh a_bf16
+                        = (__m512bh)_mm512_set1_epi32(static_cast<int>(a_pair));
                 for (int v = 0; v < nv; ++v) {
                     __m512bh b_bf16 = (__m512bh)_mm512_loadu_si512(
-                        b_off + kk * b_stride + v * 16 * VNNI_PAIR);
+                            b_off + kk * b_stride + v * 16 * VNNI_PAIR);
                     acc[m][v] = _mm512_dpbf16_ps(acc[m][v], a_bf16, b_bf16);
                 }
             }
@@ -406,12 +392,12 @@ void bf16_brgemm_tail_kernel(
         if (has_odd_tail) {
             for (int m = 0; m < mr_act; ++m) {
                 uint32_t a_pair = static_cast<uint32_t>(
-                    a_off[m * lda + 2 * k_full_pairs]);
-                __m512bh a_bf16 = (__m512bh)_mm512_set1_epi32(
-                    static_cast<int>(a_pair));
+                        a_off[m * lda + 2 * k_full_pairs]);
+                __m512bh a_bf16
+                        = (__m512bh)_mm512_set1_epi32(static_cast<int>(a_pair));
                 for (int v = 0; v < nv; ++v) {
-                    __m512bh b_bf16 = (__m512bh)_mm512_loadu_si512(
-                        b_off + k_full_pairs * b_stride + v * 16 * VNNI_PAIR);
+                    __m512bh b_bf16 = (__m512bh)_mm512_loadu_si512(b_off
+                            + k_full_pairs * b_stride + v * 16 * VNNI_PAIR);
                     acc[m][v] = _mm512_dpbf16_ps(acc[m][v], a_bf16, b_bf16);
                 }
             }
@@ -426,25 +412,26 @@ void bf16_brgemm_tail_kernel(
             if (fused_op != fused_postop_t::none)
                 val = apply_fused_postop(val, fused_op);
             if (C_bf16) {
-                _mm256_storeu_si256(
-                    reinterpret_cast<__m256i *>(C_bf16 + m * ldc_bf16 + v * 16),
-                    (__m256i)_mm512_cvtneps_pbh(val));
+                _mm256_storeu_si256(reinterpret_cast<__m256i *>(
+                                            C_bf16 + m * ldc_bf16 + v * 16),
+                        (__m256i)_mm512_cvtneps_pbh(val));
             } else {
                 _mm512_storeu_ps(C + m * ldc + v * 16, val);
             }
         }
         if (nr_tail) {
             __m512 val = acc[m][nv_full];
-            if (bias) val = _mm512_add_ps(val,
-                _mm512_maskz_loadu_ps(tail_mask, bias + nv_full * 16));
+            if (bias)
+                val = _mm512_add_ps(val,
+                        _mm512_maskz_loadu_ps(tail_mask, bias + nv_full * 16));
             if (fused_op != fused_postop_t::none)
                 val = apply_fused_postop(val, fused_op);
             if (C_bf16) {
-                _mm256_mask_storeu_epi16(
-                    C_bf16 + m * ldc_bf16 + nv_full * 16, tail_mask,
-                    (__m256i)_mm512_cvtneps_pbh(val));
+                _mm256_mask_storeu_epi16(C_bf16 + m * ldc_bf16 + nv_full * 16,
+                        tail_mask, (__m256i)_mm512_cvtneps_pbh(val));
             } else {
-                _mm512_mask_storeu_ps(C + m * ldc + nv_full * 16, tail_mask, val);
+                _mm512_mask_storeu_ps(
+                        C + m * ldc + nv_full * 16, tail_mask, val);
             }
         }
     }

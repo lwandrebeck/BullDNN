@@ -15,17 +15,17 @@
  ******************************************************************************/
 
 #include "lowoha_operators/matmul/matmul_native/brgemm/looper/int8_gemv_direct.hpp"
+#include "common/zendnnl_global.hpp"
 #include "lowoha_operators/matmul/matmul_native/brgemm/kernel/int8/int8_gemv_bkc.hpp"
 #include "lowoha_operators/matmul/matmul_native/common/kernel_cache.hpp"
 #include "lowoha_operators/matmul/matmul_native/common/native_utils.hpp"
 #include "operators/matmul/matmul_config.hpp"
-#include "common/zendnnl_global.hpp"
 
-#include <cstdint>
-#include <cstring>
-#include <cstdlib>
-#include <immintrin.h>
 #include <algorithm>
+#include <cstdint>
+#include <cstdlib>
+#include <cstring>
+#include <immintrin.h>
 
 namespace zendnnl {
 namespace lowoha {
@@ -39,7 +39,7 @@ namespace {
 
 /// BF16/FP32 bias → FP32 scratch (thread_local, cached by pointer+gen).
 bool int8_resolve_bias_f(const GemmDescriptor &desc, int N, const void *bias,
-                         bool has_bias, const float **bias_f_out) {
+        bool has_bias, const float **bias_f_out) {
     *bias_f_out = nullptr;
     if (!has_bias) return true;
     if (desc.bias_dt == data_type_t::f32) {
@@ -54,17 +54,17 @@ bool int8_resolve_bias_f(const GemmDescriptor &desc, int N, const void *bias,
     static thread_local int s_bias_N = 0;
     static thread_local uint64_t s_bias_gen = 0;
 
-    const uint64_t cur_gen = weight_cache_generation().load(
-        std::memory_order_relaxed);
+    const uint64_t cur_gen
+            = weight_cache_generation().load(std::memory_order_relaxed);
     if (s_bias_f && s_bias_ptr == bias && s_bias_N == N
-        && s_bias_gen == cur_gen) {
+            && s_bias_gen == cur_gen) {
         *bias_f_out = s_bias_f;
         return true;
     }
     if (s_bias_cap < static_cast<size_t>(N)) {
         std::free(s_bias_f);
-        s_bias_f = static_cast<float *>(std::aligned_alloc(
-            64, ((static_cast<size_t>(N) * sizeof(float) + 63) & ~size_t(63))));
+        s_bias_f = static_cast<float *>(std::aligned_alloc(64,
+                ((static_cast<size_t>(N) * sizeof(float) + 63) & ~size_t(63))));
         s_bias_cap = s_bias_f ? static_cast<size_t>(N) : 0;
         if (!s_bias_f) return false;
     }
@@ -82,12 +82,10 @@ bool int8_resolve_bias_f(const GemmDescriptor &desc, int N, const void *bias,
 
 } // namespace
 
-__attribute__((target("avx512f,avx512bw,avx512vl,avx512vnni")))
-bool int8_gemv_direct(
-    const GemmDescriptor &desc,
-    const UarchParams &uarch,
-    const void *src, const void *weight, void *dst,
-    const void *bias, matmul_params &params) {
+__attribute__((target("avx512f,avx512bw,avx512vl,avx512vnni"))) bool
+int8_gemv_direct(const GemmDescriptor &desc, const UarchParams &uarch,
+        const void *src, const void *weight, void *dst, const void *bias,
+        matmul_params &params) {
 
     const int M = desc.M, N = desc.N, K = desc.K;
     const int ldb = desc.ldb;
@@ -98,8 +96,8 @@ bool int8_gemv_direct(
     if (desc.transA) return false;
 
     // INT8 source: u8 or s8; weight: s8; dst: bf16 or fp32
-    const bool src_is_u8  = (desc.src_dt == data_type_t::u8);
-    const bool src_is_s8  = (desc.src_dt == data_type_t::s8);
+    const bool src_is_u8 = (desc.src_dt == data_type_t::u8);
+    const bool src_is_s8 = (desc.src_dt == data_type_t::s8);
     if (!src_is_u8 && !src_is_s8) return false;
     if (desc.wei_dt != data_type_t::s8) return false;
     const bool dst_is_bf16 = (desc.dst_dt == data_type_t::bf16);
@@ -108,8 +106,8 @@ bool int8_gemv_direct(
 
     const int K_padded = (K + 3) & ~3;
     const int N_padded = ((N + BKC_NR_PAD - 1) / BKC_NR_PAD) * BKC_NR_PAD;
-    const size_t b_packed_bytes =
-        static_cast<size_t>(K_padded) * N_padded * sizeof(int8_t);
+    const size_t b_packed_bytes
+            = static_cast<size_t>(K_padded) * N_padded * sizeof(int8_t);
 
     if (N <= 0) return false;
     if (desc.num_threads > 1) return false;
@@ -121,8 +119,7 @@ bool int8_gemv_direct(
 
     fused_postop_t kc_fused_op = fused_postop_t::none;
     bool has_unfuseable = false;
-    if (!scan_gemv_postops(params, &kc_fused_op, &has_unfuseable))
-        return false;
+    if (!scan_gemv_postops(params, &kc_fused_op, &has_unfuseable)) return false;
 
     // ── Extract quantization parameters ──
     // Only per-tensor src scale/zp and per-tensor/per-channel wei scale
@@ -131,16 +128,15 @@ bool int8_gemv_direct(
     float src_scale = qp.src_scale;
     int32_t src_zp = qp.src_zp;
     float wei_scale_default = 1.0f;
-    const float *wei_scale_ptr = qp.wei_scale ? qp.wei_scale : &wei_scale_default;
+    const float *wei_scale_ptr
+            = qp.wei_scale ? qp.wei_scale : &wei_scale_default;
     int wei_scale_count = qp.wei_scale_count;
     if (wei_scale_count != 0 && wei_scale_count != 1 && wei_scale_count != N)
         return false;
     const auto &src_sc_dims = params.quant_params.src_scale.dims;
-    if (!src_sc_dims.empty() && src_sc_dims.back() > 1)
-        return false;
+    if (!src_sc_dims.empty() && src_sc_dims.back() > 1) return false;
     const auto &src_zp_dims = params.quant_params.src_zp.dims;
-    if (!src_zp_dims.empty() && src_zp_dims.back() > 1)
-        return false;
+    if (!src_zp_dims.empty() && src_zp_dims.back() > 1) return false;
 
     // ── Prepare A as u8 ──
     // If source is s8, convert to u8 by adding 128 and adjust zero point.
@@ -155,8 +151,8 @@ bool int8_gemv_direct(
         // s8 → u8: add 128, adjust zp
         if (s_a_cap < static_cast<size_t>(K)) {
             std::free(s_a_buf);
-            s_a_buf = static_cast<uint8_t *>(std::aligned_alloc(
-                64, ((K + 63) & ~size_t(63))));
+            s_a_buf = static_cast<uint8_t *>(
+                    std::aligned_alloc(64, ((K + 63) & ~size_t(63))));
             s_a_cap = s_a_buf ? K : 0;
         }
         if (!s_a_buf) return false;
@@ -175,8 +171,7 @@ bool int8_gemv_direct(
 
     const bool has_bias = (desc.bias != nullptr);
     const float *bias_f = nullptr;
-    if (!int8_resolve_bias_f(desc, N, bias, has_bias, &bias_f))
-        return false;
+    if (!int8_resolve_bias_f(desc, N, bias, has_bias, &bias_f)) return false;
 
     // ── Pack + cache ──
     const int8_t *B_raw = static_cast<const int8_t *>(weight);
@@ -185,8 +180,8 @@ bool int8_gemv_direct(
     const float *effective_bias = nullptr;
     [[maybe_unused]] const char *pack_source = "none";
 
-    const int32_t s_weight_cache =
-        matmul_config_t::instance().get_weight_cache();
+    const int32_t s_weight_cache
+            = matmul_config_t::instance().get_weight_cache();
 
     if (desc.is_weights_const && s_weight_cache != 0) {
         static thread_local const void *s_gc_wt = nullptr;
@@ -196,21 +191,21 @@ bool int8_gemv_direct(
         static thread_local const INT8KContiguousWeight *s_gc_entry = nullptr;
         static thread_local uint64_t s_gc_gen = 0;
 
-        const uint64_t cur_gen = weight_cache_generation().load(
-            std::memory_order_relaxed);
+        const uint64_t cur_gen
+                = weight_cache_generation().load(std::memory_order_relaxed);
         if (s_gc_wt == weight && s_gc_K == K && s_gc_N == N
-            && s_gc_scale == src_scale && s_gc_zp == effective_zp
-            && s_gc_entry && s_gc_gen == cur_gen) {
+                && s_gc_scale == src_scale && s_gc_zp == effective_zp
+                && s_gc_entry && s_gc_gen == cur_gen) {
             B_kc = s_gc_entry->data;
             combined_scale = s_gc_entry->combined_scale;
             effective_bias = s_gc_entry->effective_bias;
             pack_source = "tl_cache";
         } else {
-            PrepackedWeightKey key{weight, K, N, ldb, desc.transB};
-            const INT8KContiguousWeight *cached =
-                INT8KContiguousWeightCache::instance().get_or_pack(
-                    key, B_raw, src_scale, effective_zp,
-                    bias_f, wei_scale_ptr, wei_scale_count);
+            PrepackedWeightKey key {weight, K, N, ldb, desc.transB};
+            const INT8KContiguousWeight *cached
+                    = INT8KContiguousWeightCache::instance().get_or_pack(key,
+                            B_raw, src_scale, effective_zp, bias_f,
+                            wei_scale_ptr, wei_scale_count);
             if (cached) {
                 B_kc = cached->data;
                 combined_scale = cached->combined_scale;
@@ -239,27 +234,27 @@ bool int8_gemv_direct(
         if (s_bkc_cap < need_pack + bkc_guard) {
             std::free(s_bkc);
             s_bkc = static_cast<int8_t *>(std::aligned_alloc(
-                64, ((need_pack + bkc_guard + 63) & ~size_t(63))));
+                    64, ((need_pack + bkc_guard + 63) & ~size_t(63))));
             s_bkc_cap = s_bkc ? need_pack + bkc_guard : 0;
         }
         if (!s_bkc) return false;
 
         if (s_dq_cap < static_cast<size_t>(N_padded)) {
-            std::free(s_cs); std::free(s_cscale); std::free(s_ebias);
+            std::free(s_cs);
+            std::free(s_cscale);
+            std::free(s_ebias);
             size_t alloc_n = ((N_padded * sizeof(float) + 63) & ~size_t(63));
-            s_cs     = static_cast<int32_t *>(std::aligned_alloc(64, alloc_n));
+            s_cs = static_cast<int32_t *>(std::aligned_alloc(64, alloc_n));
             s_cscale = static_cast<float *>(std::aligned_alloc(64, alloc_n));
-            s_ebias  = static_cast<float *>(std::aligned_alloc(64, alloc_n));
+            s_ebias = static_cast<float *>(std::aligned_alloc(64, alloc_n));
             s_dq_cap = (s_cs && s_cscale && s_ebias) ? N_padded : 0;
         }
         if (!s_cs || !s_cscale || !s_ebias) return false;
 
         pack_b_int8_bkc(B_raw, ldb, K, N, desc.transB, s_bkc, s_cs);
         std::memset(s_bkc + need_pack, 0, bkc_guard);
-        precompute_int8_dequant(
-            s_cs, bias_f, src_scale, effective_zp,
-            wei_scale_ptr, wei_scale_count,
-            N, N_padded, s_cscale, s_ebias);
+        precompute_int8_dequant(s_cs, bias_f, src_scale, effective_zp,
+                wei_scale_ptr, wei_scale_count, N, N_padded, s_cscale, s_ebias);
 
         B_kc = s_bkc;
         combined_scale = s_cscale;
@@ -268,25 +263,22 @@ bool int8_gemv_direct(
     }
 
     // ── Compute ──
-    int8_gemv_bkc(
-        A_u8, B_kc,
-        combined_scale, effective_bias,
-        dst_is_bf16 ? static_cast<uint16_t *>(dst) : nullptr,
-        dst_is_fp32 ? static_cast<float *>(dst) : nullptr,
-        kc_fused_op, desc.alpha, desc.beta,
-        dst_is_bf16, K, N);
+    int8_gemv_bkc(A_u8, B_kc, combined_scale, effective_bias,
+            dst_is_bf16 ? static_cast<uint16_t *>(dst) : nullptr,
+            dst_is_fp32 ? static_cast<float *>(dst) : nullptr, kc_fused_op,
+            desc.alpha, desc.beta, dst_is_bf16, K, N);
 
     static bool s_log = apilog_info_enabled();
     if (s_log) {
         apilog_info("Native INT8 BKC-GEMV: M=1 K=", K, " N=", N,
-                    " K_padded=", K_padded, " N_padded=", N_padded,
-                    " packed_B=", b_packed_bytes / 1024, "KB",
-                    " src=", src_is_u8 ? "u8" : "s8",
-                    " dst=", dst_is_bf16 ? "bf16" : "fp32",
-                    " src_zp=", effective_zp,
-                    " wei_scale=", wei_scale_count > 1 ? "per_channel" : "per_tensor",
-                    " fused_op=", static_cast<int>(kc_fused_op),
-                    " pack=", pack_source);
+                " K_padded=", K_padded, " N_padded=", N_padded,
+                " packed_B=", b_packed_bytes / 1024, "KB",
+                " src=", src_is_u8 ? "u8" : "s8",
+                " dst=", dst_is_bf16 ? "bf16" : "fp32",
+                " src_zp=", effective_zp, " wei_scale=",
+                wei_scale_count > 1 ? "per_channel" : "per_tensor",
+                " fused_op=", static_cast<int>(kc_fused_op),
+                " pack=", pack_source);
     }
     return true;
 }

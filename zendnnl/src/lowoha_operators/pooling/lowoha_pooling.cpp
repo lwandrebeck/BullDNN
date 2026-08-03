@@ -23,10 +23,7 @@ namespace lowoha {
 namespace pooling {
 
 void pooling_kernel_wrapper(
-    const void *input,
-    void *output,
-    pool_params &params
-) {
+        const void *input, void *output, pool_params &params) {
     // Auto-select algorithm if not explicitly set
     if (params.algo == pooling_algo_t::none) {
 #if ZENDNNL_DEPENDS_ONEDNN
@@ -56,21 +53,14 @@ void pooling_kernel_wrapper(
     log_error("Pooling: No suitable backend available");
 }
 
-status_t pooling_direct(
-    const void *input,
-    void *output,
-    pool_params &params
-) {
+status_t pooling_direct(const void *input, void *output, pool_params &params) {
     // Create profiler instance for timing
     zendnnl::profile::profiler_t profiler;
     bool is_profile = is_profile_enabled();
-    if (is_profile) {
-        profiler.tbp_start();
-    }
+    if (is_profile) { profiler.tbp_start(); }
 
     // Validate inputs
-    if (validate_pooling_inputs(input, output, params)
-        != status_t::success) {
+    if (validate_pooling_inputs(input, output, params) != status_t::success) {
         return status_t::failure;
     }
 
@@ -80,23 +70,28 @@ status_t pooling_direct(
         ss << "LOWOHA pooling_direct: "
            << (params.is_max_pooling ? "max_pooling" : "avg_pooling")
            << ", batch=" << params.dims.batch
-           << ", in_h=" << params.dims.in_height << ", in_w=" << params.dims.in_width
+           << ", in_h=" << params.dims.in_height
+           << ", in_w=" << params.dims.in_width
            << ", channels=" << params.dims.channels
-           << ", out_h=" << params.dims.out_height << ", out_w=" << params.dims.out_width
-           << ", kernel_h=" << params.dims.kernel_height << ", kernel_w=" << params.dims.kernel_width
-           << ", stride_h=" << params.stride_h << ", stride_w=" << params.stride_w
-           << ", pad_t=" << params.pad_top << ", pad_l=" << params.pad_left
-           << ", pad_b=" << params.pad_bottom << ", pad_r=" << params.pad_right
+           << ", out_h=" << params.dims.out_height
+           << ", out_w=" << params.dims.out_width
+           << ", kernel_h=" << params.dims.kernel_height
+           << ", kernel_w=" << params.dims.kernel_width
+           << ", stride_h=" << params.stride_h
+           << ", stride_w=" << params.stride_w << ", pad_t=" << params.pad_top
+           << ", pad_l=" << params.pad_left << ", pad_b=" << params.pad_bottom
+           << ", pad_r=" << params.pad_right
            << ", data_format=" << params.data_format;
     }
     apilog_info(ss.str());
-    
+
     // Execute pooling
     pooling_kernel_wrapper(input, output, params);
 
     if (is_profile) {
         profiler.tbp_stop();
-        profilelog_verbose(ss.str(), ", time=", profiler.tbp_elapsedtime(), profiler.get_res_str());
+        profilelog_verbose(ss.str(), ", time=", profiler.tbp_elapsedtime(),
+                profiler.get_res_str());
     }
 
     return status_t::success;

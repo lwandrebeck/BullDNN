@@ -18,11 +18,11 @@
 
 #include <iostream>
 #include <memory>
-#include "common/zendnnl_global.hpp"
 #include "common/float16.hpp"
-#include "operators/common/operator_kernel.hpp"
+#include "common/zendnnl_global.hpp"
 #include "embag_context.hpp"
 #include "native_kernels/embag_avx512_int8_int4_utils.hpp"
+#include "operators/common/operator_kernel.hpp"
 
 namespace zendnnl {
 namespace ops {
@@ -30,28 +30,23 @@ namespace ops {
 using namespace zendnnl::error_handling;
 
 class embag_ref_kernel_t final : public op_kernel_t<embag_context_t> {
- public:
-  status_t execute(const context_type &context_,
-                   tensor_map_type &inputs_,
-                   tensor_map_type &outputs_) override;
-
+public:
+    status_t execute(const context_type &context_, tensor_map_type &inputs_,
+            tensor_map_type &outputs_) override;
 };
 
 class embag_int8_int4_ref_kernel_t final : public op_kernel_t<embag_context_t> {
- public:
-  status_t execute(const context_type &context_,
-                   tensor_map_type &inputs_,
-                   tensor_map_type &outputs_) override;
-
+public:
+    status_t execute(const context_type &context_, tensor_map_type &inputs_,
+            tensor_map_type &outputs_) override;
 };
 
 extern "C" {
-  embag_ref_kernel_t *get_embag_ref_kernel();
-  embag_int8_int4_ref_kernel_t *get_embag_int8_int4_ref_kernel();
+embag_ref_kernel_t *get_embag_ref_kernel();
+embag_int8_int4_ref_kernel_t *get_embag_int8_int4_ref_kernel();
 }
 
 } //namespace ops
 } //namespace zendnnl
-
 
 #endif

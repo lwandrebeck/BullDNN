@@ -46,14 +46,9 @@ namespace conv {
  *
  * @return status_t::success on successful execution, status_t::failure otherwise
  */
-status_t conv_reference_wrapper(
-    const void *input,
-    const void *filter,
-    const void *bias,
-    void *output,
-    const bool is_weights_const,
-    conv_params &params
-);
+status_t conv_reference_wrapper(const void *input, const void *filter,
+        const void *bias, void *output, const bool is_weights_const,
+        conv_params &params);
 
 } // namespace conv
 } // namespace lowoha

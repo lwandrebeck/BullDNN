@@ -24,35 +24,32 @@
 namespace zendnnl {
 namespace ops {
 
-class reorder_operator_t final : public operator_t<reorder_operator_t,
-  reorder_context_t,
-  reorder_impl_t> {
- public:
-  /** @brief Self type **/
-  using self_type = reorder_operator_t;
-  /** @brief Parent type **/
-  using parent_type =
-    operator_t<reorder_operator_t, reorder_context_t, reorder_impl_t>;
-  /** @brief context type **/
-  using context_type = parent_type::context_type;
-  /** @brief impl type **/
-  using impl_type = parent_type::impl_type;
-  /** @brief impl pointer type **/
-  using impl_sptr_type = parent_type::impl_sptr_type;
+class reorder_operator_t final
+    : public operator_t<reorder_operator_t, reorder_context_t, reorder_impl_t> {
+public:
+    /** @brief Self type **/
+    using self_type = reorder_operator_t;
+    /** @brief Parent type **/
+    using parent_type
+            = operator_t<reorder_operator_t, reorder_context_t, reorder_impl_t>;
+    /** @brief context type **/
+    using context_type = parent_type::context_type;
+    /** @brief impl type **/
+    using impl_type = parent_type::impl_type;
+    /** @brief impl pointer type **/
+    using impl_sptr_type = parent_type::impl_sptr_type;
 
-  size_t get_reorder_size() {
-    return impl->get_reorder_size();
-  }
-  status_t get_reorder_isa_status() const {
-    return impl->get_reorder_isa_status();
-  }
+    size_t get_reorder_size() { return impl->get_reorder_size(); }
+    status_t get_reorder_isa_status() const {
+        return impl->get_reorder_isa_status();
+    }
 };
 
 } //namespace ops
 
 namespace interface {
 using reorder_operator_t = zendnnl::ops::reorder_operator_t;
-} //export
+} // namespace interface
 
 } //namespace zendnnl
 #endif

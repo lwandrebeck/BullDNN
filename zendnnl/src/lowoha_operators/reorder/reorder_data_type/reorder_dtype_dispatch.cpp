@@ -16,8 +16,8 @@
 
 #include "lowoha_operators/reorder/reorder_data_type/reorder_dtype_dispatch.hpp"
 #include "lowoha_operators/reorder/lowoha_reorder_utils.hpp"
-#include "lowoha_operators/reorder/reorder_data_type/static_quant_dequant_impl/static_kernels.hpp"
 #include "lowoha_operators/reorder/reorder_data_type/scalar_impl/scalar_kernels.hpp"
+#include "lowoha_operators/reorder/reorder_data_type/static_quant_dequant_impl/static_kernels.hpp"
 
 #include "lowoha_operators/matmul/lowoha_matmul_utils.hpp"
 
@@ -37,303 +37,329 @@ using zendnnl::lowoha::matmul::zendnnl_parallel_for;
  * vectorized processing via AVX-512 kernels.
  */
 static void reorder_dynamic_impl(const void *src, void *dst, size_t nelems,
-                                 const reorder_params_t &params,
-                                 reorder_algo_t algo) {
-  // Extract single scale/zp values (per-tensor quantization only)
-  const float scale = get_scale_value(params.quant_params.scale);
-  const int zero_point = get_zero_point_value(params.quant_params.zero_point);
+        const reorder_params_t &params, reorder_algo_t algo) {
+    // Extract single scale/zp values (per-tensor quantization only)
+    const float scale = get_scale_value(params.quant_params.scale);
+    const int zero_point = get_zero_point_value(params.quant_params.zero_point);
 
-  // BF16 -> INT8 (Quantization)
-  if (params.src_dtype == data_type_t::bf16 &&
-      params.dst_dtype == data_type_t::s8) {
-    const uint16_t *src_bf16 = static_cast<const uint16_t *>(src);
-    int8_t *dst_int8 = static_cast<int8_t *>(dst);
+    // BF16 -> INT8 (Quantization)
+    if (params.src_dtype == data_type_t::bf16
+            && params.dst_dtype == data_type_t::s8) {
+        const uint16_t *src_bf16 = static_cast<const uint16_t *>(src);
+        int8_t *dst_int8 = static_cast<int8_t *>(dst);
 
-    if (algo == reorder_algo_t::native) {
-      quantize_bf16_to_int8_avx512(src_bf16, dst_int8, nelems, scale, zero_point);
+        if (algo == reorder_algo_t::native) {
+            quantize_bf16_to_int8_avx512(
+                    src_bf16, dst_int8, nelems, scale, zero_point);
+        } else {
+            quantize_bf16_to_int8_ref(
+                    src_bf16, dst_int8, nelems, scale, zero_point);
+        }
+        return;
     }
-    else {
-      quantize_bf16_to_int8_ref(src_bf16, dst_int8, nelems, scale, zero_point);
+
+    // INT8 -> BF16 (Dequantization)
+    if (params.src_dtype == data_type_t::s8
+            && params.dst_dtype == data_type_t::bf16) {
+        const int8_t *src_int8 = static_cast<const int8_t *>(src);
+        uint16_t *dst_bf16 = static_cast<uint16_t *>(dst);
+
+        if (algo == reorder_algo_t::native) {
+            dequantize_int8_to_bf16_avx512(
+                    src_int8, dst_bf16, nelems, scale, zero_point);
+        } else {
+            dequantize_int8_to_bf16_ref(
+                    src_int8, dst_bf16, nelems, scale, zero_point);
+        }
+        return;
     }
-    return;
-  }
 
-  // INT8 -> BF16 (Dequantization)
-  if (params.src_dtype == data_type_t::s8 &&
-      params.dst_dtype == data_type_t::bf16) {
-    const int8_t *src_int8 = static_cast<const int8_t *>(src);
-    uint16_t *dst_bf16 = static_cast<uint16_t *>(dst);
+    // BF16 -> UINT8 (Quantization)
+    if (params.src_dtype == data_type_t::bf16
+            && params.dst_dtype == data_type_t::u8) {
+        const uint16_t *src_bf16 = static_cast<const uint16_t *>(src);
+        uint8_t *dst_uint8 = static_cast<uint8_t *>(dst);
 
-    if (algo == reorder_algo_t::native) {
-      dequantize_int8_to_bf16_avx512(src_int8, dst_bf16, nelems, scale, zero_point);
+        if (algo == reorder_algo_t::native) {
+            quantize_bf16_to_uint8_avx512(
+                    src_bf16, dst_uint8, nelems, scale, zero_point);
+        } else {
+            quantize_bf16_to_uint8_ref(
+                    src_bf16, dst_uint8, nelems, scale, zero_point);
+        }
+        return;
     }
-    else {
-      dequantize_int8_to_bf16_ref(src_int8, dst_bf16, nelems, scale, zero_point);
+
+    // UINT8 -> BF16 (Dequantization)
+    if (params.src_dtype == data_type_t::u8
+            && params.dst_dtype == data_type_t::bf16) {
+        const uint8_t *src_uint8 = static_cast<const uint8_t *>(src);
+        uint16_t *dst_bf16 = static_cast<uint16_t *>(dst);
+
+        if (algo == reorder_algo_t::native) {
+            dequantize_uint8_to_bf16_avx512(
+                    src_uint8, dst_bf16, nelems, scale, zero_point);
+        } else {
+            dequantize_uint8_to_bf16_ref(
+                    src_uint8, dst_bf16, nelems, scale, zero_point);
+        }
+        return;
     }
-    return;
-  }
 
-  // BF16 -> UINT8 (Quantization)
-  if (params.src_dtype == data_type_t::bf16 &&
-      params.dst_dtype == data_type_t::u8) {
-    const uint16_t *src_bf16 = static_cast<const uint16_t *>(src);
-    uint8_t *dst_uint8 = static_cast<uint8_t *>(dst);
+    // FP32 -> INT8 (Quantization)
+    if (params.src_dtype == data_type_t::f32
+            && params.dst_dtype == data_type_t::s8) {
+        const float *src_f32 = static_cast<const float *>(src);
+        int8_t *dst_int8 = static_cast<int8_t *>(dst);
 
-    if (algo == reorder_algo_t::native) {
-      quantize_bf16_to_uint8_avx512(src_bf16, dst_uint8, nelems, scale, zero_point);
+        if (algo == reorder_algo_t::native) {
+            quantize_f32_to_int8_avx512(
+                    src_f32, dst_int8, nelems, scale, zero_point);
+        } else {
+            quantize_f32_to_int8_ref(
+                    src_f32, dst_int8, nelems, scale, zero_point);
+        }
+        return;
     }
-    else {
-      quantize_bf16_to_uint8_ref(src_bf16, dst_uint8, nelems, scale, zero_point);
+
+    // INT8 -> FP32 (Dequantization)
+    if (params.src_dtype == data_type_t::s8
+            && params.dst_dtype == data_type_t::f32) {
+        const int8_t *src_int8 = static_cast<const int8_t *>(src);
+        float *dst_f32 = static_cast<float *>(dst);
+
+        if (algo == reorder_algo_t::native) {
+            dequantize_int8_to_f32_avx512(
+                    src_int8, dst_f32, nelems, scale, zero_point);
+        } else {
+            dequantize_int8_to_f32_ref(
+                    src_int8, dst_f32, nelems, scale, zero_point);
+        }
+        return;
     }
-    return;
-  }
 
-  // UINT8 -> BF16 (Dequantization)
-  if (params.src_dtype == data_type_t::u8 &&
-      params.dst_dtype == data_type_t::bf16) {
-    const uint8_t *src_uint8 = static_cast<const uint8_t *>(src);
-    uint16_t *dst_bf16 = static_cast<uint16_t *>(dst);
+    // FP32 -> UINT8 (Quantization)
+    if (params.src_dtype == data_type_t::f32
+            && params.dst_dtype == data_type_t::u8) {
+        const float *src_f32 = static_cast<const float *>(src);
+        uint8_t *dst_uint8 = static_cast<uint8_t *>(dst);
 
-    if (algo == reorder_algo_t::native) {
-      dequantize_uint8_to_bf16_avx512(src_uint8, dst_bf16, nelems, scale, zero_point);
+        if (algo == reorder_algo_t::native) {
+            quantize_f32_to_uint8_avx512(
+                    src_f32, dst_uint8, nelems, scale, zero_point);
+        } else {
+            quantize_f32_to_uint8_ref(
+                    src_f32, dst_uint8, nelems, scale, zero_point);
+        }
+        return;
     }
-    else {
-      dequantize_uint8_to_bf16_ref(src_uint8, dst_bf16, nelems, scale, zero_point);
+
+    // UINT8 -> FP32 (Dequantization)
+    if (params.src_dtype == data_type_t::u8
+            && params.dst_dtype == data_type_t::f32) {
+        const uint8_t *src_uint8 = static_cast<const uint8_t *>(src);
+        float *dst_f32 = static_cast<float *>(dst);
+
+        if (algo == reorder_algo_t::native) {
+            dequantize_uint8_to_f32_avx512(
+                    src_uint8, dst_f32, nelems, scale, zero_point);
+        } else {
+            dequantize_uint8_to_f32_ref(
+                    src_uint8, dst_f32, nelems, scale, zero_point);
+        }
+        return;
     }
-    return;
-  }
 
-  // FP32 -> INT8 (Quantization)
-  if (params.src_dtype == data_type_t::f32 &&
-      params.dst_dtype == data_type_t::s8) {
-    const float *src_f32 = static_cast<const float *>(src);
-    int8_t *dst_int8 = static_cast<int8_t *>(dst);
+    // FP32 -> BF16 (Type conversion with optional scaling)
+    if (params.src_dtype == data_type_t::f32
+            && params.dst_dtype == data_type_t::bf16) {
+        const float *src_f32 = static_cast<const float *>(src);
+        uint16_t *dst_bf16 = static_cast<uint16_t *>(dst);
 
-    if (algo == reorder_algo_t::native) {
-      quantize_f32_to_int8_avx512(src_f32, dst_int8, nelems, scale, zero_point);
+        if (algo == reorder_algo_t::native) {
+            convert_f32_to_bf16_avx512(
+                    src_f32, dst_bf16, nelems, scale, zero_point);
+        } else {
+            convert_f32_to_bf16_ref(
+                    src_f32, dst_bf16, nelems, scale, zero_point);
+        }
+        return;
     }
-    else {
-      quantize_f32_to_int8_ref(src_f32, dst_int8, nelems, scale, zero_point);
+
+    // BF16 -> FP32 (Type conversion with optional scaling)
+    if (params.src_dtype == data_type_t::bf16
+            && params.dst_dtype == data_type_t::f32) {
+        const uint16_t *src_bf16 = static_cast<const uint16_t *>(src);
+        float *dst_f32 = static_cast<float *>(dst);
+
+        if (algo == reorder_algo_t::native) {
+            convert_bf16_to_f32_avx512(
+                    src_bf16, dst_f32, nelems, scale, zero_point);
+        } else {
+            convert_bf16_to_f32_ref(
+                    src_bf16, dst_f32, nelems, scale, zero_point);
+        }
+        return;
     }
-    return;
-  }
 
-  // INT8 -> FP32 (Dequantization)
-  if (params.src_dtype == data_type_t::s8 &&
-      params.dst_dtype == data_type_t::f32) {
-    const int8_t *src_int8 = static_cast<const int8_t *>(src);
-    float *dst_f32 = static_cast<float *>(dst);
+    // FP32 -> F16 (Type conversion with optional scaling)
+    if (params.src_dtype == data_type_t::f32
+            && params.dst_dtype == data_type_t::f16) {
+        const float *src_f32 = static_cast<const float *>(src);
+        uint16_t *dst_f16 = static_cast<uint16_t *>(dst);
 
-    if (algo == reorder_algo_t::native) {
-      dequantize_int8_to_f32_avx512(src_int8, dst_f32, nelems, scale, zero_point);
+        if (algo == reorder_algo_t::native) {
+            convert_f32_to_f16_avx512(
+                    src_f32, dst_f16, nelems, scale, zero_point);
+        } else {
+            convert_f32_to_f16_ref(src_f32, dst_f16, nelems, scale, zero_point);
+        }
+        return;
     }
-    else {
-      dequantize_int8_to_f32_ref(src_int8, dst_f32, nelems, scale, zero_point);
+
+    // F16 -> FP32 (Type conversion with optional scaling)
+    if (params.src_dtype == data_type_t::f16
+            && params.dst_dtype == data_type_t::f32) {
+        const uint16_t *src_f16 = static_cast<const uint16_t *>(src);
+        float *dst_f32 = static_cast<float *>(dst);
+
+        if (algo == reorder_algo_t::native) {
+            convert_f16_to_f32_avx512(
+                    src_f16, dst_f32, nelems, scale, zero_point);
+        } else {
+            convert_f16_to_f32_ref(src_f16, dst_f32, nelems, scale, zero_point);
+        }
+        return;
     }
-    return;
-  }
 
-  // FP32 -> UINT8 (Quantization)
-  if (params.src_dtype == data_type_t::f32 &&
-      params.dst_dtype == data_type_t::u8) {
-    const float *src_f32 = static_cast<const float *>(src);
-    uint8_t *dst_uint8 = static_cast<uint8_t *>(dst);
+    // BF16 -> F16 (Type conversion with optional scaling)
+    if (params.src_dtype == data_type_t::bf16
+            && params.dst_dtype == data_type_t::f16) {
+        const uint16_t *src_bf16 = static_cast<const uint16_t *>(src);
+        uint16_t *dst_f16 = static_cast<uint16_t *>(dst);
 
-    if (algo == reorder_algo_t::native) {
-      quantize_f32_to_uint8_avx512(src_f32, dst_uint8, nelems, scale, zero_point);
+        if (algo == reorder_algo_t::native) {
+            convert_bf16_to_f16_avx512(
+                    src_bf16, dst_f16, nelems, scale, zero_point);
+        } else {
+            convert_bf16_to_f16_ref(
+                    src_bf16, dst_f16, nelems, scale, zero_point);
+        }
+        return;
     }
-    else {
-      quantize_f32_to_uint8_ref(src_f32, dst_uint8, nelems, scale, zero_point);
+
+    // F16 -> BF16 (Type conversion with optional scaling)
+    if (params.src_dtype == data_type_t::f16
+            && params.dst_dtype == data_type_t::bf16) {
+        const uint16_t *src_f16 = static_cast<const uint16_t *>(src);
+        uint16_t *dst_bf16 = static_cast<uint16_t *>(dst);
+
+        if (algo == reorder_algo_t::native) {
+            convert_f16_to_bf16_avx512(
+                    src_f16, dst_bf16, nelems, scale, zero_point);
+        } else {
+            convert_f16_to_bf16_ref(
+                    src_f16, dst_bf16, nelems, scale, zero_point);
+        }
+        return;
     }
-    return;
-  }
 
-  // UINT8 -> FP32 (Dequantization)
-  if (params.src_dtype == data_type_t::u8 &&
-      params.dst_dtype == data_type_t::f32) {
-    const uint8_t *src_uint8 = static_cast<const uint8_t *>(src);
-    float *dst_f32 = static_cast<float *>(dst);
+    // ---- FP16 family (static + dynamic quantization, FP16 dequant) ----
+    //
+    // For algo==native, the FMA precision is selected at runtime between
+    // F32-FMA (AVX-512F + F16C convert) and FP16-FMA (__m512h native,
+    // AVX512-FP16 ISA) by can_use_f16_fma_kernel() — defaults to FP16-FMA
+    // when the ISA is present and the library was not built with
+    // -DZENDNNL_NATIVE_F32_ACCUM=ON.
 
-    if (algo == reorder_algo_t::native) {
-      dequantize_uint8_to_f32_avx512(src_uint8, dst_f32, nelems, scale, zero_point);
+    const bool use_fp16fma = (params.src_dtype == data_type_t::f16
+                                     || params.dst_dtype == data_type_t::f16)
+            ? can_use_f16_fma_kernel()
+            : false;
+
+    // F16 -> INT8 (Quantization)
+    if (params.src_dtype == data_type_t::f16
+            && params.dst_dtype == data_type_t::s8) {
+        const uint16_t *src_f16 = static_cast<const uint16_t *>(src);
+        int8_t *dst_int8 = static_cast<int8_t *>(dst);
+
+        if (algo == reorder_algo_t::native) {
+            if (use_fp16fma) {
+                quantize_f16_to_int8_avx512fp16(
+                        src_f16, dst_int8, nelems, scale, zero_point);
+            } else {
+                quantize_f16_to_int8_avx512(
+                        src_f16, dst_int8, nelems, scale, zero_point);
+            }
+        } else {
+            quantize_f16_to_int8_ref(
+                    src_f16, dst_int8, nelems, scale, zero_point);
+        }
+        return;
     }
-    else {
-      dequantize_uint8_to_f32_ref(src_uint8, dst_f32, nelems, scale, zero_point);
+
+    // INT8 -> F16 (Dequantization)
+    if (params.src_dtype == data_type_t::s8
+            && params.dst_dtype == data_type_t::f16) {
+        const int8_t *src_int8 = static_cast<const int8_t *>(src);
+        uint16_t *dst_f16 = static_cast<uint16_t *>(dst);
+
+        if (algo == reorder_algo_t::native) {
+            if (use_fp16fma) {
+                dequantize_int8_to_f16_avx512fp16(
+                        src_int8, dst_f16, nelems, scale, zero_point);
+            } else {
+                dequantize_int8_to_f16_avx512(
+                        src_int8, dst_f16, nelems, scale, zero_point);
+            }
+        } else {
+            dequantize_int8_to_f16_ref(
+                    src_int8, dst_f16, nelems, scale, zero_point);
+        }
+        return;
     }
-    return;
-  }
 
-  // FP32 -> BF16 (Type conversion with optional scaling)
-  if (params.src_dtype == data_type_t::f32 &&
-      params.dst_dtype == data_type_t::bf16) {
-    const float *src_f32 = static_cast<const float *>(src);
-    uint16_t *dst_bf16 = static_cast<uint16_t *>(dst);
+    // F16 -> UINT8 (Quantization)
+    if (params.src_dtype == data_type_t::f16
+            && params.dst_dtype == data_type_t::u8) {
+        const uint16_t *src_f16 = static_cast<const uint16_t *>(src);
+        uint8_t *dst_uint8 = static_cast<uint8_t *>(dst);
 
-    if (algo == reorder_algo_t::native) {
-      convert_f32_to_bf16_avx512(src_f32, dst_bf16, nelems, scale, zero_point);
+        if (algo == reorder_algo_t::native) {
+            if (use_fp16fma) {
+                quantize_f16_to_uint8_avx512fp16(
+                        src_f16, dst_uint8, nelems, scale, zero_point);
+            } else {
+                quantize_f16_to_uint8_avx512(
+                        src_f16, dst_uint8, nelems, scale, zero_point);
+            }
+        } else {
+            quantize_f16_to_uint8_ref(
+                    src_f16, dst_uint8, nelems, scale, zero_point);
+        }
+        return;
     }
-    else {
-      convert_f32_to_bf16_ref(src_f32, dst_bf16, nelems, scale, zero_point);
+
+    // UINT8 -> F16 (Dequantization)
+    if (params.src_dtype == data_type_t::u8
+            && params.dst_dtype == data_type_t::f16) {
+        const uint8_t *src_uint8 = static_cast<const uint8_t *>(src);
+        uint16_t *dst_f16 = static_cast<uint16_t *>(dst);
+
+        if (algo == reorder_algo_t::native) {
+            if (use_fp16fma) {
+                dequantize_uint8_to_f16_avx512fp16(
+                        src_uint8, dst_f16, nelems, scale, zero_point);
+            } else {
+                dequantize_uint8_to_f16_avx512(
+                        src_uint8, dst_f16, nelems, scale, zero_point);
+            }
+        } else {
+            dequantize_uint8_to_f16_ref(
+                    src_uint8, dst_f16, nelems, scale, zero_point);
+        }
+        return;
     }
-    return;
-  }
-
-  // BF16 -> FP32 (Type conversion with optional scaling)
-  if (params.src_dtype == data_type_t::bf16 &&
-      params.dst_dtype == data_type_t::f32) {
-    const uint16_t *src_bf16 = static_cast<const uint16_t *>(src);
-    float *dst_f32 = static_cast<float *>(dst);
-
-    if (algo == reorder_algo_t::native) {
-      convert_bf16_to_f32_avx512(src_bf16, dst_f32, nelems, scale, zero_point);
-    }
-    else {
-      convert_bf16_to_f32_ref(src_bf16, dst_f32, nelems, scale, zero_point);
-    }
-    return;
-  }
-
-  // FP32 -> F16 (Type conversion with optional scaling)
-  if (params.src_dtype == data_type_t::f32 &&
-      params.dst_dtype == data_type_t::f16) {
-    const float *src_f32 = static_cast<const float *>(src);
-    uint16_t *dst_f16 = static_cast<uint16_t *>(dst);
-
-    if (algo == reorder_algo_t::native) {
-      convert_f32_to_f16_avx512(src_f32, dst_f16, nelems, scale, zero_point);
-    }
-    else {
-      convert_f32_to_f16_ref(src_f32, dst_f16, nelems, scale, zero_point);
-    }
-    return;
-  }
-
-  // F16 -> FP32 (Type conversion with optional scaling)
-  if (params.src_dtype == data_type_t::f16 &&
-      params.dst_dtype == data_type_t::f32) {
-    const uint16_t *src_f16 = static_cast<const uint16_t *>(src);
-    float *dst_f32 = static_cast<float *>(dst);
-
-    if (algo == reorder_algo_t::native) {
-      convert_f16_to_f32_avx512(src_f16, dst_f32, nelems, scale, zero_point);
-    }
-    else {
-      convert_f16_to_f32_ref(src_f16, dst_f32, nelems, scale, zero_point);
-    }
-    return;
-  }
-
-  // BF16 -> F16 (Type conversion with optional scaling)
-  if (params.src_dtype == data_type_t::bf16 &&
-      params.dst_dtype == data_type_t::f16) {
-    const uint16_t *src_bf16 = static_cast<const uint16_t *>(src);
-    uint16_t *dst_f16 = static_cast<uint16_t *>(dst);
-
-    if (algo == reorder_algo_t::native) {
-      convert_bf16_to_f16_avx512(src_bf16, dst_f16, nelems, scale, zero_point);
-    }
-    else {
-      convert_bf16_to_f16_ref(src_bf16, dst_f16, nelems, scale, zero_point);
-    }
-    return;
-  }
-
-  // F16 -> BF16 (Type conversion with optional scaling)
-  if (params.src_dtype == data_type_t::f16 &&
-      params.dst_dtype == data_type_t::bf16) {
-    const uint16_t *src_f16 = static_cast<const uint16_t *>(src);
-    uint16_t *dst_bf16 = static_cast<uint16_t *>(dst);
-
-    if (algo == reorder_algo_t::native) {
-      convert_f16_to_bf16_avx512(src_f16, dst_bf16, nelems, scale, zero_point);
-    }
-    else {
-      convert_f16_to_bf16_ref(src_f16, dst_bf16, nelems, scale, zero_point);
-    }
-    return;
-  }
-
-  // ---- FP16 family (static + dynamic quantization, FP16 dequant) ----
-  //
-  // For algo==native, the FMA precision is selected at runtime between
-  // F32-FMA (AVX-512F + F16C convert) and FP16-FMA (__m512h native,
-  // AVX512-FP16 ISA) by can_use_f16_fma_kernel() — defaults to FP16-FMA
-  // when the ISA is present and the library was not built with
-  // -DZENDNNL_NATIVE_F32_ACCUM=ON.
-
-  const bool use_fp16fma =
-      (params.src_dtype == data_type_t::f16 ||
-       params.dst_dtype == data_type_t::f16)
-          ? can_use_f16_fma_kernel()
-          : false;
-
-  // F16 -> INT8 (Quantization)
-  if (params.src_dtype == data_type_t::f16 && params.dst_dtype == data_type_t::s8) {
-    const uint16_t *src_f16 = static_cast<const uint16_t *>(src);
-    int8_t *dst_int8 = static_cast<int8_t *>(dst);
-
-    if (algo == reorder_algo_t::native) {
-      if (use_fp16fma) {
-        quantize_f16_to_int8_avx512fp16(src_f16, dst_int8, nelems, scale, zero_point);
-      } else {
-        quantize_f16_to_int8_avx512(src_f16, dst_int8, nelems, scale, zero_point);
-      }
-    } else {
-      quantize_f16_to_int8_ref(src_f16, dst_int8, nelems, scale, zero_point);
-    }
-    return;
-  }
-
-  // INT8 -> F16 (Dequantization)
-  if (params.src_dtype == data_type_t::s8 && params.dst_dtype == data_type_t::f16) {
-    const int8_t *src_int8 = static_cast<const int8_t *>(src);
-    uint16_t *dst_f16 = static_cast<uint16_t *>(dst);
-
-    if (algo == reorder_algo_t::native) {
-      if (use_fp16fma) {
-        dequantize_int8_to_f16_avx512fp16(src_int8, dst_f16, nelems, scale, zero_point);
-      } else {
-        dequantize_int8_to_f16_avx512(src_int8, dst_f16, nelems, scale, zero_point);
-      }
-    } else {
-      dequantize_int8_to_f16_ref(src_int8, dst_f16, nelems, scale, zero_point);
-    }
-    return;
-  }
-
-  // F16 -> UINT8 (Quantization)
-  if (params.src_dtype == data_type_t::f16 && params.dst_dtype == data_type_t::u8) {
-    const uint16_t *src_f16 = static_cast<const uint16_t *>(src);
-    uint8_t *dst_uint8 = static_cast<uint8_t *>(dst);
-
-    if (algo == reorder_algo_t::native) {
-      if (use_fp16fma) {
-        quantize_f16_to_uint8_avx512fp16(src_f16, dst_uint8, nelems, scale, zero_point);
-      } else {
-        quantize_f16_to_uint8_avx512(src_f16, dst_uint8, nelems, scale, zero_point);
-      }
-    } else {
-      quantize_f16_to_uint8_ref(src_f16, dst_uint8, nelems, scale, zero_point);
-    }
-    return;
-  }
-
-  // UINT8 -> F16 (Dequantization)
-  if (params.src_dtype == data_type_t::u8 && params.dst_dtype == data_type_t::f16) {
-    const uint8_t *src_uint8 = static_cast<const uint8_t *>(src);
-    uint16_t *dst_f16 = static_cast<uint16_t *>(dst);
-
-    if (algo == reorder_algo_t::native) {
-      if (use_fp16fma) {
-        dequantize_uint8_to_f16_avx512fp16(src_uint8, dst_f16, nelems, scale, zero_point);
-      } else {
-        dequantize_uint8_to_f16_avx512(src_uint8, dst_f16, nelems, scale, zero_point);
-      }
-    } else {
-      dequantize_uint8_to_f16_ref(src_uint8, dst_f16, nelems, scale, zero_point);
-    }
-    return;
-  }
 }
 
 /**
@@ -346,138 +372,143 @@ static void reorder_dynamic_impl(const void *src, void *dst, size_t nelems,
  * - 3D strided batched matrices
  */
 void reorder_wrapper(const void *src, void *dst, size_t nelems,
-                     const reorder_params_t &params,
-                     reorder_algo_t algo) {
-  const size_t src_elem_size = get_dtype_size(params.src_dtype);
-  const size_t dst_elem_size = get_dtype_size(params.dst_dtype);
+        const reorder_params_t &params, reorder_algo_t algo) {
+    const size_t src_elem_size = get_dtype_size(params.src_dtype);
+    const size_t dst_elem_size = get_dtype_size(params.dst_dtype);
 
-  // Check granularity type
-  granularity_type_t granularity = get_granularity_type(params);
+    // Check granularity type
+    granularity_type_t granularity = get_granularity_type(params);
 
-  // Per-channel, per-group, or mixed granularity requires element-wise processing
-  if (granularity != granularity_type_t::per_tensor) {
-    if (params.is_3d()) {
-      reorder_granular_scaler_impl_3d(src, dst, params);
-    }
-    else {
-      reorder_granular_scaler_impl_2d(src, dst, params);
-    }
-    return;
-  }
-
-  // Fast path: Contiguous memory with per-tensor quantization
-  if (!params.has_src_strides() || params.is_src_contiguous()) {
-    constexpr int64_t grain_size = LOWOHA_REORDER_GRAIN_SIZE;
-    zendnnl_parallel_for(0, static_cast<int64_t>(nelems), grain_size,
-    [&](int64_t begin, int64_t end) {
-      const uint8_t *src_ptr = static_cast<const uint8_t *>(src) + begin *
-                               src_elem_size;
-      uint8_t *dst_ptr = static_cast<uint8_t *>(dst) + begin * dst_elem_size;
-      size_t thread_nelems = static_cast<size_t>(end - begin);
-      reorder_dynamic_impl(src_ptr, dst_ptr, thread_nelems, params, algo);
-    });
-    return;
-  }
-
-  // Strided access paths
-  const auto &strides = params.src_strides;
-  const size_t shape_size = params.src_shape.size();
-
-  // 1D strided (stride != 1, otherwise would be contiguous)
-  if (shape_size == 1) {
-    const int64_t stride = strides[0];
-    #pragma omp parallel for num_threads(params.num_threads)
-    for (int64_t i = 0; i < static_cast<int64_t>(nelems); ++i) {
-      const uint8_t *src_ptr = static_cast<const uint8_t *>(src) + i * stride *
-                               src_elem_size;
-      uint8_t *dst_ptr = static_cast<uint8_t *>(dst) + i * dst_elem_size;
-      reorder_dynamic_impl(src_ptr, dst_ptr, 1, params, algo);
-    }
-    return;
-  }
-
-  // 2D strided
-  if (shape_size == 2) {
-    const int64_t M = params.M();
-    const int64_t N = params.N();
-    const int64_t stride_M = strides[0];
-    const int64_t stride_N = strides[1];
-
-    // Optimized path: if stride_N == 1, rows are contiguous - use AVX512 per row
-    if (stride_N == 1) {
-      #pragma omp parallel for num_threads(params.num_threads)
-      for (int64_t i = 0; i < M; ++i) {
-        const uint8_t *src_ptr = static_cast<const uint8_t *>(src) + i * stride_M *
-                                 src_elem_size;
-        uint8_t *dst_ptr = static_cast<uint8_t *>(dst) + i * N * dst_elem_size;
-        reorder_dynamic_impl(src_ptr, dst_ptr, static_cast<size_t>(N), params, algo);
-      }
-    }
-    else {
-      // Fallback: element-by-element for non-contiguous rows
-      #pragma omp parallel for collapse(2) num_threads(params.num_threads)
-      for (int64_t i = 0; i < M; ++i) {
-        for (int64_t j = 0; j < N; ++j) {
-          const int64_t src_offset = i * stride_M + j * stride_N;
-          const int64_t dst_offset = i * N + j;
-
-          const uint8_t *src_ptr = static_cast<const uint8_t *>(src) + src_offset *
-                                   src_elem_size;
-          uint8_t *dst_ptr = static_cast<uint8_t *>(dst) + dst_offset * dst_elem_size;
-
-          reorder_dynamic_impl(src_ptr, dst_ptr, 1, params, algo);
+    // Per-channel, per-group, or mixed granularity requires element-wise processing
+    if (granularity != granularity_type_t::per_tensor) {
+        if (params.is_3d()) {
+            reorder_granular_scaler_impl_3d(src, dst, params);
+        } else {
+            reorder_granular_scaler_impl_2d(src, dst, params);
         }
-      }
+        return;
     }
-    return;
-  }
 
-  // 3D strided (BMM)
-  if (shape_size == 3) {
-    const int64_t batch = params.batch();
-    const int64_t M = params.M();
-    const int64_t N = params.N();
-    const int64_t matrix_size = M * N;
-    const int64_t stride_batch = strides[0];
-    const int64_t stride_M = strides[1];
-    const int64_t stride_N = strides[2];
-
-    // Optimized path: if stride_N == 1, rows are contiguous - use AVX512 per row
-    if (stride_N == 1) {
-      #pragma omp parallel for collapse(2) num_threads(params.num_threads)
-      for (int64_t b = 0; b < batch; ++b) {
-        for (int64_t i = 0; i < M; ++i) {
-          const int64_t src_offset = b * stride_batch + i * stride_M;
-          const int64_t dst_offset = b * matrix_size + i * N;
-
-          const uint8_t *src_ptr = static_cast<const uint8_t *>(src) + src_offset *
-                                   src_elem_size;
-          uint8_t *dst_ptr = static_cast<uint8_t *>(dst) + dst_offset * dst_elem_size;
-
-          reorder_dynamic_impl(src_ptr, dst_ptr, static_cast<size_t>(N), params, algo);
-        }
-      }
+    // Fast path: Contiguous memory with per-tensor quantization
+    if (!params.has_src_strides() || params.is_src_contiguous()) {
+        constexpr int64_t grain_size = LOWOHA_REORDER_GRAIN_SIZE;
+        zendnnl_parallel_for(0, static_cast<int64_t>(nelems), grain_size,
+                [&](int64_t begin, int64_t end) {
+            const uint8_t *src_ptr
+                    = static_cast<const uint8_t *>(src) + begin * src_elem_size;
+            uint8_t *dst_ptr
+                    = static_cast<uint8_t *>(dst) + begin * dst_elem_size;
+            size_t thread_nelems = static_cast<size_t>(end - begin);
+            reorder_dynamic_impl(src_ptr, dst_ptr, thread_nelems, params, algo);
+        });
+        return;
     }
-    else {
-      // Fallback: element-by-element for non-contiguous rows
-      #pragma omp parallel for collapse(3) num_threads(params.num_threads)
-      for (int64_t b = 0; b < batch; ++b) {
-        for (int64_t i = 0; i < M; ++i) {
-          for (int64_t j = 0; j < N; ++j) {
-            const int64_t src_offset = b * stride_batch + i * stride_M + j * stride_N;
-            const int64_t dst_offset = b * matrix_size + i * N + j;
 
-            const uint8_t *src_ptr = static_cast<const uint8_t *>(src) + src_offset *
-                                     src_elem_size;
-            uint8_t *dst_ptr = static_cast<uint8_t *>(dst) + dst_offset * dst_elem_size;
+    // Strided access paths
+    const auto &strides = params.src_strides;
+    const size_t shape_size = params.src_shape.size();
 
+    // 1D strided (stride != 1, otherwise would be contiguous)
+    if (shape_size == 1) {
+        const int64_t stride = strides[0];
+#pragma omp parallel for num_threads(params.num_threads)
+        for (int64_t i = 0; i < static_cast<int64_t>(nelems); ++i) {
+            const uint8_t *src_ptr = static_cast<const uint8_t *>(src)
+                    + i * stride * src_elem_size;
+            uint8_t *dst_ptr = static_cast<uint8_t *>(dst) + i * dst_elem_size;
             reorder_dynamic_impl(src_ptr, dst_ptr, 1, params, algo);
-          }
         }
-      }
+        return;
     }
-    return;
-  }
+
+    // 2D strided
+    if (shape_size == 2) {
+        const int64_t M = params.M();
+        const int64_t N = params.N();
+        const int64_t stride_M = strides[0];
+        const int64_t stride_N = strides[1];
+
+        // Optimized path: if stride_N == 1, rows are contiguous - use AVX512 per row
+        if (stride_N == 1) {
+#pragma omp parallel for num_threads(params.num_threads)
+            for (int64_t i = 0; i < M; ++i) {
+                const uint8_t *src_ptr = static_cast<const uint8_t *>(src)
+                        + i * stride_M * src_elem_size;
+                uint8_t *dst_ptr
+                        = static_cast<uint8_t *>(dst) + i * N * dst_elem_size;
+                reorder_dynamic_impl(
+                        src_ptr, dst_ptr, static_cast<size_t>(N), params, algo);
+            }
+        } else {
+// Fallback: element-by-element for non-contiguous rows
+#pragma omp parallel for collapse(2) num_threads(params.num_threads)
+            for (int64_t i = 0; i < M; ++i) {
+                for (int64_t j = 0; j < N; ++j) {
+                    const int64_t src_offset = i * stride_M + j * stride_N;
+                    const int64_t dst_offset = i * N + j;
+
+                    const uint8_t *src_ptr = static_cast<const uint8_t *>(src)
+                            + src_offset * src_elem_size;
+                    uint8_t *dst_ptr = static_cast<uint8_t *>(dst)
+                            + dst_offset * dst_elem_size;
+
+                    reorder_dynamic_impl(src_ptr, dst_ptr, 1, params, algo);
+                }
+            }
+        }
+        return;
+    }
+
+    // 3D strided (BMM)
+    if (shape_size == 3) {
+        const int64_t batch = params.batch();
+        const int64_t M = params.M();
+        const int64_t N = params.N();
+        const int64_t matrix_size = M * N;
+        const int64_t stride_batch = strides[0];
+        const int64_t stride_M = strides[1];
+        const int64_t stride_N = strides[2];
+
+        // Optimized path: if stride_N == 1, rows are contiguous - use AVX512 per row
+        if (stride_N == 1) {
+#pragma omp parallel for collapse(2) num_threads(params.num_threads)
+            for (int64_t b = 0; b < batch; ++b) {
+                for (int64_t i = 0; i < M; ++i) {
+                    const int64_t src_offset = b * stride_batch + i * stride_M;
+                    const int64_t dst_offset = b * matrix_size + i * N;
+
+                    const uint8_t *src_ptr = static_cast<const uint8_t *>(src)
+                            + src_offset * src_elem_size;
+                    uint8_t *dst_ptr = static_cast<uint8_t *>(dst)
+                            + dst_offset * dst_elem_size;
+
+                    reorder_dynamic_impl(src_ptr, dst_ptr,
+                            static_cast<size_t>(N), params, algo);
+                }
+            }
+        } else {
+// Fallback: element-by-element for non-contiguous rows
+#pragma omp parallel for collapse(3) num_threads(params.num_threads)
+            for (int64_t b = 0; b < batch; ++b) {
+                for (int64_t i = 0; i < M; ++i) {
+                    for (int64_t j = 0; j < N; ++j) {
+                        const int64_t src_offset = b * stride_batch
+                                + i * stride_M + j * stride_N;
+                        const int64_t dst_offset = b * matrix_size + i * N + j;
+
+                        const uint8_t *src_ptr
+                                = static_cast<const uint8_t *>(src)
+                                + src_offset * src_elem_size;
+                        uint8_t *dst_ptr = static_cast<uint8_t *>(dst)
+                                + dst_offset * dst_elem_size;
+
+                        reorder_dynamic_impl(src_ptr, dst_ptr, 1, params, algo);
+                    }
+                }
+            }
+        }
+        return;
+    }
 }
 
 } // namespace reorder

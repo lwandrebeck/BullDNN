@@ -1,5 +1,5 @@
 /********************************************************************************
-# * Copyright (c) 2023-2024 Advanced Micro Devices, Inc. All rights reserved.
+# * Copyright (c) 2023-2026 Advanced Micro Devices, Inc. All rights reserved.
 # *
 # * Licensed under the Apache License, Version 2.0 (the "License");
 # * you may not use this file except in compliance with the License.
@@ -20,8 +20,8 @@
 #include <cstdlib>
 #include <string>
 
-#include "common/zendnnl_global.hpp"
 #include "common/hash_object.hpp"
+#include "common/zendnnl_global.hpp"
 
 namespace zendnnl {
 namespace memory {
@@ -43,82 +43,82 @@ using namespace zendnnl::error_handling;
  * @sa tensor_t, hash_object_t
  */
 class tensor_storage_t final : public hash_object_t {
-  friend class tensor_t;
-  friend class tensor_quant_t;
+    friend class tensor_t;
+    friend class tensor_quant_t;
 
 public:
-  /** @brief Parent type */
-  using parent_type = hash_object_t;
+    /** @brief Parent type */
+    using parent_type = hash_object_t;
 
-  /** @name Constructors, Destructors and Assignment
+    /** @name Constructors, Destructors and Assignment
    */
-  /**@{*/
-  /** @brief Default constuctor */
-  tensor_storage_t();
+    /**@{*/
+    /** @brief Default constuctor */
+    tensor_storage_t();
 
-  /** @brief Releases allocated memory */
-  ~tensor_storage_t();
-  /**@}*/
+    /** @brief Releases allocated memory */
+    ~tensor_storage_t();
+    /**@}*/
 
-  /** @name Create, Reset and Hash
+    /** @name Create, Reset and Hash
    */
-  /**@{*/
-  /** @brief Generate hash
+    /**@{*/
+    /** @brief Generate hash
    *
    * Hash generated is used by @c tensor_t::hash() to generate
    * tensor hash.
    * @return Generated hash.
    */
-  std::size_t   hash() override;
+    std::size_t hash() override;
 
-  /** @brief Reset the object.
+    /** @brief Reset the object.
    *
    * Resets storage. Used by @c tensor_t::reset().
    */
-  void          reset();
-  /**@}*/
+    void reset();
+    /**@}*/
 
 private:
-
-  /** @name Memory Management
+    /** @name Memory Management
    */
-  /**{*/
-  /** @brief Allocate memory buffer for tensor data.
+    /**{*/
+    /** @brief Allocate memory buffer for tensor data.
    *
    * Throws exception if memory could not be allocated.
    * @param size_ : buffer size in bytes.
    */
-  void          allocate(std::size_t size_);
+    void allocate(std::size_t size_);
 
-  /** @brief Borrow a memory buffer from a deep learning framework.
+    /** @brief Borrow a memory buffer from a deep learning framework.
    *
    * @param ptr_ : pointer to the memory buffer.
    * @param size_ : buffer size.
    */
-  void          set_raw_handle(void* ptr_, std::size_t size_);
+    void set_raw_handle(void *ptr_, std::size_t size_);
 
-  /** @brief Get a raw pointer to the memory buffer.
+    /** @brief Get a raw pointer to the memory buffer.
    *
    * This is potentially unsafe.
    * @return a void pointer to the memory buffer.
    */
-  void*         get_raw_handle();
-  /**}*/
+    void *get_raw_handle();
+    /**}*/
 
 private:
-  /* @name Private Variables
+    /* @name Private Variables
    */
-  /*{*/
-  bool         allocated; /**< Whether memory buffer is allocated or borrowed
+    /*{*/
+    bool allocated; /**< Whether memory buffer is allocated or borrowed
                              This is used to decide whether to release memory or not.*/
-  uint32_t     aligned_to; /**< Memory boundary the buffer is aligned to. Zero
+    uint32_t aligned_to; /**< Memory boundary the buffer is aligned to. Zero
                             represents unaligned allocation. */
-  std::size_t  size; /**< Buffer size in bytes. In case of borrowed buffer this is
+    std::size_t
+            size; /**< Buffer size in bytes. In case of borrowed buffer this is
                         given by the framework, and ZenDNNL trusts the size given. */
-  void*        raw_ptr; /**< Raw pointer to the memory buffer */
-  /*}*/
+    void *raw_ptr; /**< Raw pointer to the memory buffer */
+    /*}*/
 };
 
-} //memory
-} //zendnnl
+} // namespace memory
+} // namespace zendnnl
 #endif

@@ -14,89 +14,89 @@
 # * limitations under the License.
 # *******************************************************************************/
 
-#include "tensor_example.hpp"
-#include "sample_example.hpp"
-#include "matmul_example.hpp"
+#include <iostream>
 #include "batchmatmul_example.hpp"
-#include "reorder_example.hpp"
 #include "compare_op_example.hpp"
 #include "embedding_bag_example.hpp"
-#include "lowoha_matmul_example.hpp"
-#include "lowoha_group_matmul_example.hpp"
 #include "lowoha_conv2d_example.hpp"
+#include "lowoha_group_matmul_example.hpp"
+#include "lowoha_matmul_example.hpp"
+#include "lowoha_normalization_example.hpp"
+#include "lowoha_pooling_example.hpp"
 #include "lowoha_reorder_example.hpp"
 #include "lowoha_softmax_example.hpp"
-#include "lowoha_pooling_example.hpp"
-#include "lowoha_normalization_example.hpp"
-#include <iostream>
+#include "matmul_example.hpp"
+#include "reorder_example.hpp"
+#include "sample_example.hpp"
 #include "sdpa_example.hpp"
+#include "tensor_example.hpp"
 
-#define  OK          (0)
-#define  NOT_OK      (1)
+#define OK (0)
+#define NOT_OK (1)
 
 using namespace zendnnl::interface;
 using namespace zendnnl::examples;
 
 int main() {
-  try {
-    /** Tensor functionality examples.
+    try {
+        /** Tensor functionality examples.
      *  Demonstrates strided, unaligned allocation, aligned allocation,
      *  constness of tensor functionalities of tensor.
      */
-    tensor_unaligned_allocation_example();
-    tensor_aligned_allocation_example();
-    tensor_strided_aligned_allocation_example();
-    tensor_copy_and_compare_example();
-    tensor_move_and_refcount_example();
-    tensor_constness_example();
-    tensor_create_alike_example();
-    tensor_broadcast_example();
-    tensor_axes_permutation_example();
-    tensor_quantization_example();
+        tensor_unaligned_allocation_example();
+        tensor_aligned_allocation_example();
+        tensor_strided_aligned_allocation_example();
+        tensor_copy_and_compare_example();
+        tensor_move_and_refcount_example();
+        tensor_constness_example();
+        tensor_create_alike_example();
+        tensor_broadcast_example();
+        tensor_axes_permutation_example();
+        tensor_quantization_example();
 
-    /** MatMul operator functionality examples.
+        /** MatMul operator functionality examples.
     *  Demonstrates fused post-ops, different data types computation,
     *  strided input MatMul functionalities of MatMul operator.
     */
-    matmul_relu_f32_kernel_example();
-    matmul_relu_bf16_kernel_example();
-    matmul_silu_add_int8_kernel_example();
-    matmul_mul_silu_mul_f32_kernel_example();
-    matmul_silu_mul_bf16_kernel_example();
-    matmul_strided_f32_kernel_example();
-    matmul_relu_forced_ref_kernel_example();
-    matmul_broadcast_example(); //2d mm broadcast example
-    run_lowoha_matmul_fp32_test();
-    run_lowoha_matmul_f16_test();
-    matmul_woq_bf16_kernel_example();
-    run_lowoha_matmul_woq_bf16s4_test();
-    run_lowoha_matmul_woq_bf16u4_test();
-    run_lowoha_matmul_w4a8_test();
-    run_lowoha_matmul_int8_caching_test();
+        matmul_relu_f32_kernel_example();
+        matmul_relu_bf16_kernel_example();
+        matmul_silu_add_int8_kernel_example();
+        matmul_mul_silu_mul_f32_kernel_example();
+        matmul_silu_mul_bf16_kernel_example();
+        matmul_strided_f32_kernel_example();
+        matmul_relu_forced_ref_kernel_example();
+        matmul_broadcast_example(); //2d mm broadcast example
+        run_lowoha_matmul_fp32_test();
+        run_lowoha_matmul_f16_test();
+        matmul_woq_bf16_kernel_example();
+        run_lowoha_matmul_woq_bf16s4_test();
+        run_lowoha_matmul_woq_bf16u4_test();
+        run_lowoha_matmul_w4a8_test();
+        run_lowoha_matmul_int8_caching_test();
 
-    /** Group matmul (`group_matmul_direct`) operator examples.
+        /** Group matmul (`group_matmul_direct`) operator examples.
      *  Demonstrates group GEMM API for multiple independent matmul operations.
      */
-    group_matmul_f32_kernel_example();
+        group_matmul_f32_kernel_example();
 
-    /** Sequential GEMM operator functionality examples.
+        /** Sequential GEMM operator functionality examples.
      *  Demonstrates sequential (linear) GEMM using group_matmul_direct API.
      */
-    sequential_gemm_f32_kernel_example();
+        sequential_gemm_f32_kernel_example();
 
-    /** Group matmul FP32, BF16, and MoE post-op examples.
+        /** Group matmul FP32, BF16, and MoE post-op examples.
      *  Demonstrates parallel group GEMM with BF16, and the MoE
      *  weighted-reduce post-op that fuses expert outputs.
      */
-    group_matmul_fp32_example();
-    group_matmul_bf16_example();
-    group_matmul_moe_w4a8_example();
-    group_matmul_moe_postop_example();
-    group_matmul_gated_act_example();
-    group_matmul_fused_moe_example();
-    group_matmul_fused_moe_internal_alloc_example();
+        group_matmul_fp32_example();
+        group_matmul_bf16_example();
+        group_matmul_moe_w4a8_example();
+        group_matmul_moe_postop_example();
+        group_matmul_gated_act_example();
+        group_matmul_fused_moe_example();
+        group_matmul_fused_moe_internal_alloc_example();
 
-    /** LOWOHA Conv2D operator functionality examples.
+        /** LOWOHA Conv2D operator functionality examples.
      *  Demonstrates 2D convolution with low-overhead API including:
      *  - Basic FP32 and BF16 convolutions
      *  - Depthwise convolution (MobileNet pattern)
@@ -105,204 +105,203 @@ int main() {
      *  - Reference kernel implementation
      *  - OneDNN vs Reference accuracy comparison
      */
-    run_lowoha_conv2d_fp32_test();
-    run_lowoha_conv2d_bf16_test();
-    run_lowoha_depthwise_conv2d_test();
-    run_lowoha_strided_conv2d_test();
-    run_lowoha_dilated_conv2d_test();
+        run_lowoha_conv2d_fp32_test();
+        run_lowoha_conv2d_bf16_test();
+        run_lowoha_depthwise_conv2d_test();
+        run_lowoha_strided_conv2d_test();
+        run_lowoha_dilated_conv2d_test();
 
-    /** LOWOHA Reorder operator functionality examples.
+        /** LOWOHA Reorder operator functionality examples.
      *  Demonstrates data type conversion between BF16 and INT8/UINT8 using
      *  the low-overhead LOWOHA reorder API.
      */
-    // BF16 <-> INT8/UINT8 tests
-    run_lowoha_reorder_bf16_to_int8_test();
-    run_lowoha_reorder_int8_to_bf16_test();
-    run_lowoha_reorder_bf16_to_uint8_test();
-    run_lowoha_reorder_uint8_to_bf16_test();
-    run_lowoha_reorder_bf16_to_s8_per_tensor_test();
-    run_lowoha_reorder_bf16_to_s8_per_channel_test();
-    run_lowoha_reorder_bf16_to_s8_per_channel_row_test();
-    run_lowoha_reorder_bf16_to_s8_per_group_test();
-    run_lowoha_reorder_bf16_to_s8_per_group_col_test();
-    run_lowoha_reorder_bf16_to_s8_mixed_granularity_test();
-    run_lowoha_reorder_bf16_to_s8_mixed_row_group_test();
-    run_lowoha_reorder_bf16_to_s8_batched_test();
-    run_lowoha_reorder_s8_to_bf16_per_tensor_test();
-    run_lowoha_reorder_s8_to_bf16_per_channel_test();
-    run_lowoha_reorder_s8_to_bf16_per_channel_row_test();
-    run_lowoha_reorder_s8_to_bf16_per_group_test();
-    run_lowoha_reorder_s8_to_bf16_per_group_col_test();
-    run_lowoha_reorder_s8_to_bf16_mixed_granularity_test();
-    run_lowoha_reorder_s8_to_bf16_mixed_row_group_test();
-    run_lowoha_reorder_bf16_to_s8_strided_2d_test();
-    run_lowoha_reorder_bf16_to_s8_strided_3d_test();
-    run_lowoha_reorder_bf16_to_s8_strided_row_padding_test();
+        // BF16 <-> INT8/UINT8 tests
+        run_lowoha_reorder_bf16_to_int8_test();
+        run_lowoha_reorder_int8_to_bf16_test();
+        run_lowoha_reorder_bf16_to_uint8_test();
+        run_lowoha_reorder_uint8_to_bf16_test();
+        run_lowoha_reorder_bf16_to_s8_per_tensor_test();
+        run_lowoha_reorder_bf16_to_s8_per_channel_test();
+        run_lowoha_reorder_bf16_to_s8_per_channel_row_test();
+        run_lowoha_reorder_bf16_to_s8_per_group_test();
+        run_lowoha_reorder_bf16_to_s8_per_group_col_test();
+        run_lowoha_reorder_bf16_to_s8_mixed_granularity_test();
+        run_lowoha_reorder_bf16_to_s8_mixed_row_group_test();
+        run_lowoha_reorder_bf16_to_s8_batched_test();
+        run_lowoha_reorder_s8_to_bf16_per_tensor_test();
+        run_lowoha_reorder_s8_to_bf16_per_channel_test();
+        run_lowoha_reorder_s8_to_bf16_per_channel_row_test();
+        run_lowoha_reorder_s8_to_bf16_per_group_test();
+        run_lowoha_reorder_s8_to_bf16_per_group_col_test();
+        run_lowoha_reorder_s8_to_bf16_mixed_granularity_test();
+        run_lowoha_reorder_s8_to_bf16_mixed_row_group_test();
+        run_lowoha_reorder_bf16_to_s8_strided_2d_test();
+        run_lowoha_reorder_bf16_to_s8_strided_3d_test();
+        run_lowoha_reorder_bf16_to_s8_strided_row_padding_test();
 
-    // FP32 <-> INT8/UINT8 tests
-    run_lowoha_reorder_f32_to_int8_test();
-    run_lowoha_reorder_int8_to_f32_test();
-    run_lowoha_reorder_f32_to_uint8_test();
-    run_lowoha_reorder_uint8_to_f32_test();
-    run_lowoha_reorder_f32_to_s8_per_tensor_test();
-    run_lowoha_reorder_f32_to_s8_per_channel_test();
-    run_lowoha_reorder_f32_to_s8_per_channel_row_test();
-    run_lowoha_reorder_f32_to_s8_per_group_test();
-    run_lowoha_reorder_f32_to_s8_per_group_col_test();
-    run_lowoha_reorder_f32_to_s8_mixed_granularity_test();
-    run_lowoha_reorder_f32_to_s8_mixed_row_group_test();
-    run_lowoha_reorder_f32_to_s8_batched_test();
-    run_lowoha_reorder_s8_to_f32_per_tensor_test();
-    run_lowoha_reorder_s8_to_f32_per_channel_test();
-    run_lowoha_reorder_s8_to_f32_per_channel_row_test();
-    run_lowoha_reorder_s8_to_f32_per_group_test();
-    run_lowoha_reorder_s8_to_f32_per_group_col_test();
-    run_lowoha_reorder_s8_to_f32_mixed_granularity_test();
-    run_lowoha_reorder_s8_to_f32_mixed_row_group_test();
-    run_lowoha_reorder_f32_to_s8_strided_2d_test();
-    run_lowoha_reorder_f32_to_s8_strided_3d_test();
-    run_lowoha_reorder_f32_to_s8_strided_row_padding_test();
+        // FP32 <-> INT8/UINT8 tests
+        run_lowoha_reorder_f32_to_int8_test();
+        run_lowoha_reorder_int8_to_f32_test();
+        run_lowoha_reorder_f32_to_uint8_test();
+        run_lowoha_reorder_uint8_to_f32_test();
+        run_lowoha_reorder_f32_to_s8_per_tensor_test();
+        run_lowoha_reorder_f32_to_s8_per_channel_test();
+        run_lowoha_reorder_f32_to_s8_per_channel_row_test();
+        run_lowoha_reorder_f32_to_s8_per_group_test();
+        run_lowoha_reorder_f32_to_s8_per_group_col_test();
+        run_lowoha_reorder_f32_to_s8_mixed_granularity_test();
+        run_lowoha_reorder_f32_to_s8_mixed_row_group_test();
+        run_lowoha_reorder_f32_to_s8_batched_test();
+        run_lowoha_reorder_s8_to_f32_per_tensor_test();
+        run_lowoha_reorder_s8_to_f32_per_channel_test();
+        run_lowoha_reorder_s8_to_f32_per_channel_row_test();
+        run_lowoha_reorder_s8_to_f32_per_group_test();
+        run_lowoha_reorder_s8_to_f32_per_group_col_test();
+        run_lowoha_reorder_s8_to_f32_mixed_granularity_test();
+        run_lowoha_reorder_s8_to_f32_mixed_row_group_test();
+        run_lowoha_reorder_f32_to_s8_strided_2d_test();
+        run_lowoha_reorder_f32_to_s8_strided_3d_test();
+        run_lowoha_reorder_f32_to_s8_strided_row_padding_test();
 
-    // FP32 <-> BF16 tests (with optional scale/zero-point)
-    run_lowoha_reorder_f32_to_bf16_simple_test();
-    run_lowoha_reorder_f32_to_bf16_with_scale_test();
-    run_lowoha_reorder_bf16_to_f32_simple_test();
-    run_lowoha_reorder_bf16_to_f32_with_scale_test();
-    run_lowoha_reorder_f32_to_bf16_per_channel_test();
-    run_lowoha_reorder_f32_to_bf16_per_group_test();
-    run_lowoha_reorder_bf16_to_f32_per_channel_test();
-    run_lowoha_reorder_f32_to_bf16_strided_2d_test();
-    run_lowoha_reorder_f32_to_bf16_batched_test();
+        // FP32 <-> BF16 tests (with optional scale/zero-point)
+        run_lowoha_reorder_f32_to_bf16_simple_test();
+        run_lowoha_reorder_f32_to_bf16_with_scale_test();
+        run_lowoha_reorder_bf16_to_f32_simple_test();
+        run_lowoha_reorder_bf16_to_f32_with_scale_test();
+        run_lowoha_reorder_f32_to_bf16_per_channel_test();
+        run_lowoha_reorder_f32_to_bf16_per_group_test();
+        run_lowoha_reorder_bf16_to_f32_per_channel_test();
+        run_lowoha_reorder_f32_to_bf16_strided_2d_test();
+        run_lowoha_reorder_f32_to_bf16_batched_test();
 
-    // Dynamic quantization tests
-    // ---- BF16 -> S8 Symmetric Tests ----
-    run_lowoha_reorder_dynamic_quant_per_tensor_test();       // BF16->S8 per-tensor
-    run_lowoha_reorder_dynamic_quant_per_channel_row_test();  // BF16->S8 per-token
+        // Dynamic quantization tests
+        // ---- BF16 -> S8 Symmetric Tests ----
+        run_lowoha_reorder_dynamic_quant_per_tensor_test(); // BF16->S8 per-tensor
+        run_lowoha_reorder_dynamic_quant_per_channel_row_test(); // BF16->S8 per-token
 
-    // ---- F32 -> S8 Symmetric Tests ----
-    run_lowoha_reorder_dynamic_quant_per_channel_col_test();  // F32->S8 per-column
-    run_lowoha_reorder_dynamic_quant_per_group_row_test();    // F32->S8 per-group
-    run_lowoha_reorder_dynamic_quant_f32_to_s8_test();        // F32->S8 per-tensor
+        // ---- F32 -> S8 Symmetric Tests ----
+        run_lowoha_reorder_dynamic_quant_per_channel_col_test(); // F32->S8 per-column
+        run_lowoha_reorder_dynamic_quant_per_group_row_test(); // F32->S8 per-group
+        run_lowoha_reorder_dynamic_quant_f32_to_s8_test(); // F32->S8 per-tensor
 
-    // ---- Compute-Only Mode ----
-    run_lowoha_reorder_dynamic_quant_compute_only_test();     // Compute scale only
+        // ---- Compute-Only Mode ----
+        run_lowoha_reorder_dynamic_quant_compute_only_test(); // Compute scale only
 
-    // ---- F32 -> U8 Asymmetric Tests ----
-    run_lowoha_reorder_dynamic_quant_f32_to_u8_test();        // F32->U8 per-tensor
-    run_lowoha_reorder_dynamic_quant_f32_to_u8_per_col_test();// F32->U8 per-column
+        // ---- F32 -> U8 Asymmetric Tests ----
+        run_lowoha_reorder_dynamic_quant_f32_to_u8_test(); // F32->U8 per-tensor
+        run_lowoha_reorder_dynamic_quant_f32_to_u8_per_col_test(); // F32->U8 per-column
 
-    // ---- BF16 -> U8 Asymmetric Tests ----
-    run_lowoha_reorder_dynamic_quant_bf16_to_u8_test();          // BF16->U8 per-tensor
-    run_lowoha_reorder_dynamic_quant_bf16_to_u8_per_token_test();// BF16->U8 per-token
-    run_lowoha_reorder_dynamic_quant_bf16_to_u8_per_group_test();// BF16->U8 per-group
+        // ---- BF16 -> U8 Asymmetric Tests ----
+        run_lowoha_reorder_dynamic_quant_bf16_to_u8_test(); // BF16->U8 per-tensor
+        run_lowoha_reorder_dynamic_quant_bf16_to_u8_per_token_test(); // BF16->U8 per-token
+        run_lowoha_reorder_dynamic_quant_bf16_to_u8_per_group_test(); // BF16->U8 per-group
 
-    // BF16 scale tests (scale buffer stored as bf16 instead of f32)
-    run_lowoha_reorder_bf16_scale_per_tensor_quant_test();     // BF16->S8 with bf16 scale
-    run_lowoha_reorder_bf16_scale_per_channel_dequant_test();  // S8->BF16 with bf16 scales
-    run_lowoha_reorder_bf16_scale_f32_to_s8_test();            // FP32->S8 with bf16 scale
-    run_lowoha_reorder_bf16_scale_dynamic_quant_test();        // Dynamic quant with bf16 scale output
+        // BF16 scale tests (scale buffer stored as bf16 instead of f32)
+        run_lowoha_reorder_bf16_scale_per_tensor_quant_test(); // BF16->S8 with bf16 scale
+        run_lowoha_reorder_bf16_scale_per_channel_dequant_test(); // S8->BF16 with bf16 scales
+        run_lowoha_reorder_bf16_scale_f32_to_s8_test(); // FP32->S8 with bf16 scale
+        run_lowoha_reorder_bf16_scale_dynamic_quant_test(); // Dynamic quant with bf16 scale output
 
-    // Weight prepack examples (lowoha_operators/reorder/prepack).
-    // Each example exposes algo + shape as tunable local variables at
-    // the top of the function body — flip them to try other backends.
-    run_lowoha_weight_prepack_f32_test();                      // F32 weight prepack
-    run_lowoha_weight_prepack_bf16_test();                     // BF16 weight prepack
-    run_lowoha_weight_prepack_s8_test();                       // S8 weight prepack
+        // Weight prepack examples (lowoha_operators/reorder/prepack).
+        // Each example exposes algo + shape as tunable local variables at
+        // the top of the function body — flip them to try other backends.
+        run_lowoha_weight_prepack_f32_test(); // F32 weight prepack
+        run_lowoha_weight_prepack_bf16_test(); // BF16 weight prepack
+        run_lowoha_weight_prepack_s8_test(); // S8 weight prepack
 
-    /** LOWOHA Softmax operator functionality examples.
+        /** LOWOHA Softmax operator functionality examples.
      *  Demonstrates softmax, log-softmax, and softmin operations using the
      *  low-overhead LOWOHA API with support for multi-dimensional tensors.
      */
-    run_lowoha_softmax_fp32_test();
-    run_lowoha_softmax_bf16_test();
-    run_lowoha_softmin_fp32_test();
+        run_lowoha_softmax_fp32_test();
+        run_lowoha_softmax_bf16_test();
+        run_lowoha_softmin_fp32_test();
 
-    /** LOWOHA Normalization operator functionality examples.
+        /** LOWOHA Normalization operator functionality examples.
      *  Demonstrates LayerNorm, RMSNorm, and BatchNorm operations using the
      *  low-overhead LOWOHA API with FP32 data type.
      */
-    run_lowoha_layer_norm_fp32_example();
-    run_lowoha_layer_norm_3d_fp32_example();
-    run_lowoha_rms_norm_fp32_example();
-    run_lowoha_batch_norm_fp32_example();
-    run_lowoha_fused_add_rms_norm_fp32_example();
+        run_lowoha_layer_norm_fp32_example();
+        run_lowoha_layer_norm_3d_fp32_example();
+        run_lowoha_rms_norm_fp32_example();
+        run_lowoha_batch_norm_fp32_example();
+        run_lowoha_fused_add_rms_norm_fp32_example();
 
-    /** LOWOHA Pooling operator functionality examples.
+        /** LOWOHA Pooling operator functionality examples.
      *  Demonstrates max pooling and average pooling operations using the
      *  low-overhead LOWOHA API with various configurations.
      */
-    run_lowoha_maxpool_fp32_test();
-    run_lowoha_avgpool_fp32_test();
-    run_lowoha_maxpool_bf16_test();
-    run_lowoha_avgpool_padding_modes_test();
+        run_lowoha_maxpool_fp32_test();
+        run_lowoha_avgpool_fp32_test();
+        run_lowoha_maxpool_bf16_test();
+        run_lowoha_avgpool_padding_modes_test();
 
-    /** BatchMatMul operator functionality examples.
+        /** BatchMatMul operator functionality examples.
      *  Demonstrates fused post-ops, different data types computation,
      */
-    batch_matmul_relu_f32_kernel_example();
-    batch_matmul_wei2d_relu_f32_kernel_example();
-    batch_matmul_inp2d_relu_f32_kernel_example();
-    batch_matmul_relu_bf16_kernel_example();
-    batch_matmul_relu_forced_ref_kernel_example();
-    batch_matmul_mul_silu_mul_f32_kernel_example();
-    batch_matmul_silu_mul_bf16_kernel_example();
-    batchmatmul_broadcast_example();
+        batch_matmul_relu_f32_kernel_example();
+        batch_matmul_wei2d_relu_f32_kernel_example();
+        batch_matmul_inp2d_relu_f32_kernel_example();
+        batch_matmul_relu_bf16_kernel_example();
+        batch_matmul_relu_forced_ref_kernel_example();
+        batch_matmul_mul_silu_mul_f32_kernel_example();
+        batch_matmul_silu_mul_bf16_kernel_example();
+        batchmatmul_broadcast_example();
 
-    /** Reorder operator functionality examples.
+        /** Reorder operator functionality examples.
      *  Demonstrates reordering memory from contiguous to blocked format and vice versa,
      *  inplace reorder functionalities of Reorder operator.
      */
-    reorder_outofplace_f32_kernel_contiguous_blocked_example();
-    reorder_outofplace_s8_kernel_contiguous_blocked_example();
-    reorder_outofplace_matmul_relu_f32_kernel_contiguous_blocked_example();
-    reorder_inplace_bf16_kernel_contiguous_blocked_example();
-    reorder_inplace_matmul_relu_bf16_kernel_contiguous_blocked_example();
-    reorder_outofplace_bf16_kernel_blocked_contiguous_example();
-    reorder_inplace_s8_kernel_blocked_contiguous_example();
-    reorder_unreorder_outofplace_bf16_kernel_example();
+        reorder_outofplace_f32_kernel_contiguous_blocked_example();
+        reorder_outofplace_s8_kernel_contiguous_blocked_example();
+        reorder_outofplace_matmul_relu_f32_kernel_contiguous_blocked_example();
+        reorder_inplace_bf16_kernel_contiguous_blocked_example();
+        reorder_inplace_matmul_relu_bf16_kernel_contiguous_blocked_example();
+        reorder_outofplace_bf16_kernel_blocked_contiguous_example();
+        reorder_inplace_s8_kernel_blocked_contiguous_example();
+        reorder_unreorder_outofplace_bf16_kernel_example();
 
-    /** Compare operator functionality examples.
+        /** Compare operator functionality examples.
      *  Demonstrates compare operator usage for comparison of tensors.
      */
-    compare_op_example();
-    compare_ref_and_aocl_matmul_kernel_example();
+        compare_op_example();
+        compare_ref_and_aocl_matmul_kernel_example();
 
-    /** Embedding Bag operator functionality examples.
+        /** Embedding Bag operator functionality examples.
      *  Demonstrates embedding bag operator usage for efficient lookup of embeddings.
      */
-    embedding_bag_f32_kernel_example();
-    embedding_bag_f32_forced_ref_kernel_example();
-    embedding_f32_kernel_example();
-    embedding_bag_f16_kernel_example();
-    embedding_bag_u4_kernel_example();
-    embedding_bag_u4_ref_kernel_example();
-    embedding_bag_s8_f16_kernel_example();
-    group_embedding_bag_direct_example();
+        embedding_bag_f32_kernel_example();
+        embedding_bag_f32_forced_ref_kernel_example();
+        embedding_f32_kernel_example();
+        embedding_bag_f16_kernel_example();
+        embedding_bag_u4_kernel_example();
+        embedding_bag_u4_ref_kernel_example();
+        embedding_bag_s8_f16_kernel_example();
+        group_embedding_bag_direct_example();
 
-    /** Sample functionality examples.
+        /** Sample functionality examples.
      *
      */
-    sample_f32_kernel_example();
-    sample_bf16_kernel_example();
+        sample_f32_kernel_example();
+        sample_bf16_kernel_example();
 
-    /** SDPA encoder functionality examples.
+        /** SDPA encoder functionality examples.
      *  Demonstrates SDPA encoder operator usage for transformer attention.
      */
-    sdpa_example();
-    sdpa_direct_example();
+        sdpa_example();
+        sdpa_direct_example();
 
-    return OK;
-  }
-  catch (const zendnnl::error_handling::exception_t &e) {
-    std::cerr << "ZenDNN exception caught in main: " << e.what() << std::endl;
-    return NOT_OK;
-  }
-  catch (const std::exception &e) {
-    std::cerr << "Standard exception caught in main: " << e.what() << std::endl;
-    return NOT_OK;
-  }
-  catch (...) {
-    std::cerr << "Unknown exception caught in main" << std::endl;
-    return NOT_OK;
-  }
+        return OK;
+    } catch (const zendnnl::error_handling::exception_t &e) {
+        std::cerr << "ZenDNN exception caught in main: " << e.what()
+                  << std::endl;
+        return NOT_OK;
+    } catch (const std::exception &e) {
+        std::cerr << "Standard exception caught in main: " << e.what()
+                  << std::endl;
+        return NOT_OK;
+    } catch (...) {
+        std::cerr << "Unknown exception caught in main" << std::endl;
+        return NOT_OK;
+    }
 }

@@ -35,8 +35,8 @@ struct EmbagConfig;
  * @param table Vector to store created table tensors.
  * @return int OK (0) on success, NOT_OK (1) on failure.
  */
-int create_table_tensor(tensor_factory_t &tensor_factory, EmbagConfig cfg,
-                        tensor_t &table);
+int create_table_tensor(
+        tensor_factory_t &tensor_factory, EmbagConfig cfg, tensor_t &table);
 
 /**
  * @brief Creates indices tensor for the embag benchmark.
@@ -48,8 +48,8 @@ int create_table_tensor(tensor_factory_t &tensor_factory, EmbagConfig cfg,
  * @param indices Vector to store created indices values.
  * @return int OK (0) on success, NOT_OK (1) on failure.
  */
-int create_indices_tensor(tensor_factory_t &tensor_factory, EmbagConfig cfg,
-                          tensor_t &indices);
+int create_indices_tensor(
+        tensor_factory_t &tensor_factory, EmbagConfig cfg, tensor_t &indices);
 
 /**
  * @brief Creates offsets tensor for the embag benchmark.
@@ -61,8 +61,8 @@ int create_indices_tensor(tensor_factory_t &tensor_factory, EmbagConfig cfg,
  * @param offsets Vector to store created offsets values.
  * @return int OK (0) on success, NOT_OK (1) on failure.
  */
-int create_offsets_tensor(tensor_factory_t &tensor_factory, EmbagConfig cfg,
-                          tensor_t &offsets);
+int create_offsets_tensor(
+        tensor_factory_t &tensor_factory, EmbagConfig cfg, tensor_t &offsets);
 
 /**
  * @brief Creates weight tensor for the embag benchmark.
@@ -74,8 +74,8 @@ int create_offsets_tensor(tensor_factory_t &tensor_factory, EmbagConfig cfg,
  * @param weights Vector to store created weights tensor.
  * @return int OK (0) on success, NOT_OK (1) on failure.
  */
-int create_weights_tensor(tensor_factory_t &tensor_factory, EmbagConfig cfg,
-                          tensor_t &weights);
+int create_weights_tensor(
+        tensor_factory_t &tensor_factory, EmbagConfig cfg, tensor_t &weights);
 
 /**
  * @brief Creates output tensors for the embag benchmark.
@@ -87,8 +87,8 @@ int create_weights_tensor(tensor_factory_t &tensor_factory, EmbagConfig cfg,
  * @param output Vector to store created output tensors.
  * @return int OK (0) on success, NOT_OK (1) on failure.
  */
-int create_output_tensor(tensor_factory_t &tensor_factory, EmbagConfig cfg,
-                         tensor_t &output);
+int create_output_tensor(
+        tensor_factory_t &tensor_factory, EmbagConfig cfg, tensor_t &output);
 
 } // namespace embag
 } // namespace benchdnn

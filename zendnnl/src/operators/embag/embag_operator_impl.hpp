@@ -1,5 +1,5 @@
 /********************************************************************************
-# * Copyright (c) 2025 Advanced Micro Devices, Inc. All rights reserved.
+# * Copyright (c) 2025-2026 Advanced Micro Devices, Inc. All rights reserved.
 # *
 # * Licensed under the Apache License, Version 2.0 (the "License");
 # * you may not use this file except in compliance with the License.
@@ -17,8 +17,8 @@
 #define _EMBAG_OPERATOR_IMPL_HPP_
 
 #include "common/zendnnl_global.hpp"
-#include "operators/common/operator_impl.hpp"
 #include "embag_context.hpp"
+#include "operators/common/operator_impl.hpp"
 
 namespace zendnnl {
 namespace ops {
@@ -54,58 +54,57 @@ namespace ops {
  */
 class embag_impl_t final : public operator_impl_t<embag_context_t> {
 public:
-  /** @brief Self type **/
-  using self_type = embag_impl_t;
-  /** @brief Parent type **/
-  using parent_type = operator_impl_t<embag_context_t>;
-  /** @brief context type **/
-  using context_type = parent_type::context_type;
-  /** @brief kernel type **/
-  using   kernel_type =  parent_type::kernel_type;
-  /** @brief Shared pointer to kernels */
-  using   kernel_sptr_type =  parent_type::kernel_sptr_type;
-  /** @brief A map type from strings to tensors */
-  using   tensor_map_type = parent_type::tensor_map_type;
-  /** @brief Kernel handle type */
-  using   create_kernel_handle_type  = parent_type::create_kernel_handle_type;
+    /** @brief Self type **/
+    using self_type = embag_impl_t;
+    /** @brief Parent type **/
+    using parent_type = operator_impl_t<embag_context_t>;
+    /** @brief context type **/
+    using context_type = parent_type::context_type;
+    /** @brief kernel type **/
+    using kernel_type = parent_type::kernel_type;
+    /** @brief Shared pointer to kernels */
+    using kernel_sptr_type = parent_type::kernel_sptr_type;
+    /** @brief A map type from strings to tensors */
+    using tensor_map_type = parent_type::tensor_map_type;
+    /** @brief Kernel handle type */
+    using create_kernel_handle_type = parent_type::create_kernel_handle_type;
 
 protected:
-  /** @brief Validate input/output
+    /** @brief Validate input/output
    *
    * Validates if all mandatory inputs and outputs are given.
    * @return @c status_t::success if successful.
    */
-  status_t validate() override;
+    status_t validate() override;
 
-  /** @brief Validate forced kernel
+    /** @brief Validate forced kernel
    *
    * Validates if forced kernel is valid.
    * @return @c status_t::success if successful.
    */
-  status_t validate_forced_kernel() override;
+    status_t validate_forced_kernel() override;
 
-  /** @brief Select kernel based on input data type.
+    /** @brief Select kernel based on input data type.
    * @return @c status_t::success if successful.
    */
-  status_t kernel_factory() override;
+    status_t kernel_factory() override;
 
-  /** @brief Preprocess operator
+    /** @brief Preprocess operator
    * @return @c status_t::success if successful.
    */
-  status_t preprocess();
+    status_t preprocess();
 
-  /** @brief Print operator create information
+    /** @brief Print operator create information
    * @return @c std::string
    */
-  std::string op_create_info() override;
+    std::string op_create_info() override;
 
-  /** @brief Print operator execute information
+    /** @brief Print operator execute information
    * @return @c std::string
    */
-  std::string op_execute_info() override;
+    std::string op_execute_info() override;
 };
 
 } //namespace ops
 } //namespace zendnnl
 #endif
-

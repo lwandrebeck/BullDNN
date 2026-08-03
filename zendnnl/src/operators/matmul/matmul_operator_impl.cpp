@@ -19,841 +19,876 @@
 namespace zendnnl {
 namespace ops {
 
-status_t matmul_impl_t::validate_buffer_post_op(std::vector<uint64_t>
-    &output_size,
-    std::vector<post_op_t> &po,
-    std::map<std::string,tensor_t> &inputs) {
-  /**
+status_t matmul_impl_t::validate_buffer_post_op(
+        std::vector<uint64_t> &output_size, std::vector<post_op_t> &po,
+        std::map<std::string, tensor_t> &inputs) {
+    /**
   * @todo Add validation support for per tensor and per channel
   * for binary post-ops
   */
-  if (!po.empty()) {
-    for (const auto &op : po) {
-      if (op.type == post_op_type_t::binary_add) {
-        auto add_tensor_obj = inputs.find(op.binary_add_params.tensor_name);
-        if (add_tensor_obj == inputs.end()) {
-          apilog_error("Invalid post-op: ",
-                       op.binary_add_params.tensor_name, " buffer not passed.");
-          return status_t::failure;
-        }
-        // F16 binary post-op tensor requires AVX512-FP16 just like an F16
-        // src/wei/dst would. Reject early with isa_unsupported so callers
-        // (gtests, examples) can skip gracefully on non-FP16 hardware.
-        if (add_tensor_obj->second.get_data_type() == data_type_t::f16 &&
-            !platform_info.get_avx512_f16_status()) {
-          apilog_error("Binary post-op tensor '",
-                       op.binary_add_params.tensor_name,
-                       "' is F16 but platform lacks AVX512-FP16 "
-                       "(F16 data type is not supported on this platform).");
-          return status_t::isa_unsupported;
-        }
-        auto tensor_size = add_tensor_obj->second.get_size();
-        if (add_tensor_obj->second.get_order() == "ba") {
-          apilog_error("Invalid post-op: ",
-                       op.binary_add_params.tensor_name, " transposed buffer not supported.");
-          return status_t::failure;
-        }
-        /** todo: support 1d add scale*/
-        if (tensor_size.size() == 1 && output_size.size() == 2 &&
-            tensor_size[0] == output_size.at(1) &&
-            op.binary_add_params.scale == 1.0) {
-          continue;
-        }
-        // Row broadcast [1, N] (same as 1D length-N); only kernels that treat it as a
-        // row vector (not dense M×N matrix_add) may accept it.
-        else if (output_size.size() == 2 && tensor_size.size() == 2 &&
-                 tensor_size[0] == 1 &&
-                 tensor_size[1] == output_size.at(1) &&
-                 op.binary_add_params.scale == 1.0) {
-          if (!(forced_kernel.empty() ||
+    if (!po.empty()) {
+        for (const auto &op : po) {
+            if (op.type == post_op_type_t::binary_add) {
+                auto add_tensor_obj
+                        = inputs.find(op.binary_add_params.tensor_name);
+                if (add_tensor_obj == inputs.end()) {
+                    apilog_error("Invalid post-op: ",
+                            op.binary_add_params.tensor_name,
+                            " buffer not passed.");
+                    return status_t::failure;
+                }
+                // F16 binary post-op tensor requires AVX512-FP16 just like an F16
+                // src/wei/dst would. Reject early with isa_unsupported so callers
+                // (gtests, examples) can skip gracefully on non-FP16 hardware.
+                if (add_tensor_obj->second.get_data_type() == data_type_t::f16
+                        && !platform_info.get_avx512_f16_status()) {
+                    apilog_error("Binary post-op tensor '",
+                            op.binary_add_params.tensor_name,
+                            "' is F16 but platform lacks AVX512-FP16 "
+                            "(F16 data type is not supported on this "
+                            "platform).");
+                    return status_t::isa_unsupported;
+                }
+                auto tensor_size = add_tensor_obj->second.get_size();
+                if (add_tensor_obj->second.get_order() == "ba") {
+                    apilog_error("Invalid post-op: ",
+                            op.binary_add_params.tensor_name,
+                            " transposed buffer not supported.");
+                    return status_t::failure;
+                }
+                /** todo: support 1d add scale*/
+                if (tensor_size.size() == 1 && output_size.size() == 2
+                        && tensor_size[0] == output_size.at(1)
+                        && op.binary_add_params.scale == 1.0) {
+                    continue;
+                }
+                // Row broadcast [1, N] (same as 1D length-N); only kernels that treat it as a
+                // row vector (not dense M×N matrix_add) may accept it.
+                else if (output_size.size() == 2 && tensor_size.size() == 2
+                        && tensor_size[0] == 1
+                        && tensor_size[1] == output_size.at(1)
+                        && op.binary_add_params.scale == 1.0) {
+                    if (!(forced_kernel.empty() ||
 #if ZENDNNL_DEPENDS_AOCLDLP
-                forced_kernel == "aocl_dlp" ||
-                forced_kernel == "aocl_dlp_blocked" ||
+                                forced_kernel == "aocl_dlp"
+                                || forced_kernel == "aocl_dlp_blocked" ||
 #endif
-                forced_kernel == "onednn" || forced_kernel == "onednn_blocked" ||
-                forced_kernel == "reference")) {
-            apilog_error(add_tensor_obj->second.get_name(),
-                         " Invalid post-op: row-broadcast binary_add {1,N} is not supported for kernel ",
-                         forced_kernel, "; use a 1D length-N tensor or a supported kernel.");
-            return status_t::failure;
-          }
-          continue;
-        }
-        else if (output_size.size() == 2 && tensor_size.size() == 2 &&
-                 tensor_size[0] == output_size.at(0) &&
-                 tensor_size[1] == output_size.at(1)) {
-          continue;
-        }
-        // Batched output [B, M, N]: full 3D operand (supported only by onednn/onednn_blocked/reference kernels).
-        else if (tensor_size.size() == 3 && output_size.size() == 3 &&
-                 tensor_size[0] == output_size.at(0) &&
-                 tensor_size[1] == output_size.at(1) &&
-                 tensor_size[2] == output_size.at(2)) {
-          if (!(forced_kernel == "onednn" ||
-                forced_kernel == "onednn_blocked" ||
-                forced_kernel == "reference")) {
-            apilog_error(add_tensor_obj->second.get_name(),
-                         " Invalid post-op: full 3D binary_add {B,M,N} is not supported for kernel ",
-                         forced_kernel,
-                         "; use onednn/onednn_blocked/reference kernel.");
-            return status_t::failure;
-          }
-          continue;
-        }
-        // OneDNN supports only 3D Buffer Tensor.
-        else if (tensor_size.size() == 3 && output_size.size() == 3 &&
-                 (forced_kernel == "onednn" || forced_kernel == "reference") &&
-                 (tensor_size[1] == output_size.at(1) &&
-                  tensor_size[2] == output_size.at(2))) {
-          continue;
-        }
-        /** BMM postop check, Work only for 1D, 2D add tensor*/
-        //** Todo: support 3D add tensor*/
-        else if (tensor_size.size() == 1 && output_size.size() == 3 &&
-                 tensor_size[0] == output_size.at(2) && op.binary_add_params.scale == 1.0) {
-          continue;
-        }
-        else if (tensor_size.size() == 2 && output_size.size() == 3 &&
-                 (tensor_size[0] == output_size.at(1) && tensor_size[1] == output_size.at(2))) {
-          continue;
-        }
-        else {
-          apilog_error(add_tensor_obj->second.get_name(),
-                       " Invalid post-op: size mismatch for binary_add post op: Output_size=",
-                       output_size.size(), " Tensor_size=", tensor_size.size());
-          return status_t::failure;
-        }
-      }
-      else if (op.type == post_op_type_t::binary_mul) {
-        auto mul_tensor_obj = inputs.find(op.binary_mul_params.tensor_name);
-        if (mul_tensor_obj == inputs.end()) {
-          apilog_error("Invalid post-op: ",
-                       op.binary_mul_params.tensor_name, " buffer not passed.");
-          return status_t::failure;
-        }
-        // F16 binary post-op tensor requires AVX512-FP16 just like an F16
-        // src/wei/dst would. Reject early with isa_unsupported so callers
-        // (gtests, examples) can skip gracefully on non-FP16 hardware.
-        if (mul_tensor_obj->second.get_data_type() == data_type_t::f16 &&
-            !platform_info.get_avx512_f16_status()) {
-          apilog_error("Binary post-op tensor '",
-                       op.binary_mul_params.tensor_name,
-                       "' is F16 but platform lacks AVX512-FP16 "
-                       "(F16 data type is not supported on this platform).");
-          return status_t::isa_unsupported;
-        }
-        auto tensor_size = mul_tensor_obj->second.get_size();
-        if (mul_tensor_obj->second.get_order() == "ba") {
-          apilog_error("Invalid post-op: ",
-                       op.binary_mul_params.tensor_name, " transposed buffer not supported.");
-          return status_t::failure;
-        }
-        if (tensor_size.size() == 1 && output_size.size() == 2 &&
-            tensor_size[0] == output_size.at(1) &&
-            op.binary_mul_params.scale == 1.0) {
-          continue;
-        }
-        else if (output_size.size() == 2 && tensor_size.size() == 2 &&
-                 tensor_size[0] == 1 &&
-                 tensor_size[1] == output_size.at(1) &&
-                 op.binary_mul_params.scale == 1.0) {
-          if (!(forced_kernel.empty() ||
+                                forced_kernel == "onednn"
+                                || forced_kernel == "onednn_blocked"
+                                || forced_kernel == "reference")) {
+                        apilog_error(add_tensor_obj->second.get_name(),
+                                " Invalid post-op: row-broadcast binary_add "
+                                "{1,N} is not supported for kernel ",
+                                forced_kernel,
+                                "; use a 1D length-N tensor or a supported "
+                                "kernel.");
+                        return status_t::failure;
+                    }
+                    continue;
+                } else if (output_size.size() == 2 && tensor_size.size() == 2
+                        && tensor_size[0] == output_size.at(0)
+                        && tensor_size[1] == output_size.at(1)) {
+                    continue;
+                }
+                // Batched output [B, M, N]: full 3D operand (supported only by onednn/onednn_blocked/reference kernels).
+                else if (tensor_size.size() == 3 && output_size.size() == 3
+                        && tensor_size[0] == output_size.at(0)
+                        && tensor_size[1] == output_size.at(1)
+                        && tensor_size[2] == output_size.at(2)) {
+                    if (!(forced_kernel == "onednn"
+                                || forced_kernel == "onednn_blocked"
+                                || forced_kernel == "reference")) {
+                        apilog_error(add_tensor_obj->second.get_name(),
+                                " Invalid post-op: full 3D binary_add {B,M,N} "
+                                "is not supported for kernel ",
+                                forced_kernel,
+                                "; use onednn/onednn_blocked/reference "
+                                "kernel.");
+                        return status_t::failure;
+                    }
+                    continue;
+                }
+                // OneDNN supports only 3D Buffer Tensor.
+                else if (tensor_size.size() == 3 && output_size.size() == 3
+                        && (forced_kernel == "onednn"
+                                || forced_kernel == "reference")
+                        && (tensor_size[1] == output_size.at(1)
+                                && tensor_size[2] == output_size.at(2))) {
+                    continue;
+                }
+                /** BMM postop check, Work only for 1D, 2D add tensor*/
+                //** Todo: support 3D add tensor*/
+                else if (tensor_size.size() == 1 && output_size.size() == 3
+                        && tensor_size[0] == output_size.at(2)
+                        && op.binary_add_params.scale == 1.0) {
+                    continue;
+                } else if (tensor_size.size() == 2 && output_size.size() == 3
+                        && (tensor_size[0] == output_size.at(1)
+                                && tensor_size[1] == output_size.at(2))) {
+                    continue;
+                } else {
+                    apilog_error(add_tensor_obj->second.get_name(),
+                            " Invalid post-op: size mismatch for binary_add "
+                            "post op: Output_size=",
+                            output_size.size(),
+                            " Tensor_size=", tensor_size.size());
+                    return status_t::failure;
+                }
+            } else if (op.type == post_op_type_t::binary_mul) {
+                auto mul_tensor_obj
+                        = inputs.find(op.binary_mul_params.tensor_name);
+                if (mul_tensor_obj == inputs.end()) {
+                    apilog_error("Invalid post-op: ",
+                            op.binary_mul_params.tensor_name,
+                            " buffer not passed.");
+                    return status_t::failure;
+                }
+                // F16 binary post-op tensor requires AVX512-FP16 just like an F16
+                // src/wei/dst would. Reject early with isa_unsupported so callers
+                // (gtests, examples) can skip gracefully on non-FP16 hardware.
+                if (mul_tensor_obj->second.get_data_type() == data_type_t::f16
+                        && !platform_info.get_avx512_f16_status()) {
+                    apilog_error("Binary post-op tensor '",
+                            op.binary_mul_params.tensor_name,
+                            "' is F16 but platform lacks AVX512-FP16 "
+                            "(F16 data type is not supported on this "
+                            "platform).");
+                    return status_t::isa_unsupported;
+                }
+                auto tensor_size = mul_tensor_obj->second.get_size();
+                if (mul_tensor_obj->second.get_order() == "ba") {
+                    apilog_error("Invalid post-op: ",
+                            op.binary_mul_params.tensor_name,
+                            " transposed buffer not supported.");
+                    return status_t::failure;
+                }
+                if (tensor_size.size() == 1 && output_size.size() == 2
+                        && tensor_size[0] == output_size.at(1)
+                        && op.binary_mul_params.scale == 1.0) {
+                    continue;
+                } else if (output_size.size() == 2 && tensor_size.size() == 2
+                        && tensor_size[0] == 1
+                        && tensor_size[1] == output_size.at(1)
+                        && op.binary_mul_params.scale == 1.0) {
+                    if (!(forced_kernel.empty() ||
 #if ZENDNNL_DEPENDS_AOCLDLP
-                forced_kernel == "aocl_dlp" ||
-                forced_kernel == "aocl_dlp_blocked" ||
+                                forced_kernel == "aocl_dlp"
+                                || forced_kernel == "aocl_dlp_blocked" ||
 #endif
-                forced_kernel == "onednn" || forced_kernel == "onednn_blocked" ||
-                forced_kernel == "reference")) {
-            apilog_error(mul_tensor_obj->second.get_name(),
-                         " Invalid post-op: row-broadcast binary_mul {1,N} is not supported for kernel ",
-                         forced_kernel, "; use a 1D length-N tensor or a supported kernel.");
-            return status_t::failure;
-          }
-          continue;
+                                forced_kernel == "onednn"
+                                || forced_kernel == "onednn_blocked"
+                                || forced_kernel == "reference")) {
+                        apilog_error(mul_tensor_obj->second.get_name(),
+                                " Invalid post-op: row-broadcast binary_mul "
+                                "{1,N} is not supported for kernel ",
+                                forced_kernel,
+                                "; use a 1D length-N tensor or a supported "
+                                "kernel.");
+                        return status_t::failure;
+                    }
+                    continue;
+                } else if (output_size.size() == 2 && tensor_size.size() == 2
+                        && tensor_size[0] == output_size.at(0)
+                        && tensor_size[1] == output_size.at(1)) {
+                    continue;
+                } else if (tensor_size.size() == 3 && output_size.size() == 3
+                        && tensor_size[0] == output_size.at(0)
+                        && tensor_size[1] == output_size.at(1)
+                        && tensor_size[2] == output_size.at(2)) {
+                    if (!(forced_kernel == "onednn"
+                                || forced_kernel == "onednn_blocked"
+                                || forced_kernel == "reference")) {
+                        apilog_error(mul_tensor_obj->second.get_name(),
+                                " Invalid post-op: full 3D binary_mul {B,M,N} "
+                                "is not supported for kernel ",
+                                forced_kernel,
+                                "; use onednn/onednn_blocked/reference "
+                                "kernel.");
+                        return status_t::failure;
+                    }
+                    continue;
+                }
+                // BMM post-op broadcast checks for 3D output with 1D [N] or 2D [M, N]
+                // binary_mul tensors. Full 3D [B, M, N] binary_mul tensors are
+                // validated above (onednn/onednn_blocked/reference only).
+                else if (tensor_size.size() == 1 && output_size.size() == 3
+                        && tensor_size[0] == output_size.at(2)
+                        && op.binary_mul_params.scale == 1.0) {
+                    continue;
+                } else if (tensor_size.size() == 2 && output_size.size() == 3
+                        && (tensor_size[0] == output_size.at(1)
+                                && tensor_size[1] == output_size.at(2))) {
+                    continue;
+                }
+                // OneDNN supports only 3D Buffer Tensor
+                else if (tensor_size.size() == 3 && output_size.size() == 3
+                        && (forced_kernel == "onednn"
+                                || forced_kernel == "reference")
+                        && (tensor_size[1] == output_size.at(1)
+                                && tensor_size[2] == output_size.at(2))) {
+                    continue;
+                } else {
+                    apilog_error(mul_tensor_obj->second.get_name(),
+                            " Invalid post-op: size mismatch for binary_mul "
+                            "post op: Output_size=",
+                            output_size.size(),
+                            " Tensor_size=", tensor_size.size());
+                    return status_t::failure;
+                }
+            }
         }
-        else if (output_size.size() == 2 && tensor_size.size() == 2 &&
-                 tensor_size[0] == output_size.at(0) &&
-                 tensor_size[1] == output_size.at(1)) {
-          continue;
-        }
-        else if (tensor_size.size() == 3 && output_size.size() == 3 &&
-                 tensor_size[0] == output_size.at(0) &&
-                 tensor_size[1] == output_size.at(1) &&
-                 tensor_size[2] == output_size.at(2)) {
-          if (!(forced_kernel == "onednn" ||
-                forced_kernel == "onednn_blocked" ||
-                forced_kernel == "reference")) {
-            apilog_error(mul_tensor_obj->second.get_name(),
-                         " Invalid post-op: full 3D binary_mul {B,M,N} is not supported for kernel ",
-                         forced_kernel,
-                         "; use onednn/onednn_blocked/reference kernel.");
-            return status_t::failure;
-          }
-          continue;
-        }
-        // BMM post-op broadcast checks for 3D output with 1D [N] or 2D [M, N]
-        // binary_mul tensors. Full 3D [B, M, N] binary_mul tensors are
-        // validated above (onednn/onednn_blocked/reference only).
-        else if (tensor_size.size() == 1 && output_size.size()==3 &&
-                 tensor_size[0] == output_size.at(2) && op.binary_mul_params.scale == 1.0) {
-          continue;
-        }
-        else if (tensor_size.size() == 2 && output_size.size()==3 &&
-                 (tensor_size[0] == output_size.at(1) && tensor_size[1] == output_size.at(2))) {
-          continue;
-        }
-        // OneDNN supports only 3D Buffer Tensor
-        else if (tensor_size.size() == 3 && output_size.size() == 3 &&
-                 (forced_kernel == "onednn" || forced_kernel == "reference") &&
-                 (tensor_size[1] == output_size.at(1) &&
-                  tensor_size[2] == output_size.at(2))) {
-          continue;
-        }
-        else {
-          apilog_error(mul_tensor_obj->second.get_name(),
-                       " Invalid post-op: size mismatch for binary_mul post op: Output_size=",
-                       output_size.size(), " Tensor_size=", tensor_size.size());
-          return status_t::failure;
-        }
-      }
     }
-  }
-  return status_t::success;
+    return status_t::success;
 }
 
 status_t matmul_impl_t::update_matmul_kernel() {
-  matmul_config_t &matmul_config = matmul_config_t::instance();
+    matmul_config_t &matmul_config = matmul_config_t::instance();
 
-  // Use BMM algo for batch operations, otherwise use matmul algo
-  int32_t algo = is_bmm ? matmul_config.get_bmm_algo() : matmul_config.get_algo();
+    // Use BMM algo for batch operations, otherwise use matmul algo
+    int32_t algo
+            = is_bmm ? matmul_config.get_bmm_algo() : matmul_config.get_algo();
 
-  if (is_bmm && algo == static_cast<int>(matmul_algo_t::none)) {
-    algo = static_cast<int>(matmul_algo_t::aocl_dlp);
-  }
+    if (is_bmm && algo == static_cast<int>(matmul_algo_t::none)) {
+        algo = static_cast<int>(matmul_algo_t::aocl_dlp);
+    }
 
-  if (algo == static_cast<int>(matmul_algo_t::aocl_dlp)) {
-    forced_kernel = "aocl_dlp";
-  }
-  else if (algo == static_cast<int>(matmul_algo_t::aocl_dlp_blocked)) {
-    forced_kernel = "aocl_dlp_blocked";
-  }
-  else if (algo == static_cast<int>(matmul_algo_t::onednn)) {
-    forced_kernel = "onednn";
-  }
-  else if (algo == static_cast<int>(matmul_algo_t::onednn_blocked)) {
-    forced_kernel = "onednn_blocked";
-  }
-  else if (algo == static_cast<int>(matmul_algo_t::reference)) {
-    forced_kernel = "reference";
-  }
-  else if (algo == static_cast<int>(matmul_algo_t::algo_count) ||
-           algo == static_cast<int>(matmul_algo_t::batched_sgemm)) {
-    return status_t::failure;
-  }
+    if (algo == static_cast<int>(matmul_algo_t::aocl_dlp)) {
+        forced_kernel = "aocl_dlp";
+    } else if (algo == static_cast<int>(matmul_algo_t::aocl_dlp_blocked)) {
+        forced_kernel = "aocl_dlp_blocked";
+    } else if (algo == static_cast<int>(matmul_algo_t::onednn)) {
+        forced_kernel = "onednn";
+    } else if (algo == static_cast<int>(matmul_algo_t::onednn_blocked)) {
+        forced_kernel = "onednn_blocked";
+    } else if (algo == static_cast<int>(matmul_algo_t::reference)) {
+        forced_kernel = "reference";
+    } else if (algo == static_cast<int>(matmul_algo_t::algo_count)
+            || algo == static_cast<int>(matmul_algo_t::batched_sgemm)) {
+        return status_t::failure;
+    }
 
-  return status_t::success;
+    return status_t::success;
 }
 
 status_t matmul_impl_t::validate() {
-  LOG_DEBUG_INFO("<", get_name(),
-                 "> Validating matmul op parameters matmul_operator_t");
-  if (parent_type::validate() != status_t::success) {
-    return status_t::failure;
-  }
-
-  //TODO: Add data type check for input output
-  auto input        = get_input("matmul_input");
-  auto output       = get_output("matmul_output");
-
-  auto weights      = context.get_param("weights");
-  auto bias         = context.get_param("bias");
-
-  if (!input || !output) {
-    apilog_error("Invalid input or output tensor.");
-    return status_t::failure;
-  }
-
-  auto input_size   = input->get_size();
-  auto weights_size = weights->get_size();
-  auto output_size  = output->get_size();
-  auto out_order    = output->get_order();
-
-  if (out_order == "ba") {
-    apilog_error("<", get_name(), "> kernel needs non-transposed output tensors.");
-    return status_t::failure;
-  }
-
-  bool is_mm_sizes  = (input_size.size() == 2 && weights_size.size() == 2 &&
-                       output_size.size() == 2);
-  bool is_bmm_sizes = (input_size.size() == 3 && weights_size.size() == 3 &&
-                       output_size.size() == 3);
-  bool is_broadcast_bmm_sizes = ((input_size.size() == 3 &&
-                                  weights_size.size() == 2) || (input_size.size() == 2 &&
-                                      weights_size.size() == 3)) && (output_size.size() == 3);
-
-  is_bmm =  is_bmm_sizes || is_bmm;
-
-  if (!is_mm_sizes && !is_bmm_sizes && !is_broadcast_bmm_sizes) {
-    apilog_error("input, weight or output size is not valid");
-    return status_t::failure;
-  }
-
-  //Input and Output Dimension Check
-  if (input_size.size()==3 && input_size.at(0) != output_size.at(0)) {
-    apilog_error("Input and output size mismatch at dim - 0 for batchMatmul. Input size= ",
-                 input_size.at(0), " Output size= ",output_size.at(0));
-    return status_t::failure;
-  }
-
-  if (input_size.at(input_size.size()-2) != output_size.at(
-        output_size.size()-2)) {
-    apilog_error("Input and output size mismatch at output dim - ",
-                 output_size.size()-2," for matmul/batchMatmul. Input size= ",
-                 input_size.at(input_size.size()-2),
-                 " Output size= ", output_size.at(output_size.size()-2));
-    return status_t::failure;
-  }
-
-  //Input and Weight Dimension check
-  if (input_size.at(input_size.size()-1) != weights_size.at(
-        weights_size.size()-2)) {
-    apilog_error("Dimension mismatch with input and weights. Input dim= ",
-                 input_size.at(input_size.size()-1),
-                 " Weight dim= ", weights_size.at(weights_size.size()-2));
-    return status_t::failure;
-  }
-
-  //Weight and Output Dimension Check
-  if (weights_size.size()==3 && weights_size.at(0) != output_size.at(0)) {
-    apilog_error("weights and output size mismatch at dim - 0 for batchMatmul: weights size=",
-                 weights_size.at(0), " output size=", output_size.at(0));
-    return status_t::failure;
-  }
-
-  if (weights_size.at(weights_size.size()-1) != output_size.at(
-        output_size.size()-1)) {
-    apilog_error("Dimension mismatch with weights and output: weights dim= ",
-                 weights_size.at(weights_size.size()-1), " output dim= ",
-                 output_size.at(output_size.size()-1));
-    return status_t::failure;
-  }
-
-  // Update forced kernel if forced kernel is empty and env/config is provided.
-  if (forced_kernel.empty()) {
-    if (update_matmul_kernel() == status_t::failure) {
-      log_error("Invalid matmul kernel algo is set");
-      return status_t::failure;
-    }
-  }
-  bool is_onednn_kernel = (forced_kernel == "onednn" ||
-                           forced_kernel == "onednn_blocked");
-
-  // Input and Output Size Check
-  // OneDNN doesn't support broadcasted inputs or weights
-  // TODO: Fallback to reference/supported kernel
-  if (is_broadcast_bmm_sizes && is_onednn_kernel) {
-    apilog_error("Input, weight or output size is not valid for onednn");
-    return status_t::failure;
-  }
-
-  if (input_size.size() == 3 && is_onednn_kernel &&
-      (input_size.at(0) != 1 && weights_size.at(0) != 1 &&
-       input_size.at(0) != weights_size.at(0))) {
-    apilog_error("Broadcast incompatible with onednn for batchmatmul. Input size= ",
-                 input_size.at(0), " weight size= ", weights_size.at(0));
-    return status_t::failure;
-  }
-
-  if (input->is_quantized()) {
-    unsigned long scale_nelems = compute_product(input->get_quant_scale_size());
-    unsigned long M_dim = input_size.at(input_size.size()-2);
-    unsigned long K_dim = input_size.at(input_size.size()-1);
-    bool is_per_tensor_src = (scale_nelems == 1);
-    bool is_per_token_src = (scale_nelems == M_dim);
-    bool is_per_group_src = (scale_nelems > M_dim) && (scale_nelems % M_dim == 0) &&
-                            (K_dim % (scale_nelems / M_dim) == 0);
-    if (!(is_per_tensor_src || is_per_token_src || is_per_group_src)) {
-      apilog_error("Source quant scale: unsupported granularity");
-      return status_t::failure;
-    }
-
-    if (input->get_quant_subtype() == quant_subtype_t::asymmetric) {
-      auto zero_nelems = compute_product(input->get_quant_zero_size());
-      data_type_t zero_data_type = input->get_quant_zero_data_type();
-      if (zero_data_type != data_type_t::s32 &&
-          zero_data_type != data_type_t::s8 &&
-          zero_data_type != data_type_t::u8) {
-        apilog_error("Input quant zero supports only s32, s8, or u8 data type for input tensor");
+    LOG_DEBUG_INFO("<", get_name(),
+            "> Validating matmul op parameters matmul_operator_t");
+    if (parent_type::validate() != status_t::success) {
         return status_t::failure;
-      }
-      if (zero_nelems != 1) {
-        apilog_error("Source quant zero supports only per-tensor");
-        return status_t::failure;
-      }
     }
 
-    if (weights->is_quantized() && is_per_group_src) {
-      unsigned long N_dim = weights_size.at(weights_size.size()-1);
-      unsigned long wei_scale_nelems = compute_product(
-                                         weights->get_quant_scale_size());
-      bool is_per_group_wei = (wei_scale_nelems > N_dim) &&
-                              (wei_scale_nelems % N_dim == 0);
-      if (is_per_group_wei) {
-        unsigned long src_groups = scale_nelems / M_dim;
-        unsigned long wei_groups = wei_scale_nelems / N_dim;
-        if (src_groups != wei_groups) {
-          apilog_error("Weight scale per-group count (", wei_groups,
-                       ") does not match source per-group count (", src_groups, ")");
-          return status_t::failure;
+    //TODO: Add data type check for input output
+    auto input = get_input("matmul_input");
+    auto output = get_output("matmul_output");
+
+    auto weights = context.get_param("weights");
+    auto bias = context.get_param("bias");
+
+    if (!input || !output) {
+        apilog_error("Invalid input or output tensor.");
+        return status_t::failure;
+    }
+
+    auto input_size = input->get_size();
+    auto weights_size = weights->get_size();
+    auto output_size = output->get_size();
+    auto out_order = output->get_order();
+
+    if (out_order == "ba") {
+        apilog_error("<", get_name(),
+                "> kernel needs non-transposed output tensors.");
+        return status_t::failure;
+    }
+
+    bool is_mm_sizes = (input_size.size() == 2 && weights_size.size() == 2
+            && output_size.size() == 2);
+    bool is_bmm_sizes = (input_size.size() == 3 && weights_size.size() == 3
+            && output_size.size() == 3);
+    bool is_broadcast_bmm_sizes
+            = ((input_size.size() == 3 && weights_size.size() == 2)
+                      || (input_size.size() == 2 && weights_size.size() == 3))
+            && (output_size.size() == 3);
+
+    is_bmm = is_bmm_sizes || is_bmm;
+
+    if (!is_mm_sizes && !is_bmm_sizes && !is_broadcast_bmm_sizes) {
+        apilog_error("input, weight or output size is not valid");
+        return status_t::failure;
+    }
+
+    //Input and Output Dimension Check
+    if (input_size.size() == 3 && input_size.at(0) != output_size.at(0)) {
+        apilog_error(
+                "Input and output size mismatch at dim - 0 for batchMatmul. "
+                "Input size= ",
+                input_size.at(0), " Output size= ", output_size.at(0));
+        return status_t::failure;
+    }
+
+    if (input_size.at(input_size.size() - 2)
+            != output_size.at(output_size.size() - 2)) {
+        apilog_error("Input and output size mismatch at output dim - ",
+                output_size.size() - 2, " for matmul/batchMatmul. Input size= ",
+                input_size.at(input_size.size() - 2),
+                " Output size= ", output_size.at(output_size.size() - 2));
+        return status_t::failure;
+    }
+
+    //Input and Weight Dimension check
+    if (input_size.at(input_size.size() - 1)
+            != weights_size.at(weights_size.size() - 2)) {
+        apilog_error("Dimension mismatch with input and weights. Input dim= ",
+                input_size.at(input_size.size() - 1),
+                " Weight dim= ", weights_size.at(weights_size.size() - 2));
+        return status_t::failure;
+    }
+
+    //Weight and Output Dimension Check
+    if (weights_size.size() == 3 && weights_size.at(0) != output_size.at(0)) {
+        apilog_error(
+                "weights and output size mismatch at dim - 0 for batchMatmul: "
+                "weights size=",
+                weights_size.at(0), " output size=", output_size.at(0));
+        return status_t::failure;
+    }
+
+    if (weights_size.at(weights_size.size() - 1)
+            != output_size.at(output_size.size() - 1)) {
+        apilog_error(
+                "Dimension mismatch with weights and output: weights dim= ",
+                weights_size.at(weights_size.size() - 1),
+                " output dim= ", output_size.at(output_size.size() - 1));
+        return status_t::failure;
+    }
+
+    // Update forced kernel if forced kernel is empty and env/config is provided.
+    if (forced_kernel.empty()) {
+        if (update_matmul_kernel() == status_t::failure) {
+            log_error("Invalid matmul kernel algo is set");
+            return status_t::failure;
         }
-      }
     }
-  }
+    bool is_onednn_kernel
+            = (forced_kernel == "onednn" || forced_kernel == "onednn_blocked");
 
-  if (output->is_quantized()) {
-    unsigned long scale_nelems = compute_product(output->get_quant_scale_size());
-    // TODO: Expand this support for different granularities
-    if (scale_nelems != 1) {
-      apilog_error("Output quant scale supports only per-tensor");
-      return status_t::failure;
-    }
-
-    if (output->get_quant_subtype() == quant_subtype_t::asymmetric) {
-      auto zero_nelems = compute_product(output->get_quant_zero_size());
-      data_type_t zero_data_type = output->get_quant_zero_data_type();
-      if (zero_data_type != data_type_t::s32 &&
-          zero_data_type != data_type_t::s8 &&
-          zero_data_type != data_type_t::u8) {
-        apilog_error("Output quant zero supports only s32, s8, or u8 data type for output tensor");
+    // Input and Output Size Check
+    // OneDNN doesn't support broadcasted inputs or weights
+    // TODO: Fallback to reference/supported kernel
+    if (is_broadcast_bmm_sizes && is_onednn_kernel) {
+        apilog_error("Input, weight or output size is not valid for onednn");
         return status_t::failure;
-      }
-      // TODO: Expand this support for different granularities
-      if (zero_nelems != 1) {
-        apilog_error("Output quant zero supports only per-tensor");
+    }
+
+    if (input_size.size() == 3 && is_onednn_kernel
+            && (input_size.at(0) != 1 && weights_size.at(0) != 1
+                    && input_size.at(0) != weights_size.at(0))) {
+        apilog_error(
+                "Broadcast incompatible with onednn for batchmatmul. Input "
+                "size= ",
+                input_size.at(0), " weight size= ", weights_size.at(0));
         return status_t::failure;
-      }
-    }
-  }
-
-  if (weights && (weights->get_data_type() == data_type_t::s4 ||
-                  weights->get_data_type() == data_type_t::u4) &&
-      forced_kernel != "reference") {
-    // AOCL DLP S4/U4 GEMM requires a pre-reordered (blocked) 2D weight.
-    // A batched/3D S4/U4 weight cannot be reordered per-batch, so reject it
-    if (weights_size.size() != 2) {
-      apilog_error("<", get_name(),
-                   "> S4/U4 weights must be 2D (pre-reordered); batched/3D "
-                   "S4/U4 weights are not supported.");
-      return status_t::failure;
     }
 
-    apilog_info("Weight tensor is S4/U4, forcing aocl_dlp_blocked kernel");
-    forced_kernel = "aocl_dlp_blocked";
-  }
+    if (input->is_quantized()) {
+        unsigned long scale_nelems
+                = compute_product(input->get_quant_scale_size());
+        unsigned long M_dim = input_size.at(input_size.size() - 2);
+        unsigned long K_dim = input_size.at(input_size.size() - 1);
+        bool is_per_tensor_src = (scale_nelems == 1);
+        bool is_per_token_src = (scale_nelems == M_dim);
+        bool is_per_group_src = (scale_nelems > M_dim)
+                && (scale_nelems % M_dim == 0)
+                && (K_dim % (scale_nelems / M_dim) == 0);
+        if (!(is_per_tensor_src || is_per_token_src || is_per_group_src)) {
+            apilog_error("Source quant scale: unsupported granularity");
+            return status_t::failure;
+        }
 
-  if (weights->get_data_type() != data_type_t::u4 &&
-      (weights->get_layout() & uint16_t(tensor_layout_t::blocked) ||
-       weights->get_layout() & uint16_t(tensor_layout_t::blocked_aocl))) {
-    apilog_info("Weight tensor is prepacked, forcing aocl_dlp_blocked kernel");
-    forced_kernel = "aocl_dlp_blocked";
-  }
+        if (input->get_quant_subtype() == quant_subtype_t::asymmetric) {
+            auto zero_nelems = compute_product(input->get_quant_zero_size());
+            data_type_t zero_data_type = input->get_quant_zero_data_type();
+            if (zero_data_type != data_type_t::s32
+                    && zero_data_type != data_type_t::s8
+                    && zero_data_type != data_type_t::u8) {
+                apilog_error(
+                        "Input quant zero supports only s32, s8, or u8 data "
+                        "type for input tensor");
+                return status_t::failure;
+            }
+            if (zero_nelems != 1) {
+                apilog_error("Source quant zero supports only per-tensor");
+                return status_t::failure;
+            }
+        }
 
-  if (bias) {
-    auto bias_size  = bias->get_size();
-    if (bias_size.size() != output_size.size()) {
-      apilog_error("Mismatch in bias and output size. Bias size = ",
-                   bias_size.size(), " Output size= ", output_size.size());
-      return status_t::failure;
+        if (weights->is_quantized() && is_per_group_src) {
+            unsigned long N_dim = weights_size.at(weights_size.size() - 1);
+            unsigned long wei_scale_nelems
+                    = compute_product(weights->get_quant_scale_size());
+            bool is_per_group_wei = (wei_scale_nelems > N_dim)
+                    && (wei_scale_nelems % N_dim == 0);
+            if (is_per_group_wei) {
+                unsigned long src_groups = scale_nelems / M_dim;
+                unsigned long wei_groups = wei_scale_nelems / N_dim;
+                if (src_groups != wei_groups) {
+                    apilog_error("Weight scale per-group count (", wei_groups,
+                            ") does not match source per-group count (",
+                            src_groups, ")");
+                    return status_t::failure;
+                }
+            }
+        }
     }
 
-    // Hard Force to Reference Kernel if input or weights are F32 whereas bias is BF16
-    auto bias_dt    = bias->get_data_type();
-    auto weights_dt = weights->get_data_type();
-    auto input_dt   = input->get_data_type();
-    if (bias_dt == data_type_t::bf16 && (input_dt == data_type_t::f32 ||
-                                         weights_dt == data_type_t::f32)) {
-      log_info("Bias tensor is BF16, forcing reference kernel");
-      forced_kernel = "reference";
-    }
-  }
-  //Hard Force to Reference Kernel if 2D Matrix is broadcasted from user-side
-  //No-Support in AOCL-DLP
-  {
-    auto inp_stride = input->get_stride();
-    auto wei_stride = weights->get_stride();
-    if (inp_stride[input_size.size()-1] == 0 ||
-        inp_stride[input_size.size()-2] == 0) {
-      log_info("Input is broadcasted from user-side, forcing ref kernel");
-      forced_kernel = "reference";
-    }
+    if (output->is_quantized()) {
+        unsigned long scale_nelems
+                = compute_product(output->get_quant_scale_size());
+        // TODO: Expand this support for different granularities
+        if (scale_nelems != 1) {
+            apilog_error("Output quant scale supports only per-tensor");
+            return status_t::failure;
+        }
 
-    if (wei_stride[weights_size.size()-1] == 0 ||
-        wei_stride[weights_size.size()-2] == 0) {
-      log_info("Weight is broadcasted from user-side, forcing ref kernel");
-      forced_kernel = "reference";
-    }
-
-  }
-  auto post_ops = context.get_post_op();
-
-  // Detect F16 dtype on src / wei / dst or bias. Any of these would otherwise
-  // reach a kernel that touches F16 storage and produce wrong results / UB
-  // on platforms without AVX512-FP16, so they all gate dispatch the same way.
-  // F16 on binary post-op tensors is checked separately in
-  // validate_buffer_post_op() where the post-op tensor lookups already live.
-  bool is_f16_core = (input->get_data_type()   == data_type_t::f16 ||
-                      weights->get_data_type() == data_type_t::f16 ||
-                      output->get_data_type()  == data_type_t::f16);
-  bool is_f16_bias = (bias &&
-                      bias->get_data_type() == data_type_t::f16);
-
-  if (is_f16_core || is_f16_bias) {
-    // F16 requires AVX512-FP16
-    if (!platform_info.get_avx512_f16_status()) {
-      if (is_f16_bias && !is_f16_core) {
-        apilog_error("Bias tensor is F16 but platform lacks AVX512-FP16 "
-                     "(F16 data type is not supported on this platform).");
-      }
-      else {
-        apilog_error("F16 data type is not supported on this platform "
-                     "(requires AVX512-FP16).");
-      }
-      return status_t::isa_unsupported;
+        if (output->get_quant_subtype() == quant_subtype_t::asymmetric) {
+            auto zero_nelems = compute_product(output->get_quant_zero_size());
+            data_type_t zero_data_type = output->get_quant_zero_data_type();
+            if (zero_data_type != data_type_t::s32
+                    && zero_data_type != data_type_t::s8
+                    && zero_data_type != data_type_t::u8) {
+                apilog_error(
+                        "Output quant zero supports only s32, s8, or u8 data "
+                        "type for output tensor");
+                return status_t::failure;
+            }
+            // TODO: Expand this support for different granularities
+            if (zero_nelems != 1) {
+                apilog_error("Output quant zero supports only per-tensor");
+                return status_t::failure;
+            }
+        }
     }
 
-    bool is_aocl_kernel = (forced_kernel == "aocl_dlp" ||
-                           forced_kernel == "aocl_dlp_blocked");
+    if (weights
+            && (weights->get_data_type() == data_type_t::s4
+                    || weights->get_data_type() == data_type_t::u4)
+            && forced_kernel != "reference") {
+        // AOCL DLP S4/U4 GEMM requires a pre-reordered (blocked) 2D weight.
+        // A batched/3D S4/U4 weight cannot be reordered per-batch, so reject it
+        if (weights_size.size() != 2) {
+            apilog_error("<", get_name(),
+                    "> S4/U4 weights must be 2D (pre-reordered); batched/3D "
+                    "S4/U4 weights are not supported.");
+            return status_t::failure;
+        }
 
-    if (forced_kernel != "reference" && !is_onednn_kernel && !is_aocl_kernel) {
-      forced_kernel = "aocl_dlp_blocked";
-      log_info("Switching to aocl_dlp_blocked kernel for F16 GEMM");
+        apilog_info("Weight tensor is S4/U4, forcing aocl_dlp_blocked kernel");
+        forced_kernel = "aocl_dlp_blocked";
     }
-  }
 
-  // TODO: Remove this workaround once OneDNN fixes the GEMV M=1 + beta!=0 case.
-  if (input_size.at(0) == 1 && (forced_kernel == "onednn" ||
-                                forced_kernel == "onednn_blocked") &&
-      input->get_data_type() == data_type_t::f32) {
-    log_info("M=1 and src is F32, switching to aocl_dlp_blocked kernel");
-    forced_kernel = "aocl_dlp_blocked";
-  }
+    if (weights->get_data_type() != data_type_t::u4
+            && (weights->get_layout() & uint16_t(tensor_layout_t::blocked)
+                    || weights->get_layout()
+                            & uint16_t(tensor_layout_t::blocked_aocl))) {
+        apilog_info(
+                "Weight tensor is prepacked, forcing aocl_dlp_blocked kernel");
+        forced_kernel = "aocl_dlp_blocked";
+    }
 
-  // Update singleton accum_type so the reference kernel can later read which
-  // accumulation precision to use.
-  if (forced_kernel != "reference") {
-    matmul_config_t &matmul_config = matmul_config_t::instance();
-    bool is_aocl = (forced_kernel == "aocl_dlp" ||
-                    forced_kernel == "aocl_dlp_blocked");
-    bool is_f16_gemm = (input->get_data_type() == data_type_t::f16 &&
-                        weights->get_data_type() == data_type_t::f16);
-    matmul_config.set_accum_type(
-      (is_aocl && is_f16_gemm) ? data_type_t::f16
-      : data_type_t::f32);
-  }
+    if (bias) {
+        auto bias_size = bias->get_size();
+        if (bias_size.size() != output_size.size()) {
+            apilog_error("Mismatch in bias and output size. Bias size = ",
+                    bias_size.size(), " Output size= ", output_size.size());
+            return status_t::failure;
+        }
 
-  // validate post-ops
-  return validate_buffer_post_op(output_size, post_ops, inputs);
+        // Hard Force to Reference Kernel if input or weights are F32 whereas bias is BF16
+        auto bias_dt = bias->get_data_type();
+        auto weights_dt = weights->get_data_type();
+        auto input_dt = input->get_data_type();
+        if (bias_dt == data_type_t::bf16
+                && (input_dt == data_type_t::f32
+                        || weights_dt == data_type_t::f32)) {
+            log_info("Bias tensor is BF16, forcing reference kernel");
+            forced_kernel = "reference";
+        }
+    }
+    //Hard Force to Reference Kernel if 2D Matrix is broadcasted from user-side
+    //No-Support in AOCL-DLP
+    {
+        auto inp_stride = input->get_stride();
+        auto wei_stride = weights->get_stride();
+        if (inp_stride[input_size.size() - 1] == 0
+                || inp_stride[input_size.size() - 2] == 0) {
+            log_info("Input is broadcasted from user-side, forcing ref kernel");
+            forced_kernel = "reference";
+        }
+
+        if (wei_stride[weights_size.size() - 1] == 0
+                || wei_stride[weights_size.size() - 2] == 0) {
+            log_info(
+                    "Weight is broadcasted from user-side, forcing ref kernel");
+            forced_kernel = "reference";
+        }
+    }
+    auto post_ops = context.get_post_op();
+
+    // Detect F16 dtype on src / wei / dst or bias. Any of these would otherwise
+    // reach a kernel that touches F16 storage and produce wrong results / UB
+    // on platforms without AVX512-FP16, so they all gate dispatch the same way.
+    // F16 on binary post-op tensors is checked separately in
+    // validate_buffer_post_op() where the post-op tensor lookups already live.
+    bool is_f16_core = (input->get_data_type() == data_type_t::f16
+            || weights->get_data_type() == data_type_t::f16
+            || output->get_data_type() == data_type_t::f16);
+    bool is_f16_bias = (bias && bias->get_data_type() == data_type_t::f16);
+
+    if (is_f16_core || is_f16_bias) {
+        // F16 requires AVX512-FP16
+        if (!platform_info.get_avx512_f16_status()) {
+            if (is_f16_bias && !is_f16_core) {
+                apilog_error(
+                        "Bias tensor is F16 but platform lacks AVX512-FP16 "
+                        "(F16 data type is not supported on this platform).");
+            } else {
+                apilog_error(
+                        "F16 data type is not supported on this platform "
+                        "(requires AVX512-FP16).");
+            }
+            return status_t::isa_unsupported;
+        }
+
+        bool is_aocl_kernel = (forced_kernel == "aocl_dlp"
+                || forced_kernel == "aocl_dlp_blocked");
+
+        if (forced_kernel != "reference" && !is_onednn_kernel
+                && !is_aocl_kernel) {
+            forced_kernel = "aocl_dlp_blocked";
+            log_info("Switching to aocl_dlp_blocked kernel for F16 GEMM");
+        }
+    }
+
+    // TODO: Remove this workaround once OneDNN fixes the GEMV M=1 + beta!=0 case.
+    if (input_size.at(0) == 1
+            && (forced_kernel == "onednn" || forced_kernel == "onednn_blocked")
+            && input->get_data_type() == data_type_t::f32) {
+        log_info("M=1 and src is F32, switching to aocl_dlp_blocked kernel");
+        forced_kernel = "aocl_dlp_blocked";
+    }
+
+    // Update singleton accum_type so the reference kernel can later read which
+    // accumulation precision to use.
+    if (forced_kernel != "reference") {
+        matmul_config_t &matmul_config = matmul_config_t::instance();
+        bool is_aocl = (forced_kernel == "aocl_dlp"
+                || forced_kernel == "aocl_dlp_blocked");
+        bool is_f16_gemm = (input->get_data_type() == data_type_t::f16
+                && weights->get_data_type() == data_type_t::f16);
+        matmul_config.set_accum_type(
+                (is_aocl && is_f16_gemm) ? data_type_t::f16 : data_type_t::f32);
+    }
+
+    // validate post-ops
+    return validate_buffer_post_op(output_size, post_ops, inputs);
 }
 
 status_t matmul_impl_t::validate_forced_kernel() {
 
-// TODO: Move optional dependency prerpocessor to respective kernel file.
-  if (forced_kernel.empty() || forced_kernel == "aocl_dlp" ||
-      forced_kernel == "aocl_dlp_blocked"
-      || forced_kernel == "onednn" || forced_kernel == "onednn_blocked"
-     ) {
+    // TODO: Move optional dependency prerpocessor to respective kernel file.
+    if (forced_kernel.empty() || forced_kernel == "aocl_dlp"
+            || forced_kernel == "aocl_dlp_blocked" || forced_kernel == "onednn"
+            || forced_kernel == "onednn_blocked") {
+        return status_t::success;
+    }
+    LOG_DEBUG_INFO("<", get_name(), "> Validating forced kernel matmul_impl_t");
+    if (forced_kernel == "reference") {
+        auto input = get_input("matmul_input");
+        auto output = get_output("matmul_output");
+        auto weights = context.get_param("weights");
+
+        auto in_dtype = input->get_data_type();
+        auto out_dtype = output->get_data_type();
+        auto wt_dtype = weights->get_data_type();
+        auto out_order = output->get_order();
+
+        if (wt_dtype == data_type_t::s8) {
+            if (!((in_dtype == data_type_t::s8) || (in_dtype == data_type_t::u8)
+                        || (in_dtype == data_type_t::bf16)
+                        || (in_dtype == data_type_t::f32))
+                    || !((out_dtype == data_type_t::s8)
+                            || (out_dtype == data_type_t::u8)
+                            || (out_dtype == data_type_t::f32)
+                            || (out_dtype == data_type_t::bf16)
+                            || (out_dtype == data_type_t::s32)
+                            || (out_dtype == data_type_t::f16))) {
+                log_error("<", get_name(),
+                        "> forced reference kernel needs s8/u8/bf16/f32/f16 "
+                        "input and output tensors.");
+                return status_t::failure;
+            }
+        } else if (wt_dtype == data_type_t::s4 || wt_dtype == data_type_t::u4) {
+            // WOQ: Weight-Only Quantization - s4/u4 weights with bf16 input
+            if (!(in_dtype == data_type_t::bf16)
+                    || !((out_dtype == data_type_t::f32)
+                            || (out_dtype == data_type_t::bf16))
+                    || (out_order == "ba")) {
+                log_error("<", get_name(),
+                        "> forced reference kernel for WOQ needs bf16 input "
+                        "and f32/bf16 output and non-transposed dst.");
+                return status_t::failure;
+            }
+            // Check that weights are quantized (required for WOQ)
+            if (!weights->is_quantized()) {
+                log_error("<", get_name(),
+                        "> forced reference kernel for WOQ requires quantized "
+                        "weights with scales.");
+                return status_t::failure;
+            }
+        } else if (wt_dtype == data_type_t::f16) {
+            if (!(in_dtype == data_type_t::f16)
+                    || !((out_dtype == data_type_t::f16)
+                            || (out_dtype == data_type_t::f32))) {
+                log_error("<", get_name(),
+                        "> forced reference kernel for F16 needs f16 input and "
+                        "f16/f32 output.");
+                return status_t::failure;
+            }
+        } else if ((!((in_dtype == data_type_t::f32)
+                           || (in_dtype == data_type_t::bf16)))
+                || (!((out_dtype == data_type_t::f32)
+                        || (out_dtype == data_type_t::bf16)))
+                || (!((wt_dtype == data_type_t::f32)
+                        || (wt_dtype == data_type_t::bf16)))
+                || (out_order == "ba")) {
+            log_error("<", get_name(),
+                    "> forced reference kernel needs f32 or bf16 tensors and "
+                    "non-transposed dst.");
+            return status_t::failure;
+        }
+    } else {
+        apilog_error("<", get_name(), "> ", forced_kernel,
+                " kernel can not be forced.");
+        return status_t::failure;
+    }
     return status_t::success;
-  }
-  LOG_DEBUG_INFO("<", get_name(), "> Validating forced kernel matmul_impl_t");
-  if (forced_kernel == "reference") {
-    auto input        = get_input("matmul_input");
-    auto output       = get_output("matmul_output");
-    auto weights      = context.get_param("weights");
-
-    auto in_dtype     = input->get_data_type();
-    auto out_dtype    = output->get_data_type();
-    auto wt_dtype     = weights->get_data_type();
-    auto out_order   = output->get_order();
-
-    if (wt_dtype == data_type_t::s8) {
-      if (!((in_dtype == data_type_t::s8) || (in_dtype  == data_type_t::u8) ||
-            (in_dtype == data_type_t::bf16) || (in_dtype == data_type_t::f32)) ||
-          !((out_dtype == data_type_t::s8) || (out_dtype == data_type_t::u8) ||
-            (out_dtype == data_type_t::f32) || (out_dtype == data_type_t::bf16) ||
-            (out_dtype == data_type_t::s32) || (out_dtype == data_type_t::f16))) {
-        log_error("<", get_name(),
-                  "> forced reference kernel needs s8/u8/bf16/f32/f16 input and output tensors.");
-        return status_t::failure;
-      }
-    }
-    else if (wt_dtype == data_type_t::s4 || wt_dtype == data_type_t::u4) {
-      // WOQ: Weight-Only Quantization - s4/u4 weights with bf16 input
-      if (!(in_dtype == data_type_t::bf16) ||
-          !((out_dtype == data_type_t::f32) || (out_dtype == data_type_t::bf16)) ||
-          (out_order == "ba")) {
-        log_error("<", get_name(),
-                  "> forced reference kernel for WOQ needs bf16 input and f32/bf16 output and non-transposed dst.");
-        return status_t::failure;
-      }
-      // Check that weights are quantized (required for WOQ)
-      if (!weights->is_quantized()) {
-        log_error("<", get_name(),
-                  "> forced reference kernel for WOQ requires quantized weights with scales.");
-        return status_t::failure;
-      }
-    }
-    else if (wt_dtype == data_type_t::f16) {
-      if (!(in_dtype == data_type_t::f16) ||
-          !((out_dtype == data_type_t::f16) || (out_dtype == data_type_t::f32))) {
-        log_error("<", get_name(),
-                  "> forced reference kernel for F16 needs f16 input and f16/f32 output.");
-        return status_t::failure;
-      }
-    }
-    else if ((!((in_dtype == data_type_t::f32) ||
-                (in_dtype  == data_type_t::bf16))) ||
-             (!((out_dtype == data_type_t::f32) || (out_dtype == data_type_t::bf16))) ||
-             (!((wt_dtype == data_type_t::f32) || (wt_dtype == data_type_t::bf16))) ||
-             (out_order == "ba")) {
-      log_error("<", get_name(),
-                "> forced reference kernel needs f32 or bf16 tensors and non-transposed dst.");
-      return status_t::failure;
-    }
-  }
-  else {
-    apilog_error("<", get_name(), "> ", forced_kernel,
-                 " kernel can not be forced.");
-    return status_t::failure;
-  }
-  return status_t::success;
 }
 
 status_t matmul_impl_t::preprocess() {
-  if (forced_kernel.empty() || forced_kernel == "aocl_dlp" ||
-      forced_kernel == "aocl_dlp_blocked") {
+    if (forced_kernel.empty() || forced_kernel == "aocl_dlp"
+            || forced_kernel == "aocl_dlp_blocked") {
 #if !ZENDNNL_DEPENDS_AOCLDLP
-    // Mirror op_execute_info()'s empty-kernel default: blocked-layout weights
-    // imply aocl_dlp_blocked, otherwise aocl_dlp.
-    std::string selected_kernel = forced_kernel;
-    if (selected_kernel.empty()) {
-      auto weights = context.get_param("weights");
-      selected_kernel = (weights && (weights->get_layout() &
-                                     uint16_t(tensor_layout_t::blocked)))
-                        ? "aocl_dlp_blocked" : "aocl_dlp";
-    }
-    apilog_error("<", get_name(), "> AOCL-DLP kernel '", selected_kernel,
-                 "' selected but ZenDNNL was built without AOCL-DLP support "
-                 "(ZENDNNL_DEPENDS_AOCLDLP=0).");
-    return status_t::unimplemented;
+        // Mirror op_execute_info()'s empty-kernel default: blocked-layout weights
+        // imply aocl_dlp_blocked, otherwise aocl_dlp.
+        std::string selected_kernel = forced_kernel;
+        if (selected_kernel.empty()) {
+            auto weights = context.get_param("weights");
+            selected_kernel
+                    = (weights
+                              && (weights->get_layout()
+                                      & uint16_t(tensor_layout_t::blocked)))
+                    ? "aocl_dlp_blocked"
+                    : "aocl_dlp";
+        }
+        apilog_error("<", get_name(), "> AOCL-DLP kernel '", selected_kernel,
+                "' selected but ZenDNNL was built without AOCL-DLP support "
+                "(ZENDNNL_DEPENDS_AOCLDLP=0).");
+        return status_t::unimplemented;
 #else
-    auto weight_tensor = context.get_param("weights");
-    LOG_DEBUG_INFO("<", get_name(), "> Preprocessing matmul_operator_t");
-    //get bias tensor
-    auto optional_bias_tensor = context.get_param("bias");
+        auto weight_tensor = context.get_param("weights");
+        LOG_DEBUG_INFO("<", get_name(), "> Preprocessing matmul_operator_t");
+        //get bias tensor
+        auto optional_bias_tensor = context.get_param("bias");
 
-    // output tensor
-    auto output_tensor = outputs["matmul_output"];
+        // output tensor
+        auto output_tensor = outputs["matmul_output"];
 
-    if (forced_kernel == "aocl_dlp_blocked") {
-      // input tensor
-      auto input_dt = inputs["matmul_input"].get_data_type();
-      if (context.aocl_dlp_utils_ptr->reorder_weights(weight_tensor, input_dt)
-          == status_t::failure) {
-        return status_t::failure;
-      }
-    }
-    //initialize aocl po
-    if (context.aocl_dlp_utils_ptr->alloc_post_op(context.get_post_op(),
-        optional_bias_tensor, *weight_tensor, inputs, output_tensor)
-        == status_t::failure) {
-      return status_t::failure;
-    }
-    //set runtime post ops from inputs
-    return context.aocl_dlp_utils_ptr->set_runtime_post_op_buffer(inputs,
-           optional_bias_tensor ? true : false, output_tensor);
+        if (forced_kernel == "aocl_dlp_blocked") {
+            // input tensor
+            auto input_dt = inputs["matmul_input"].get_data_type();
+            if (context.aocl_dlp_utils_ptr->reorder_weights(
+                        weight_tensor, input_dt)
+                    == status_t::failure) {
+                return status_t::failure;
+            }
+        }
+        //initialize aocl po
+        if (context.aocl_dlp_utils_ptr->alloc_post_op(context.get_post_op(),
+                    optional_bias_tensor, *weight_tensor, inputs, output_tensor)
+                == status_t::failure) {
+            return status_t::failure;
+        }
+        //set runtime post ops from inputs
+        return context.aocl_dlp_utils_ptr->set_runtime_post_op_buffer(
+                inputs, optional_bias_tensor ? true : false, output_tensor);
 #endif
-  }
-  return status_t::success;
+    }
+    return status_t::success;
 }
 
 std::string matmul_impl_t::op_create_info() {
-  std::stringstream ss;
+    std::stringstream ss;
 
-  ss << "MatMul operator create - ";
-  if (!(get_name().empty())) {
-    ss << get_name() << ",";
-  }
+    ss << "MatMul operator create - ";
+    if (!(get_name().empty())) { ss << get_name() << ","; }
 
-  auto weights       = context.get_param("weights").value();
-  auto bias          = context.get_param("bias");
-  auto post_op_count = context.get_post_op_count();
+    auto weights = context.get_param("weights").value();
+    auto bias = context.get_param("bias");
+    auto post_op_count = context.get_post_op_count();
 
-  ss << weights.tensor_info() << ",";
-  if (bias) {
-    ss << bias.value().tensor_info() << ",";
-  }
+    ss << weights.tensor_info() << ",";
+    if (bias) { ss << bias.value().tensor_info() << ","; }
 
-  ss << "alpha:" << context.get_alpha() << ",beta:" << context.get_beta();
-  if (post_op_count) {
-    ss << ",post-op";
+    ss << "alpha:" << context.get_alpha() << ",beta:" << context.get_beta();
+    if (post_op_count) {
+        ss << ",post-op";
 
-    for (uint32_t i = 0; i < post_op_count; ++i) {
-      post_op_t zen_po = context.get_post_op(i);
-      ss << ":" <<zen_po.post_op_info(zen_po);
+        for (uint32_t i = 0; i < post_op_count; ++i) {
+            post_op_t zen_po = context.get_post_op(i);
+            ss << ":" << zen_po.post_op_info(zen_po);
+        }
     }
-  }
 
-  return ss.str();
+    return ss.str();
 }
 
 std::string matmul_impl_t::op_execute_info() {
-  std::stringstream ss;
+    std::stringstream ss;
 
-  ss << "MatMul operator execute - ";
-  if (!(get_name().empty())) {
-    ss << get_name() << ",";
-  }
+    ss << "MatMul operator execute - ";
+    if (!(get_name().empty())) { ss << get_name() << ","; }
 
-  auto input         = get_input("matmul_input");
-  auto output        = get_output("matmul_output");
-  auto weights       = context.get_param("weights").value();
-  auto bias          = context.get_param("bias");
-  auto post_op_count = context.get_post_op_count();
+    auto input = get_input("matmul_input");
+    auto output = get_output("matmul_output");
+    auto weights = context.get_param("weights").value();
+    auto bias = context.get_param("bias");
+    auto post_op_count = context.get_post_op_count();
 
-  if (forced_kernel.empty()) {
-    if (weights.get_layout() & uint16_t(tensor_layout_t::blocked)) {
-      ss << "kernel:aocl_dlp_blocked" << ",";
+    if (forced_kernel.empty()) {
+        if (weights.get_layout() & uint16_t(tensor_layout_t::blocked)) {
+            ss << "kernel:aocl_dlp_blocked" << ",";
+        } else {
+            ss << "kernel:aocl_dlp" << ",";
+        }
+    } else {
+        ss << "kernel:" << forced_kernel << ",";
     }
-    else {
-      ss << "kernel:aocl_dlp" << ",";
+    ss << input.value().tensor_info() << "," << weights.tensor_info() << ",";
+    if (bias) { ss << bias.value().tensor_info() << ","; }
+
+    ss << output.value().tensor_info();
+
+    ss << ",alpha:" << context.get_alpha() << ",beta:" << context.get_beta();
+    if (post_op_count) {
+        ss << ",post-op";
+
+        for (uint32_t i = 0; i < post_op_count; ++i) {
+            post_op_t zen_po = context.get_post_op(i);
+            ss << ":" << zen_po.post_op_info(zen_po);
+        }
     }
-  }
-  else {
-    ss << "kernel:" << forced_kernel << ",";
-  }
-  ss << input.value().tensor_info() << ","
-     << weights.tensor_info() << ",";
-  if (bias) {
-    ss << bias.value().tensor_info() << ",";
-  }
+    ss << ",weight_address:" << weights.get_raw_handle_unsafe();
 
-  ss << output.value().tensor_info();
-
-  ss << ",alpha:" << context.get_alpha() << ",beta:" << context.get_beta();
-  if (post_op_count) {
-    ss << ",post-op";
-
-    for (uint32_t i = 0; i < post_op_count; ++i) {
-      post_op_t zen_po = context.get_post_op(i);
-      ss << ":" <<zen_po.post_op_info(zen_po);
-    }
-  }
-  ss << ",weight_address:" << weights.get_raw_handle_unsafe();
-
-  return ss.str();
+    return ss.str();
 }
 
 status_t matmul_impl_t::kernel_factory() {
-  LOG_DEBUG_INFO("<", get_name(), "> Executing kernel factory matmul_impl_t");
+    LOG_DEBUG_INFO("<", get_name(), "> Executing kernel factory matmul_impl_t");
 
-  //get forced kernel if any
-  if (forced_kernel.empty() || forced_kernel == "aocl_dlp_blocked" ||
-      forced_kernel == "aocl_dlp") {
+    //get forced kernel if any
+    if (forced_kernel.empty() || forced_kernel == "aocl_dlp_blocked"
+            || forced_kernel == "aocl_dlp") {
 #if !ZENDNNL_DEPENDS_AOCLDLP
-    // Mirror op_execute_info()'s empty-kernel default: blocked-layout weights
-    // imply aocl_dlp_blocked, otherwise aocl_dlp.
-    std::string selected_kernel = forced_kernel;
-    if (selected_kernel.empty()) {
-      auto weights = context.get_param("weights");
-      selected_kernel = (weights && (weights->get_layout() &
-                                     uint16_t(tensor_layout_t::blocked)))
-                        ? "aocl_dlp_blocked" : "aocl_dlp";
-    }
-    apilog_error("<", obj_name, "> AOCL-DLP kernel '", selected_kernel,
-                 "' selected but ZenDNNL was built without AOCL-DLP support "
-                 "(ZENDNNL_DEPENDS_AOCLDLP=0).");
-    return status_t::unimplemented;
+        // Mirror op_execute_info()'s empty-kernel default: blocked-layout weights
+        // imply aocl_dlp_blocked, otherwise aocl_dlp.
+        std::string selected_kernel = forced_kernel;
+        if (selected_kernel.empty()) {
+            auto weights = context.get_param("weights");
+            selected_kernel
+                    = (weights
+                              && (weights->get_layout()
+                                      & uint16_t(tensor_layout_t::blocked)))
+                    ? "aocl_dlp_blocked"
+                    : "aocl_dlp";
+        }
+        apilog_error("<", obj_name, "> AOCL-DLP kernel '", selected_kernel,
+                "' selected but ZenDNNL was built without AOCL-DLP support "
+                "(ZENDNNL_DEPENDS_AOCLDLP=0).");
+        return status_t::unimplemented;
 #else
-    auto weight_tensor  = context.get_param("weights").value();
-    auto weight_dtype   = context.get_param("weights")->get_data_type();
-    auto input_dtype    = get_input("matmul_input")->get_data_type();
-    auto output_dtype   = get_output("matmul_output")->get_data_type();
-    /**TODO: check Use of blocked BMM weights with new AOCL BMM API */
-    if (weight_tensor.get_dim() == 3 && forced_kernel == "aocl_dlp_blocked") {
-      apilog_info("<", obj_name, "> kernel unimplemented using aocl_dlp_blocked.");
-      forced_kernel = "aocl_dlp";
-    }
+        auto weight_tensor = context.get_param("weights").value();
+        auto weight_dtype = context.get_param("weights")->get_data_type();
+        auto input_dtype = get_input("matmul_input")->get_data_type();
+        auto output_dtype = get_output("matmul_output")->get_data_type();
+        /**TODO: check Use of blocked BMM weights with new AOCL BMM API */
+        if (weight_tensor.get_dim() == 3
+                && forced_kernel == "aocl_dlp_blocked") {
+            apilog_info("<", obj_name,
+                    "> kernel unimplemented using aocl_dlp_blocked.");
+            forced_kernel = "aocl_dlp";
+        }
 
-    /**TODO: move the preprocess to specific kernel */
-    if (preprocess() != status_t::success) {
-      return status_t::failure;
-    }
-    if ((weight_dtype == data_type_t::f32) &&
-        (input_dtype  == data_type_t::f32) &&
-        (output_dtype == data_type_t::f32)) {
-      kernel = std::shared_ptr<matmul_f32_avx512_kernel_t>
-               (get_matmul_f32_avx512_kernel());
-    }
-    else if ((weight_dtype == data_type_t::bf16) &&
-             (input_dtype  == data_type_t::bf16) &&
-             (output_dtype == data_type_t::f32 ||
-              output_dtype == data_type_t::bf16)) {
-      kernel = std::shared_ptr<matmul_bf16_avx512_kernel_t>
-               (get_matmul_bf16_avx512_kernel());
-    }
-    else if ((weight_dtype == data_type_t::f16) &&
-             (input_dtype  == data_type_t::f16) &&
-             (output_dtype == data_type_t::f16 ||
-              output_dtype == data_type_t::f32)) {
-      kernel = std::shared_ptr<matmul_f16_avx512_kernel_t>
-               (get_matmul_f16_avx512_kernel());
-    }
-    else if ((weight_dtype == data_type_t::s8) &&
-             (input_dtype  == data_type_t::s8 ||
-              input_dtype  == data_type_t::u8) &&
-             (output_dtype == data_type_t::f32 ||
-              output_dtype == data_type_t::bf16 ||
-              output_dtype == data_type_t::s8 ||
-              output_dtype == data_type_t::u8 ||
-              output_dtype == data_type_t::s32 ||
-              output_dtype == data_type_t::f16)) {
-      kernel = std::shared_ptr<matmul_int8_avx512_kernel_t>
-               (get_matmul_int8_avx512_kernel());
-    }
-    else if ((weight_dtype == data_type_t::s4 ||
-              weight_dtype == data_type_t::u4) &&
-             (input_dtype  == data_type_t::bf16) &&
-             (output_dtype == data_type_t::f32 ||
-              output_dtype == data_type_t::bf16)) {
-      kernel = std::shared_ptr<matmul_bf16s4_avx512_kernel_t>
-               (get_matmul_bf16s4_avx512_kernel());
-    }
-    else {
-      apilog_error("<", obj_name, "> kernel unimplemented.");
-      return status_t::unimplemented;
-    }
+        /**TODO: move the preprocess to specific kernel */
+        if (preprocess() != status_t::success) { return status_t::failure; }
+        if ((weight_dtype == data_type_t::f32)
+                && (input_dtype == data_type_t::f32)
+                && (output_dtype == data_type_t::f32)) {
+            kernel = std::shared_ptr<matmul_f32_avx512_kernel_t>(
+                    get_matmul_f32_avx512_kernel());
+        } else if ((weight_dtype == data_type_t::bf16)
+                && (input_dtype == data_type_t::bf16)
+                && (output_dtype == data_type_t::f32
+                        || output_dtype == data_type_t::bf16)) {
+            kernel = std::shared_ptr<matmul_bf16_avx512_kernel_t>(
+                    get_matmul_bf16_avx512_kernel());
+        } else if ((weight_dtype == data_type_t::f16)
+                && (input_dtype == data_type_t::f16)
+                && (output_dtype == data_type_t::f16
+                        || output_dtype == data_type_t::f32)) {
+            kernel = std::shared_ptr<matmul_f16_avx512_kernel_t>(
+                    get_matmul_f16_avx512_kernel());
+        } else if ((weight_dtype == data_type_t::s8)
+                && (input_dtype == data_type_t::s8
+                        || input_dtype == data_type_t::u8)
+                && (output_dtype == data_type_t::f32
+                        || output_dtype == data_type_t::bf16
+                        || output_dtype == data_type_t::s8
+                        || output_dtype == data_type_t::u8
+                        || output_dtype == data_type_t::s32
+                        || output_dtype == data_type_t::f16)) {
+            kernel = std::shared_ptr<matmul_int8_avx512_kernel_t>(
+                    get_matmul_int8_avx512_kernel());
+        } else if ((weight_dtype == data_type_t::s4
+                           || weight_dtype == data_type_t::u4)
+                && (input_dtype == data_type_t::bf16)
+                && (output_dtype == data_type_t::f32
+                        || output_dtype == data_type_t::bf16)) {
+            kernel = std::shared_ptr<matmul_bf16s4_avx512_kernel_t>(
+                    get_matmul_bf16s4_avx512_kernel());
+        } else {
+            apilog_error("<", obj_name, "> kernel unimplemented.");
+            return status_t::unimplemented;
+        }
 #endif
-  }
-  else {
-    if (forced_kernel == "reference") {
-      kernel = std::shared_ptr<matmul_ref_kernel_t>(get_matmul_ref_kernel());
+    } else {
+        if (forced_kernel == "reference") {
+            kernel = std::shared_ptr<matmul_ref_kernel_t>(
+                    get_matmul_ref_kernel());
+        } else if (forced_kernel == "onednn"
+                || forced_kernel == "onednn_blocked") {
+            kernel = std::shared_ptr<matmul_onednn_kernel_t>(
+                    get_matmul_onednn_kernel());
+        } else {
+            apilog_error("<", obj_name,
+                    "> kernel unimplemented using forced kernel ",
+                    forced_kernel);
+            return status_t::unimplemented;
+        }
     }
-    else if (forced_kernel == "onednn" || forced_kernel == "onednn_blocked") {
-      kernel = std::shared_ptr<matmul_onednn_kernel_t>(get_matmul_onednn_kernel());
-    }
-    else {
-      apilog_error("<", obj_name, "> kernel unimplemented using forced kernel ",
-                   forced_kernel);
-      return status_t::unimplemented;
-    }
-  }
 
-  kernel->create();
-  if (! kernel->check()) {
-    return kernel->get_last_status();
-  }
+    kernel->create();
+    if (!kernel->check()) { return kernel->get_last_status(); }
 
-  return status_t::success;
+    return status_t::success;
 }
 
 } //namespace ops

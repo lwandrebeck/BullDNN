@@ -17,12 +17,12 @@
 #ifndef _LOWOHA_REORDER_EXAMPLE_HPP_
 #define _LOWOHA_REORDER_EXAMPLE_HPP_
 
-#include "zendnnl.hpp"
 #include <iostream>
 #include <vector>
+#include "zendnnl.hpp"
 
-#define OK      (0)
-#define NOT_OK  (1)
+#define OK (0)
+#define NOT_OK (1)
 
 namespace zendnnl {
 namespace examples {

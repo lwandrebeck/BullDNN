@@ -1,5 +1,5 @@
 /********************************************************************************
-# * Copyright (c) 2023-2024 Advanced Micro Devices, Inc. All rights reserved.
+# * Copyright (c) 2023-2026 Advanced Micro Devices, Inc. All rights reserved.
 # *
 # * Licensed under the Apache License, Version 2.0 (the "License");
 # * you may not use this file except in compliance with the License.
@@ -16,7 +16,7 @@
 #ifndef _DLSAMPLE_KERNEL_LIST_HPP_
 #define _DLSAMPLE_KERNEL_LIST_HPP_
 
-#include "dlsample_avx512_kernels.hpp"
 #include "dlsample_avx2_kernels.hpp"
+#include "dlsample_avx512_kernels.hpp"
 
 #endif

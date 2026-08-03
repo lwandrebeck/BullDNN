@@ -1,5 +1,5 @@
 /********************************************************************************
-# * Copyright (c) 2023-2024 Advanced Micro Devices, Inc. All rights reserved.
+# * Copyright (c) 2023-2026 Advanced Micro Devices, Inc. All rights reserved.
 # *
 # * Licensed under the Apache License, Version 2.0 (the "License");
 # * you may not use this file except in compliance with the License.
@@ -29,21 +29,20 @@ namespace ops {
  * It is invoked if input data type is @c data_type_t::bf16.
  */
 class sample_bf16_avx512_kernel_t final : public op_kernel_t<sample_context_t> {
- public:
-  /** @brief Default destructor */
-  ~sample_bf16_avx512_kernel_t() = default;
+public:
+    /** @brief Default destructor */
+    ~sample_bf16_avx512_kernel_t() = default;
 
-  /** @brief Execute */
-  status_t execute(const context_type &context_,
-                   tensor_map_type &inputs_,
-                   tensor_map_type &outputs_) override;
+    /** @brief Execute */
+    status_t execute(const context_type &context_, tensor_map_type &inputs_,
+            tensor_map_type &outputs_) override;
 };
 
 } //namespace ops
 } //namespace zendnnl
 
 extern "C" {
-  /** @fn get_sample_bf16_avx512_kernel
+/** @fn get_sample_bf16_avx512_kernel
    *  @brief returns a shared pointer to sample_bf16_kernel_t kernel
    *
    * This is needed inside extern"C" scope to avoid name mangling. This arrangement is
@@ -51,7 +50,7 @@ extern "C" {
    * @c operator_t::load_module(), this function is searched using
    * @c operator_t::load_symbol(), and executed to get kernel pointer.
    */
-  zendnnl::ops::sample_bf16_avx512_kernel_t *get_sample_bf16_avx512_kernel();
+zendnnl::ops::sample_bf16_avx512_kernel_t *get_sample_bf16_avx512_kernel();
 }
 
 #endif

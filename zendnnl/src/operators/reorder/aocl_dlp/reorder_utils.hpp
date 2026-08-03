@@ -1,5 +1,5 @@
 /********************************************************************************
-# * Copyright (c) 2025 Advanced Micro Devices, Inc. All rights reserved.
+# * Copyright (c) 2025-2026 Advanced Micro Devices, Inc. All rights reserved.
 # *
 # * Licensed under the Apache License, Version 2.0 (the "License");
 # * you may not use this file except in compliance with the License.
@@ -30,16 +30,14 @@ using namespace zendnnl::memory;
  *
  */
 class aocl_dlp_reorder_utils_t {
- public:
-
-  /** @brief Computes size for AOCL DLP reorder/unreorder operations
+public:
+    /** @brief Computes size for AOCL DLP reorder/unreorder operations
   *  @param context The reorder context containing configuration parameters.
   *  @param input_tensor The input tensor for which the reorder/unreorder size is computed.
   *  @return The size required for the AOCL DLP reorder/unreorder operation.
   */
-  static size_t get_aocl_reorder_size(const reorder_context_t &context,
-                                      const tensor_t &input_tensor);
-
+    static size_t get_aocl_reorder_size(
+            const reorder_context_t &context, const tensor_t &input_tensor);
 };
 
 } // namespace ops

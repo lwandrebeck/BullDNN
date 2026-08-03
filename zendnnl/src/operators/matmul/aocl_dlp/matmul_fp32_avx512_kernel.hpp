@@ -16,18 +16,17 @@
 #ifndef _MATMUL_FP32_AVX512_KERNEL_HPP_
 #define _MATMUL_FP32_AVX512_KERNEL_HPP_
 
-#include <vector>
+#include <cstdlib>
+#include <cstring>
 #include <iostream>
 #include <memory>
-#include <cstring>
-#include <cstdlib>
+#include <vector>
 #include "common/zendnnl_global.hpp"
 #include "operators/common/operator_kernel.hpp"
 #include "operators/matmul/matmul_context.hpp"
 
-
 #if ZENDNNL_DEPENDS_AOCLDLP
-  #include "aocl_dlp.h"
+#include "aocl_dlp.h"
 #endif
 
 namespace zendnnl {
@@ -36,17 +35,16 @@ namespace ops {
 using namespace zendnnl::error_handling;
 
 class matmul_f32_avx512_kernel_t final : public op_kernel_t<matmul_context_t> {
- public:
-  status_t execute(const context_type &context_,
-                   tensor_map_type &inputs_,
-                   tensor_map_type &outputs_) override;
+public:
+    status_t execute(const context_type &context_, tensor_map_type &inputs_,
+            tensor_map_type &outputs_) override;
 };
 
 } //namespace ops
 } //namespace zendnnl
 
 extern "C" {
-  zendnnl::ops::matmul_f32_avx512_kernel_t *get_matmul_f32_avx512_kernel();
+zendnnl::ops::matmul_f32_avx512_kernel_t *get_matmul_f32_avx512_kernel();
 }
 
 #endif

@@ -1,5 +1,5 @@
 /********************************************************************************
-# * Copyright (c) 2025 Advanced Micro Devices, Inc. All rights reserved.
+# * Copyright (c) 2025-2026 Advanced Micro Devices, Inc. All rights reserved.
 # *
 # * Licensed under the Apache License, Version 2.0 (the "License");
 # * you may not use this file except in compliance with the License.
@@ -17,8 +17,8 @@
 #ifndef _ZENAI_OPERATOR_CONFIG_HPP_
 #define _ZENAI_OPERATOR_CONFIG_HPP_
 
-#include "nlohmann/json.hpp"
 #include "common/error_status.hpp"
+#include "nlohmann/json.hpp"
 
 using json = nlohmann::json;
 using status_t = zendnnl::error_handling::status_t;
@@ -36,24 +36,24 @@ namespace ops {
  *
  */
 class op_config_t {
- public:
-  /** @brief Set default runtime variables.
+public:
+    /** @brief Set default runtime variables.
   */
-  virtual void set_default_config() = 0;
+    virtual void set_default_config() = 0;
 
-  /** @brief Set runtime variables from json.
+    /** @brief Set runtime variables from json.
   */
-  virtual status_t set_user_config(json config_json) = 0;
+    virtual status_t set_user_config(json config_json) = 0;
 
-  /** @brief Set runtime variables from environment.
+    /** @brief Set runtime variables from environment.
   */
-  virtual void set_env_config() = 0;
+    virtual void set_env_config() = 0;
 
-  /** @brief Virtual destructor
+    /** @brief Virtual destructor
   *
   *  Virtual since this class acts as virtual base class.
   */
-  virtual ~op_config_t() = default;
+    virtual ~op_config_t() = default;
 };
 
 } // namespace ops

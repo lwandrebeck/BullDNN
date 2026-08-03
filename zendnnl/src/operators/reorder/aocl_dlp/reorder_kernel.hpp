@@ -1,5 +1,5 @@
 /********************************************************************************
-# * Copyright (c) 2025 Advanced Micro Devices, Inc. All rights reserved.
+# * Copyright (c) 2025-2026 Advanced Micro Devices, Inc. All rights reserved.
 # *
 # * Licensed under the Apache License, Version 2.0 (the "License");
 # * you may not use this file except in compliance with the License.
@@ -31,42 +31,41 @@ namespace ops {
  * @c data_type_t::bf16 or @c data_type_t::s8 or @c data_type_t::s4.
  */
 class reorder_kernel_t final : public op_kernel_t<reorder_context_t> {
- public:
-  /** @brief Default destructor */
-  ~reorder_kernel_t() = default;
+public:
+    /** @brief Default destructor */
+    ~reorder_kernel_t() = default;
 
-  /** @brief Execute */
-  status_t execute(const context_type &context_,
-                   tensor_map_type &inputs_,
-                   tensor_map_type &outputs_) override;
+    /** @brief Execute */
+    status_t execute(const context_type &context_, tensor_map_type &inputs_,
+            tensor_map_type &outputs_) override;
 
-  /** @fn data_copy
+    /** @fn data_copy
   *
   * @brief
   * Templatized API, copies the data to actual buffer from the local buffer.
   *
   */
-  template <typename T>
-  void data_copy(void *output, void *reorder_weights, size_t reorder_size) {
-    for (long long int idx = 0; idx < (long long int)(reorder_size/sizeof(T));
-         idx++) {
-      ((T *)output)[idx] = ((T *)reorder_weights)[idx];
+    template <typename T>
+    void data_copy(void *output, void *reorder_weights, size_t reorder_size) {
+        for (long long int idx = 0;
+                idx < (long long int)(reorder_size / sizeof(T)); idx++) {
+            ((T *)output)[idx] = ((T *)reorder_weights)[idx];
+        }
     }
-  }
 };
 
 } //namespace ops
 } //namespace zendnnl
 
 extern "C" {
-  /** @fn get_reorder_aocl_kernel
+/** @fn get_reorder_aocl_kernel
    *
    * This is needed inside extern"C" scope to avoid name mangling. This arrangement is
    * made to enable dynamic loading. After loading the module using
    * @c operator_t::load_module(), this function is searched using
    * @c operator_t::load_symbol(), and executed to get kernel pointer.
    */
-  zendnnl::ops::reorder_kernel_t *get_reorder_aocl_kernel();
+zendnnl::ops::reorder_kernel_t *get_reorder_aocl_kernel();
 }
 
 #endif

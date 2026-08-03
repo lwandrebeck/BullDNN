@@ -16,11 +16,11 @@
 #ifndef _SDPA_BENCHDNN_HPP_
 #define _SDPA_BENCHDNN_HPP_
 
-#include "example_utils.hpp"
 #include "benchdnn.hpp"
-#include "sdpa_utils.hpp"
-#include "sdpa_tensor_factory.hpp"
+#include "example_utils.hpp"
 #include "sdpa_lowoha.hpp"
+#include "sdpa_tensor_factory.hpp"
+#include "sdpa_utils.hpp"
 
 namespace zendnnl {
 namespace benchdnn {
@@ -51,8 +51,8 @@ using namespace zendnnl::examples;
  * @return int OK (0) on success, NOT_OK (1) on failure.
  */
 int bench(const std::string &in_filename, const std::string &out_filename,
-          const InputMode inputMode, const global_options &options,
-          const bool isLOWOHA, size_t cache_size);
+        const InputMode inputMode, const global_options &options,
+        const bool isLOWOHA, size_t cache_size);
 
 } // namespace sdpa
 } // namespace benchdnn

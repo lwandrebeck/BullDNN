@@ -29,56 +29,56 @@ namespace ops {
  * should be the class itself.
  * @sa sdpa_encoder_operator_t
  */
-class sdpa_encoder_context_t final : public
-  op_context_t<sdpa_encoder_context_t> {
- public:
-  using parent_type = op_context_t<sdpa_encoder_context_t>;
-  /** @brief constructor */
-  sdpa_encoder_context_t();
+class sdpa_encoder_context_t final
+    : public op_context_t<sdpa_encoder_context_t> {
+public:
+    using parent_type = op_context_t<sdpa_encoder_context_t>;
+    /** @brief constructor */
+    sdpa_encoder_context_t();
 
-  /** @brief Set scale parameter value.*/
-  sdpa_encoder_context_t &set_scale(float scale_);
+    /** @brief Set scale parameter value.*/
+    sdpa_encoder_context_t &set_scale(float scale_);
 
-  /** @brief Get scale parameter value.*/
-  float get_scale() const;
+    /** @brief Get scale parameter value.*/
+    float get_scale() const;
 
-  /** @brief Set is_dropout parameter value.*/
-  sdpa_encoder_context_t &set_is_dropout(bool is_dropout_);
+    /** @brief Set is_dropout parameter value.*/
+    sdpa_encoder_context_t &set_is_dropout(bool is_dropout_);
 
-  /** @brief Get is_dropout parameter value.*/
-  bool get_is_dropout() const;
+    /** @brief Get is_dropout parameter value.*/
+    bool get_is_dropout() const;
 
-  /** @brief Set is_causal parameter value.*/
-  sdpa_encoder_context_t &set_is_causal(bool is_causal_);
+    /** @brief Set is_causal parameter value.*/
+    sdpa_encoder_context_t &set_is_causal(bool is_causal_);
 
-  /** @brief Get is_causal parameter value.*/
-  bool get_is_causal() const;
+    /** @brief Get is_causal parameter value.*/
+    bool get_is_causal() const;
 
-  /** @brief Set has_mask parameter value.*/
-  sdpa_encoder_context_t &set_has_mask(bool has_mask_);
+    /** @brief Set has_mask parameter value.*/
+    sdpa_encoder_context_t &set_has_mask(bool has_mask_);
 
-  /** @brief Get has_mask parameter value.*/
-  bool get_has_mask() const;
+    /** @brief Get has_mask parameter value.*/
+    bool get_has_mask() const;
 
+    /** @brief Returns SDPA encoder context information */
+    std::string context_info() override;
 
-  /** @brief Returns SDPA encoder context information */
-  std::string context_info() override;
+protected:
+    /** @brief validate parameters */
+    status_t validate() override;
 
- protected:
-  /** @brief validate parameters */
-  status_t validate() override;
- private:
-  float _scale;      /**< scale parameter */
-  bool _is_dropout;  /**< is_dropout parameter */
-  bool _is_causal;   /**< is_causal parameter */
-  bool _has_mask;    /**< has_mask parameter */
+private:
+    float _scale; /**< scale parameter */
+    bool _is_dropout; /**< is_dropout parameter */
+    bool _is_causal; /**< is_causal parameter */
+    bool _has_mask; /**< has_mask parameter */
 };
 
 } //namespace ops
 
 namespace interface {
 using sdpa_encoder_context_t = zendnnl::ops::sdpa_encoder_context_t;
-} //export
+} // namespace interface
 
 } //namespace zendnnl
 #endif

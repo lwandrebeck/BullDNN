@@ -16,11 +16,11 @@
 #ifndef _MATMUL_BENCHDNN_HPP_
 #define _MATMUL_BENCHDNN_HPP_
 
-#include "example_utils.hpp"
 #include "benchdnn.hpp"
-#include "matmul_utils.hpp"
-#include "matmul_tensor_factory.hpp"
+#include "example_utils.hpp"
 #include "matmul_lowoha.hpp"
+#include "matmul_tensor_factory.hpp"
+#include "matmul_utils.hpp"
 
 namespace zendnnl {
 namespace benchdnn {
@@ -46,8 +46,9 @@ using namespace zendnnl::examples;
  * @return int OK (0) on success, NOT_OK (1) on failure.
  */
 int run_matmul(tensor_t output_tensor, tensor_t input_tensor, tensor_t weights,
-               tensor_t bias, MatmulConfig cfg, std::vector<tensor_t> binary_post_ops_tensors,
-               TimingStats &stats, bool isNotWarmup = false);
+        tensor_t bias, MatmulConfig cfg,
+        std::vector<tensor_t> binary_post_ops_tensors, TimingStats &stats,
+        bool isNotWarmup = false);
 
 /**
  * @brief Benchmarks matmul (optionally fused with post-ops) using user-specified parameters.
@@ -63,9 +64,9 @@ int run_matmul(tensor_t output_tensor, tensor_t input_tensor, tensor_t weights,
  * @return int Returns OK (0) on success, NOT_OK (1) on failure.
  */
 int matmul_benchdnn(std::vector<MatmulConfig> configs,
-                    std::vector<std::pair<MatmulConfig, std::vector<TimingStats>>> &matmul_results,
-                    const global_options &options,
-                    size_t cache_size);
+        std::vector<std::pair<MatmulConfig, std::vector<TimingStats>>>
+                &matmul_results,
+        const global_options &options, size_t cache_size);
 
 /**
  * @brief Runs the full matmul benchmark suite from an input file and writes results to a CSV file.
@@ -82,8 +83,8 @@ int matmul_benchdnn(std::vector<MatmulConfig> configs,
  * @return int Returns OK (0) on success, NOT_OK (1) on failure.
  */
 int bench(const std::string &in_filename, const std::string &out_filename,
-          const InputMode inputMode, const global_options &options, const bool isLOWOHA,
-          size_t cache_size);
+        const InputMode inputMode, const global_options &options,
+        const bool isLOWOHA, size_t cache_size);
 
 } // namespace matmul
 } // namespace benchdnn

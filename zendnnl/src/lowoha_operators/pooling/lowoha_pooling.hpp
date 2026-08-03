@@ -40,11 +40,7 @@ namespace pooling {
  *
  * @return status_t::success or status_t::failure
  */
-status_t pooling_direct(
-    const void *input,
-    void *output,
-    pool_params &params
-);
+status_t pooling_direct(const void *input, void *output, pool_params &params);
 
 /**
  * @brief Execute pooling with automatic kernel selection (legacy interface)
@@ -62,10 +58,7 @@ status_t pooling_direct(
  * @return status_t::success or status_t::failure
  */
 void pooling_kernel_wrapper(
-    const void *input,
-    void *output,
-    pool_params &params
-);
+        const void *input, void *output, pool_params &params);
 
 } // namespace pooling
 } // namespace lowoha

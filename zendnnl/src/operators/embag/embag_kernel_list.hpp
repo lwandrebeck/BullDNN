@@ -1,5 +1,5 @@
 /********************************************************************************
-# * Copyright (c) 2025 Advanced Micro Devices, Inc. All rights reserved.
+# * Copyright (c) 2025-2026 Advanced Micro Devices, Inc. All rights reserved.
 # *
 # * Licensed under the Apache License, Version 2.0 (the "License");
 # * you may not use this file except in compliance with the License.
@@ -16,8 +16,8 @@
 #ifndef _EMBEG_KERNEL_LIST_HPP_
 #define _EMBEG_KERNEL_LIST_HPP_
 
-#include "native_kernels/embag_avx512_kernels.hpp"
-#include "native_kernels/embag_avx2_kernels.hpp"
 #include "embag_ref_kernel.hpp"
+#include "native_kernels/embag_avx2_kernels.hpp"
+#include "native_kernels/embag_avx512_kernels.hpp"
 
 #endif

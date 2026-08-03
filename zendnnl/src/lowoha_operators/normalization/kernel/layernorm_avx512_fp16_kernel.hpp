@@ -53,13 +53,8 @@ namespace normalization {
 // without the AVX512-FP16 ISA will SIGILL. On toolchains older than GCC 12,
 // this returns status_t::isa_unsupported.
 // ---------------------------------------------------------------------------
-status_t layer_norm_avx512_fp16(
-  const void *input,
-  void       *output,
-  const void *gamma,
-  const void *beta,
-  norm_params &params
-);
+status_t layer_norm_avx512_fp16(const void *input, void *output,
+        const void *gamma, const void *beta, norm_params &params);
 
 } // namespace normalization
 } // namespace lowoha

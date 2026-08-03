@@ -86,15 +86,10 @@ inline constexpr int kBf16GemvNarrowMaxN = 4;
 /// to call on ultra-short K (including K=1); a single odd-K tail is
 /// handled with a zero second-pair BF16 so VDPBF16PS contributes
 /// only the live lane.
-void bf16_gemv_narrow(
-    const uint16_t *A, int K,
-    const uint16_t *B, int ldb,
-    uint16_t *C_bf16, float *C_fp32,
-    const float *bias_f,
-    fused_postop_t fused_op,
-    float alpha, float beta,
-    bool dst_is_bf16,
-    int N);
+void bf16_gemv_narrow(const uint16_t *A, int K, const uint16_t *B, int ldb,
+        uint16_t *C_bf16, float *C_fp32, const float *bias_f,
+        fused_postop_t fused_op, float alpha, float beta, bool dst_is_bf16,
+        int N);
 
 } // namespace native
 } // namespace matmul

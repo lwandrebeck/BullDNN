@@ -38,8 +38,8 @@
 
 #include <gtest/gtest.h>
 
-#include "lowoha_operators/matmul/group_matmul/custom_kernel/dispatch.hpp"
 #include "ck_test_helpers.hpp"
+#include "lowoha_operators/matmul/group_matmul/custom_kernel/dispatch.hpp"
 
 namespace {
 
@@ -52,70 +52,69 @@ using ck_test::data_type_t;
 // Negative cases are the complement on the full data_type_t³ sweep.
 // ──────────────────────────────────────────────────────────────────
 struct PositiveRow {
-  data_type_t        src, wei, dst;
-  ck::KernelVariant  expected;
+    data_type_t src, wei, dst;
+    ck::KernelVariant expected;
 };
 
 constexpr PositiveRow kPositiveTable[] = {
-    {data_type_t::bf16, data_type_t::bf16, data_type_t::bf16,
-     ck::KernelVariant::kBF16_BF16_BF16},
-    {data_type_t::bf16, data_type_t::bf16, data_type_t::f32,
-     ck::KernelVariant::kBF16_BF16_F32},
-    // FP16 family — native AVX-512-FP16 (non-quant, like bf16).  The
-    // 3-arg overload (dynamic_quant=false) routes these directly; see
-    // `resolve_variant` in custom_kernel/dispatch.cpp.
-    {data_type_t::f16, data_type_t::f16, data_type_t::f16,
-     ck::KernelVariant::kF16_F16_F16},
-    {data_type_t::f16, data_type_t::f16, data_type_t::f32,
-     ck::KernelVariant::kF16_F16_F32},
+        {data_type_t::bf16, data_type_t::bf16, data_type_t::bf16,
+                ck::KernelVariant::kBF16_BF16_BF16},
+        {data_type_t::bf16, data_type_t::bf16, data_type_t::f32,
+                ck::KernelVariant::kBF16_BF16_F32},
+        // FP16 family — native AVX-512-FP16 (non-quant, like bf16).  The
+        // 3-arg overload (dynamic_quant=false) routes these directly; see
+        // `resolve_variant` in custom_kernel/dispatch.cpp.
+        {data_type_t::f16, data_type_t::f16, data_type_t::f16,
+                ck::KernelVariant::kF16_F16_F16},
+        {data_type_t::f16, data_type_t::f16, data_type_t::f32,
+                ck::KernelVariant::kF16_F16_F32},
 };
 
 // Every value declared in `data_type_t` (see `common/data_types.hpp`).
 // Keep this in sync with the enum so the negative sweep cannot miss
 // a newly added dtype quietly admitted by the dispatcher.
 constexpr data_type_t kAllDtypes[] = {
-    data_type_t::none,
-    data_type_t::f32,
-    data_type_t::f16,
-    data_type_t::bf16,
-    data_type_t::s32,
-    data_type_t::s64,
-    data_type_t::s16,
-    data_type_t::s8,
-    data_type_t::s4,
-    data_type_t::u32,
-    data_type_t::u16,
-    data_type_t::u8,
-    data_type_t::u4,
+        data_type_t::none,
+        data_type_t::f32,
+        data_type_t::f16,
+        data_type_t::bf16,
+        data_type_t::s32,
+        data_type_t::s64,
+        data_type_t::s16,
+        data_type_t::s8,
+        data_type_t::s4,
+        data_type_t::u32,
+        data_type_t::u16,
+        data_type_t::u8,
+        data_type_t::u4,
 };
 
 // ──────────────────────────────────────────────────────────────────
 // [Positive] Every supported tuple resolves to its expected variant.
 // ──────────────────────────────────────────────────────────────────
-class CkResolveVariantPositive
-    : public ::testing::TestWithParam<PositiveRow> {};
+class CkResolveVariantPositive : public ::testing::TestWithParam<PositiveRow> {
+};
 
 TEST_P(CkResolveVariantPositive, MatchesExpectedVariant) {
-  const auto &p = GetParam();
-  EXPECT_EQ(ck::resolve_variant(p.src, p.wei, p.dst), p.expected)
-      << "src="  << ck_test::dt_name(p.src)
-      << " wei=" << ck_test::dt_name(p.wei)
-      << " dst=" << ck_test::dt_name(p.dst);
+    const auto &p = GetParam();
+    EXPECT_EQ(ck::resolve_variant(p.src, p.wei, p.dst), p.expected)
+            << "src=" << ck_test::dt_name(p.src)
+            << " wei=" << ck_test::dt_name(p.wei)
+            << " dst=" << ck_test::dt_name(p.dst);
 }
 
-INSTANTIATE_TEST_SUITE_P(
-    AllSupportedTuples, CkResolveVariantPositive,
-    ::testing::ValuesIn(std::begin(kPositiveTable),
-                        std::end(kPositiveTable)),
-    [](const ::testing::TestParamInfo<PositiveRow> &info) {
-      std::string s;
-      s += ck_test::dt_name(info.param.src);
-      s += "_";
-      s += ck_test::dt_name(info.param.wei);
-      s += "_";
-      s += ck_test::dt_name(info.param.dst);
-      return s;
-    });
+INSTANTIATE_TEST_SUITE_P(AllSupportedTuples, CkResolveVariantPositive,
+        ::testing::ValuesIn(
+                std::begin(kPositiveTable), std::end(kPositiveTable)),
+        [](const ::testing::TestParamInfo<PositiveRow> &info) {
+            std::string s;
+            s += ck_test::dt_name(info.param.src);
+            s += "_";
+            s += ck_test::dt_name(info.param.wei);
+            s += "_";
+            s += ck_test::dt_name(info.param.dst);
+            return s;
+        });
 
 // ──────────────────────────────────────────────────────────────────
 // [Negative] Every tuple NOT in the positive list resolves to
@@ -125,46 +124,44 @@ INSTANTIATE_TEST_SUITE_P(
 // admitted dtype anywhere in the enum gets caught.
 // ──────────────────────────────────────────────────────────────────
 struct NegativeRow {
-  data_type_t src, wei, dst;
+    data_type_t src, wei, dst;
 };
 
 inline std::vector<NegativeRow> build_negative_rows() {
-  std::vector<NegativeRow> rows;
-  // 13 dtypes ³ - small positive table; reserving a generous size
-  // avoids reallocations during the build loop.
-  rows.reserve(13 * 13 * 13);
-  for (auto src : kAllDtypes) {
-    for (auto wei : kAllDtypes) {
-      for (auto dst : kAllDtypes) {
-        bool is_positive = false;
-        for (const auto &p : kPositiveTable) {
-          if (p.src == src && p.wei == wei && p.dst == dst) {
-            is_positive = true;
-            break;
-          }
+    std::vector<NegativeRow> rows;
+    // 13 dtypes ³ - small positive table; reserving a generous size
+    // avoids reallocations during the build loop.
+    rows.reserve(13 * 13 * 13);
+    for (auto src : kAllDtypes) {
+        for (auto wei : kAllDtypes) {
+            for (auto dst : kAllDtypes) {
+                bool is_positive = false;
+                for (const auto &p : kPositiveTable) {
+                    if (p.src == src && p.wei == wei && p.dst == dst) {
+                        is_positive = true;
+                        break;
+                    }
+                }
+                if (!is_positive) { rows.push_back({src, wei, dst}); }
+            }
         }
-        if (!is_positive) {
-          rows.push_back({src, wei, dst});
-        }
-      }
     }
-  }
-  return rows;
+    return rows;
 }
 
-class CkResolveVariantNegative
-    : public ::testing::TestWithParam<NegativeRow> {};
+class CkResolveVariantNegative : public ::testing::TestWithParam<NegativeRow> {
+};
 
 TEST_P(CkResolveVariantNegative, ResolvesToUnsupported) {
-  const auto &p = GetParam();
-  EXPECT_EQ(ck::resolve_variant(p.src, p.wei, p.dst),
+    const auto &p = GetParam();
+    EXPECT_EQ(ck::resolve_variant(p.src, p.wei, p.dst),
             ck::KernelVariant::kUnsupported)
-      << "src="  << ck_test::dt_name(p.src)
-      << " wei=" << ck_test::dt_name(p.wei)
-      << " dst=" << ck_test::dt_name(p.dst)
-      << " — if you just landed an int8 (or other) variant, add the "
-         "tuple to the kPositiveTable above so it is asserted in the "
-         "Positive suite instead.";
+            << "src=" << ck_test::dt_name(p.src)
+            << " wei=" << ck_test::dt_name(p.wei)
+            << " dst=" << ck_test::dt_name(p.dst)
+            << " — if you just landed an int8 (or other) variant, add the "
+               "tuple to the kPositiveTable above so it is asserted in the "
+               "Positive suite instead.";
 }
 
 // gtest holds parameter sources for the lifetime of the test suite,
@@ -173,21 +170,20 @@ TEST_P(CkResolveVariantNegative, ResolvesToUnsupported) {
 // dangling iterators after the rvalue's destruction; wrap the
 // builder in an immediately-invoked lambda whose function-local
 // static gives the container static storage duration.
-INSTANTIATE_TEST_SUITE_P(
-    AllRejectedTuples, CkResolveVariantNegative,
-    ::testing::ValuesIn([]() -> const std::vector<NegativeRow>& {
-      static const std::vector<NegativeRow> kRows = build_negative_rows();
-      return kRows;
-    }()),
-    [](const ::testing::TestParamInfo<NegativeRow> &info) {
-      std::string s;
-      s += ck_test::dt_name(info.param.src);
-      s += "_";
-      s += ck_test::dt_name(info.param.wei);
-      s += "_";
-      s += ck_test::dt_name(info.param.dst);
-      return s;
-    });
+INSTANTIATE_TEST_SUITE_P(AllRejectedTuples, CkResolveVariantNegative,
+        ::testing::ValuesIn([]() -> const std::vector<NegativeRow> & {
+            static const std::vector<NegativeRow> kRows = build_negative_rows();
+            return kRows;
+        }()),
+        [](const ::testing::TestParamInfo<NegativeRow> &info) {
+            std::string s;
+            s += ck_test::dt_name(info.param.src);
+            s += "_";
+            s += ck_test::dt_name(info.param.wei);
+            s += "_";
+            s += ck_test::dt_name(info.param.dst);
+            return s;
+        });
 
 // ──────────────────────────────────────────────────────────────────
 // [Properties] Hand-coded invariants the table must satisfy.  These
@@ -195,85 +191,81 @@ INSTANTIATE_TEST_SUITE_P(
 // for a tuple that should have stayed `kUnsupported`).
 // ──────────────────────────────────────────────────────────────────
 TEST(CkResolveVariantProperties, NoneOnAnyDtypeIsUnsupported) {
-  // `data_type_t::none` is a sentinel — never a real input; should
-  // never match any supported variant.
-  for (auto dt1 : kAllDtypes) {
-    for (auto dt2 : kAllDtypes) {
-      EXPECT_EQ(
-          ck::resolve_variant(data_type_t::none, dt1, dt2),
-          ck::KernelVariant::kUnsupported);
-      EXPECT_EQ(
-          ck::resolve_variant(dt1, data_type_t::none, dt2),
-          ck::KernelVariant::kUnsupported);
-      EXPECT_EQ(
-          ck::resolve_variant(dt1, dt2, data_type_t::none),
-          ck::KernelVariant::kUnsupported);
+    // `data_type_t::none` is a sentinel — never a real input; should
+    // never match any supported variant.
+    for (auto dt1 : kAllDtypes) {
+        for (auto dt2 : kAllDtypes) {
+            EXPECT_EQ(ck::resolve_variant(data_type_t::none, dt1, dt2),
+                    ck::KernelVariant::kUnsupported);
+            EXPECT_EQ(ck::resolve_variant(dt1, data_type_t::none, dt2),
+                    ck::KernelVariant::kUnsupported);
+            EXPECT_EQ(ck::resolve_variant(dt1, dt2, data_type_t::none),
+                    ck::KernelVariant::kUnsupported);
+        }
     }
-  }
 }
 
 TEST(CkResolveVariantProperties, F16OnlyHomogeneousF16IsSupported) {
-  // The native AVX-512-FP16 family serves exactly two tuples on the
-  // 3-arg (non-quant) overload:
-  //   (f16, f16, f16) → kF16_F16_F16
-  //   (f16, f16, f32) → kF16_F16_F32
-  // Every OTHER (src, wei, dst) tuple that mentions f16 — mixed
-  // src/wei dtypes, or an f16 dst with non-f16 src/wei — has no CK
-  // route and must resolve to `kUnsupported`.
-  EXPECT_EQ(ck::resolve_variant(data_type_t::f16, data_type_t::f16,
-                                data_type_t::f16),
+    // The native AVX-512-FP16 family serves exactly two tuples on the
+    // 3-arg (non-quant) overload:
+    //   (f16, f16, f16) → kF16_F16_F16
+    //   (f16, f16, f32) → kF16_F16_F32
+    // Every OTHER (src, wei, dst) tuple that mentions f16 — mixed
+    // src/wei dtypes, or an f16 dst with non-f16 src/wei — has no CK
+    // route and must resolve to `kUnsupported`.
+    EXPECT_EQ(ck::resolve_variant(
+                      data_type_t::f16, data_type_t::f16, data_type_t::f16),
             ck::KernelVariant::kF16_F16_F16);
-  EXPECT_EQ(ck::resolve_variant(data_type_t::f16, data_type_t::f16,
-                                data_type_t::f32),
+    EXPECT_EQ(ck::resolve_variant(
+                      data_type_t::f16, data_type_t::f16, data_type_t::f32),
             ck::KernelVariant::kF16_F16_F32);
 
-  // Helper: the only supported f16-mentioning tuples are
-  // (f16, f16, {f16, f32}).
-  auto is_supported_f16 = [](data_type_t s, data_type_t w,
-                             data_type_t d) {
-    return s == data_type_t::f16 && w == data_type_t::f16
-        && (d == data_type_t::f16 || d == data_type_t::f32);
-  };
+    // Helper: the only supported f16-mentioning tuples are
+    // (f16, f16, {f16, f32}).
+    auto is_supported_f16 = [](data_type_t s, data_type_t w, data_type_t d) {
+        return s == data_type_t::f16 && w == data_type_t::f16
+                && (d == data_type_t::f16 || d == data_type_t::f32);
+    };
 
-  for (auto dt1 : kAllDtypes) {
-    for (auto dt2 : kAllDtypes) {
-      if (!is_supported_f16(data_type_t::f16, dt1, dt2)) {
-        EXPECT_EQ(ck::resolve_variant(data_type_t::f16, dt1, dt2),
-                  ck::KernelVariant::kUnsupported)
-            << "src=f16 wei=" << ck_test::dt_name(dt1)
-            << " dst=" << ck_test::dt_name(dt2);
-      }
-      if (!is_supported_f16(dt1, data_type_t::f16, dt2)) {
-        EXPECT_EQ(ck::resolve_variant(dt1, data_type_t::f16, dt2),
-                  ck::KernelVariant::kUnsupported)
-            << "src=" << ck_test::dt_name(dt1)
-            << " wei=f16 dst=" << ck_test::dt_name(dt2);
-      }
-      if (!is_supported_f16(dt1, dt2, data_type_t::f16)) {
-        EXPECT_EQ(ck::resolve_variant(dt1, dt2, data_type_t::f16),
-                  ck::KernelVariant::kUnsupported)
-            << "src=" << ck_test::dt_name(dt1)
-            << " wei=" << ck_test::dt_name(dt2) << " dst=f16";
-      }
+    for (auto dt1 : kAllDtypes) {
+        for (auto dt2 : kAllDtypes) {
+            if (!is_supported_f16(data_type_t::f16, dt1, dt2)) {
+                EXPECT_EQ(ck::resolve_variant(data_type_t::f16, dt1, dt2),
+                        ck::KernelVariant::kUnsupported)
+                        << "src=f16 wei=" << ck_test::dt_name(dt1)
+                        << " dst=" << ck_test::dt_name(dt2);
+            }
+            if (!is_supported_f16(dt1, data_type_t::f16, dt2)) {
+                EXPECT_EQ(ck::resolve_variant(dt1, data_type_t::f16, dt2),
+                        ck::KernelVariant::kUnsupported)
+                        << "src=" << ck_test::dt_name(dt1)
+                        << " wei=f16 dst=" << ck_test::dt_name(dt2);
+            }
+            if (!is_supported_f16(dt1, dt2, data_type_t::f16)) {
+                EXPECT_EQ(ck::resolve_variant(dt1, dt2, data_type_t::f16),
+                        ck::KernelVariant::kUnsupported)
+                        << "src=" << ck_test::dt_name(dt1)
+                        << " wei=" << ck_test::dt_name(dt2) << " dst=f16";
+            }
+        }
     }
-  }
 }
 
 TEST(CkResolveVariantProperties, U8IsAlwaysUnsupportedToday) {
-  // U8 has no instantiated variant on the 3-arg (BF16-only) overload.
-  // The 5-arg `dynamic_quant=true, compute=u8` form is the DQ-INT8
-  // ASYM path; that one is tested separately in
-  // `CkResolveVariantInt8.AcceptsAsymmetric` below.
-  for (auto dt1 : kAllDtypes) {
-    for (auto dt2 : kAllDtypes) {
-      EXPECT_EQ(ck::resolve_variant(data_type_t::u8, dt1, dt2),
-                ck::KernelVariant::kUnsupported);
-      EXPECT_EQ(ck::resolve_variant(dt1, data_type_t::u8, dt2),
-                ck::KernelVariant::kUnsupported);
-      EXPECT_EQ(ck::resolve_variant(dt1, dt2, data_type_t::u8),
-                ck::KernelVariant::kUnsupported);
+    // U8 has no instantiated variant on the 3-arg (BF16-only) overload.
+    // The 5-arg `dynamic_quant=true, compute=u8` form is the DQ-INT8
+    // ASYM path; that one is tested separately in
+    // `CkResolveVariantInt8.AcceptsAsymmetric` below.
+    for (auto dt1 : kAllDtypes) {
+        for (auto dt2 : kAllDtypes) {
+            EXPECT_EQ(ck::resolve_variant(data_type_t::u8, dt1, dt2),
+                    ck::KernelVariant::kUnsupported);
+            EXPECT_EQ(ck::resolve_variant(dt1, data_type_t::u8, dt2),
+                    ck::KernelVariant::kUnsupported);
+            EXPECT_EQ(ck::resolve_variant(dt1, dt2, data_type_t::u8),
+                    ck::KernelVariant::kUnsupported);
+        }
     }
-  }
 }
 
 // ──────────────────────────────────────────────────────────────────
@@ -283,142 +275,137 @@ TEST(CkResolveVariantProperties, U8IsAlwaysUnsupportedToday) {
 // non-s8 wei or non-bf16 src/dst) resolves to `kUnsupported`.
 // ──────────────────────────────────────────────────────────────────
 TEST(CkResolveVariantInt8, AcceptsSymmetric) {
-  EXPECT_EQ(ck::resolve_variant(data_type_t::bf16, data_type_t::s8,
-                                data_type_t::bf16,
-                                /*dynamic_quant=*/true,
-                                /*compute_dtype=*/data_type_t::s8),
+    EXPECT_EQ(ck::resolve_variant(data_type_t::bf16, data_type_t::s8,
+                      data_type_t::bf16,
+                      /*dynamic_quant=*/true,
+                      /*compute_dtype=*/data_type_t::s8),
             ck::KernelVariant::kS8_S8_BF16_SYM);
 }
 
 TEST(CkResolveVariantInt8, AcceptsAsymmetric) {
-  EXPECT_EQ(ck::resolve_variant(data_type_t::bf16, data_type_t::s8,
-                                data_type_t::bf16,
-                                /*dynamic_quant=*/true,
-                                /*compute_dtype=*/data_type_t::u8),
+    EXPECT_EQ(ck::resolve_variant(data_type_t::bf16, data_type_t::s8,
+                      data_type_t::bf16,
+                      /*dynamic_quant=*/true,
+                      /*compute_dtype=*/data_type_t::u8),
             ck::KernelVariant::kU8_S8_BF16_ASYM);
 }
 
 TEST(CkResolveVariantInt8, AcceptsF32Dst) {
-  // FP32 dst is a served int8 variant (ukernel_f32dst): src=bf16,
-  // wei=s8, dst=f32, dynamic_quant=true, compute=s8/u8.
-  EXPECT_EQ(ck::resolve_variant(data_type_t::bf16, data_type_t::s8,
-                                data_type_t::f32, /*dynamic_quant=*/true,
-                                /*compute_dtype=*/data_type_t::s8),
+    // FP32 dst is a served int8 variant (ukernel_f32dst): src=bf16,
+    // wei=s8, dst=f32, dynamic_quant=true, compute=s8/u8.
+    EXPECT_EQ(ck::resolve_variant(data_type_t::bf16, data_type_t::s8,
+                      data_type_t::f32, /*dynamic_quant=*/true,
+                      /*compute_dtype=*/data_type_t::s8),
             ck::KernelVariant::kS8_S8_F32_SYM);
-  EXPECT_EQ(ck::resolve_variant(data_type_t::bf16, data_type_t::s8,
-                                data_type_t::f32, /*dynamic_quant=*/true,
-                                /*compute_dtype=*/data_type_t::u8),
+    EXPECT_EQ(ck::resolve_variant(data_type_t::bf16, data_type_t::s8,
+                      data_type_t::f32, /*dynamic_quant=*/true,
+                      /*compute_dtype=*/data_type_t::u8),
             ck::KernelVariant::kU8_S8_F32_ASYM);
 }
 
 TEST(CkResolveVariantInt8, AcceptsGroupedPreQuantS8SrcSym) {
-  // group_dynamic_quant pre-pass form: the src is ALREADY s8 and the
-  // dynamic_quant flag has been CLEARED.  resolve_variant accepts
-  // src==s8 directly (mirror of dispatch.cpp's grouped-s8 acceptance),
-  // independent of the dynamic_quant flag.  compute=s8 -> symmetric.
-  EXPECT_EQ(ck::resolve_variant(data_type_t::s8, data_type_t::s8,
-                                data_type_t::bf16, /*dynamic_quant=*/false,
-                                /*compute_dtype=*/data_type_t::s8),
+    // group_dynamic_quant pre-pass form: the src is ALREADY s8 and the
+    // dynamic_quant flag has been CLEARED.  resolve_variant accepts
+    // src==s8 directly (mirror of dispatch.cpp's grouped-s8 acceptance),
+    // independent of the dynamic_quant flag.  compute=s8 -> symmetric.
+    EXPECT_EQ(ck::resolve_variant(data_type_t::s8, data_type_t::s8,
+                      data_type_t::bf16, /*dynamic_quant=*/false,
+                      /*compute_dtype=*/data_type_t::s8),
             ck::KernelVariant::kS8_S8_BF16_SYM);
-  EXPECT_EQ(ck::resolve_variant(data_type_t::s8, data_type_t::s8,
-                                data_type_t::f32, /*dynamic_quant=*/false,
-                                /*compute_dtype=*/data_type_t::s8),
+    EXPECT_EQ(ck::resolve_variant(data_type_t::s8, data_type_t::s8,
+                      data_type_t::f32, /*dynamic_quant=*/false,
+                      /*compute_dtype=*/data_type_t::s8),
             ck::KernelVariant::kS8_S8_F32_SYM);
-  // Also accepted when dynamic_quant happens to still be true (the
-  // discriminator is src==s8, not the flag).
-  EXPECT_EQ(ck::resolve_variant(data_type_t::s8, data_type_t::s8,
-                                data_type_t::bf16, /*dynamic_quant=*/true,
-                                /*compute_dtype=*/data_type_t::s8),
+    // Also accepted when dynamic_quant happens to still be true (the
+    // discriminator is src==s8, not the flag).
+    EXPECT_EQ(ck::resolve_variant(data_type_t::s8, data_type_t::s8,
+                      data_type_t::bf16, /*dynamic_quant=*/true,
+                      /*compute_dtype=*/data_type_t::s8),
             ck::KernelVariant::kS8_S8_BF16_SYM);
 }
 
 TEST(CkResolveVariantInt8, AcceptsGroupedPreQuantS8SrcAsym) {
-  // compute=u8 -> asymmetric, for both bf16 and f32 dst.
-  EXPECT_EQ(ck::resolve_variant(data_type_t::s8, data_type_t::s8,
-                                data_type_t::bf16, /*dynamic_quant=*/false,
-                                /*compute_dtype=*/data_type_t::u8),
+    // compute=u8 -> asymmetric, for both bf16 and f32 dst.
+    EXPECT_EQ(ck::resolve_variant(data_type_t::s8, data_type_t::s8,
+                      data_type_t::bf16, /*dynamic_quant=*/false,
+                      /*compute_dtype=*/data_type_t::u8),
             ck::KernelVariant::kU8_S8_BF16_ASYM);
-  EXPECT_EQ(ck::resolve_variant(data_type_t::s8, data_type_t::s8,
-                                data_type_t::f32, /*dynamic_quant=*/false,
-                                /*compute_dtype=*/data_type_t::u8),
+    EXPECT_EQ(ck::resolve_variant(data_type_t::s8, data_type_t::s8,
+                      data_type_t::f32, /*dynamic_quant=*/false,
+                      /*compute_dtype=*/data_type_t::u8),
             ck::KernelVariant::kU8_S8_F32_ASYM);
 }
 
 TEST(CkResolveVariantInt8, GroupedPreQuantS8RequiresValidComputeAndShape) {
-  // s8 src still needs wei=s8, dst in {bf16,f32}, compute in {s8,u8}.
-  EXPECT_EQ(ck::resolve_variant(data_type_t::s8, data_type_t::s8,
-                                data_type_t::bf16, false, data_type_t::none),
+    // s8 src still needs wei=s8, dst in {bf16,f32}, compute in {s8,u8}.
+    EXPECT_EQ(ck::resolve_variant(data_type_t::s8, data_type_t::s8,
+                      data_type_t::bf16, false, data_type_t::none),
             ck::KernelVariant::kUnsupported)
-      << "compute=none (no DQ-INT8 contract) must reject";
-  EXPECT_EQ(ck::resolve_variant(data_type_t::s8, data_type_t::bf16,
-                                data_type_t::bf16, false, data_type_t::s8),
+            << "compute=none (no DQ-INT8 contract) must reject";
+    EXPECT_EQ(ck::resolve_variant(data_type_t::s8, data_type_t::bf16,
+                      data_type_t::bf16, false, data_type_t::s8),
             ck::KernelVariant::kUnsupported)
-      << "wei!=s8 must reject";
-  EXPECT_EQ(ck::resolve_variant(data_type_t::s8, data_type_t::s8,
-                                data_type_t::s32, false, data_type_t::s8),
+            << "wei!=s8 must reject";
+    EXPECT_EQ(ck::resolve_variant(data_type_t::s8, data_type_t::s8,
+                      data_type_t::s32, false, data_type_t::s8),
             ck::KernelVariant::kUnsupported)
-      << "dst outside {bf16,f32} must reject";
+            << "dst outside {bf16,f32} must reject";
 }
 
 TEST(CkResolveVariantInt8, RejectsDynamicQuantWithoutInt8WeiPathway) {
-  // dynamic_quant=true is the trigger for the int8 path, but the
-  // routing still requires src=bf16, wei=s8, dst ∈ {bf16, f32}; any
-  // deviation must reject.
-  EXPECT_EQ(ck::resolve_variant(data_type_t::f32, data_type_t::s8,
-                                data_type_t::bf16, true,
-                                data_type_t::s8),
+    // dynamic_quant=true is the trigger for the int8 path, but the
+    // routing still requires src=bf16, wei=s8, dst ∈ {bf16, f32}; any
+    // deviation must reject.
+    EXPECT_EQ(ck::resolve_variant(data_type_t::f32, data_type_t::s8,
+                      data_type_t::bf16, true, data_type_t::s8),
             ck::KernelVariant::kUnsupported)
-      << "non-bf16 src must not resolve to the int8 path";
-  EXPECT_EQ(ck::resolve_variant(data_type_t::bf16, data_type_t::bf16,
-                                data_type_t::bf16, true,
-                                data_type_t::s8),
+            << "non-bf16 src must not resolve to the int8 path";
+    EXPECT_EQ(ck::resolve_variant(data_type_t::bf16, data_type_t::bf16,
+                      data_type_t::bf16, true, data_type_t::s8),
             ck::KernelVariant::kUnsupported)
-      << "non-s8 wei must not resolve to the int8 path";
-  EXPECT_EQ(ck::resolve_variant(data_type_t::bf16, data_type_t::s8,
-                                data_type_t::s32, true,
-                                data_type_t::s8),
+            << "non-s8 wei must not resolve to the int8 path";
+    EXPECT_EQ(ck::resolve_variant(data_type_t::bf16, data_type_t::s8,
+                      data_type_t::s32, true, data_type_t::s8),
             ck::KernelVariant::kUnsupported)
-      << "dst outside {bf16, f32} must not resolve to the int8 path";
+            << "dst outside {bf16, f32} must not resolve to the int8 path";
 }
 
 TEST(CkResolveVariantInt8, RejectsUnknownComputeDtype) {
-  // compute_dtype must be s8 or u8; anything else (e.g. bf16, f32,
-  // s32) is a contract violation and must resolve to kUnsupported.
-  for (auto bad : {data_type_t::f32, data_type_t::bf16,
-                   data_type_t::s32, data_type_t::s4,
-                   data_type_t::s16}) {
-    EXPECT_EQ(ck::resolve_variant(data_type_t::bf16, data_type_t::s8,
-                                  data_type_t::bf16, true, bad),
-              ck::KernelVariant::kUnsupported)
-        << "compute_dtype=" << ck_test::dt_name(bad)
-        << " must not resolve to the int8 path";
-  }
+    // compute_dtype must be s8 or u8; anything else (e.g. bf16, f32,
+    // s32) is a contract violation and must resolve to kUnsupported.
+    for (auto bad : {data_type_t::f32, data_type_t::bf16, data_type_t::s32,
+                 data_type_t::s4, data_type_t::s16}) {
+        EXPECT_EQ(ck::resolve_variant(data_type_t::bf16, data_type_t::s8,
+                          data_type_t::bf16, true, bad),
+                ck::KernelVariant::kUnsupported)
+                << "compute_dtype=" << ck_test::dt_name(bad)
+                << " must not resolve to the int8 path";
+    }
 }
 
 TEST(CkResolveVariantInt8, DynamicQuantFlagIsRequired) {
-  // (bf16, s8, bf16) without `dynamic_quant=true` must NOT match
-  // the int8 path — that combination is the static-quant case
-  // which N-tile / CK does not handle, and `resolve_variant` should
-  // refuse cleanly so the call falls back to AOCL DLP.
-  EXPECT_EQ(ck::resolve_variant(data_type_t::bf16, data_type_t::s8,
-                                data_type_t::bf16,
-                                /*dynamic_quant=*/false,
-                                /*compute_dtype=*/data_type_t::s8),
+    // (bf16, s8, bf16) without `dynamic_quant=true` must NOT match
+    // the int8 path — that combination is the static-quant case
+    // which N-tile / CK does not handle, and `resolve_variant` should
+    // refuse cleanly so the call falls back to AOCL DLP.
+    EXPECT_EQ(ck::resolve_variant(data_type_t::bf16, data_type_t::s8,
+                      data_type_t::bf16,
+                      /*dynamic_quant=*/false,
+                      /*compute_dtype=*/data_type_t::s8),
             ck::KernelVariant::kUnsupported);
 }
 
 TEST(CkResolveVariantProperties, NoExceptOnEverything) {
-  // The contract on `resolve_variant` is `noexcept`.  Smoke-prove it
-  // by sweeping the full data_type_t³ enumeration — gtest would
-  // catch any accidental throw in the call below.
-  for (auto src : kAllDtypes)
-    for (auto wei : kAllDtypes)
-      for (auto dst : kAllDtypes)
-        (void)ck::resolve_variant(src, wei, dst);
-  static_assert(noexcept(ck::resolve_variant(
-                    data_type_t::bf16, data_type_t::bf16,
-                    data_type_t::bf16)),
-                "resolve_variant must be noexcept");
+    // The contract on `resolve_variant` is `noexcept`.  Smoke-prove it
+    // by sweeping the full data_type_t³ enumeration — gtest would
+    // catch any accidental throw in the call below.
+    for (auto src : kAllDtypes)
+        for (auto wei : kAllDtypes)
+            for (auto dst : kAllDtypes)
+                (void)ck::resolve_variant(src, wei, dst);
+    static_assert(noexcept(ck::resolve_variant(data_type_t::bf16,
+                          data_type_t::bf16, data_type_t::bf16)),
+            "resolve_variant must be noexcept");
 }
 
 // ──────────────────────────────────────────────────────────────────
@@ -436,77 +423,88 @@ TEST(CkResolveVariantProperties, NoExceptOnEverything) {
 // silent misroute.
 // ──────────────────────────────────────────────────────────────────
 TEST(CkResolveVariantInt8, ExhaustiveNegativeSweep) {
-  int n_int8_accepted = 0;
-  int n_rejected = 0;
-  for (auto src : kAllDtypes) {
-    for (auto wei : kAllDtypes) {
-      for (auto dst : kAllDtypes) {
-        for (bool dq : {false, true}) {
-          for (auto cmp : kAllDtypes) {
-            const auto v = ck::resolve_variant(src, wei, dst, dq, cmp);
-            // The DQ-INT8 family reaches the CK int8 microkernel via TWO
-            // src forms (mirror of `resolve_variant`'s grouped-s8
-            // acceptance):
-            //   * runtime hoist     — src=bf16 with dynamic_quant=true;
-            //   * grouped pre-quant — src=s8 (any dynamic_quant, since
-            //     group_dynamic_quant CLEARS the flag).
-            // Both require wei=s8, dst in {bf16,f32}, compute in {s8,u8}.
-            const bool dq_int8_src =
-                (src == data_type_t::bf16 && dq)
-                || (src == data_type_t::s8);
-            const bool int8_family =
-                dq_int8_src
-                && (wei == data_type_t::s8)
-                && (dst == data_type_t::bf16 || dst == data_type_t::f32)
-                && (cmp == data_type_t::s8 || cmp == data_type_t::u8);
-            if (int8_family) {
-              const auto expected = (dst == data_type_t::bf16)
-                  ? (cmp == data_type_t::s8
-                         ? ck::KernelVariant::kS8_S8_BF16_SYM
-                         : ck::KernelVariant::kU8_S8_BF16_ASYM)
-                  : (cmp == data_type_t::s8
-                         ? ck::KernelVariant::kS8_S8_F32_SYM
-                         : ck::KernelVariant::kU8_S8_F32_ASYM);
-              EXPECT_EQ(v, expected)
-                  << "int8 family must accept src=" << ck_test::dt_name(src)
-                  << " wei=" << ck_test::dt_name(wei)
-                  << " dst=" << ck_test::dt_name(dst)
-                  << " dq=" << dq << " cmp=" << ck_test::dt_name(cmp);
-              ++n_int8_accepted;
-            } else if (!dq) {
-              // Non-int8-family with dynamic_quant=false must mirror the
-              // 3-arg overload exactly (compute is ignored off the int8
-              // path → bf16/bf16 family or kUnsupported).
-              const auto v3 = ck::resolve_variant(src, wei, dst);
-              EXPECT_EQ(v, v3)
-                  << "dynamic_quant=false non-int8 must mirror the 3-arg "
-                     "overload; src=" << ck_test::dt_name(src)
-                  << " wei=" << ck_test::dt_name(wei)
-                  << " dst=" << ck_test::dt_name(dst)
-                  << " cmp=" << ck_test::dt_name(cmp);
-              if (v == ck::KernelVariant::kUnsupported) ++n_rejected;
-            } else {
-              // dynamic_quant=true, not int8 family → must reject.
-              EXPECT_EQ(v, ck::KernelVariant::kUnsupported)
-                  << "dynamic_quant=true must reject "
-                  << ck_test::dt_name(src) << ","
-                  << ck_test::dt_name(wei) << ","
-                  << ck_test::dt_name(dst) << ",cmp="
-                  << ck_test::dt_name(cmp);
-              ++n_rejected;
+    int n_int8_accepted = 0;
+    int n_rejected = 0;
+    for (auto src : kAllDtypes) {
+        for (auto wei : kAllDtypes) {
+            for (auto dst : kAllDtypes) {
+                for (bool dq : {false, true}) {
+                    for (auto cmp : kAllDtypes) {
+                        const auto v
+                                = ck::resolve_variant(src, wei, dst, dq, cmp);
+                        // The DQ-INT8 family reaches the CK int8 microkernel via TWO
+                        // src forms (mirror of `resolve_variant`'s grouped-s8
+                        // acceptance):
+                        //   * runtime hoist     — src=bf16 with dynamic_quant=true;
+                        //   * grouped pre-quant — src=s8 (any dynamic_quant, since
+                        //     group_dynamic_quant CLEARS the flag).
+                        // Both require wei=s8, dst in {bf16,f32}, compute in {s8,u8}.
+                        const bool dq_int8_src
+                                = (src == data_type_t::bf16 && dq)
+                                || (src == data_type_t::s8);
+                        const bool int8_family = dq_int8_src
+                                && (wei == data_type_t::s8)
+                                && (dst == data_type_t::bf16
+                                        || dst == data_type_t::f32)
+                                && (cmp == data_type_t::s8
+                                        || cmp == data_type_t::u8);
+                        if (int8_family) {
+                            const auto expected = (dst == data_type_t::bf16)
+                                    ? (cmp == data_type_t::s8
+                                                      ? ck::KernelVariant::
+                                                                kS8_S8_BF16_SYM
+                                                      : ck::KernelVariant::
+                                                                kU8_S8_BF16_ASYM)
+                                    : (cmp == data_type_t::s8
+                                                      ? ck::KernelVariant::
+                                                                kS8_S8_F32_SYM
+                                                      : ck::KernelVariant::
+                                                                kU8_S8_F32_ASYM);
+                            EXPECT_EQ(v, expected)
+                                    << "int8 family must accept src="
+                                    << ck_test::dt_name(src)
+                                    << " wei=" << ck_test::dt_name(wei)
+                                    << " dst=" << ck_test::dt_name(dst)
+                                    << " dq=" << dq
+                                    << " cmp=" << ck_test::dt_name(cmp);
+                            ++n_int8_accepted;
+                        } else if (!dq) {
+                            // Non-int8-family with dynamic_quant=false must mirror the
+                            // 3-arg overload exactly (compute is ignored off the int8
+                            // path → bf16/bf16 family or kUnsupported).
+                            const auto v3 = ck::resolve_variant(src, wei, dst);
+                            EXPECT_EQ(v, v3)
+                                    << "dynamic_quant=false non-int8 must "
+                                       "mirror the 3-arg "
+                                       "overload; src="
+                                    << ck_test::dt_name(src)
+                                    << " wei=" << ck_test::dt_name(wei)
+                                    << " dst=" << ck_test::dt_name(dst)
+                                    << " cmp=" << ck_test::dt_name(cmp);
+                            if (v == ck::KernelVariant::kUnsupported)
+                                ++n_rejected;
+                        } else {
+                            // dynamic_quant=true, not int8 family → must reject.
+                            EXPECT_EQ(v, ck::KernelVariant::kUnsupported)
+                                    << "dynamic_quant=true must reject "
+                                    << ck_test::dt_name(src) << ","
+                                    << ck_test::dt_name(wei) << ","
+                                    << ck_test::dt_name(dst)
+                                    << ",cmp=" << ck_test::dt_name(cmp);
+                            ++n_rejected;
+                        }
+                    }
+                }
             }
-          }
         }
-      }
     }
-  }
-  // Served int8 set = {dst in (bf16,f32)} x {cmp in (s8,u8)} = 4 shapes,
-  // reached by 3 (src,dq) forms — (bf16,dq=true), (s8,dq=true),
-  // (s8,dq=false) — so 4 x 3 = 12 accepts (4 runtime-hoist + 8 grouped).
-  EXPECT_EQ(n_int8_accepted, 12)
-      << "Truth table should accept the 4 int8 shapes via the 3 "
-         "(src,dynamic_quant) forms (runtime-hoist + grouped pre-quant)";
-  EXPECT_GT(n_rejected, 0);
+    // Served int8 set = {dst in (bf16,f32)} x {cmp in (s8,u8)} = 4 shapes,
+    // reached by 3 (src,dq) forms — (bf16,dq=true), (s8,dq=true),
+    // (s8,dq=false) — so 4 x 3 = 12 accepts (4 runtime-hoist + 8 grouped).
+    EXPECT_EQ(n_int8_accepted, 12)
+            << "Truth table should accept the 4 int8 shapes via the 3 "
+               "(src,dynamic_quant) forms (runtime-hoist + grouped pre-quant)";
+    EXPECT_GT(n_rejected, 0);
 }
 
-}  // namespace
+} // namespace

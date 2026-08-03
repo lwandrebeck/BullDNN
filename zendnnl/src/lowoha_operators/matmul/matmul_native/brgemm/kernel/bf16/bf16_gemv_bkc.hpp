@@ -29,10 +29,10 @@ namespace native {
 /// (NP=6 from wide CU + NP=4 from standard CU).
 /// Both packing and kernel must use the same block width for a given N.
 inline int choose_blk_n(int N) {
-    constexpr int BLK_N_STD  = 4 * 64;   // 256
-    constexpr int BLK_N_WIDE = 6 * 64;   // 384
-    return (N > BLK_N_STD && N <= 512 && (N % 64) == 0)
-        ? BLK_N_WIDE : BLK_N_STD;
+    constexpr int BLK_N_STD = 4 * 64; // 256
+    constexpr int BLK_N_WIDE = 6 * 64; // 384
+    return (N > BLK_N_STD && N <= 512 && (N % 64) == 0) ? BLK_N_WIDE
+                                                        : BLK_N_STD;
 }
 
 /// Blocked K-contiguous (BKC) GEMV kernel with block-aware packing.
@@ -41,38 +41,25 @@ inline int choose_blk_n(int N) {
 /// (256 or 384 columns depending on N alignment), each packed with
 /// K-contiguous VNNI layout. Within each block, all k-pairs are
 /// contiguous with stride = blk_N_padded × VNNI_PAIR.
-void bf16_gemv_bkc(
-    const uint16_t *__restrict__ A,
-    const uint16_t *__restrict__ B_bkc,
-    uint16_t *__restrict__ C_bf16,
-    float *__restrict__ C_fp32,
-    const float *__restrict__ bias_f,
-    fused_postop_t fused_op,
-    float alpha, float beta,
-    bool dst_is_bf16,
-    int K, int N);
+void bf16_gemv_bkc(const uint16_t *__restrict__ A,
+        const uint16_t *__restrict__ B_bkc, uint16_t *__restrict__ C_bf16,
+        float *__restrict__ C_fp32, const float *__restrict__ bias_f,
+        fused_postop_t fused_op, float alpha, float beta, bool dst_is_bf16,
+        int K, int N);
 
 /// Pack B into Blocked K-contiguous (BKC) VNNI block layout.
 /// Total size: K_padded × N_padded × sizeof(uint16_t) bytes (same as before).
 /// \p col0  Starting column in B (0 = pack columns [0, N); else [col0, col0+N)).
-void pack_b_bkc_ext(
-    const uint16_t *B, int ldb, int K, int N, bool transB,
-    uint16_t *packed,
-    int col0 = 0);
+void pack_b_bkc_ext(const uint16_t *B, int ldb, int K, int N, bool transB,
+        uint16_t *packed, int col0 = 0);
 
 /// Wide-block dispatch for NP=5,6 (separate CU to avoid i-cache pollution).
 /// Called from bf16_gemv_bkc when block width is 384.
-void bf16_gemv_bkc_wide_dispatch(
-    const uint16_t *__restrict__ A,
-    const uint16_t *__restrict__ B_bkc,
-    uint16_t *__restrict__ C_bf16,
-    float *__restrict__ C_fp32,
-    const float *__restrict__ bias_f,
-    fused_postop_t fused_op,
-    float alpha, float beta,
-    bool dst_is_bf16,
-    int k_pairs, int n_stride, int K, int N,
-    int jc, int nb);
+void bf16_gemv_bkc_wide_dispatch(const uint16_t *__restrict__ A,
+        const uint16_t *__restrict__ B_bkc, uint16_t *__restrict__ C_bf16,
+        float *__restrict__ C_fp32, const float *__restrict__ bias_f,
+        fused_postop_t fused_op, float alpha, float beta, bool dst_is_bf16,
+        int k_pairs, int n_stride, int K, int N, int jc, int nb);
 
 } // namespace native
 } // namespace matmul

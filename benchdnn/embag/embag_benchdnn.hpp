@@ -16,11 +16,11 @@
 #ifndef _EMBAG_BENCHDNN_HPP_
 #define _EMBAG_BENCHDNN_HPP_
 
-#include "example_utils.hpp"
 #include "benchdnn.hpp"
-#include "embag_utils.hpp"
-#include "embag_tensor_factory.hpp"
 #include "embag_lowoha.hpp"
+#include "embag_tensor_factory.hpp"
+#include "embag_utils.hpp"
+#include "example_utils.hpp"
 
 namespace zendnnl {
 namespace benchdnn {
@@ -46,9 +46,9 @@ using namespace zendnnl::examples;
  * @return int OK (0) on success, NOT_OK (1) on failure.
  */
 int run_embag(tensor_t output_tensor, tensor_t table_tensor,
-              tensor_t indices_tensor,
-              tensor_t offsets_tensor, tensor_t weights_tensor, EmbagConfig cfg,
-              TimingStats &stats, bool isNotWarmup = false);
+        tensor_t indices_tensor, tensor_t offsets_tensor,
+        tensor_t weights_tensor, EmbagConfig cfg, TimingStats &stats,
+        bool isNotWarmup = false);
 
 /**
  * @brief Benchmarks embag using user-specified parameters.
@@ -64,8 +64,8 @@ int run_embag(tensor_t output_tensor, tensor_t table_tensor,
  * @return int Returns OK (0) on success, NOT_OK (1) on failure.
  */
 int embag_benchdnn(std::vector<EmbagConfig> configs,
-                   std::vector<std::pair<EmbagConfig, TimingStats>> &embag_results,
-                   const global_options &options, size_t cache_size);
+        std::vector<std::pair<EmbagConfig, TimingStats>> &embag_results,
+        const global_options &options, size_t cache_size);
 
 /**
  * @brief Runs the full embag benchmark suite from an input file and writes results to a CSV file.
@@ -81,7 +81,7 @@ int embag_benchdnn(std::vector<EmbagConfig> configs,
  * @return int Returns OK (0) on success, NOT_OK (1) on failure.
  */
 int bench(const std::string &in_filename, const std::string &out_filename,
-          const global_options &options, const bool isLOWOHA, size_t cache_size);
+        const global_options &options, const bool isLOWOHA, size_t cache_size);
 
 } // namespace embag
 } // namespace benchdnn

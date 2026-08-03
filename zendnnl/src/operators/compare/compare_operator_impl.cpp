@@ -1,5 +1,5 @@
 /********************************************************************************
-# * Copyright (c) 2023-2025 Advanced Micro Devices, Inc. All rights reserved.
+# * Copyright (c) 2023-2026 Advanced Micro Devices, Inc. All rights reserved.
 # *
 # * Licensed under the Apache License, Version 2.0 (the "License");
 # * you may not use this file except in compliance with the License.
@@ -20,150 +20,140 @@ namespace zendnnl {
 namespace ops {
 
 status_t compare_impl_t::validate() {
-  LOG_DEBUG_INFO("Validating compare op parameters");
-  if (parent_type::validate() != status_t::success) {
-    return status_t::failure;
-  }
-
-  auto expec_tensor   = get_input("expected_tensor");
-  auto test_tensor    = get_input("test_tensor");
-  auto diff_tensor    = get_output("diff_tensor");
-
-  auto expec_dtype    = expec_tensor->get_data_type();
-  auto test_dtype     = test_tensor->get_data_type();
-  auto diff_dtype     = diff_tensor->get_data_type();
-
-  auto expec_layout   = expec_tensor->get_layout();
-  auto test_layout    = test_tensor->get_layout();
-  auto diff_layout    = diff_tensor->get_layout();
-
-  auto expec_size = expec_tensor->get_size();
-  auto test_size  = test_tensor->get_size();
-  auto diff_size  = diff_tensor->get_size();
-
-  //Checking shape of the tensors
-  if ((expec_size.size() != test_size.size()) ||
-      (test_size.size()  != diff_size.size()) ||
-      (expec_size.size() != diff_size.size())) {
-    apilog_error("<", get_name(), "> tensors are of same shape.");
-    return status_t::failure;
-  }
-
-  for (size_t i=0; i<expec_size.size(); i++) {
-    if ((expec_size.at(i) != test_size.at(i)) ||
-        (test_size.at(i)  != diff_size.at(i)) ||
-        (expec_size.at(i) != diff_size.at(i))) {
-      return status_t::failure;
+    LOG_DEBUG_INFO("Validating compare op parameters");
+    if (parent_type::validate() != status_t::success) {
+        return status_t::failure;
     }
-  }
 
-  //Checking data type of the tensors
-  if (expec_dtype  != test_dtype) {
-    return status_t::failure;
-  }
+    auto expec_tensor = get_input("expected_tensor");
+    auto test_tensor = get_input("test_tensor");
+    auto diff_tensor = get_output("diff_tensor");
 
-  //nonzero layout is non-contiguous
-  if ((expec_layout) ||
-      (test_layout) ||
-      (diff_layout)) {
-    apilog_error("<", get_name(), "> compare kernel needs contiguous tensors.");
-    return status_t::failure;
-  }
+    auto expec_dtype = expec_tensor->get_data_type();
+    auto test_dtype = test_tensor->get_data_type();
+    auto diff_dtype = diff_tensor->get_data_type();
 
-  if (diff_dtype != data_type_t::f32 && diff_dtype != data_type_t::bf16) {
-    return status_t::failure;
-  }
+    auto expec_layout = expec_tensor->get_layout();
+    auto test_layout = test_tensor->get_layout();
+    auto diff_layout = diff_tensor->get_layout();
 
-   // Check for NaN or Inf values
-   auto contains_nan_or_inf = [](const std::optional<tensor_t>& tensor_opt) -> bool {
-     if (!tensor_opt.has_value()) return false;
-     const tensor_t& tensor = tensor_opt.value();
-     auto dtype = tensor.get_data_type();
-     size_t num_elements = 1;
-     for (auto dim : tensor.get_size()) {
-       num_elements *= dim;
-     }
-     // Only check for floating point types
-     if (dtype == data_type_t::f32) {
-       const float* data = static_cast<const float*>(tensor.get_raw_handle_unsafe());
-       for (size_t i = 0; i < num_elements; ++i) {
-         if (std::isnan(data[i]) || std::isinf(data[i])) {
-           return true;
-         }
-       }
-     } else if (dtype == data_type_t::bf16) {
-       const bfloat16_t* data = static_cast<const bfloat16_t*>(tensor.get_raw_handle_unsafe());
-       for (size_t i = 0; i < num_elements; ++i) {
-         float val = static_cast<float>(data[i]);
-         if (std::isnan(val) || std::isinf(val)) {
-           return true;
-         }
-       }
-     }
-     // For integer and other types, NaN/Inf are not possible
-     return false;
-   };
+    auto expec_size = expec_tensor->get_size();
+    auto test_size = test_tensor->get_size();
+    auto diff_size = diff_tensor->get_size();
 
-  if (contains_nan_or_inf(expec_tensor) || contains_nan_or_inf(test_tensor) || contains_nan_or_inf(diff_tensor)) {
-    apilog_error("<", get_name(), "> tensors contain NaN or Inf values.");
-    return status_t::failure;
-  }
+    //Checking shape of the tensors
+    if ((expec_size.size() != test_size.size())
+            || (test_size.size() != diff_size.size())
+            || (expec_size.size() != diff_size.size())) {
+        apilog_error("<", get_name(), "> tensors are of same shape.");
+        return status_t::failure;
+    }
 
-  return status_t::success;
+    for (size_t i = 0; i < expec_size.size(); i++) {
+        if ((expec_size.at(i) != test_size.at(i))
+                || (test_size.at(i) != diff_size.at(i))
+                || (expec_size.at(i) != diff_size.at(i))) {
+            return status_t::failure;
+        }
+    }
+
+    //Checking data type of the tensors
+    if (expec_dtype != test_dtype) { return status_t::failure; }
+
+    //nonzero layout is non-contiguous
+    if ((expec_layout) || (test_layout) || (diff_layout)) {
+        apilog_error(
+                "<", get_name(), "> compare kernel needs contiguous tensors.");
+        return status_t::failure;
+    }
+
+    if (diff_dtype != data_type_t::f32 && diff_dtype != data_type_t::bf16) {
+        return status_t::failure;
+    }
+
+    // Check for NaN or Inf values
+    auto contains_nan_or_inf
+            = [](const std::optional<tensor_t> &tensor_opt) -> bool {
+        if (!tensor_opt.has_value()) return false;
+        const tensor_t &tensor = tensor_opt.value();
+        auto dtype = tensor.get_data_type();
+        size_t num_elements = 1;
+        for (auto dim : tensor.get_size()) {
+            num_elements *= dim;
+        }
+        // Only check for floating point types
+        if (dtype == data_type_t::f32) {
+            const float *data = static_cast<const float *>(
+                    tensor.get_raw_handle_unsafe());
+            for (size_t i = 0; i < num_elements; ++i) {
+                if (std::isnan(data[i]) || std::isinf(data[i])) { return true; }
+            }
+        } else if (dtype == data_type_t::bf16) {
+            const bfloat16_t *data = static_cast<const bfloat16_t *>(
+                    tensor.get_raw_handle_unsafe());
+            for (size_t i = 0; i < num_elements; ++i) {
+                float val = static_cast<float>(data[i]);
+                if (std::isnan(val) || std::isinf(val)) { return true; }
+            }
+        }
+        // For integer and other types, NaN/Inf are not possible
+        return false;
+    };
+
+    if (contains_nan_or_inf(expec_tensor) || contains_nan_or_inf(test_tensor)
+            || contains_nan_or_inf(diff_tensor)) {
+        apilog_error("<", get_name(), "> tensors contain NaN or Inf values.");
+        return status_t::failure;
+    }
+
+    return status_t::success;
 }
 
 std::string compare_impl_t::op_create_info() {
-  std::stringstream ss;
+    std::stringstream ss;
 
-  ss << "Compare operator create - ";
-  if (!(get_name().empty())) {
-    ss << get_name() << ",";
-  }
+    ss << "Compare operator create - ";
+    if (!(get_name().empty())) { ss << get_name() << ","; }
 
-  auto tolerance = context.get_tolerance();
-  ss << "tolerance:" << tolerance;
+    auto tolerance = context.get_tolerance();
+    ss << "tolerance:" << tolerance;
 
-  return ss.str();
+    return ss.str();
 }
 
 std::string compare_impl_t::op_execute_info() {
-  std::stringstream ss;
+    std::stringstream ss;
 
-  ss << "Compare operator execute - ";
-  if (!(get_name().empty())) {
-    ss << get_name() << ",";
-  }
+    ss << "Compare operator execute - ";
+    if (!(get_name().empty())) { ss << get_name() << ","; }
 
-  auto expec_tensor = get_input("expected_tensor");
-  auto test_tensor  = get_input("test_tensor");
-  auto diff_tensor  = get_output("diff_tensor");
-  auto tolerance    = context.get_tolerance();
+    auto expec_tensor = get_input("expected_tensor");
+    auto test_tensor = get_input("test_tensor");
+    auto diff_tensor = get_output("diff_tensor");
+    auto tolerance = context.get_tolerance();
 
-  ss << expec_tensor.value().tensor_info() << ","
-     << test_tensor.value().tensor_info() << ","
-     << diff_tensor.value().tensor_info() << ","
-     << "tolerance:" << tolerance;
+    ss << expec_tensor.value().tensor_info() << ","
+       << test_tensor.value().tensor_info() << ","
+       << diff_tensor.value().tensor_info() << ","
+       << "tolerance:" << tolerance;
 
-  return ss.str();
+    return ss.str();
 }
 
 status_t compare_impl_t::kernel_factory() {
-  LOG_DEBUG_INFO("Executing compare operator");
+    LOG_DEBUG_INFO("Executing compare operator");
 
-  kernel = std::shared_ptr<compare_ref_kernel_t>(get_compare_kernel());
+    kernel = std::shared_ptr<compare_ref_kernel_t>(get_compare_kernel());
 
-  kernel->create();
-  if (! kernel->check()) {
-    return status_t::failure;
-  }
+    kernel->create();
+    if (!kernel->check()) { return status_t::failure; }
 
-  return status_t::success;
+    return status_t::success;
 }
 
 compare_stats_t compare_impl_t::get_compare_stats() {
-  return *(get_context().get_compare_stats());
+    return *(get_context().get_compare_stats());
 }
 
 } //namespace ops
 } //namespace zendnnl
-

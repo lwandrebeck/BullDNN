@@ -17,8 +17,8 @@
 #ifndef LOWOHA_SDPA_BMM_HPP
 #define LOWOHA_SDPA_BMM_HPP
 
-#include "lowoha_operators/sdpa/bmm_sdpa/lowoha_sdpa_utils.hpp"
 #include "lowoha_operators/matmul/lowoha_matmul.hpp"
+#include "lowoha_operators/sdpa/bmm_sdpa/lowoha_sdpa_utils.hpp"
 #include "lowoha_operators/softmax/lowoha_softmax.hpp"
 
 namespace zendnnl {
@@ -42,14 +42,8 @@ namespace sdpa {
  *
  * @return status_t::success or status_t::failure
  */
-status_t bmm_based_sdpa(
-  const void *query,
-  const void *key,
-  const void *value,
-  const void *attn_mask,
-  void *output,
-  sdpa_params &params
-);
+status_t bmm_based_sdpa(const void *query, const void *key, const void *value,
+        const void *attn_mask, void *output, sdpa_params &params);
 
 /// Free the thread-local BMM scratch buffer. Must be called from the same thread.
 void sdpa_free_scratch();

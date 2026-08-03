@@ -45,8 +45,8 @@ namespace {
 
 namespace ck = ck_test::ck;
 using ck_test::bfloat16_t;
-using ck_test::float16_t;
 using ck_test::data_type_t;
+using ck_test::float16_t;
 using ck_test::grp_matmul_gated_act_t;
 using ck_test::status_t;
 
@@ -55,39 +55,42 @@ using ck_test::status_t;
 // the inputs to `prepare_for_call` per the documented mapping.
 // ──────────────────────────────────────────────────────────────────
 TEST(CkFeatures, ResolvedActKindMatches) {
-  CK_SKIP_IF_NO_BF16_ISA();
-  for (auto act : {grp_matmul_gated_act_t::none,
-                   grp_matmul_gated_act_t::swiglu_oai_mul}) {
-    ck_test::PrepCallCase c{};
-    c.act = act;
-    c.label = "act_resolved";
-    ck_test::PrepCallStorage storage;
-    ck::CallContext kctx;
-    ASSERT_EQ(ck_test::run_prepare(c, storage, kctx), status_t::success);
-    if (act == grp_matmul_gated_act_t::swiglu_oai_mul) {
-      EXPECT_EQ(kctx.act_kind, ck::ActKind::swiglu_oai_mul);
-    } else {
-      EXPECT_EQ(kctx.act_kind, ck::ActKind::none);
+    CK_SKIP_IF_NO_BF16_ISA();
+    for (auto act : {grp_matmul_gated_act_t::none,
+                 grp_matmul_gated_act_t::swiglu_oai_mul}) {
+        ck_test::PrepCallCase c {};
+        c.act = act;
+        c.label = "act_resolved";
+        ck_test::PrepCallStorage storage;
+        ck::CallContext kctx;
+        ASSERT_EQ(ck_test::run_prepare(c, storage, kctx), status_t::success);
+        if (act == grp_matmul_gated_act_t::swiglu_oai_mul) {
+            EXPECT_EQ(kctx.act_kind, ck::ActKind::swiglu_oai_mul);
+        } else {
+            EXPECT_EQ(kctx.act_kind, ck::ActKind::none);
+        }
     }
-  }
 }
 
 TEST(CkFeatures, ResolvedBiasKindMatches) {
-  CK_SKIP_IF_NO_BF16_ISA();
-  struct Row { data_type_t dt; ck::BiasKind expected; };
-  for (auto r : {Row{data_type_t::none, ck::BiasKind::none},
-                 Row{data_type_t::bf16, ck::BiasKind::bf16},
-                 Row{data_type_t::f32 , ck::BiasKind::fp32},
-                 Row{data_type_t::f16 , ck::BiasKind::f16}}) {
-    ck_test::PrepCallCase c{};
-    c.bias_dt = r.dt;
-    c.label = "bias_resolved";
-    ck_test::PrepCallStorage storage;
-    ck::CallContext kctx;
-    ASSERT_EQ(ck_test::run_prepare(c, storage, kctx), status_t::success);
-    EXPECT_EQ(kctx.bias_kind, r.expected)
-        << "bias_dt=" << ck_test::dt_name(r.dt);
-  }
+    CK_SKIP_IF_NO_BF16_ISA();
+    struct Row {
+        data_type_t dt;
+        ck::BiasKind expected;
+    };
+    for (auto r : {Row {data_type_t::none, ck::BiasKind::none},
+                 Row {data_type_t::bf16, ck::BiasKind::bf16},
+                 Row {data_type_t::f32, ck::BiasKind::fp32},
+                 Row {data_type_t::f16, ck::BiasKind::f16}}) {
+        ck_test::PrepCallCase c {};
+        c.bias_dt = r.dt;
+        c.label = "bias_resolved";
+        ck_test::PrepCallStorage storage;
+        ck::CallContext kctx;
+        ASSERT_EQ(ck_test::run_prepare(c, storage, kctx), status_t::success);
+        EXPECT_EQ(kctx.bias_kind, r.expected)
+                << "bias_dt=" << ck_test::dt_name(r.dt);
+    }
 }
 
 // ──────────────────────────────────────────────────────────────────
@@ -97,21 +100,21 @@ TEST(CkFeatures, ResolvedBiasKindMatches) {
 // non-multiple value would silently truncate.
 // ──────────────────────────────────────────────────────────────────
 TEST(CkFeatures, RepresentativeSubtileIsValid) {
-  CK_SKIP_IF_NO_BF16_ISA();
-  for (int N : {64, 128, 256, 512, 1536, 5760}) {
-    ck_test::PrepCallCase c{};
-    c.N = N;
-    c.label = "subtile_valid";
-    ck_test::PrepCallStorage storage;
-    ck::CallContext kctx;
-    ASSERT_EQ(ck_test::run_prepare(c, storage, kctx), status_t::success);
-    EXPECT_GT(kctx.subtile_cols, 0)
-        << "subtile_cols not populated; N=" << N;
-    EXPECT_EQ(kctx.subtile_cols % kctx.pack_nr, 0)
-        << "subtile_cols=" << kctx.subtile_cols
-        << " not a multiple of pack_nr=" << kctx.pack_nr
-        << " (N=" << N << ")";
-  }
+    CK_SKIP_IF_NO_BF16_ISA();
+    for (int N : {64, 128, 256, 512, 1536, 5760}) {
+        ck_test::PrepCallCase c {};
+        c.N = N;
+        c.label = "subtile_valid";
+        ck_test::PrepCallStorage storage;
+        ck::CallContext kctx;
+        ASSERT_EQ(ck_test::run_prepare(c, storage, kctx), status_t::success);
+        EXPECT_GT(kctx.subtile_cols, 0)
+                << "subtile_cols not populated; N=" << N;
+        EXPECT_EQ(kctx.subtile_cols % kctx.pack_nr, 0)
+                << "subtile_cols=" << kctx.subtile_cols
+                << " not a multiple of pack_nr=" << kctx.pack_nr << " (N=" << N
+                << ")";
+    }
 }
 
 // ──────────────────────────────────────────────────────────────────
@@ -131,95 +134,85 @@ TEST(CkFeatures, RepresentativeSubtileIsValid) {
 // `dispatch_tile()` reads `subtile_cols` (the m_max-sized global)
 // for each expert.
 TEST(CkFeatures, SubtilePerExpertOverride_OffLeavesActiveSlotsZero) {
-  CK_SKIP_IF_NO_BF16_ISA();
-  moe_test_utils::CustomKernelSubtilePerExpertOverride
-      subtile_guard(/*value=*/0);
+    CK_SKIP_IF_NO_BF16_ISA();
+    moe_test_utils::CustomKernelSubtilePerExpertOverride subtile_guard(
+            /*value=*/0);
 
-  constexpr int kNumActive = 3;
-  constexpr int M = 8, K = 64, N = 256;
-  std::vector<bfloat16_t> wei0(K * N, bfloat16_t(0.05f));
-  std::vector<bfloat16_t> wei1(K * N, bfloat16_t(0.06f));
-  std::vector<bfloat16_t> wei2(K * N, bfloat16_t(0.07f));
-  std::vector<const void *> weight = {wei0.data(), wei1.data(),
-                                      wei2.data()};
-  std::vector<bool>  transA(kNumActive, false), transB(kNumActive, false);
-  std::vector<bool>  is_wc(kNumActive, true);
-  std::vector<int>   M_v(kNumActive, M), N_v(kNumActive, N),
-                     K_v(kNumActive, K), ldb_v(kNumActive, N);
-  std::vector<float> alpha_v(kNumActive, 1.0f),
-                     beta_v(kNumActive, 0.0f);
+    constexpr int kNumActive = 3;
+    constexpr int M = 8, K = 64, N = 256;
+    std::vector<bfloat16_t> wei0(K * N, bfloat16_t(0.05f));
+    std::vector<bfloat16_t> wei1(K * N, bfloat16_t(0.06f));
+    std::vector<bfloat16_t> wei2(K * N, bfloat16_t(0.07f));
+    std::vector<const void *> weight = {wei0.data(), wei1.data(), wei2.data()};
+    std::vector<bool> transA(kNumActive, false), transB(kNumActive, false);
+    std::vector<bool> is_wc(kNumActive, true);
+    std::vector<int> M_v(kNumActive, M), N_v(kNumActive, N), K_v(kNumActive, K),
+            ldb_v(kNumActive, N);
+    std::vector<float> alpha_v(kNumActive, 1.0f), beta_v(kNumActive, 0.0f);
 
-  ck::CallContext kctx;
-  ASSERT_EQ(ck::prepare_for_call(
-                grp_matmul_gated_act_t::none,
-                data_type_t::bf16, data_type_t::bf16, data_type_t::bf16,
-                data_type_t::bf16, data_type_t::none,
-                transA, transB, M_v, N_v, K_v, ldb_v, alpha_v, beta_v,
-                weight, is_wc, kctx),
+    ck::CallContext kctx;
+    ASSERT_EQ(ck::prepare_for_call(grp_matmul_gated_act_t::none,
+                      data_type_t::bf16, data_type_t::bf16, data_type_t::bf16,
+                      data_type_t::bf16, data_type_t::none, transA, transB, M_v,
+                      N_v, K_v, ldb_v, alpha_v, beta_v, weight, is_wc, kctx),
             status_t::success);
 
-  EXPECT_GT(kctx.subtile_cols, 0)
-      << "global subtile_cols not populated under OFF — `dispatch_tile`"
-         " has no value to read for any expert";
-  // Active slots [0, kNumActive) must be zero (per-expert path off).
-  for (int i = 0; i < kNumActive; ++i) {
-    EXPECT_EQ(kctx.subtile_cols_per_expert[i], 0)
-        << "active slot " << i
-        << " populated under override=OFF — should fall back to the"
-           " global subtile_cols";
-  }
+    EXPECT_GT(kctx.subtile_cols, 0)
+            << "global subtile_cols not populated under OFF — `dispatch_tile`"
+               " has no value to read for any expert";
+    // Active slots [0, kNumActive) must be zero (per-expert path off).
+    for (int i = 0; i < kNumActive; ++i) {
+        EXPECT_EQ(kctx.subtile_cols_per_expert[i], 0)
+                << "active slot " << i
+                << " populated under override=OFF — should fall back to the"
+                   " global subtile_cols";
+    }
 }
 
 // ON: every active slot is populated with a positive value sized
 // from that expert's M; inactive tail stays zero.
 TEST(CkFeatures, SubtilePerExpertOverride_OnPopulatesActiveSlots) {
-  CK_SKIP_IF_NO_BF16_ISA();
-  moe_test_utils::CustomKernelSubtilePerExpertOverride
-      subtile_guard(/*value=*/1);
+    CK_SKIP_IF_NO_BF16_ISA();
+    moe_test_utils::CustomKernelSubtilePerExpertOverride subtile_guard(
+            /*value=*/1);
 
-  constexpr int kNumActive = 3;
-  constexpr int M = 8, K = 64, N = 256;
-  std::vector<bfloat16_t> wei0(K * N, bfloat16_t(0.05f));
-  std::vector<bfloat16_t> wei1(K * N, bfloat16_t(0.06f));
-  std::vector<bfloat16_t> wei2(K * N, bfloat16_t(0.07f));
-  std::vector<const void *> weight = {wei0.data(), wei1.data(),
-                                      wei2.data()};
-  std::vector<bool>  transA(kNumActive, false), transB(kNumActive, false);
-  std::vector<bool>  is_wc(kNumActive, true);
-  std::vector<int>   M_v(kNumActive, M), N_v(kNumActive, N),
-                     K_v(kNumActive, K), ldb_v(kNumActive, N);
-  std::vector<float> alpha_v(kNumActive, 1.0f),
-                     beta_v(kNumActive, 0.0f);
+    constexpr int kNumActive = 3;
+    constexpr int M = 8, K = 64, N = 256;
+    std::vector<bfloat16_t> wei0(K * N, bfloat16_t(0.05f));
+    std::vector<bfloat16_t> wei1(K * N, bfloat16_t(0.06f));
+    std::vector<bfloat16_t> wei2(K * N, bfloat16_t(0.07f));
+    std::vector<const void *> weight = {wei0.data(), wei1.data(), wei2.data()};
+    std::vector<bool> transA(kNumActive, false), transB(kNumActive, false);
+    std::vector<bool> is_wc(kNumActive, true);
+    std::vector<int> M_v(kNumActive, M), N_v(kNumActive, N), K_v(kNumActive, K),
+            ldb_v(kNumActive, N);
+    std::vector<float> alpha_v(kNumActive, 1.0f), beta_v(kNumActive, 0.0f);
 
-  ck::CallContext kctx;
-  ASSERT_EQ(ck::prepare_for_call(
-                grp_matmul_gated_act_t::none,
-                data_type_t::bf16, data_type_t::bf16, data_type_t::bf16,
-                data_type_t::bf16, data_type_t::none,
-                transA, transB, M_v, N_v, K_v, ldb_v, alpha_v, beta_v,
-                weight, is_wc, kctx),
+    ck::CallContext kctx;
+    ASSERT_EQ(ck::prepare_for_call(grp_matmul_gated_act_t::none,
+                      data_type_t::bf16, data_type_t::bf16, data_type_t::bf16,
+                      data_type_t::bf16, data_type_t::none, transA, transB, M_v,
+                      N_v, K_v, ldb_v, alpha_v, beta_v, weight, is_wc, kctx),
             status_t::success);
 
-  // Active slots populated, must be a multiple of pack_nr (the per-
-  // expert subtile arithmetic respects the same alignment as the
-  // global `subtile_cols`).
-  for (int i = 0; i < kNumActive; ++i) {
-    EXPECT_GT(kctx.subtile_cols_per_expert[i], 0)
-        << "active slot " << i
-        << " not populated under override=ON";
-    EXPECT_EQ(kctx.subtile_cols_per_expert[i] % kctx.pack_nr, 0)
-        << "active slot " << i
-        << " value=" << kctx.subtile_cols_per_expert[i]
-        << " not a multiple of pack_nr=" << kctx.pack_nr;
-  }
-  // Inactive tail must stay zero — `dispatch_tile()` indexes by
-  // expert and a stale non-zero would size the wrong subtile width.
-  for (int i = kNumActive;
-       i < static_cast<int>(kctx.subtile_cols_per_expert.size()); ++i) {
-    EXPECT_EQ(kctx.subtile_cols_per_expert[i], 0)
-        << "inactive slot " << i
-        << " populated under override=ON";
-  }
+    // Active slots populated, must be a multiple of pack_nr (the per-
+    // expert subtile arithmetic respects the same alignment as the
+    // global `subtile_cols`).
+    for (int i = 0; i < kNumActive; ++i) {
+        EXPECT_GT(kctx.subtile_cols_per_expert[i], 0)
+                << "active slot " << i << " not populated under override=ON";
+        EXPECT_EQ(kctx.subtile_cols_per_expert[i] % kctx.pack_nr, 0)
+                << "active slot " << i
+                << " value=" << kctx.subtile_cols_per_expert[i]
+                << " not a multiple of pack_nr=" << kctx.pack_nr;
+    }
+    // Inactive tail must stay zero — `dispatch_tile()` indexes by
+    // expert and a stale non-zero would size the wrong subtile width.
+    for (int i = kNumActive;
+            i < static_cast<int>(kctx.subtile_cols_per_expert.size()); ++i) {
+        EXPECT_EQ(kctx.subtile_cols_per_expert[i], 0)
+                << "inactive slot " << i << " populated under override=ON";
+    }
 }
 
 // ──────────────────────────────────────────────────────────────────
@@ -229,42 +222,39 @@ TEST(CkFeatures, SubtilePerExpertOverride_OnPopulatesActiveSlots) {
 // crash, while a stale non-null would write to the wrong buffer.
 // ──────────────────────────────────────────────────────────────────
 TEST(CkFeatures, MultiExpertPreparePopulatesActiveOnly) {
-  CK_SKIP_IF_NO_BF16_ISA();
+    CK_SKIP_IF_NO_BF16_ISA();
 
-  // 3 active experts on a uniform shape.  Build per-expert vectors
-  // with the dispatcher's expected sizes.
-  constexpr int kNumActive = 3;
-  constexpr int M = 8, K = 64, N = 256;
-  std::vector<bfloat16_t> wei0(K * N, bfloat16_t(0.05f));
-  std::vector<bfloat16_t> wei1(K * N, bfloat16_t(0.06f));
-  std::vector<bfloat16_t> wei2(K * N, bfloat16_t(0.07f));
-  std::vector<const void *> weight = {wei0.data(), wei1.data(),
-                                      wei2.data()};
-  std::vector<bool>  transA(kNumActive, false), transB(kNumActive, false);
-  std::vector<bool>  is_wc(kNumActive, true);
-  std::vector<int>   M_v(kNumActive, M), N_v(kNumActive, N),
-                     K_v(kNumActive, K), ldb_v(kNumActive, N);
-  std::vector<float> alpha_v(kNumActive, 1.0f),
-                     beta_v(kNumActive, 0.0f);
+    // 3 active experts on a uniform shape.  Build per-expert vectors
+    // with the dispatcher's expected sizes.
+    constexpr int kNumActive = 3;
+    constexpr int M = 8, K = 64, N = 256;
+    std::vector<bfloat16_t> wei0(K * N, bfloat16_t(0.05f));
+    std::vector<bfloat16_t> wei1(K * N, bfloat16_t(0.06f));
+    std::vector<bfloat16_t> wei2(K * N, bfloat16_t(0.07f));
+    std::vector<const void *> weight = {wei0.data(), wei1.data(), wei2.data()};
+    std::vector<bool> transA(kNumActive, false), transB(kNumActive, false);
+    std::vector<bool> is_wc(kNumActive, true);
+    std::vector<int> M_v(kNumActive, M), N_v(kNumActive, N), K_v(kNumActive, K),
+            ldb_v(kNumActive, N);
+    std::vector<float> alpha_v(kNumActive, 1.0f), beta_v(kNumActive, 0.0f);
 
-  ck::CallContext kctx;
-  const auto status = ck::prepare_for_call(
-      grp_matmul_gated_act_t::none, data_type_t::bf16, data_type_t::bf16,
-      data_type_t::bf16, data_type_t::bf16, data_type_t::none,
-      transA, transB, M_v, N_v, K_v, ldb_v, alpha_v, beta_v,
-      weight, is_wc, kctx);
-  ASSERT_EQ(status, status_t::success);
+    ck::CallContext kctx;
+    const auto status = ck::prepare_for_call(grp_matmul_gated_act_t::none,
+            data_type_t::bf16, data_type_t::bf16, data_type_t::bf16,
+            data_type_t::bf16, data_type_t::none, transA, transB, M_v, N_v, K_v,
+            ldb_v, alpha_v, beta_v, weight, is_wc, kctx);
+    ASSERT_EQ(status, status_t::success);
 
-  // First `kNumActive` slots populated; rest stay nullptr.
-  for (int i = 0; i < kNumActive; ++i) {
-    EXPECT_NE(kctx.packed_ptrs[i], nullptr)
-        << "active expert " << i << " has nullptr packed_ptr";
-  }
-  for (int i = kNumActive;
-       i < static_cast<int>(kctx.packed_ptrs.size()); ++i) {
-    EXPECT_EQ(kctx.packed_ptrs[i], nullptr)
-        << "inactive slot " << i << " has non-null packed_ptr";
-  }
+    // First `kNumActive` slots populated; rest stay nullptr.
+    for (int i = 0; i < kNumActive; ++i) {
+        EXPECT_NE(kctx.packed_ptrs[i], nullptr)
+                << "active expert " << i << " has nullptr packed_ptr";
+    }
+    for (int i = kNumActive; i < static_cast<int>(kctx.packed_ptrs.size());
+            ++i) {
+        EXPECT_EQ(kctx.packed_ptrs[i], nullptr)
+                << "inactive slot " << i << " has non-null packed_ptr";
+    }
 }
 
 // ──────────────────────────────────────────────────────────────────
@@ -276,47 +266,45 @@ TEST(CkFeatures, MultiExpertPreparePopulatesActiveOnly) {
 // the f16 family otherwise and the array would stay all-null).
 // ──────────────────────────────────────────────────────────────────
 TEST(CkFeatures, MultiExpertPrepareF16PopulatesActiveOnly) {
-  CK_SKIP_IF_NO_F16_ISA();
+    CK_SKIP_IF_NO_F16_ISA();
 
-  constexpr int kNumActive = 3;
-  constexpr int M = 8, K = 64, N = 256;
-  std::vector<float16_t> wei0(K * N, float16_t(0.05f));
-  std::vector<float16_t> wei1(K * N, float16_t(0.06f));
-  std::vector<float16_t> wei2(K * N, float16_t(0.07f));
-  std::vector<const void *> weight = {wei0.data(), wei1.data(),
-                                      wei2.data()};
-  std::vector<bool>  transA(kNumActive, false), transB(kNumActive, false);
-  std::vector<bool>  is_wc(kNumActive, true);
-  std::vector<int>   M_v(kNumActive, M), N_v(kNumActive, N),
-                     K_v(kNumActive, K), ldb_v(kNumActive, N);
-  std::vector<float> alpha_v(kNumActive, 1.0f),
-                     beta_v(kNumActive, 0.0f);
+    constexpr int kNumActive = 3;
+    constexpr int M = 8, K = 64, N = 256;
+    std::vector<float16_t> wei0(K * N, float16_t(0.05f));
+    std::vector<float16_t> wei1(K * N, float16_t(0.06f));
+    std::vector<float16_t> wei2(K * N, float16_t(0.07f));
+    std::vector<const void *> weight = {wei0.data(), wei1.data(), wei2.data()};
+    std::vector<bool> transA(kNumActive, false), transB(kNumActive, false);
+    std::vector<bool> is_wc(kNumActive, true);
+    std::vector<int> M_v(kNumActive, M), N_v(kNumActive, N), K_v(kNumActive, K),
+            ldb_v(kNumActive, N);
+    std::vector<float> alpha_v(kNumActive, 1.0f), beta_v(kNumActive, 0.0f);
 
-  ck::CallContext kctx;
-  const auto status = ck::prepare_for_call(
-      grp_matmul_gated_act_t::none, data_type_t::f16, data_type_t::f16,
-      data_type_t::f16, data_type_t::f16, data_type_t::none,
-      transA, transB, M_v, N_v, K_v, ldb_v, alpha_v, beta_v,
-      weight, is_wc, kctx);
-  ASSERT_EQ(status, status_t::success);
-  EXPECT_TRUE(kctx.enabled);
-  EXPECT_EQ(kctx.variant, ck::KernelVariant::kF16_F16_F16);
+    ck::CallContext kctx;
+    const auto status = ck::prepare_for_call(grp_matmul_gated_act_t::none,
+            data_type_t::f16, data_type_t::f16, data_type_t::f16,
+            data_type_t::f16, data_type_t::none, transA, transB, M_v, N_v, K_v,
+            ldb_v, alpha_v, beta_v, weight, is_wc, kctx);
+    ASSERT_EQ(status, status_t::success);
+    EXPECT_TRUE(kctx.enabled);
+    EXPECT_EQ(kctx.variant, ck::KernelVariant::kF16_F16_F16);
 
-  // Active slots populated in `packed_ptrs_f16`; bf16 `packed_ptrs`
-  // stays all-null (the f16 path never touches it); inactive f16 tail
-  // stays null.
-  for (int i = 0; i < kNumActive; ++i) {
-    EXPECT_NE(kctx.packed_ptrs_f16[i], nullptr)
-        << "active f16 expert " << i << " has nullptr packed_ptrs_f16";
-    EXPECT_EQ(kctx.packed_ptrs[i], nullptr)
-        << "f16 path must not populate the bf16 packed_ptrs array "
-           "(expert " << i << ")";
-  }
-  for (int i = kNumActive;
-       i < static_cast<int>(kctx.packed_ptrs_f16.size()); ++i) {
-    EXPECT_EQ(kctx.packed_ptrs_f16[i], nullptr)
-        << "inactive f16 slot " << i << " has non-null packed_ptrs_f16";
-  }
+    // Active slots populated in `packed_ptrs_f16`; bf16 `packed_ptrs`
+    // stays all-null (the f16 path never touches it); inactive f16 tail
+    // stays null.
+    for (int i = 0; i < kNumActive; ++i) {
+        EXPECT_NE(kctx.packed_ptrs_f16[i], nullptr)
+                << "active f16 expert " << i << " has nullptr packed_ptrs_f16";
+        EXPECT_EQ(kctx.packed_ptrs[i], nullptr)
+                << "f16 path must not populate the bf16 packed_ptrs array "
+                   "(expert "
+                << i << ")";
+    }
+    for (int i = kNumActive; i < static_cast<int>(kctx.packed_ptrs_f16.size());
+            ++i) {
+        EXPECT_EQ(kctx.packed_ptrs_f16[i], nullptr)
+                << "inactive f16 slot " << i << " has non-null packed_ptrs_f16";
+    }
 }
 
-}  // namespace
+} // namespace

@@ -16,12 +16,12 @@
 #ifndef _PLATFORM_INFO_HPP_
 #define _PLATFORM_INFO_HPP_
 
-#include <string>
 #include <cstdint>
-#include "common/error_status.hpp"
-#include "common/zendnnl_exceptions.hpp"
+#include <string>
 #include "Au/Cpuid/CacheInfo.hh"
 #include "Au/Cpuid/X86Cpu.hh"
+#include "common/error_status.hpp"
+#include "common/zendnnl_exceptions.hpp"
 
 namespace zendnnl {
 namespace common {
@@ -37,31 +37,31 @@ using namespace zendnnl::error_handling;
  */
 
 class platform_info_t final {
- public:
-  /** @name Constructors, Destructors and Assignments */
-  /**@{*/
-  /** @brief Default constrcutor */
-  platform_info_t();
-  /**@}*/
+public:
+    /** @name Constructors, Destructors and Assignments */
+    /**@{*/
+    /** @brief Default constrcutor */
+    platform_info_t();
+    /**@}*/
 
-  /** @name Interface */
-  /**@{*/
-  /** @brief Populate platform info
+    /** @name Interface */
+    /**@{*/
+    /** @brief Populate platform info
    * @return status_t::success
    */
-  status_t populate();
+    status_t populate();
 
-  /** @brief Get avx2 status
+    /** @brief Get avx2 status
    *  @return true if platform supports avx2 else false.
    */
-  bool get_avx2_status() const;
+    bool get_avx2_status() const;
 
-  /** @brief Get avx512 status
+    /** @brief Get avx512 status
    *  @return true if platform supports avx512 else false.
    */
-  bool get_avx512f_status() const;
+    bool get_avx512f_status() const;
 
-  /** @brief Get native AVX512-FP16 ISA status (full FP16 arithmetic).
+    /** @brief Get native AVX512-FP16 ISA status (full FP16 arithmetic).
    *
    *  True only when the CPU supports AVX512-FP16 (CPUID leaf 7, subleaf 0,
    *  EDX bit 23), which provides native FP16 FMA, add, mul, etc.
@@ -70,9 +70,9 @@ class platform_info_t final {
    *
    *  @return true if platform supports AVX512-FP16, false otherwise.
    */
-  bool get_avx512_f16_status() const;
+    bool get_avx512_f16_status() const;
 
-  /** @brief Get AVX-512 BW + VL status.
+    /** @brief Get AVX-512 BW + VL status.
    *
    *  True only when the CPU supports both AVX-512BW and AVX-512VL. The
    *  native reorder / dynamic-quant kernels are compiled for
@@ -84,54 +84,54 @@ class platform_info_t final {
    *
    *  @return true if platform supports both AVX-512BW and AVX-512VL.
    */
-  bool get_avx512_bw_vl_status() const;
+    bool get_avx512_bw_vl_status() const;
 
-  /** @brief Get isa version
+    /** @brief Get isa version
    *  @return isa version.
    */
-  uint32_t get_isa_version() const;
+    uint32_t get_isa_version() const;
 
-  /** @brief Get cpu family
+    /** @brief Get cpu family
    *  @return cpu family.
    */
-  uint32_t get_cpu_family() const;
+    uint32_t get_cpu_family() const;
 
-  /** @brief Get cpu model
+    /** @brief Get cpu model
    *  @return cpu model.
    */
-  uint32_t get_cpu_model() const;
+    uint32_t get_cpu_model() const;
 
-  /** @brief Get cpu vendor
+    /** @brief Get cpu vendor
    *  @return cpu vendor.
    */
-  uint32_t get_cpu_vendor() const;
+    uint32_t get_cpu_vendor() const;
 
-  /** @brief Get cpu uarch
+    /** @brief Get cpu uarch
    *  @return cpu uarch.
    */
-  uint32_t get_cpu_uarch() const;
-  /**@}*/
+    uint32_t get_cpu_uarch() const;
+    /**@}*/
 
- private:
-  /** @brief Detect F16 ISA support via raw CPUID queries.
+private:
+    /** @brief Detect F16 ISA support via raw CPUID queries.
    *
    *  Populates is_avx512_f16_native by checking AVX512-FP16
    *  (leaf 7, sub 0, EDX bit 23).
    */
-  void detect_f16_isa();
+    void detect_f16_isa();
 
-  bool          is_avx2;
-  bool          is_avx512f;
-  bool          is_avx512bw;
-  bool          is_avx512vl;
-  bool          is_avx512_f16_native;
-  uint32_t      isa_version;
-  uint32_t      cpu_family;
-  uint32_t      cpu_model;
-  uint32_t      cpu_vendor;
-  uint32_t      cpu_uarch;
+    bool is_avx2;
+    bool is_avx512f;
+    bool is_avx512bw;
+    bool is_avx512vl;
+    bool is_avx512_f16_native;
+    uint32_t isa_version;
+    uint32_t cpu_family;
+    uint32_t cpu_model;
+    uint32_t cpu_vendor;
+    uint32_t cpu_uarch;
 };
 
-} //common
-} //zendnnl
+} // namespace common
+} // namespace zendnnl
 #endif

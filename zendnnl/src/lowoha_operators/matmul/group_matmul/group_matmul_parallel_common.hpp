@@ -43,9 +43,9 @@
 
 #include "custom_kernel/dispatch.hpp"
 #include "group_matmul_direct.hpp"
+#include "lowoha_operators/common/omp_thread_control.hpp"
 #include "lowoha_operators/matmul/lowoha_matmul_utils.hpp"
 #include "lowoha_operators/matmul/quantization/reorder_quantization.hpp"
-#include "lowoha_operators/common/omp_thread_control.hpp"
 #include "operators/matmul/matmul_config.hpp"
 
 namespace zendnnl {
@@ -62,30 +62,26 @@ using zendnnl::common::size_of;
 // lines and gemm_mode_out strings; keeps activation names consistent
 // across executors.
 inline const char *act_name(grp_matmul_gated_act_t a) {
-  switch (a) {
-  case grp_matmul_gated_act_t::none:
-    return "none";
-  case grp_matmul_gated_act_t::silu_and_mul:
-    return "silu_and_mul";
-  case grp_matmul_gated_act_t::gelu_and_mul:
-    return "gelu_and_mul";
-  case grp_matmul_gated_act_t::swiglu_oai_mul:
-    return "swiglu_oai_mul";
-  }
-  return "?";
+    switch (a) {
+        case grp_matmul_gated_act_t::none: return "none";
+        case grp_matmul_gated_act_t::silu_and_mul: return "silu_and_mul";
+        case grp_matmul_gated_act_t::gelu_and_mul: return "gelu_and_mul";
+        case grp_matmul_gated_act_t::swiglu_oai_mul: return "swiglu_oai_mul";
+    }
+    return "?";
 }
 
 // Tile-size + weight-class constants shared by ALGO 0 auto-select and
 // the tile kernels.  Cutoffs separate per-CCD-L3-resident shapes
 // (small) from L3-tight shapes (medium) from DRAM-streaming (large).
-inline constexpr int    kDecodeMaxM   = 32;                // per-expert M ≤ this → "decode"
-inline constexpr int    kMinNTile     = 512;               // prompt-path per-thread N
+inline constexpr int kDecodeMaxM = 32; // per-expert M ≤ this → "decode"
+inline constexpr int kMinNTile = 512; // prompt-path per-thread N
 
 // DQ-INT8 sibling of `kMinNTile`.  Today set equal to the bf16
 // value so the dtype-aware split is a structural no-op.  Kept as an
 // independent constant so the int8 family can be retuned without
 // perturbing the bf16 prompt thresholds.
-inline constexpr int    kMinNTileInt8 = 512;
+inline constexpr int kMinNTileInt8 = 512;
 
 // NOTE: `kDecodeNTile` (decode-path per-thread N, default 256) now
 // lives in `n_tile/group_matmul_n_tile_planner.hpp` (re-included by
@@ -115,7 +111,7 @@ inline constexpr int    kMinNTileInt8 = 512;
 /// ≤ 8-thread host instead falls to rule 1 and routes to ALGO 3.
 /// Documented in `auto_select_algo`'s rule precedence comment in
 /// `group_matmul_dispatch.cpp`.
-inline constexpr int    kFewExpertsAlgo1 = 8;
+inline constexpr int kFewExpertsAlgo1 = 8;
 
 /// Few-experts threshold for the ALGO 0 default-policy ALGO 2 preference.
 /// When the GLOBAL ALGO env is auto (0) AND neither active phase env is
@@ -128,7 +124,7 @@ inline constexpr int    kFewExpertsAlgo1 = 8;
 /// the legacy cascade) still wins — this is a DEFAULT refinement, not a
 /// hard clamp.
 /// Falls back to ALGO 1 when the shape is not m_tile_safe.
-inline constexpr int    kFewExpertsAlgo2Pref = 8;
+inline constexpr int kFewExpertsAlgo2Pref = 8;
 
 // ── Executed-ALGO from gemm_mode ────────────────────────────────────────
 // Maps the executor-written `gemm_mode` string (the authoritative record of
@@ -149,29 +145,29 @@ inline constexpr int    kFewExpertsAlgo2Pref = 8;
 // (`fused_moe_*(op1=..,op2=..)`) derive the algo from the Op1 sub-mode; the
 // full per-op detail stays in the `mode=` string itself.
 inline int executed_algo_from_gemm_mode(const char *mode) {
-  if (mode == nullptr) return 0;
-  auto starts = [&](const char *p) {
-    return std::strncmp(mode, p, std::strlen(p)) == 0;
-  };
-  // No-op / nothing-executed markers map to 0 (must precede the generic
-  // prefixes they share, e.g. "flat_m_tile_skip" before "flat_m_tile").
-  if (starts("skip"))                  return 0;  // whole-call no-op (all M<=0)
-  if (starts("flat_m_tile_skip"))      return 0;  // empty / no active expert
-  if (starts("multilevel_skip"))       return 0;
-  if (starts("fused_moe_skip"))        return 0;
-  if (starts("flat_m_tile_seq_clamp")) return 1;  // sequential full-team
-  if (starts("sequential"))            return 1;  // "sequential" / "..._experts"
-  if (starts("flat_m_tile"))           return 2;
-  if (starts("vertical_fusion"))       return 2;  // M-tile fused pipeline
-  if (starts("flat_n_tile"))           return 3;
-  if (starts("multilevel"))            return 4;
-  if (starts("per_expert"))            return 5;
-  if (starts("fused_moe")) {
-    // Composite: derive from the Op1 executor sub-mode.
-    const char *op1 = std::strstr(mode, "op1=");
-    return (op1 != nullptr) ? executed_algo_from_gemm_mode(op1 + 4) : 0;
-  }
-  return 0;
+    if (mode == nullptr) return 0;
+    auto starts = [&](const char *p) {
+        return std::strncmp(mode, p, std::strlen(p)) == 0;
+    };
+    // No-op / nothing-executed markers map to 0 (must precede the generic
+    // prefixes they share, e.g. "flat_m_tile_skip" before "flat_m_tile").
+    if (starts("skip")) return 0; // whole-call no-op (all M<=0)
+    if (starts("flat_m_tile_skip")) return 0; // empty / no active expert
+    if (starts("multilevel_skip")) return 0;
+    if (starts("fused_moe_skip")) return 0;
+    if (starts("flat_m_tile_seq_clamp")) return 1; // sequential full-team
+    if (starts("sequential")) return 1; // "sequential" / "..._experts"
+    if (starts("flat_m_tile")) return 2;
+    if (starts("vertical_fusion")) return 2; // M-tile fused pipeline
+    if (starts("flat_n_tile")) return 3;
+    if (starts("multilevel")) return 4;
+    if (starts("per_expert")) return 5;
+    if (starts("fused_moe")) {
+        // Composite: derive from the Op1 executor sub-mode.
+        const char *op1 = std::strstr(mode, "op1=");
+        return (op1 != nullptr) ? executed_algo_from_gemm_mode(op1 + 4) : 0;
+    }
+    return 0;
 }
 
 // NOTE: `kNTilePlanMaxExperts` (max experts the ALGO 3 N-tile planner
@@ -200,7 +196,7 @@ inline int executed_algo_from_gemm_mode(const char *mode) {
 // validator was independently using `N[i] / 2` unconditionally,
 // which under-restricted `ldb_down` for `act == none` callers.
 inline int op2_k_for_act(int n_op1, grp_matmul_gated_act_t act) {
-  return (act == grp_matmul_gated_act_t::none) ? n_op1 : (n_op1 / 2);
+    return (act == grp_matmul_gated_act_t::none) ? n_op1 : (n_op1 / 2);
 }
 
 // NOTE: `check_m_tile_safe` (M-tile ALGO 2 structural eligibility
@@ -235,18 +231,18 @@ inline int op2_k_for_act(int n_op1, grp_matmul_gated_act_t act) {
 /// makes "invalid env value → fall back to documented default" the
 /// observable behaviour.
 inline bool parse_env_int_strict(const char *e, int &out) {
-  if (e == nullptr || e[0] == '\0') return false;
-  char *end = nullptr;
-  errno = 0;
-  const long v = std::strtol(e, &end, 10);
-  if (end == e) return false;        // no digits consumed
-  if (*end != '\0') return false;    // trailing junk (e.g. "1abc")
-  if (errno == ERANGE) return false; // overflowed long
-  if (v < static_cast<long>(std::numeric_limits<int>::min())
-      || v > static_cast<long>(std::numeric_limits<int>::max()))
-    return false;
-  out = static_cast<int>(v);
-  return true;
+    if (e == nullptr || e[0] == '\0') return false;
+    char *end = nullptr;
+    errno = 0;
+    const long v = std::strtol(e, &end, 10);
+    if (end == e) return false; // no digits consumed
+    if (*end != '\0') return false; // trailing junk (e.g. "1abc")
+    if (errno == ERANGE) return false; // overflowed long
+    if (v < static_cast<long>(std::numeric_limits<int>::min())
+            || v > static_cast<long>(std::numeric_limits<int>::max()))
+        return false;
+    out = static_cast<int>(v);
+    return true;
 }
 
 /// ZENDNNL_GRP_MATMUL_ALGO = "1".."5" force a specific ALGO, "0"/unset
@@ -267,14 +263,13 @@ inline bool parse_env_int_strict(const char *e, int &out) {
 /// `AlgoEnvGuard(N)` continues to observe `N` without source-level changes.
 inline std::atomic<int> &test_api_algo_override();
 inline int get_grp_matmul_algo() {
-  const int ovr = test_api_algo_override().load(
-      std::memory_order_relaxed);
-  if (ovr >= 0) return (ovr >= 1 && ovr <= 5) ? ovr : 0;
-  static const int v = []() {
-    const char *env = std::getenv("ZENDNNL_GRP_MATMUL_ALGO");
-    return (env && env[0] >= '1' && env[0] <= '5') ? (env[0] - '0') : 0;
-  }();
-  return v;
+    const int ovr = test_api_algo_override().load(std::memory_order_relaxed);
+    if (ovr >= 0) return (ovr >= 1 && ovr <= 5) ? ovr : 0;
+    static const int v = []() {
+        const char *env = std::getenv("ZENDNNL_GRP_MATMUL_ALGO");
+        return (env && env[0] >= '1' && env[0] <= '5') ? (env[0] - '0') : 0;
+    }();
+    return v;
 }
 
 // ── Auto-select per-phase overrides (consulted only under ALGO=0) ─────
@@ -344,21 +339,21 @@ inline int get_grp_matmul_algo() {
 //   of envs for the rationale.
 inline std::atomic<int> &test_api_auto_prompt_algo_override();
 inline int get_grp_matmul_auto_prompt_algo() {
-  // Strict env parsing — non-numeric input falls back to the documented
-  // default 2 (flat_m_tile).  Bogus values (< 0 OR > 5) also clamp
-  // to the default so a typo cannot accidentally pin an unintended
-  // algo.
-  constexpr int kDefault = 2;
-  const int ovr = test_api_auto_prompt_algo_override().load(
-      std::memory_order_relaxed);
-  if (ovr >= 0) return (ovr <= 5) ? ovr : kDefault;
-  static const int v = []() {
-    const char *e = std::getenv("ZENDNNL_GRP_MATMUL_AUTO_PROMPT_ALGO");
-    int parsed = 0;
-    if (!parse_env_int_strict(e, parsed)) return kDefault;
-    return (parsed >= 0 && parsed <= 5) ? parsed : kDefault;
-  }();
-  return v;
+    // Strict env parsing — non-numeric input falls back to the documented
+    // default 2 (flat_m_tile).  Bogus values (< 0 OR > 5) also clamp
+    // to the default so a typo cannot accidentally pin an unintended
+    // algo.
+    constexpr int kDefault = 2;
+    const int ovr = test_api_auto_prompt_algo_override().load(
+            std::memory_order_relaxed);
+    if (ovr >= 0) return (ovr <= 5) ? ovr : kDefault;
+    static const int v = []() {
+        const char *e = std::getenv("ZENDNNL_GRP_MATMUL_AUTO_PROMPT_ALGO");
+        int parsed = 0;
+        if (!parse_env_int_strict(e, parsed)) return kDefault;
+        return (parsed >= 0 && parsed <= 5) ? parsed : kDefault;
+    }();
+    return v;
 }
 
 // ZENDNNL_GRP_MATMUL_AUTO_DECODE_ALGO = { 0, 1..5 } — cached, default 3.
@@ -370,17 +365,17 @@ inline int get_grp_matmul_auto_prompt_algo() {
 //   decode choice.
 inline std::atomic<int> &test_api_auto_decode_algo_override();
 inline int get_grp_matmul_auto_decode_algo() {
-  constexpr int kDefault = 3;
-  const int ovr = test_api_auto_decode_algo_override().load(
-      std::memory_order_relaxed);
-  if (ovr >= 0) return (ovr <= 5) ? ovr : kDefault;
-  static const int v = []() {
-    const char *e = std::getenv("ZENDNNL_GRP_MATMUL_AUTO_DECODE_ALGO");
-    int parsed = 0;
-    if (!parse_env_int_strict(e, parsed)) return kDefault;
-    return (parsed >= 0 && parsed <= 5) ? parsed : kDefault;
-  }();
-  return v;
+    constexpr int kDefault = 3;
+    const int ovr = test_api_auto_decode_algo_override().load(
+            std::memory_order_relaxed);
+    if (ovr >= 0) return (ovr <= 5) ? ovr : kDefault;
+    static const int v = []() {
+        const char *e = std::getenv("ZENDNNL_GRP_MATMUL_AUTO_DECODE_ALGO");
+        int parsed = 0;
+        if (!parse_env_int_strict(e, parsed)) return kDefault;
+        return (parsed >= 0 && parsed <= 5) ? parsed : kDefault;
+    }();
+    return v;
 }
 
 // True when the operator has EXPLICITLY chosen a prompt phase algo —
@@ -391,26 +386,28 @@ inline int get_grp_matmul_auto_decode_algo() {
 // out-of-the-box.  Env presence is cached on first call (same pattern as
 // the value getter); test overrides read the live atomic.
 inline bool grp_matmul_auto_prompt_algo_is_set() {
-  if (test_api_auto_prompt_algo_override().load(std::memory_order_relaxed) >= 0)
-    return true;
-  static const bool s = []() {
-    const char *e = std::getenv("ZENDNNL_GRP_MATMUL_AUTO_PROMPT_ALGO");
-    int parsed = 0;
-    return parse_env_int_strict(e, parsed);
-  }();
-  return s;
+    if (test_api_auto_prompt_algo_override().load(std::memory_order_relaxed)
+            >= 0)
+        return true;
+    static const bool s = []() {
+        const char *e = std::getenv("ZENDNNL_GRP_MATMUL_AUTO_PROMPT_ALGO");
+        int parsed = 0;
+        return parse_env_int_strict(e, parsed);
+    }();
+    return s;
 }
 
 // Decode counterpart of `grp_matmul_auto_prompt_algo_is_set()`.
 inline bool grp_matmul_auto_decode_algo_is_set() {
-  if (test_api_auto_decode_algo_override().load(std::memory_order_relaxed) >= 0)
-    return true;
-  static const bool s = []() {
-    const char *e = std::getenv("ZENDNNL_GRP_MATMUL_AUTO_DECODE_ALGO");
-    int parsed = 0;
-    return parse_env_int_strict(e, parsed);
-  }();
-  return s;
+    if (test_api_auto_decode_algo_override().load(std::memory_order_relaxed)
+            >= 0)
+        return true;
+    static const bool s = []() {
+        const char *e = std::getenv("ZENDNNL_GRP_MATMUL_AUTO_DECODE_ALGO");
+        int parsed = 0;
+        return parse_env_int_strict(e, parsed);
+    }();
+    return s;
 }
 
 // NOTE: `get_grp_n_tile_fused_act()` moved to
@@ -442,12 +439,12 @@ inline bool grp_matmul_auto_decode_algo_is_set() {
 /// Standard-backend silu / gelu tile helpers are a planned follow-up;
 /// until then, callers with CK off fall back to the separate-pass
 /// path (`act_fused = false`) by way of this gate returning `false`.
-inline bool a3_can_fuse_act(grp_matmul_gated_act_t act,
-                            bool use_custom_kernel) {
-  if (act == grp_matmul_gated_act_t::swiglu_oai_mul) return true;
-  if (act == grp_matmul_gated_act_t::silu_and_mul) return use_custom_kernel;
-  if (act == grp_matmul_gated_act_t::gelu_and_mul) return use_custom_kernel;
-  return false;
+inline bool a3_can_fuse_act(
+        grp_matmul_gated_act_t act, bool use_custom_kernel) {
+    if (act == grp_matmul_gated_act_t::swiglu_oai_mul) return true;
+    if (act == grp_matmul_gated_act_t::silu_and_mul) return use_custom_kernel;
+    if (act == grp_matmul_gated_act_t::gelu_and_mul) return use_custom_kernel;
+    return false;
 }
 
 // ZENDNNL_GRP_MATMUL_N_ROUNDS = { 0, 1, 2, 3 } — cached, default 1.
@@ -489,17 +486,17 @@ inline bool a3_can_fuse_act(grp_matmul_gated_act_t act,
 // is cleared on scope exit, including on test failure / fixture
 // teardown.
 namespace test_api {
-inline std::atomic<int> s_grp_n_rounds_mode_override{-1};
-inline std::atomic<int> s_grp_matmul_custom_kernel_override{-1};
+inline std::atomic<int> s_grp_n_rounds_mode_override {-1};
+inline std::atomic<int> s_grp_matmul_custom_kernel_override {-1};
 // DQ-INT8 CK sub-knob — independent from the master CK switch so
 // tests / deployments can toggle the int8 fast path without
 // disturbing the bf16 path.  Sentinel `-1` = no override (env / default).
-inline std::atomic<int> s_grp_matmul_custom_kernel_int8_override{-1};
+inline std::atomic<int> s_grp_matmul_custom_kernel_int8_override {-1};
 // FP16 CK sub-knob — independent from the master CK switch and the
 // int8 sub-knob so tests / deployments can A/B the native
 // AVX-512-FP16 fast path in isolation.  Sentinel `-1` = no override
 // (env / default).
-inline std::atomic<int> s_grp_matmul_custom_kernel_f16_override{-1};
+inline std::atomic<int> s_grp_matmul_custom_kernel_f16_override {-1};
 // NOTE: `s_grp_matmul_custom_kernel_n_tile_override` and
 // `s_grp_n_tile_strategy_override` moved to `group_matmul_n_tile.hpp`
 // (Section A.3) together with the rest of the N-tile override atoms.
@@ -514,7 +511,7 @@ inline std::atomic<int> s_grp_matmul_custom_kernel_f16_override{-1};
 //   * any non-negative value other than 32 / 64 → clamped to 0 by
 //     the getter, matching the env-parse "validate or treat as
 //     unset" behaviour.
-inline std::atomic<int> s_grp_matmul_custom_kernel_nr_override{-1};
+inline std::atomic<int> s_grp_matmul_custom_kernel_nr_override {-1};
 
 // Sentinel `-1` = no override.  Settable values: 0 (explicit legacy
 // 3-rule cascade — escape hatch from the new default phase pin),
@@ -532,8 +529,8 @@ inline std::atomic<int> s_grp_matmul_custom_kernel_nr_override{-1};
 //   * > 5        — clamped to the documented default (1 for prompt,
 //                  3 for decode), matching the env-parse validation
 //                  behaviour.
-inline std::atomic<int> s_grp_matmul_auto_prompt_algo_override{-1};
-inline std::atomic<int> s_grp_matmul_auto_decode_algo_override{-1};
+inline std::atomic<int> s_grp_matmul_auto_prompt_algo_override {-1};
+inline std::atomic<int> s_grp_matmul_auto_decode_algo_override {-1};
 
 // Sentinel `-1` = no override (use cached env path).  Settable values
 // 0..5 mirror `get_grp_matmul_algo()` parse output (`0` = AUTO,
@@ -542,7 +539,7 @@ inline std::atomic<int> s_grp_matmul_auto_decode_algo_override{-1};
 // sets the env-var AND stores into this atomic so that any gtest using
 // `AlgoEnvGuard(N)` continues to flip the effective algo mid-process —
 // without paying the `std::getenv` cost on every production call site.
-inline std::atomic<int> s_grp_matmul_algo_override{-1};
+inline std::atomic<int> s_grp_matmul_algo_override {-1};
 
 // NOTE: `s_grp_matmul_n_tile_heavy_threshold_override` moved to
 // `group_matmul_n_tile.hpp` (Section A.3) together with the rest of
@@ -569,7 +566,8 @@ inline std::atomic<int> s_grp_matmul_algo_override{-1};
 //   * 0 → ON returns false; 1 (or any other positive value) → ON
 //     returns true.  Mirrors the env-parse "0 means off, anything
 //     else means on" convention of `get_grp_n_tile_fused_act()`.
-inline std::atomic<int> s_grp_matmul_custom_kernel_subtile_per_expert_override{-1};
+inline std::atomic<int> s_grp_matmul_custom_kernel_subtile_per_expert_override {
+        -1};
 
 // Last `gemm_mode` string set by `group_matmul_direct` on a
 // successful return.  Read-only inspection hook for tests that need
@@ -596,15 +594,15 @@ inline std::atomic<int> s_grp_matmul_custom_kernel_subtile_per_expert_override{-
 //   tax on multi-rank serving deployments that have no use for
 //   the test hook.  Same pattern as `s_capture_phase_b` (see
 //   `group_matmul_n_tile.hpp`).
-inline std::atomic<bool>         s_capture_gemm_mode{false};
-inline std::atomic<const char *> s_last_group_matmul_direct_gemm_mode{nullptr};
+inline std::atomic<bool> s_capture_gemm_mode {false};
+inline std::atomic<const char *> s_last_group_matmul_direct_gemm_mode {nullptr};
 
 // NOTE: The M-tile (ALGO 2) branch-tag capture hook —
 // `s_capture_m_tile_path`, `s_last_m_tile_path`, and the
 // `m_tile_path_tag::*` named constants — moved out to
 // `group_matmul_m_tile.hpp` (Section H.2).  See the file header
 // there for the same capture-gate rationale that used to live here.
-}  // namespace test_api
+} // namespace test_api
 
 // Out-of-namespace accessors for the AUTO_*_ALGO override atomics.
 // Forward-declared above the getters (which are defined inline near
@@ -613,31 +611,31 @@ inline std::atomic<const char *> s_last_group_matmul_direct_gemm_mode{nullptr};
 // definition and the override atomic.  Same single-relaxed-load
 // pattern as the other `test_api::*` consumers.
 inline std::atomic<int> &test_api_auto_prompt_algo_override() {
-  return test_api::s_grp_matmul_auto_prompt_algo_override;
+    return test_api::s_grp_matmul_auto_prompt_algo_override;
 }
 inline std::atomic<int> &test_api_auto_decode_algo_override() {
-  return test_api::s_grp_matmul_auto_decode_algo_override;
+    return test_api::s_grp_matmul_auto_decode_algo_override;
 }
 inline std::atomic<int> &test_api_algo_override() {
-  return test_api::s_grp_matmul_algo_override;
+    return test_api::s_grp_matmul_algo_override;
 }
 
 inline int get_grp_n_rounds_mode() {
-  const int ovr = test_api::s_grp_n_rounds_mode_override.load(
-      std::memory_order_relaxed);
-  if (ovr >= 0) return ovr;
-  // Default: 1 (single-round).  Strict env parsing — anything that
-  // is not exactly `"0"`, `"1"`, `"2"`, or `"3"` falls back to the
-  // documented default (NOT silently to mode 0 via the legacy
-  // atoi-returns-0-for-junk behaviour).  See `parse_env_int_strict`.
-  constexpr int kDefault = 1;
-  static const int v = []() {
-    const char *e = std::getenv("ZENDNNL_GRP_MATMUL_N_ROUNDS");
-    int parsed = 0;
-    if (!parse_env_int_strict(e, parsed)) return kDefault;
-    return (parsed >= 0 && parsed <= 3) ? parsed : kDefault;
-  }();
-  return v;
+    const int ovr = test_api::s_grp_n_rounds_mode_override.load(
+            std::memory_order_relaxed);
+    if (ovr >= 0) return ovr;
+    // Default: 1 (single-round).  Strict env parsing — anything that
+    // is not exactly `"0"`, `"1"`, `"2"`, or `"3"` falls back to the
+    // documented default (NOT silently to mode 0 via the legacy
+    // atoi-returns-0-for-junk behaviour).  See `parse_env_int_strict`.
+    constexpr int kDefault = 1;
+    static const int v = []() {
+        const char *e = std::getenv("ZENDNNL_GRP_MATMUL_N_ROUNDS");
+        int parsed = 0;
+        if (!parse_env_int_strict(e, parsed)) return kDefault;
+        return (parsed >= 0 && parsed <= 3) ? parsed : kDefault;
+    }();
+    return v;
 }
 
 // NOTE: `get_grp_n_tile_strategy()` (ZENDNNL_GRP_MATMUL_N_TILE_STRATEGY)
@@ -684,12 +682,12 @@ inline constexpr bool kDecodeTileAbOn = true;
 //   the full predicate.  Set "0" here to force wide (debug /
 //   layout-regression bisection).
 inline int get_grp_matmul_fused_moe_tight() {
-  static const int v = []() {
-    const char *e = std::getenv("ZENDNNL_GRP_MATMUL_FUSED_MOE_TIGHT");
-    if (e == nullptr || e[0] == '\0') return 1;  // default: force-tight
-    return (e[0] == '0') ? 0 : 1;
-  }();
-  return v;
+    static const int v = []() {
+        const char *e = std::getenv("ZENDNNL_GRP_MATMUL_FUSED_MOE_TIGHT");
+        if (e == nullptr || e[0] == '\0') return 1; // default: force-tight
+        return (e[0] == '0') ? 0 : 1;
+    }();
+    return v;
 }
 
 // ZENDNNL_GRP_MATMUL_CUSTOM_KERNEL = { "0", "1" } — cached, default ON.
@@ -730,15 +728,15 @@ inline int get_grp_matmul_fused_moe_tight() {
 //   for the full gate cascade), so callers outside the supported
 //   envelope see no behaviour change regardless of this knob.
 inline bool get_grp_matmul_custom_kernel() {
-  const int ovr = test_api::s_grp_matmul_custom_kernel_override.load(
-      std::memory_order_relaxed);
-  if (ovr >= 0) return ovr != 0;
-  static const bool v = []() {
-    const char *e = std::getenv("ZENDNNL_GRP_MATMUL_CUSTOM_KERNEL");
-    if (e == nullptr || e[0] == '\0') return true;  // default: ON
-    return e[0] != '0';
-  }();
-  return v;
+    const int ovr = test_api::s_grp_matmul_custom_kernel_override.load(
+            std::memory_order_relaxed);
+    if (ovr >= 0) return ovr != 0;
+    static const bool v = []() {
+        const char *e = std::getenv("ZENDNNL_GRP_MATMUL_CUSTOM_KERNEL");
+        if (e == nullptr || e[0] == '\0') return true; // default: ON
+        return e[0] != '0';
+    }();
+    return v;
 }
 
 // ZENDNNL_GRP_MATMUL_CUSTOM_KERNEL_INT8 = { "0", "1" } — cached, default ON.
@@ -768,15 +766,15 @@ inline bool get_grp_matmul_custom_kernel() {
 //   Tests can pin the value via `s_grp_matmul_custom_kernel_int8_override`
 //   (sentinel `-1` = no override).
 inline bool get_grp_matmul_custom_kernel_int8() {
-  const int ovr = test_api::s_grp_matmul_custom_kernel_int8_override.load(
-      std::memory_order_relaxed);
-  if (ovr >= 0) return ovr != 0;
-  static const bool v = []() {
-    const char *e = std::getenv("ZENDNNL_GRP_MATMUL_CUSTOM_KERNEL_INT8");
-    if (e == nullptr || e[0] == '\0') return true;  // default: ON
-    return e[0] != '0';
-  }();
-  return v;
+    const int ovr = test_api::s_grp_matmul_custom_kernel_int8_override.load(
+            std::memory_order_relaxed);
+    if (ovr >= 0) return ovr != 0;
+    static const bool v = []() {
+        const char *e = std::getenv("ZENDNNL_GRP_MATMUL_CUSTOM_KERNEL_INT8");
+        if (e == nullptr || e[0] == '\0') return true; // default: ON
+        return e[0] != '0';
+    }();
+    return v;
 }
 
 // ZENDNNL_GRP_MATMUL_CUSTOM_KERNEL_F16 = { "0", "1" } — cached, default ON.
@@ -813,15 +811,15 @@ inline bool get_grp_matmul_custom_kernel_int8() {
 //   Tests can pin the value via `s_grp_matmul_custom_kernel_f16_override`
 //   (sentinel `-1` = no override).
 inline bool get_grp_matmul_custom_kernel_f16() {
-  const int ovr = test_api::s_grp_matmul_custom_kernel_f16_override.load(
-      std::memory_order_relaxed);
-  if (ovr >= 0) return ovr != 0;
-  static const bool v = []() {
-    const char *e = std::getenv("ZENDNNL_GRP_MATMUL_CUSTOM_KERNEL_F16");
-    if (e == nullptr || e[0] == '\0') return true;  // default: ON
-    return e[0] != '0';
-  }();
-  return v;
+    const int ovr = test_api::s_grp_matmul_custom_kernel_f16_override.load(
+            std::memory_order_relaxed);
+    if (ovr >= 0) return ovr != 0;
+    static const bool v = []() {
+        const char *e = std::getenv("ZENDNNL_GRP_MATMUL_CUSTOM_KERNEL_F16");
+        if (e == nullptr || e[0] == '\0') return true; // default: ON
+        return e[0] != '0';
+    }();
+    return v;
 }
 
 // ZENDNNL_GRP_MATMUL_CROSS_WARM = { "0", "1" } — cached, default ON.
@@ -876,12 +874,12 @@ inline bool get_grp_matmul_custom_kernel_f16() {
 //   short-circuits everything to a no-op; this knob only controls
 //   the cross-regime fan-out when the master is ON.
 inline bool get_grp_matmul_cross_warm() {
-  static const bool v = []() {
-    const char *e = std::getenv("ZENDNNL_GRP_MATMUL_CROSS_WARM");
-    if (e == nullptr || e[0] == '\0') return true;   // default: On
-    return e[0] != '0';
-  }();
-  return v;
+    static const bool v = []() {
+        const char *e = std::getenv("ZENDNNL_GRP_MATMUL_CROSS_WARM");
+        if (e == nullptr || e[0] == '\0') return true; // default: On
+        return e[0] != '0';
+    }();
+    return v;
 }
 
 // ZENDNNL_GRP_MATMUL_PREPACK = { "0", "1" } — cached, default ON.
@@ -951,12 +949,12 @@ inline bool get_grp_matmul_cross_warm() {
 //   to "0" — that path is also covered by the env-matrix gtests in
 //   `group_matmul/test_prepack.cpp` ([26]-[28]).
 inline bool get_grp_matmul_prepack() {
-  static const bool v = []() {
-    const char *e = std::getenv("ZENDNNL_GRP_MATMUL_PREPACK");
-    if (e == nullptr || e[0] == '\0') return true;   // default: On
-    return e[0] != '0';
-  }();
-  return v;
+    static const bool v = []() {
+        const char *e = std::getenv("ZENDNNL_GRP_MATMUL_PREPACK");
+        if (e == nullptr || e[0] == '\0') return true; // default: On
+        return e[0] != '0';
+    }();
+    return v;
 }
 
 // ──────────────────────────────────────────────────────────────────────
@@ -1019,30 +1017,30 @@ inline bool get_grp_matmul_prepack() {
 // ZENDNNL_GRP_MATMUL_AOCL_STABLE_NTILE = { "0", "1" } — cached, default ON.
 //   "0" restores the legacy dynamic plan topology (cache thrash).
 inline bool get_grp_matmul_aocl_stable_ntile() {
-  static const bool v = []() {
-    const char *e = std::getenv("ZENDNNL_GRP_MATMUL_AOCL_STABLE_NTILE");
-    if (e == nullptr || e[0] == '\0') return true;
-    return e[0] != '0';
-  }();
-  return v;
+    static const bool v = []() {
+        const char *e = std::getenv("ZENDNNL_GRP_MATMUL_AOCL_STABLE_NTILE");
+        if (e == nullptr || e[0] == '\0') return true;
+        return e[0] != '0';
+    }();
+    return v;
 }
 
-inline constexpr int kAoclTargetConcurrentSlots = 16;   // team-budget divisor
-inline constexpr int kAoclBlisNc                = 128;  // BLIS-bf16 inner-N block
+inline constexpr int kAoclTargetConcurrentSlots = 16; // team-budget divisor
+inline constexpr int kAoclBlisNc = 128; // BLIS-bf16 inner-N block
 
 // ZENDNNL_GRP_MATMUL_AOCL_TARGET_SLOTS = positive int — cached, default 16.
 //   Team-budget divisor.  Lower (e.g. 8) for few-expert deployments;
 //   raise for many-expert deployments where reducing per-expert fan-
 //   out helps.  Non-positive → default.
 inline int get_grp_matmul_aocl_target_slots() {
-  // Strict env parsing — non-numeric input falls back to default.
-  static const int v = []() {
-    const char *e = std::getenv("ZENDNNL_GRP_MATMUL_AOCL_TARGET_SLOTS");
-    int parsed = 0;
-    if (!parse_env_int_strict(e, parsed)) return kAoclTargetConcurrentSlots;
-    return (parsed > 0) ? parsed : kAoclTargetConcurrentSlots;
-  }();
-  return v;
+    // Strict env parsing — non-numeric input falls back to default.
+    static const int v = []() {
+        const char *e = std::getenv("ZENDNNL_GRP_MATMUL_AOCL_TARGET_SLOTS");
+        int parsed = 0;
+        if (!parse_env_int_strict(e, parsed)) return kAoclTargetConcurrentSlots;
+        return (parsed > 0) ? parsed : kAoclTargetConcurrentSlots;
+    }();
+    return v;
 }
 
 // ZENDNNL_GRP_MATMUL_AOCL_BLIS_NC = positive int — cached, default 128.
@@ -1065,14 +1063,14 @@ inline int get_grp_matmul_aocl_target_slots() {
 //   line change in `aocl_stable_n_thr` and we don't churn the env
 //   surface area.
 inline int get_grp_matmul_aocl_blis_nc() {
-  // Strict env parsing — non-numeric input falls back to default.
-  static const int v = []() {
-    const char *e = std::getenv("ZENDNNL_GRP_MATMUL_AOCL_BLIS_NC");
-    int parsed = 0;
-    if (!parse_env_int_strict(e, parsed)) return kAoclBlisNc;
-    return (parsed > 0) ? parsed : kAoclBlisNc;
-  }();
-  return v;
+    // Strict env parsing — non-numeric input falls back to default.
+    static const int v = []() {
+        const char *e = std::getenv("ZENDNNL_GRP_MATMUL_AOCL_BLIS_NC");
+        int parsed = 0;
+        if (!parse_env_int_strict(e, parsed)) return kAoclBlisNc;
+        return (parsed > 0) ? parsed : kAoclBlisNc;
+    }();
+    return v;
 }
 
 // NOTE: `get_grp_matmul_n_tile_heavy_threshold()`
@@ -1104,8 +1102,8 @@ inline int get_grp_matmul_aocl_blis_nc() {
 // The `N` parameter is retained for source-level compatibility with
 // existing callers; it is intentionally unused.
 inline int aocl_stable_n_thr(int num_threads, int /*N*/) {
-  if (num_threads <= 0) return 1;
-  return std::max(1, num_threads / get_grp_matmul_aocl_target_slots());
+    if (num_threads <= 0) return 1;
+    return std::max(1, num_threads / get_grp_matmul_aocl_target_slots());
 }
 
 // ──────────────────────────────────────────────────────────────────────
@@ -1124,21 +1122,18 @@ inline int aocl_stable_n_thr(int num_threads, int /*N*/) {
 // the override is the only deterministic way to flip this knob in
 // the same process.
 inline int get_grp_matmul_custom_kernel_nr() {
-  const int ovr = test_api::s_grp_matmul_custom_kernel_nr_override.load(
-      std::memory_order_relaxed);
-  if (ovr >= 0) {
-    return (ovr == 32 || ovr == 64) ? ovr : 0;
-  }
-  // Strict env parsing — non-numeric input (or anything other than
-  // exactly "32" / "64") falls back to 0 (auto-pick).
-  static const int v = []() {
-    const char *e = std::getenv("ZENDNNL_GRP_MATMUL_CUSTOM_KERNEL_NR");
-    int parsed = 0;
-    if (!parse_env_int_strict(e, parsed)) return 0;
-    return (parsed == 32 || parsed == 64) ? parsed : 0;
-  }
-  ();
-  return v;
+    const int ovr = test_api::s_grp_matmul_custom_kernel_nr_override.load(
+            std::memory_order_relaxed);
+    if (ovr >= 0) { return (ovr == 32 || ovr == 64) ? ovr : 0; }
+    // Strict env parsing — non-numeric input (or anything other than
+    // exactly "32" / "64") falls back to 0 (auto-pick).
+    static const int v = []() {
+        const char *e = std::getenv("ZENDNNL_GRP_MATMUL_CUSTOM_KERNEL_NR");
+        int parsed = 0;
+        if (!parse_env_int_strict(e, parsed)) return 0;
+        return (parsed == 32 || parsed == 64) ? parsed : 0;
+    }();
+    return v;
 }
 
 // ZENDNNL_GRP_MATMUL_CUSTOM_KERNEL_SUBTILE_PER_EXPERT = { "0", "1" } — cached, default OFF.
@@ -1153,17 +1148,16 @@ inline int get_grp_matmul_custom_kernel_nr() {
 // lambda) and later env mutations are invisible — the override is
 // the only deterministic way to flip this knob in the same process.
 inline bool get_grp_matmul_custom_kernel_subtile_per_expert() {
-  const int ovr =
-      test_api::s_grp_matmul_custom_kernel_subtile_per_expert_override
-          .load(std::memory_order_relaxed);
-  if (ovr >= 0) return (ovr != 0);
-  static const bool v = []() {
-    const char *e = std::getenv(
-                      "ZENDNNL_GRP_MATMUL_CUSTOM_KERNEL_SUBTILE_PER_EXPERT");
-    return (e != nullptr && e[0] != '\0' && e[0] != '0');
-  }
-  ();
-  return v;
+    const int ovr
+            = test_api::s_grp_matmul_custom_kernel_subtile_per_expert_override
+                      .load(std::memory_order_relaxed);
+    if (ovr >= 0) return (ovr != 0);
+    static const bool v = []() {
+        const char *e = std::getenv(
+                "ZENDNNL_GRP_MATMUL_CUSTOM_KERNEL_SUBTILE_PER_EXPERT");
+        return (e != nullptr && e[0] != '\0' && e[0] != '0');
+    }();
+    return v;
 }
 
 // NOTE: `get_grp_matmul_custom_kernel_n_tile()`
@@ -1176,13 +1170,11 @@ inline bool get_grp_matmul_custom_kernel_subtile_per_expert() {
 /// honours it when the slowest thread stays within 2× of the fastest
 /// after rounding; otherwise it falls back to the unaligned even split.
 inline int backend_n_align(matmul_algo_t algo) {
-  switch (algo) {
-  case matmul_algo_t::native_brgemm:
-  case matmul_algo_t::native_gemm:
-    return 64;
-  default:
-    return 1;
-  }
+    switch (algo) {
+        case matmul_algo_t::native_brgemm:
+        case matmul_algo_t::native_gemm: return 64;
+        default: return 1;
+    }
 }
 
 /// Aligned column-slice partitioner for ALGO 3.  Returns {col_start,
@@ -1198,50 +1190,43 @@ inline int backend_n_align(matmul_algo_t algo) {
 ///
 /// Falls back to even split (N*tid/n_thr) when n_thr<=1 or align<=1
 /// or no aligned slice meets the 2× bound.
-inline std::pair<int, int> aligned_n_split(int N, int n_thr, int tid,
-    int align) {
-  // Hardened against pathological inputs: n_thr<=0 used to hit
-  // even_split's divide-by-zero (`N * tid / n_thr`).
-  if (n_thr <= 0 || N <= 0) {
-    return std::make_pair(0, 0);
-  }
+inline std::pair<int, int> aligned_n_split(
+        int N, int n_thr, int tid, int align) {
+    // Hardened against pathological inputs: n_thr<=0 used to hit
+    // even_split's divide-by-zero (`N * tid / n_thr`).
+    if (n_thr <= 0 || N <= 0) { return std::make_pair(0, 0); }
 
-  auto even_split = [&]() {
-    const int s = static_cast<int>(static_cast<int64_t>(N) * tid / n_thr);
-    const int e = static_cast<int>(
-                    static_cast<int64_t>(N) * (tid + 1) / n_thr);
-    return std::make_pair(s, e);
-  };
+    auto even_split = [&]() {
+        const int s = static_cast<int>(static_cast<int64_t>(N) * tid / n_thr);
+        const int e
+                = static_cast<int>(static_cast<int64_t>(N) * (tid + 1) / n_thr);
+        return std::make_pair(s, e);
+    };
 
-  if (align <= 1 || n_thr <= 1) {
-    return even_split();
-  }
+    if (align <= 1 || n_thr <= 1) { return even_split(); }
 
-  // Walk slice size down in `align` quanta from ceil(N/n_thr) until
-  // the imbalance bound holds.  Cost is at most a handful of
-  // iterations in practice (slice sizes converge in 1-2 steps for
-  // realistic N / n_thr / align triples).
-  //
-  // Intermediates promoted to int64_t to keep the products
-  // aligned_per_thr * (n_thr - 1) and aligned_per_thr * tid free of
-  // signed overflow (UB) for any (N, n_thr) combination representable
-  // as int.
-  const int64_t even_per_thr =
-    (static_cast<int64_t>(N) + n_thr - 1) / n_thr;
-  for (int64_t aligned_per_thr =
-         ((even_per_thr + align - 1) / align) * align;
-       aligned_per_thr >= align;
-       aligned_per_thr -= align) {
-    const int64_t n_full = aligned_per_thr * (n_thr - 1);
-    const int64_t last = static_cast<int64_t>(N) - n_full;
-    if (last > 0 && last * 2 >= aligned_per_thr) {
-      const int64_t s = aligned_per_thr * tid;
-      const int64_t e =
-        (tid < n_thr - 1) ? aligned_per_thr * (tid + 1) : N;
-      return std::make_pair(static_cast<int>(s), static_cast<int>(e));
+    // Walk slice size down in `align` quanta from ceil(N/n_thr) until
+    // the imbalance bound holds.  Cost is at most a handful of
+    // iterations in practice (slice sizes converge in 1-2 steps for
+    // realistic N / n_thr / align triples).
+    //
+    // Intermediates promoted to int64_t to keep the products
+    // aligned_per_thr * (n_thr - 1) and aligned_per_thr * tid free of
+    // signed overflow (UB) for any (N, n_thr) combination representable
+    // as int.
+    const int64_t even_per_thr = (static_cast<int64_t>(N) + n_thr - 1) / n_thr;
+    for (int64_t aligned_per_thr = ((even_per_thr + align - 1) / align) * align;
+            aligned_per_thr >= align; aligned_per_thr -= align) {
+        const int64_t n_full = aligned_per_thr * (n_thr - 1);
+        const int64_t last = static_cast<int64_t>(N) - n_full;
+        if (last > 0 && last * 2 >= aligned_per_thr) {
+            const int64_t s = aligned_per_thr * tid;
+            const int64_t e
+                    = (tid < n_thr - 1) ? aligned_per_thr * (tid + 1) : N;
+            return std::make_pair(static_cast<int>(s), static_cast<int>(e));
+        }
     }
-  }
-  return even_split();
+    return even_split();
 }
 
 /// 32 MB of L3 per CCD on Zen 3 / 4 / 5 classic-CCD topologies.
@@ -1252,7 +1237,7 @@ inline constexpr size_t kL3PerCcdBytes = 32UL * 1024UL * 1024UL;
 /// summarise_topology() so this stays consistent with how the rest
 /// of the planner partitions the team.
 inline size_t get_grp_l3_total_bytes(int num_ccds) {
-  return static_cast<size_t>(std::max(1, num_ccds)) * kL3PerCcdBytes;
+    return static_cast<size_t>(std::max(1, num_ccds)) * kL3PerCcdBytes;
 }
 
 // ──────────────────────────────────────────────────────────────────────
@@ -1262,70 +1247,59 @@ inline size_t get_grp_l3_total_bytes(int num_ccds) {
 /// Resolves the effective matmul algo ID from the runtime config,
 /// falling back to AOCL DLP blocked when the config is unset/invalid.
 inline matmul_algo_t resolve_kernel() {
-  static const matmul_algo_t algo = []() {
-    int32_t a = matmul_config_t::instance().get_algo();
-    if (a <= 0 || a >= static_cast<int32_t>(matmul_algo_t::algo_count)) {
-      return matmul_algo_t::aocl_dlp_blocked;
-    }
-    return static_cast<matmul_algo_t>(a);
-  }
-  ();
-  return algo;
+    static const matmul_algo_t algo = []() {
+        int32_t a = matmul_config_t::instance().get_algo();
+        if (a <= 0 || a >= static_cast<int32_t>(matmul_algo_t::algo_count)) {
+            return matmul_algo_t::aocl_dlp_blocked;
+        }
+        return static_cast<matmul_algo_t>(a);
+    }();
+    return algo;
 }
 
 /// Thin wrapper around matmul_execute that packages per-expert slice
 /// arguments into the batch/params objects the kernel expects.
-inline void execute_expert_slice(
-  char layout, bool transA, bool transB,
-  int M, int N, int K, float alpha,
-  const void *src, int lda,
-  const void *weight, int ldb,
-  const void *bias, float beta,
-  void *dst, int ldc,
-  bool is_weights_const, int num_thr,
-  matmul_params &params,
-  matmul_algo_t algo) {
+inline void execute_expert_slice(char layout, bool transA, bool transB, int M,
+        int N, int K, float alpha, const void *src, int lda, const void *weight,
+        int ldb, const void *bias, float beta, void *dst, int ldc,
+        bool is_weights_const, int num_thr, matmul_params &params,
+        matmul_algo_t algo) {
 
-  // Inactive expert (no routed tokens): nothing to compute.  Returning
-  // early keeps the per-expert ALGOs (1/4/5) from driving the backend
-  // GEMM with M == 0, where tile-count math divides by the row count and
-  // traps (SIGFPE).  The M-tile / N-tile ALGOs flatten over rows and skip
-  // empty experts implicitly, so this is the only path that needs the
-  // guard.  Sparse MoE routing (e.g. 6 of 15 experts firing) relies on it.
-  if (M <= 0) {
-    return;
-  }
+    // Inactive expert (no routed tokens): nothing to compute.  Returning
+    // early keeps the per-expert ALGOs (1/4/5) from driving the backend
+    // GEMM with M == 0, where tile-count math divides by the row count and
+    // traps (SIGFPE).  The M-tile / N-tile ALGOs flatten over rows and skip
+    // empty experts implicitly, so this is the only path that needs the
+    // guard.  Sparse MoE routing (e.g. 6 of 15 experts firing) relies on it.
+    if (M <= 0) { return; }
 
-  matmul_batch_params_t bp;
-  bp.Batch_A = 1;
-  bp.Batch_B = 1;
-  matmul_algo_t kernel = algo;
+    matmul_batch_params_t bp;
+    bp.Batch_A = 1;
+    bp.Batch_B = 1;
+    matmul_algo_t kernel = algo;
 
-  // Per-expert dynamic-quant fallback path.  This fires only when the
-  // source is still bf16/f32 and `params.dynamic_quant == true` (the
-  // wrapper's own eligibility gate).  When the caller already ran the
-  // grouped `group_dynamic_quant` pre-pass (ZENDNNL_ENABLE_GROUP_DQ on),
-  // it rewrote `params.dtypes.src` to s8 and cleared `dynamic_quant`, so
-  // this wrapper short-circuits to a no-op and no double-quant occurs.
-  // When grouped DQ is disabled (env off) this is the active per-expert
-  // quantization path, preserving the legacy behaviour.
-  int         reordered_lda = lda;
-  size_t      src_type_size = size_of(params.dtypes.src);
-  reorder_quant_buffers_t quant_buffers;
-  if (reorder_quantization_wrapper(src, lda, reordered_lda, src_type_size,
-                                   params, bp, transA, M, K,
-                                   num_thr, quant_buffers) != status_t::success) {
-    log_error("execute_expert_slice: reorder_quantization_wrapper failed");
-    return;
-  }
+    // Per-expert dynamic-quant fallback path.  This fires only when the
+    // source is still bf16/f32 and `params.dynamic_quant == true` (the
+    // wrapper's own eligibility gate).  When the caller already ran the
+    // grouped `group_dynamic_quant` pre-pass (ZENDNNL_ENABLE_GROUP_DQ on),
+    // it rewrote `params.dtypes.src` to s8 and cleared `dynamic_quant`, so
+    // this wrapper short-circuits to a no-op and no double-quant occurs.
+    // When grouped DQ is disabled (env off) this is the active per-expert
+    // quantization path, preserving the legacy behaviour.
+    int reordered_lda = lda;
+    size_t src_type_size = size_of(params.dtypes.src);
+    reorder_quant_buffers_t quant_buffers;
+    if (reorder_quantization_wrapper(src, lda, reordered_lda, src_type_size,
+                params, bp, transA, M, K, num_thr, quant_buffers)
+            != status_t::success) {
+        log_error("execute_expert_slice: reorder_quantization_wrapper failed");
+        return;
+    }
 
-  matmul_execute(layout, transA, transB,
-                 M, N, K, alpha, src,
-                 params.dynamic_quant ? reordered_lda : lda,
-                 weight, ldb, bias, beta, dst, ldc,
-                 is_weights_const, src_type_size,
-                 size_of(params.dtypes.dst),
-                 num_thr, kernel, params, bp, 0);
+    matmul_execute(layout, transA, transB, M, N, K, alpha, src,
+            params.dynamic_quant ? reordered_lda : lda, weight, ldb, bias, beta,
+            dst, ldc, is_weights_const, src_type_size,
+            size_of(params.dtypes.dst), num_thr, kernel, params, bp, 0);
 }
 
 /// ZENDNNL_ENABLE_GROUP_DQ — opt-in/out for the grouped dynamic-quant
@@ -1336,9 +1310,9 @@ inline void execute_expert_slice(
 /// (legacy path).  Intentionally NOT cached so gtests can flip it
 /// per-scope via setenv; the getenv cost is negligible next to a GEMM.
 inline bool get_grp_matmul_enable_group_dq() {
-  const char *env = std::getenv("ZENDNNL_ENABLE_GROUP_DQ");
-  if (env == nullptr || env[0] == '\0') return true;     // default ON
-  return !(env[0] == '0' && env[1] == '\0');             // "0" => OFF
+    const char *env = std::getenv("ZENDNNL_ENABLE_GROUP_DQ");
+    if (env == nullptr || env[0] == '\0') return true; // default ON
+    return !(env[0] == '0' && env[1] == '\0'); // "0" => OFF
 }
 
 // NOTE: The N-tile shared utilities — `sort_indices_by_m`,
@@ -1372,16 +1346,13 @@ inline bool get_grp_matmul_enable_group_dq() {
 /// tile-safety checks, auto_select_algo on env=0.  Pure observer
 /// (no side-effects); used by the fused-MoE entry to choose tight
 /// vs wide arena before committing the buffer layout.
-int select_grp_matmul_algo(
-  const std::vector<char> &layout,
-  const std::vector<int> &M,
-  const std::vector<int> &N,
-  const std::vector<int> &K,
-  const std::vector<matmul_params> &params,
-  int num_threads);
+int select_grp_matmul_algo(const std::vector<char> &layout,
+        const std::vector<int> &M, const std::vector<int> &N,
+        const std::vector<int> &K, const std::vector<matmul_params> &params,
+        int num_threads);
 
 } // namespace matmul
 } // namespace lowoha
 } // namespace zendnnl
 
-#endif  // ZENDNNL_GROUP_MATMUL_PARALLEL_COMMON_HPP
+#endif // ZENDNNL_GROUP_MATMUL_PARALLEL_COMMON_HPP

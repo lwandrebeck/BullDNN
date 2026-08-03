@@ -15,26 +15,23 @@
  ******************************************************************************/
 
 #include "lowoha_operators/matmul/matmul_native/brgemm/kernel/fp32/fp32_brgemm_ukernel.hpp"
-#include "lowoha_operators/matmul/matmul_native/common/avx512_math.hpp"
-#include <cstring>
 #include <algorithm>
 #include <cassert>
 #include <cmath>
+#include <cstring>
 #include <immintrin.h>
+#include "lowoha_operators/matmul/matmul_native/common/avx512_math.hpp"
 
 namespace zendnnl {
 namespace lowoha {
 namespace matmul {
 namespace native {
 
-template<int MR, int NV>
-__attribute__((target("avx512f,fma"), noinline))
-void brgemm_ukernel(
-    const float * __restrict__ A, int lda,
-    const float * __restrict__ pb, int pb_stride,
-    float * __restrict__ C, int ldc,
-    int K, int BK, float beta,
-    const float * __restrict__ bias, fused_postop_t fused_op) {
+template <int MR, int NV>
+__attribute__((target("avx512f,fma"), noinline)) void brgemm_ukernel(
+        const float *__restrict__ A, int lda, const float *__restrict__ pb,
+        int pb_stride, float *__restrict__ C, int ldc, int K, int BK,
+        float beta, const float *__restrict__ bias, fused_postop_t fused_op) {
 
     __m512 acc[MR][NV];
     if (beta != 0.0f) {
@@ -42,7 +39,7 @@ void brgemm_ukernel(
         for (int m = 0; m < MR; ++m)
             for (int v = 0; v < NV; ++v)
                 acc[m][v] = _mm512_mul_ps(
-                    bv, _mm512_loadu_ps(C + m * ldc + v * 16));
+                        bv, _mm512_loadu_ps(C + m * ldc + v * 16));
     } else {
         for (int m = 0; m < MR; ++m)
             for (int v = 0; v < NV; ++v)
@@ -52,7 +49,7 @@ void brgemm_ukernel(
     // Batch-reduce: iterate ALL K, keeping accumulators live
     for (int pc = 0; pc < K; pc += BK) {
         const int kb = std::min(BK, K - pc);
-        const float *a_off = A + pc;        // A offset for this K-block
+        const float *a_off = A + pc; // A offset for this K-block
         const float *b_off = pb + pc * pb_stride; // B offset for this K-block
 
         // K-loop: 4x unrolled
@@ -104,19 +101,17 @@ void brgemm_ukernel(
 }
 
 // Explicit instantiation for MR=6, NR=16
-template void brgemm_ukernel<6,1>(const float*, int, const float*, int,
-    float*, int, int, int, float, const float*, fused_postop_t);
+template void brgemm_ukernel<6, 1>(const float *, int, const float *, int,
+        float *, int, int, int, float, const float *, fused_postop_t);
 
 // ============================================================================
 // BRGEMM tail kernel (dynamic MR/NR for edge tiles)
 // ============================================================================
-__attribute__((target("avx512f,avx512bw,fma")))
-void brgemm_tail_kernel(
-    const float * __restrict__ A, int lda,
-    const float * __restrict__ pb, int pb_stride,
-    float * __restrict__ C, int ldc,
-    int K, int BK, int mr_count, int nr_count, float beta,
-    const float * __restrict__ bias, fused_postop_t fused_op) {
+__attribute__((target("avx512f,avx512bw,fma"))) void brgemm_tail_kernel(
+        const float *__restrict__ A, int lda, const float *__restrict__ pb,
+        int pb_stride, float *__restrict__ C, int ldc, int K, int BK,
+        int mr_count, int nr_count, float beta, const float *__restrict__ bias,
+        fused_postop_t fused_op) {
 
     static constexpr int MAX_MR = 12;
     static constexpr int MAX_NV = 4;
@@ -137,10 +132,11 @@ void brgemm_tail_kernel(
         for (int m = 0; m < mr_count; ++m) {
             for (int v = 0; v < full_vecs; ++v)
                 acc[m][v] = _mm512_mul_ps(
-                    bv, _mm512_loadu_ps(C + m * ldc + v * 16));
+                        bv, _mm512_loadu_ps(C + m * ldc + v * 16));
             if (rem)
-                acc[m][full_vecs] = _mm512_mul_ps(
-                    bv, _mm512_maskz_loadu_ps(rem_mask, C + m * ldc + full_vecs * 16));
+                acc[m][full_vecs] = _mm512_mul_ps(bv,
+                        _mm512_maskz_loadu_ps(
+                                rem_mask, C + m * ldc + full_vecs * 16));
         }
     } else {
         for (int m = 0; m < mr_count; ++m)
@@ -160,14 +156,14 @@ void brgemm_tail_kernel(
                 bv[v] = _mm512_loadu_ps(b_off + kk * pb_stride + v * 16);
             if (rem)
                 bv[full_vecs] = _mm512_maskz_loadu_ps(
-                    rem_mask, b_off + kk * pb_stride + full_vecs * 16);
+                        rem_mask, b_off + kk * pb_stride + full_vecs * 16);
             for (int m = 0; m < mr_count; ++m) {
                 __m512 a = _mm512_set1_ps(a_off[m * lda + kk]);
                 for (int v = 0; v < full_vecs; ++v)
                     acc[m][v] = _mm512_fmadd_ps(a, bv[v], acc[m][v]);
                 if (rem)
-                    acc[m][full_vecs] = _mm512_fmadd_ps(a, bv[full_vecs],
-                                                         acc[m][full_vecs]);
+                    acc[m][full_vecs] = _mm512_fmadd_ps(
+                            a, bv[full_vecs], acc[m][full_vecs]);
             }
         }
     }
@@ -196,8 +192,8 @@ void brgemm_tail_kernel(
         for (int v = 0; v < full_vecs; ++v)
             _mm512_storeu_ps(C + m * ldc + v * 16, acc[m][v]);
         if (rem)
-            _mm512_mask_storeu_ps(C + m * ldc + full_vecs * 16,
-                                  rem_mask, acc[m][full_vecs]);
+            _mm512_mask_storeu_ps(
+                    C + m * ldc + full_vecs * 16, rem_mask, acc[m][full_vecs]);
     }
 }
 

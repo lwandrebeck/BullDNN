@@ -1,5 +1,5 @@
 /********************************************************************************
-# * Copyright (c) 2023-2024 Advanced Micro Devices, Inc. All rights reserved.
+# * Copyright (c) 2023-2026 Advanced Micro Devices, Inc. All rights reserved.
 # *
 # * Licensed under the Apache License, Version 2.0 (the "License");
 # * you may not use this file except in compliance with the License.
@@ -14,21 +14,21 @@
 # * limitations under the License.
 # *******************************************************************************/
 
-#include <memory>
-#include <iostream>
-#include <optional>
 #include <cstdint>
+#include <iostream>
+#include <memory>
+#include <optional>
 
-#include "zendnnl.hpp"
 #include "example_utils.hpp"
+#include "zendnnl.hpp"
 
-#define  OK                 (0)
-#define  NOT_OK             (1)
-#define  MATMUL_ROWS        100
-#define  MATMUL_COLS        100
-#define  MATMUL_DEPTH       5
-#define  MATMUL_STRIDE_COLS 128
-#define  ALIGNMENT_BOUNDARY 256
+#define OK (0)
+#define NOT_OK (1)
+#define MATMUL_ROWS 100
+#define MATMUL_COLS 100
+#define MATMUL_DEPTH 5
+#define MATMUL_STRIDE_COLS 128
+#define ALIGNMENT_BOUNDARY 256
 
 namespace zendnnl {
 namespace examples {
@@ -181,5 +181,5 @@ int tensor_axes_permutation_example();
  */
 int tensor_quantization_example();
 
-} //examples
-} //zendnnl
+} // namespace examples
+} // namespace zendnnl

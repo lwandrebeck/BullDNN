@@ -41,13 +41,8 @@ namespace sdpa {
  *
  * @return status_t::success or status_t::failure
  */
-status_t flash_sdpa(
-  const void *query,
-  const void *key,
-  const void *value,
-  const void *attn_mask,
-  void *output,
-  const sdpa_params &params);
+status_t flash_sdpa(const void *query, const void *key, const void *value,
+        const void *attn_mask, void *output, const sdpa_params &params);
 
 } // namespace sdpa
 } // namespace lowoha

@@ -20,179 +20,186 @@ namespace zendnnl {
 namespace ops {
 using namespace zendnnl::error_handling;
 status_t reorder_kernel_t::execute(const context_type &context_,
-                                   tensor_map_type &inputs_,
-                                   tensor_map_type &outputs_) {
-  log_info("Executing reorder kernel");
+        tensor_map_type &inputs_, tensor_map_type &outputs_) {
+    log_info("Executing reorder kernel");
 
-  auto input_iter = inputs_.find("reorder_input");
-  auto output_iter = outputs_.find("reorder_output");
+    auto input_iter = inputs_.find("reorder_input");
+    auto output_iter = outputs_.find("reorder_output");
 
-  if (input_iter == inputs_.end()) {
-    log_error("reorder_input tensor not found");
-    return status_t::failure;
-  }
-  if (output_iter == outputs_.end()) {
-    log_error("reorder_output tensor not found");
-    return status_t::failure;
-  }
+    if (input_iter == inputs_.end()) {
+        log_error("reorder_input tensor not found");
+        return status_t::failure;
+    }
+    if (output_iter == outputs_.end()) {
+        log_error("reorder_output tensor not found");
+        return status_t::failure;
+    }
 
-  const auto &input_tensor = input_iter->second;
-  const auto &output_tensor = output_iter->second;
-  const auto input_dtype = input_tensor.get_data_type();
-  const auto source_dtype = context_.get_source_dtype();
+    const auto &input_tensor = input_iter->second;
+    const auto &output_tensor = output_iter->second;
+    const auto input_dtype = input_tensor.get_data_type();
+    const auto source_dtype = context_.get_source_dtype();
 
-  void     *input        = input_tensor.get_raw_handle_unsafe();
-  void     *output       = output_tensor.get_raw_handle_unsafe();
+    void *input = input_tensor.get_raw_handle_unsafe();
+    void *output = output_tensor.get_raw_handle_unsafe();
 
-  const int K            = input_tensor.get_size(0);
-  const int N            = input_tensor.get_size(1);
+    const int K = input_tensor.get_size(0);
+    const int N = input_tensor.get_size(1);
 
-  const char reorder_param0   = 'B';
-  const char order            = 'r';
-  bool is_transpose           = input_tensor.get_order() == "ba";
-  const char trans            = is_transpose ? 't' : 'n';
-  int ldb                     = is_transpose ?
-                                input_tensor.get_stride(1) :
-                                input_tensor.get_stride(0);
+    const char reorder_param0 = 'B';
+    const char order = 'r';
+    bool is_transpose = input_tensor.get_order() == "ba";
+    const char trans = is_transpose ? 't' : 'n';
+    int ldb = is_transpose ? input_tensor.get_stride(1)
+                           : input_tensor.get_stride(0);
 
-  size_t output_buff_size     = output_tensor.get_buffer_sz_bytes();
-  //reorder_size%alignment(64) = 0 for portability and integration
-  //Todo: move this alignment padding to unified library utility function
-  size_t alignment            = 64;
-  size_t reorder_size_padded  = (output_buff_size + alignment - 1) & ~
-                                (alignment-1) ;
-  void *interim_output        = aligned_alloc(alignment, reorder_size_padded);
-  if (interim_output == nullptr) {
-    log_error("reorder_weights can not have align allocation");
-    return status_t::unimplemented;
-  }
+    size_t output_buff_size = output_tensor.get_buffer_sz_bytes();
+    //reorder_size%alignment(64) = 0 for portability and integration
+    //Todo: move this alignment padding to unified library utility function
+    size_t alignment = 64;
+    size_t reorder_size_padded
+            = (output_buff_size + alignment - 1) & ~(alignment - 1);
+    void *interim_output = aligned_alloc(alignment, reorder_size_padded);
+    if (interim_output == nullptr) {
+        log_error("reorder_weights can not have align allocation");
+        return status_t::unimplemented;
+    }
 
-  bool memory_reorder         = ((!(input_tensor.get_layout() | uint16_t(
-                                      tensor_layout_t::contiguous)) ||
-                                  (input_tensor.get_layout() & uint16_t(tensor_layout_t::aligned))) &&
-                                 (output_tensor.get_layout() & uint16_t(tensor_layout_t::blocked)));
-  bool memory_unreorder       = ((input_tensor.get_layout() & uint16_t(
-                                    tensor_layout_t::blocked)) &&
-                                 !(output_tensor.get_layout() | uint16_t(tensor_layout_t::contiguous)));
+    bool memory_reorder
+            = ((!(input_tensor.get_layout()
+                        | uint16_t(tensor_layout_t::contiguous))
+                       || (input_tensor.get_layout()
+                               & uint16_t(tensor_layout_t::aligned)))
+                    && (output_tensor.get_layout()
+                            & uint16_t(tensor_layout_t::blocked)));
+    bool memory_unreorder
+            = ((input_tensor.get_layout() & uint16_t(tensor_layout_t::blocked))
+                    && !(output_tensor.get_layout()
+                            | uint16_t(tensor_layout_t::contiguous)));
 
-  if (memory_reorder) {
-    if (input_dtype == data_type_t::f32) {
-      aocl_reorder_f32f32f32of32(order, trans, reorder_param0, (float *)input,
+    if (memory_reorder) {
+        if (input_dtype == data_type_t::f32) {
+            aocl_reorder_f32f32f32of32(order, trans, reorder_param0,
+                    (float *)input,
 #if (ZENDNNL_DEPENDS_AOCLDLP)
-                                 (float *)interim_output, K, N, ldb, nullptr);
+                    (float *)interim_output, K, N, ldb, nullptr);
 #else
-                                 (float *)interim_output, K, N, ldb);
+                    (float *)interim_output, K, N, ldb);
 #endif
-      data_copy<float>(output, interim_output, output_buff_size);
-    }
-    else if (input_dtype == data_type_t::bf16) {
-      aocl_reorder_bf16bf16f32of32(order, trans, reorder_param0,(int16_t *)input,
+            data_copy<float>(output, interim_output, output_buff_size);
+        } else if (input_dtype == data_type_t::bf16) {
+            aocl_reorder_bf16bf16f32of32(order, trans, reorder_param0,
+                    (int16_t *)input,
 #if (ZENDNNL_DEPENDS_AOCLDLP)
-                                   (int16_t *)interim_output, K, N, ldb, nullptr);
+                    (int16_t *)interim_output, K, N, ldb, nullptr);
 #else
-                                   (int16_t *)interim_output, K, N, ldb);
+                    (int16_t *)interim_output, K, N, ldb);
 #endif
-      data_copy<int16_t>(output, interim_output, output_buff_size);
-    }
+            data_copy<int16_t>(output, interim_output, output_buff_size);
+        }
 #if (ZENDNNL_DEPENDS_AOCLDLP)
-    else if (input_dtype == data_type_t::f16) {
-      aocl_reorder_f16f16f16of16(order, trans, reorder_param0, (uint16_t *)input,
-                                 (uint16_t *)interim_output, K, N, ldb, nullptr);
-      data_copy<uint16_t>(output, interim_output, output_buff_size);
-    }
+        else if (input_dtype == data_type_t::f16) {
+            aocl_reorder_f16f16f16of16(order, trans, reorder_param0,
+                    (uint16_t *)input, (uint16_t *)interim_output, K, N, ldb,
+                    nullptr);
+            data_copy<uint16_t>(output, interim_output, output_buff_size);
+        }
 #else
-    else if (input_dtype == data_type_t::f16) {
-      log_error("f16 reorder requires AOCL DLP; rebuild with ZENDNNL_DEPENDS_AOCLDLP");
-      free(interim_output);
-      return status_t::unimplemented;
-    }
+        else if (input_dtype == data_type_t::f16) {
+            log_error(
+                    "f16 reorder requires AOCL DLP; rebuild with "
+                    "ZENDNNL_DEPENDS_AOCLDLP");
+            free(interim_output);
+            return status_t::unimplemented;
+        }
 #endif
-    else if (input_dtype == data_type_t::s8) {
-      if (source_dtype == data_type_t::s8) {
-        aocl_reorder_s8s8s32os32(order, trans, reorder_param0, (int8_t *)input,
+        else if (input_dtype == data_type_t::s8) {
+            if (source_dtype == data_type_t::s8) {
+                aocl_reorder_s8s8s32os32(order, trans, reorder_param0,
+                        (int8_t *)input,
 #if (ZENDNNL_DEPENDS_AOCLDLP)
-                                 (int8_t *)interim_output, K, N, ldb, nullptr);
+                        (int8_t *)interim_output, K, N, ldb, nullptr);
 #else
-                                 (int8_t *)interim_output, K, N, ldb);
+                        (int8_t *)interim_output, K, N, ldb);
 #endif
-      }
-      else if (source_dtype == data_type_t::u8) {
-        aocl_reorder_u8s8s32os32(order, trans, reorder_param0, (int8_t *)input,
+            } else if (source_dtype == data_type_t::u8) {
+                aocl_reorder_u8s8s32os32(order, trans, reorder_param0,
+                        (int8_t *)input,
 #if (ZENDNNL_DEPENDS_AOCLDLP)
-                                 (int8_t *)interim_output, K, N, ldb, nullptr);
+                        (int8_t *)interim_output, K, N, ldb, nullptr);
 #else
-                                 (int8_t *)interim_output, K, N, ldb);
+                        (int8_t *)interim_output, K, N, ldb);
 #endif
-      }
-      data_copy<int8_t>(output, interim_output, output_buff_size);
-    }
-    else if (input_dtype == data_type_t::s4) {
-      // WOQ_BF16 api to reorder.
-      aocl_reorder_bf16s4f32of32(order, trans, reorder_param0, (int8_t *)input,
+            }
+            data_copy<int8_t>(output, interim_output, output_buff_size);
+        } else if (input_dtype == data_type_t::s4) {
+            // WOQ_BF16 api to reorder.
+            aocl_reorder_bf16s4f32of32(order, trans, reorder_param0,
+                    (int8_t *)input,
 #if (ZENDNNL_DEPENDS_AOCLDLP)
-                                 (int8_t *)interim_output, K, N, ldb, nullptr);
+                    (int8_t *)interim_output, K, N, ldb, nullptr);
 #else
-                                 (int8_t *)interim_output, K, N, ldb);
+                    (int8_t *)interim_output, K, N, ldb);
 #endif
-      data_copy<int8_t>(output, interim_output, output_buff_size);
-    }
-  }
-  else if (memory_unreorder) {
-    if (input_dtype == data_type_t::f32) {
-      aocl_unreorder_f32f32f32of32_reference(is_transpose ? 'c' : 'r', reorder_param0,
-                                             (float *)input, (float *)interim_output,
+            data_copy<int8_t>(output, interim_output, output_buff_size);
+        }
+    } else if (memory_unreorder) {
+        if (input_dtype == data_type_t::f32) {
+            aocl_unreorder_f32f32f32of32_reference(is_transpose ? 'c' : 'r',
+                    reorder_param0, (float *)input, (float *)interim_output,
 #if (ZENDNNL_DEPENDS_AOCLDLP)
-                                             K, N, ldb, nullptr);
+                    K, N, ldb, nullptr);
 #else
-                                             K, N, ldb);
+                    K, N, ldb);
 #endif
-      data_copy<float>(output, interim_output, output_buff_size);
-    }
-    else if (input_dtype == data_type_t::bf16) {
-      aocl_unreorder_bf16bf16f32of32(is_transpose ? 'c' : 'r', reorder_param0,
-                                     (int16_t *)input, (int16_t *)interim_output,
+            data_copy<float>(output, interim_output, output_buff_size);
+        } else if (input_dtype == data_type_t::bf16) {
+            aocl_unreorder_bf16bf16f32of32(is_transpose ? 'c' : 'r',
+                    reorder_param0, (int16_t *)input, (int16_t *)interim_output,
 #if (ZENDNNL_DEPENDS_AOCLDLP)
-                                     K, N, ldb, nullptr);
+                    K, N, ldb, nullptr);
 #else
-                                     K, N, ldb);
+                    K, N, ldb);
 #endif
-      data_copy<int16_t>(output, interim_output, output_buff_size);
-    }
+            data_copy<int16_t>(output, interim_output, output_buff_size);
+        }
 #if (ZENDNNL_DEPENDS_AOCLDLP)
-    else if (input_dtype == data_type_t::f16) {
-      aocl_unreorder_f16f16f16of16(is_transpose ? 'c' : 'r', reorder_param0,
-                                   (uint16_t *)input, (uint16_t *)interim_output,
-                                   K, N, ldb, nullptr);
-      data_copy<uint16_t>(output, interim_output, output_buff_size);
-    }
+        else if (input_dtype == data_type_t::f16) {
+            aocl_unreorder_f16f16f16of16(is_transpose ? 'c' : 'r',
+                    reorder_param0, (uint16_t *)input,
+                    (uint16_t *)interim_output, K, N, ldb, nullptr);
+            data_copy<uint16_t>(output, interim_output, output_buff_size);
+        }
 #else
-    else if (input_dtype == data_type_t::f16) {
-      log_error("f16 unreorder requires AOCL DLP; rebuild with ZENDNNL_DEPENDS_AOCLDLP");
-      free(interim_output);
-      return status_t::unimplemented;
-    }
+        else if (input_dtype == data_type_t::f16) {
+            log_error(
+                    "f16 unreorder requires AOCL DLP; rebuild with "
+                    "ZENDNNL_DEPENDS_AOCLDLP");
+            free(interim_output);
+            return status_t::unimplemented;
+        }
 #endif
-    else if (input_dtype == data_type_t::s8) {
-      aocl_unreorder_s8s8s32os32_reference(is_transpose ? 'c' : 'r', reorder_param0,
-                                           (int8_t *)input, (int8_t *)interim_output,
+        else if (input_dtype == data_type_t::s8) {
+            aocl_unreorder_s8s8s32os32_reference(is_transpose ? 'c' : 'r',
+                    reorder_param0, (int8_t *)input, (int8_t *)interim_output,
 #if (ZENDNNL_DEPENDS_AOCLDLP)
-                                           K, N, ldb, nullptr);
+                    K, N, ldb, nullptr);
 #else
-                                           K, N, ldb);
+                    K, N, ldb);
 #endif
-      data_copy<int8_t>(output, interim_output, output_buff_size);
+            data_copy<int8_t>(output, interim_output, output_buff_size);
+        }
     }
-  }
-  free(interim_output);
+    free(interim_output);
 
-  return status_t::success;
+    return status_t::success;
 }
 
 } //namespace ops
 } //namespace zendnnl
 
 extern "C" {
-  zendnnl::ops::reorder_kernel_t *get_reorder_aocl_kernel() {
+zendnnl::ops::reorder_kernel_t *get_reorder_aocl_kernel() {
     return new zendnnl::ops::reorder_kernel_t();
-  }
+}
 }

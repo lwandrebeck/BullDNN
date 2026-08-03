@@ -62,9 +62,9 @@ using zendnnl::error_handling::status_t;
 /// the private LRU cache, and the user wants
 /// `backends/aocl/aocl_kernel.{hpp,cpp}` left strictly alone.
 struct AoclDlpPackProbeStats {
-  int total_attempted = 0;
-  int packed_ok       = 0;
-  int skipped_invalid = 0;
+    int total_attempted = 0;
+    int packed_ok = 0;
+    int skipped_invalid = 0;
 };
 
 /// Pre-populate the AOCL DLP weight reorder cache for every expert
@@ -114,16 +114,11 @@ struct AoclDlpPackProbeStats {
 /// call before an OMP parallel region; callers must NOT invoke
 /// this concurrently with any in-flight `run_dlp(...)` or
 /// `clear_aocl_matmul_weight_caches()` on other threads.
-status_t warm_pack_all_aocl_dlp_experts(
-  const std::vector<const void *> &weight,
-  const std::vector<int>          &K,
-  const std::vector<int>          &N,
-  const std::vector<int>          &ldb,
-  const std::vector<bool>         &transB,
-  const std::vector<bool>         &is_weights_const,
-  int                              total_count,
-  data_type_t                      wei_dtype,
-  AoclDlpPackProbeStats           &stats);
+status_t warm_pack_all_aocl_dlp_experts(const std::vector<const void *> &weight,
+        const std::vector<int> &K, const std::vector<int> &N,
+        const std::vector<int> &ldb, const std::vector<bool> &transB,
+        const std::vector<bool> &is_weights_const, int total_count,
+        data_type_t wei_dtype, AoclDlpPackProbeStats &stats);
 
 /// Per-tile variant of `warm_pack_all_aocl_dlp_experts`, sized for
 /// ALGO 3 flat_n_tile's strict-stable plan
@@ -162,18 +157,12 @@ status_t warm_pack_all_aocl_dlp_experts(
 /// full-weight `total_count`; the AOCL reorder primitives fast-path
 /// on duplicate keys so re-warming an already-cached tile is free.
 status_t warm_pack_all_aocl_dlp_experts_n_tile(
-  const std::vector<const void *> &weight,
-  const std::vector<int>          &K,
-  const std::vector<int>          &N,
-  const std::vector<int>          &ldb,
-  const std::vector<bool>         &transB,
-  const std::vector<bool>         &is_weights_const,
-  int                              total_count,
-  data_type_t                      wei_dtype,
-  int                              num_threads,
-  int                              stable,
-  int                              nr_align,
-  AoclDlpPackProbeStats           &stats);
+        const std::vector<const void *> &weight, const std::vector<int> &K,
+        const std::vector<int> &N, const std::vector<int> &ldb,
+        const std::vector<bool> &transB,
+        const std::vector<bool> &is_weights_const, int total_count,
+        data_type_t wei_dtype, int num_threads, int stable, int nr_align,
+        AoclDlpPackProbeStats &stats);
 
 /// DQ-INT8 symmetric-quant full-weight warmer (Gap B — int8/bf16
 /// cross-warm parity).  Sibling of `warm_pack_all_aocl_dlp_experts`
@@ -211,16 +200,12 @@ status_t warm_pack_all_aocl_dlp_experts_n_tile(
 ///     call builds at runtime.  Warms the AOCL fallback a per-group layer
 ///     routed to ALGO 1/2/4/5 (or an ALGO-3 CK-refused expert) will read.
 status_t warm_pack_all_aocl_dlp_experts_sym_quant(
-  const std::vector<const void *> &weight,
-  const std::vector<int>          &K,
-  const std::vector<int>          &N,
-  const std::vector<int>          &ldb,
-  const std::vector<bool>         &transB,
-  const std::vector<bool>         &is_weights_const,
-  int                              total_count,
-  data_type_t                      wei_dtype,
-  AoclDlpPackProbeStats           &stats,
-  int                              group_size = 0);
+        const std::vector<const void *> &weight, const std::vector<int> &K,
+        const std::vector<int> &N, const std::vector<int> &ldb,
+        const std::vector<bool> &transB,
+        const std::vector<bool> &is_weights_const, int total_count,
+        data_type_t wei_dtype, AoclDlpPackProbeStats &stats,
+        int group_size = 0);
 
 /// DQ-INT8 symmetric-quant PER-TILE warmer — per-tile sibling of
 /// `warm_pack_all_aocl_dlp_experts_sym_quant`, and the sym-quant
@@ -240,19 +225,12 @@ status_t warm_pack_all_aocl_dlp_experts_sym_quant(
 /// = K/G).  Used for the ALGO-3 CK-off per-group decode fallback (each
 /// N-tile reorders its sliced weight through the per-group sym-quant key).
 status_t warm_pack_all_aocl_dlp_experts_n_tile_sym_quant(
-  const std::vector<const void *> &weight,
-  const std::vector<int>          &K,
-  const std::vector<int>          &N,
-  const std::vector<int>          &ldb,
-  const std::vector<bool>         &transB,
-  const std::vector<bool>         &is_weights_const,
-  int                              total_count,
-  data_type_t                      wei_dtype,
-  int                              num_threads,
-  int                              stable,
-  int                              nr_align,
-  AoclDlpPackProbeStats           &stats,
-  int                              group_size = 0);
+        const std::vector<const void *> &weight, const std::vector<int> &K,
+        const std::vector<int> &N, const std::vector<int> &ldb,
+        const std::vector<bool> &transB,
+        const std::vector<bool> &is_weights_const, int total_count,
+        data_type_t wei_dtype, int num_threads, int stable, int nr_align,
+        AoclDlpPackProbeStats &stats, int group_size = 0);
 
 /// W4A8 full-weight warm-pack: converts s4→s8 then reorders via
 /// aocl_reorder_s8s8s32os32_sym_quant into the AOCL W4A8 weight cache.
@@ -260,16 +238,11 @@ status_t warm_pack_all_aocl_dlp_experts_n_tile_sym_quant(
 /// @param group_size  K-group size for the sym-quant reorder (typically K/G
 ///                    where G = wei_scale.dims[0]).  Pass 0 for full-K.
 status_t warm_pack_all_aocl_dlp_experts_w4a8(
-  const std::vector<const void *> &weight,
-  const std::vector<int>          &K,
-  const std::vector<int>          &N,
-  const std::vector<int>          &ldb,
-  const std::vector<bool>         &transB,
-  const std::vector<bool>         &is_weights_const,
-  int                              total_count,
-  data_type_t                      wei_dtype,
-  int                              group_size,
-  AoclDlpPackProbeStats           &stats);
+        const std::vector<const void *> &weight, const std::vector<int> &K,
+        const std::vector<int> &N, const std::vector<int> &ldb,
+        const std::vector<bool> &transB,
+        const std::vector<bool> &is_weights_const, int total_count,
+        data_type_t wei_dtype, int group_size, AoclDlpPackProbeStats &stats);
 
 /// W4A8 per-N-tile warm-pack for ALGO 3.  Two-level caching:
 ///   Plain cache: cvt_s4_to_s8 full weight → cached in the plain-s8 LRU
@@ -282,19 +255,12 @@ status_t warm_pack_all_aocl_dlp_experts_w4a8(
 /// populated eagerly here.
 /// @param group_size  K-group size for sym-quant (K/G).  Must be > 0.
 status_t warm_pack_all_aocl_dlp_experts_n_tile_w4a8(
-  const std::vector<const void *> &weight,
-  const std::vector<int>          &K,
-  const std::vector<int>          &N,
-  const std::vector<int>          &ldb,
-  const std::vector<bool>         &transB,
-  const std::vector<bool>         &is_weights_const,
-  int                              total_count,
-  data_type_t                      wei_dtype,
-  int                              num_threads,
-  int                              stable,
-  int                              nr_align,
-  int                              group_size,
-  AoclDlpPackProbeStats           &stats);
+        const std::vector<const void *> &weight, const std::vector<int> &K,
+        const std::vector<int> &N, const std::vector<int> &ldb,
+        const std::vector<bool> &transB,
+        const std::vector<bool> &is_weights_const, int total_count,
+        data_type_t wei_dtype, int num_threads, int stable, int nr_align,
+        int group_size, AoclDlpPackProbeStats &stats);
 
 } // namespace aocl_dlp
 } // namespace group_matmul_prepack

@@ -1,5 +1,5 @@
 /********************************************************************************
-# * Copyright (c) 2025 Advanced Micro Devices, Inc. All rights reserved.
+# * Copyright (c) 2025-2026 Advanced Micro Devices, Inc. All rights reserved.
 # *
 # * Licensed under the Apache License, Version 2.0 (the "License");
 # * you may not use this file except in compliance with the License.
@@ -16,11 +16,11 @@
 #ifndef _MATMUL_EXAMPLE_HPP_
 #define _MATMUL_EXAMPLE_HPP_
 
-#include "zendnnl.hpp"
 #include "example_utils.hpp"
+#include "zendnnl.hpp"
 
-#define  OK          (0)
-#define  NOT_OK      (1)
+#define OK (0)
+#define NOT_OK (1)
 
 namespace zendnnl {
 namespace examples {
@@ -121,9 +121,9 @@ int matmul_broadcast_example();
  *  This example demonstrates WOQ matmul operator creation and
  *  execution of one of its bf16s4 computation based kernel.
  */
- int matmul_woq_bf16_kernel_example();
+int matmul_woq_bf16_kernel_example();
 
-} //examples
-} //zendnnl
+} // namespace examples
+} // namespace zendnnl
 
 #endif

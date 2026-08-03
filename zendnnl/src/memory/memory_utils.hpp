@@ -13,8 +13,8 @@
  * See the License for the specific language governing permissions and
  * limitations under the License.
  *******************************************************************************/
-#ifndef  _MEMORY_UTILS_HPP_
-#define  _MEMORY_UTILS_HPP_
+#ifndef _MEMORY_UTILS_HPP_
+#define _MEMORY_UTILS_HPP_
 
 #include <cstdint>
 #include <cstring>
@@ -38,7 +38,7 @@ using namespace zendnnl::common;
 // Utility function to compute the product of all elements in a vector
 template <typename T>
 int compute_product(const std::vector<T> &vec) {
-  return std::accumulate(vec.begin(), vec.end(), 1, std::multiplies<T>());
+    return std::accumulate(vec.begin(), vec.end(), 1, std::multiplies<T>());
 }
 
 /**
@@ -51,33 +51,34 @@ int compute_product(const std::vector<T> &vec) {
  */
 template <typename T>
 T read_and_cast(const void *value, data_type_t data_type, size_t index = 0) {
-  if (value == nullptr) {
-    return static_cast<T>(0.0f);
-  }
-  switch (data_type) {
-  case data_type_t::s8:
-    return static_cast<T>(reinterpret_cast<const int8_t *>(value)[index]);
-  case data_type_t::u8:
-    return static_cast<T>(reinterpret_cast<const uint8_t *>(value)[index]);
-  case data_type_t::s32:
-    return static_cast<T>(reinterpret_cast<const int32_t *>(value)[index]);
-  case data_type_t::f32:
-    return static_cast<T>(reinterpret_cast<const float *>(value)[index]);
-  case data_type_t::bf16:
-    return static_cast<T>(bfloat16_t::bf16_to_f32_val(
-                            reinterpret_cast<const int16_t *>
-                            (value)[index]));
-  case data_type_t::f16:
-    return static_cast<T>(float16_t::f16_to_f32_val(
-                            reinterpret_cast<const uint16_t *>
-                            (value)[index]));
-  default:
-    log_error("Unsupported data type for casting");
-    return static_cast<T>(0); // Return 0 as a fallback for unsupported types
-  }
+    if (value == nullptr) { return static_cast<T>(0.0f); }
+    switch (data_type) {
+        case data_type_t::s8:
+            return static_cast<T>(
+                    reinterpret_cast<const int8_t *>(value)[index]);
+        case data_type_t::u8:
+            return static_cast<T>(
+                    reinterpret_cast<const uint8_t *>(value)[index]);
+        case data_type_t::s32:
+            return static_cast<T>(
+                    reinterpret_cast<const int32_t *>(value)[index]);
+        case data_type_t::f32:
+            return static_cast<T>(
+                    reinterpret_cast<const float *>(value)[index]);
+        case data_type_t::bf16:
+            return static_cast<T>(bfloat16_t::bf16_to_f32_val(
+                    reinterpret_cast<const int16_t *>(value)[index]));
+        case data_type_t::f16:
+            return static_cast<T>(float16_t::f16_to_f32_val(
+                    reinterpret_cast<const uint16_t *>(value)[index]));
+        default:
+            log_error("Unsupported data type for casting");
+            return static_cast<T>(
+                    0); // Return 0 as a fallback for unsupported types
+    }
 }
 
-}
-}
+} // namespace memory
+} // namespace zendnnl
 
 #endif // _MEMORY_UTILS_HPP_

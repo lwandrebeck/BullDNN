@@ -55,38 +55,39 @@ namespace matmul {
  * @var warmup_iters Number of warmup iterations to run before actual benchmarking.
  */
 struct MatmulConfig {
-  std::string
-  modelName; /**< Name of the model (used for model-based benchmarking). */
-  size_t bs; /**< Batch size (for batched matmul; default 1 for non-batched). */
-  size_t m; /**< Number of rows in matrix A (output rows). */
-  size_t k; /**< Number of columns in matrix A / rows in matrix B (inner dimension). */
-  std::vector<size_t> n_values; /**< Vector of output columns
+    std::string
+            modelName; /**< Name of the model (used for model-based benchmarking). */
+    size_t bs; /**< Batch size (for batched matmul; default 1 for non-batched). */
+    size_t m; /**< Number of rows in matrix A (output rows). */
+    size_t k; /**< Number of columns in matrix A / rows in matrix B (inner dimension). */
+    std::vector<size_t> n_values; /**< Vector of output columns
                                 for each layer (multi-layer support). */
-  int iters; /**< Number of iterations to run the benchmark. */
-  std::vector<zendnnl::common::data_type_t> dt; /**< Data types for
+    int iters; /**< Number of iterations to run the benchmark. */
+    std::vector<zendnnl::common::data_type_t> dt; /**< Data types for
                                                 input, weights, and output (e.g., f32:f32:f32). */
-  bool isBiasEnabled; /**< Flag indicating if bias is enabled in the matmul operation. */
-  zendnnl::common::data_type_t bias_dt; /**< Data type for the bias tensor
+    bool isBiasEnabled; /**< Flag indicating if bias is enabled in the matmul operation. */
+    zendnnl::common::data_type_t bias_dt; /**< Data type for the bias tensor
                                         (e.g., f32, bf16). Defaults to f32 if not specified. */
-  std::vector<zendnnl::ops::post_op_type_t> post_ops; /**< List of post operations
+    std::vector<zendnnl::ops::post_op_type_t>
+            post_ops; /**< List of post operations
                                                       to apply (e.g., relu, gelu). */
-  zendnnl::common::data_type_t post_op_dt; /**< Datatype of post operation. */
-  std::vector<int> binary_post_ops_pos; /**< List of positions for
+    zendnnl::common::data_type_t post_op_dt; /**< Datatype of post operation. */
+    std::vector<int> binary_post_ops_pos; /**< List of positions for
                                         binary post-operations. */
-  std::string kernel_name; /**< Name of the kernel backend
+    std::string kernel_name; /**< Name of the kernel backend
                             to invoke (e.g., aocl_dlp, aocl_dlp_blocked). */
-  bool isTransA; /** Transpose flag for input matrix */
-  bool isTransB; /** Transpose flag for weight matrix */
-  float alpha, beta; /**< Scaling factors for the matrix multiplication. */
-  std::string scale_granularity; /**< Granularity
+    bool isTransA; /** Transpose flag for input matrix */
+    bool isTransB; /** Transpose flag for weight matrix */
+    float alpha, beta; /**< Scaling factors for the matrix multiplication. */
+    std::string scale_granularity; /**< Granularity
                                   for scaling (e.g., per-tensor, per-channel, per-group). */
-  uint64_t group_size; /**< Group size for per-group scaling granularity. */
-  zendnnl::common::data_type_t scale_dt; /**< Data type
+    uint64_t group_size; /**< Group size for per-group scaling granularity. */
+    zendnnl::common::data_type_t scale_dt; /**< Data type
                                          for scaling factors (e.g., f32, bf16). */
-  bool is_weights_const; /**< Flag indicating if weights are constant. */
-  int warmup_iters; /**< Number of warmup iterations to run before actual benchmarking. */
+    bool is_weights_const; /**< Flag indicating if weights are constant. */
+    int warmup_iters; /**< Number of warmup iterations to run before actual benchmarking. */
 
-  /**
+    /**
    * Dynamic source quantization (W8A8 and W4A8, symmetric).
    *
    * When `src_dynamic_quant` is true and the dtype combination is
@@ -105,19 +106,22 @@ struct MatmulConfig {
    * Currently supported only for the LOWOHA path (`--lowoha=true`) with
    * `--ndims=2`. Ignored otherwise.
    */
-  bool src_dynamic_quant; /**< Master toggle for dynamic source quantization. */
-  std::string src_scale_granularity; /**< per-tensor | per-token | per-group. */
-  uint64_t src_group_size; /**< K-direction group size for per-group; 0 -> per-token. */
-  zendnnl::common::data_type_t src_scale_dt; /**< Source scale dtype (f32 | bf16). */
+    bool src_dynamic_quant; /**< Master toggle for dynamic source quantization. */
+    std::string
+            src_scale_granularity; /**< per-tensor | per-token | per-group. */
+    uint64_t
+            src_group_size; /**< K-direction group size for per-group; 0 -> per-token. */
+    zendnnl::common::data_type_t
+            src_scale_dt; /**< Source scale dtype (f32 | bf16). */
 
-  /**
+    /**
    * Cache mode for this config's measurement (cold/warm/hot). Defaults to the
    * global --cache_mode; the --cache_sweep axis overrides it per expanded row so
    * each cache mode becomes its own benchmark config.
    */
-  CacheMode cache_mode = CacheMode::HOT;
+    CacheMode cache_mode = CacheMode::HOT;
 
-  /**
+    /**
    * Records which sweep-managed dtype/quant fields the input row explicitly
    * provided. During --sweep expansion the input file wins for any field it
    * set; the dtype catalog only fills fields left absent here. Numeric/bool
@@ -127,14 +131,16 @@ struct MatmulConfig {
    * configs (e.g. model-file rows, which carry only a shape) report nothing
    * provided, so the catalog supplies every dtype/quant field for them.
    */
-  struct SweepFieldSource {
-    bool dt = false;           /**< dtype triple present in the row. */
-    bool kernel = false;       /**< kernel_name present (or forced via algo). */
-    bool wei_scale = false;    /**< weight scale granularity present (governs group_size). */
-    bool wei_scale_dt = false; /**< weight scale dtype present. */
-    bool src_scale = false;    /**< src scale granularity present (governs src_dynamic_quant + src_group_size). */
-    bool src_scale_dt = false; /**< src scale dtype present. */
-  } provided;
+    struct SweepFieldSource {
+        bool dt = false; /**< dtype triple present in the row. */
+        bool kernel = false; /**< kernel_name present (or forced via algo). */
+        bool wei_scale
+                = false; /**< weight scale granularity present (governs group_size). */
+        bool wei_scale_dt = false; /**< weight scale dtype present. */
+        bool src_scale
+                = false; /**< src scale granularity present (governs src_dynamic_quant + src_group_size). */
+        bool src_scale_dt = false; /**< src scale dtype present. */
+    } provided;
 };
 
 /**
@@ -152,7 +158,7 @@ struct MatmulConfig {
  * @param options Global benchmarking options (e.g., ndims, data types).
  */
 void inputFileParser(std::ifstream &infile, std::vector<MatmulConfig> &configs,
-                     bool &isPipeline, const global_options &options);
+        bool &isPipeline, const global_options &options);
 
 /**
  * @brief Parses a model input file and populates benchmark configurations for matrix multiplication.
@@ -168,8 +174,8 @@ void inputFileParser(std::ifstream &infile, std::vector<MatmulConfig> &configs,
  * @param options Global benchmarking options (e.g., ndims, data types).
  */
 void inputModelFileParser(std::ifstream &infile,
-                          std::vector<MatmulConfig> &configs, bool &isPipeline,
-                          const global_options &options);
+        std::vector<MatmulConfig> &configs, bool &isPipeline,
+        const global_options &options);
 
 /**
  * @brief Parses command-line arguments and populates benchmark configurations for matrix multiplication.
@@ -183,7 +189,7 @@ void inputModelFileParser(std::ifstream &infile,
  * @param options Global benchmarking options (e.g., ndims, data_types).
  */
 void inputCommandLineParser(std::vector<MatmulConfig> &configs,
-                            bool &isPipeline, const global_options &options);
+        bool &isPipeline, const global_options &options);
 
 /**
  * @brief Normalizes weight and source quantization fields for W4A8 configs.
@@ -204,8 +210,8 @@ void normalize_w4a8_quant_config(MatmulConfig &cfg);
  * Clones each parsed config and patches M + dtype/quant fields.
  */
 std::vector<MatmulConfig> expand_matmul_sweep(
-    const std::vector<MatmulConfig> &base, const global_options &options,
-    bool is_lowoha);
+        const std::vector<MatmulConfig> &base, const global_options &options,
+        bool is_lowoha);
 
 /**
 * @brief Logs a detailed error message for a failed benchmark configuration.
@@ -228,8 +234,8 @@ void log_benchmark_failure(const MatmulConfig &cfg);
  * @param options Global benchmarking options (e.g., ndims, data_types).
  */
 void print_matmul_execution_summary(const MatmulConfig &cfg,
-                                    const std::vector<TimingStats> &time_stats_layer,
-                                    const global_options &options);
+        const std::vector<TimingStats> &time_stats_layer,
+        const global_options &options);
 
 /**
  * @brief Writes a single configuration's result as a CSV row to the output stream.
@@ -246,10 +252,9 @@ void print_matmul_execution_summary(const MatmulConfig &cfg,
  * @param isPipeline  Whether this is a pipeline (multi-layer) result (default: false).
  */
 void write_each_config_result(const MatmulConfig &config,
-                              const std::vector<TimingStats> &stat, std::ostream &outfile,
-                              const bool isLOWOHA,
-                              int layer_num = 0,
-                              double percentage = 0.0, bool isPipeline = false);
+        const std::vector<TimingStats> &stat, std::ostream &outfile,
+        const bool isLOWOHA, int layer_num = 0, double percentage = 0.0,
+        bool isPipeline = false);
 
 /**
  * @brief Calculates and updates the maximum column widths for table formatting.
@@ -267,9 +272,9 @@ void write_each_config_result(const MatmulConfig &config,
  * @param isPipeline  Whether this is a pipeline (multi-layer) result (default: false).
  */
 void cal_column_width(const MatmulConfig &config,
-                      const std::vector<TimingStats> &stat, std::vector<size_t> &col_widths,
-                      int st_index, const bool isLOWOHA, int layer_num = 0, double percentage = 0.0,
-                      bool isPipeline = false);
+        const std::vector<TimingStats> &stat, std::vector<size_t> &col_widths,
+        int st_index, const bool isLOWOHA, int layer_num = 0,
+        double percentage = 0.0, bool isPipeline = false);
 
 /**
  * @brief Fills a vector of strings with formatted benchmarking results for a single matmul configuration/layer.
@@ -285,11 +290,9 @@ void cal_column_width(const MatmulConfig &config,
  * @param percentage  The percentage of total time this layer took (used in pipeline mode, default: 0.0).
  * @param isPipeline  Whether this is a pipeline (multi-layer) result (default: false).
  */
-void fill_row(const MatmulConfig &config,
-              const std::vector<TimingStats> &stat, std::vector<std::string> &row,
-              const bool isLOWOHA,
-              int layer_num = 0, double percentage = 0.0,
-              bool isPipeline = false);
+void fill_row(const MatmulConfig &config, const std::vector<TimingStats> &stat,
+        std::vector<std::string> &row, const bool isLOWOHA, int layer_num = 0,
+        double percentage = 0.0, bool isPipeline = false);
 
 /**
  * @brief Logs pipeline (multi-layer) matmul benchmark results to a CSV file.
@@ -302,9 +305,10 @@ void fill_row(const MatmulConfig &config,
  * @param inputMode Mode of input (FILE, MODEL, COMMAND_LINE).
  */
 void log_pipeline_results(
-  std::vector<std::pair<MatmulConfig, std::vector<TimingStats>>> &matmul_results,
-  std::ostream &outfile, const global_options &options,
-  const InputMode inputMode);
+        std::vector<std::pair<MatmulConfig, std::vector<TimingStats>>>
+                &matmul_results,
+        std::ostream &outfile, const global_options &options,
+        const InputMode inputMode);
 
 /**
  * @brief Prints pipeline (multi-layer) matmul benchmark results as a formatted table.
@@ -317,9 +321,10 @@ void log_pipeline_results(
  * @param inputMode Mode of input (FILE, MODEL, COMMAND_LINE).
  */
 void print_pipeline_results(
-  std::vector<std::pair<MatmulConfig, std::vector<TimingStats>>> &matmul_results,
-  std::ostream &outfile, const global_options &options,
-  const InputMode inputMode);
+        std::vector<std::pair<MatmulConfig, std::vector<TimingStats>>>
+                &matmul_results,
+        std::ostream &outfile, const global_options &options,
+        const InputMode inputMode);
 
 /**
  * @brief Logs single-layer matmul benchmark results to a CSV file.
@@ -333,10 +338,10 @@ void print_pipeline_results(
  * @param isLOWOHA Whether this is a Low Overhead API result.
  * @param inputMode Mode of input (FILE, MODEL, COMMAND_LINE).
  */
-void log_results(
-  std::vector<std::pair<MatmulConfig, std::vector<TimingStats>>> &matmul_results,
-  std::ostream &outfile, const global_options &options, const bool isLOWOHA,
-  const InputMode inputMode);
+void log_results(std::vector<std::pair<MatmulConfig, std::vector<TimingStats>>>
+                         &matmul_results,
+        std::ostream &outfile, const global_options &options,
+        const bool isLOWOHA, const InputMode inputMode);
 
 /**
  * @brief Prints single-layer matmul benchmark results as a formatted table.
@@ -351,9 +356,10 @@ void log_results(
  * @param inputMode Mode of input (FILE, MODEL, COMMAND_LINE).
  */
 void print_results(
-  std::vector<std::pair<MatmulConfig, std::vector<TimingStats>>> &matmul_results,
-  std::ostream &outfile, const global_options &options, const bool isLOWOHA,
-  const InputMode inputMode);
+        std::vector<std::pair<MatmulConfig, std::vector<TimingStats>>>
+                &matmul_results,
+        std::ostream &outfile, const global_options &options,
+        const bool isLOWOHA, const InputMode inputMode);
 } // namespace matmul
 } // namespace benchdnn
 } // namespace zendnnl

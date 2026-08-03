@@ -16,11 +16,11 @@
 #ifndef _REORDER_EXAMPLE_HPP_
 #define _REORDER_EXAMPLE_HPP_
 
-#include "zendnnl.hpp"
 #include "example_utils.hpp"
+#include "zendnnl.hpp"
 
-#define  OK          (0)
-#define  NOT_OK      (1)
+#define OK (0)
+#define NOT_OK (1)
 
 namespace zendnnl {
 namespace examples {
@@ -121,7 +121,7 @@ int reorder_inplace_s8_kernel_blocked_contiguous_example();
  */
 int reorder_unreorder_outofplace_bf16_kernel_example();
 
-} //examples
-} //zendnnl
+} // namespace examples
+} // namespace zendnnl
 
 #endif

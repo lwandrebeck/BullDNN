@@ -17,8 +17,8 @@
 #ifndef MATMUL_NATIVE_BRGEMM_PLANNER_HPP
 #define MATMUL_NATIVE_BRGEMM_PLANNER_HPP
 
-#include "lowoha_operators/matmul/matmul_native/common/gemm_descriptor.hpp"
 #include "lowoha_operators/matmul/matmul_native/common/cost_model.hpp"
+#include "lowoha_operators/matmul/matmul_native/common/gemm_descriptor.hpp"
 
 namespace zendnnl {
 namespace lowoha {
@@ -35,27 +35,27 @@ namespace native {
 /// Thread loop: parallel over MC × NC tiles only (no PC loop).
 /// Each thread calls the BRGEMM microkernel once per (MC, NC) tile.
 struct BrgemmPlan {
-  int MB;           ///< M-block size (MC tile)
-  int NB;           ///< N-block size (NC tile)
-  int BK;           ///< K-block size inside microkernel
-  int MR;           ///< Register tile rows
-  int NR;           ///< Register tile columns
-  int num_threads;  ///< Thread count
+    int MB; ///< M-block size (MC tile)
+    int NB; ///< N-block size (NC tile)
+    int BK; ///< K-block size inside microkernel
+    int MR; ///< Register tile rows
+    int NR; ///< Register tile columns
+    int num_threads; ///< Thread count
 };
 
 /// Select FP32 BRGEMM blocking parameters (MR=6, NR=16).
-BrgemmPlan plan_fp32_brgemm(const GemmDescriptor &desc,
-                            const UarchParams &uarch);
+BrgemmPlan plan_fp32_brgemm(
+        const GemmDescriptor &desc, const UarchParams &uarch);
 
 /// Select BF16 BRGEMM blocking parameters (NR=64, VNNI layout).
 /// Computes MR, BK, NB, MB from scratch for BF16 dpbf16ps microkernels.
-BrgemmPlan plan_bf16_brgemm(const GemmDescriptor &desc,
-                            const UarchParams &uarch);
+BrgemmPlan plan_bf16_brgemm(
+        const GemmDescriptor &desc, const UarchParams &uarch);
 
 /// Select INT8 BRGEMM blocking parameters (NR=64, INT8 VNNI layout).
 /// INT8 uses 1-byte elements and 4-byte VNNI groups (vpdpbusd).
-BrgemmPlan plan_int8_brgemm(const GemmDescriptor &desc,
-                            const UarchParams &uarch);
+BrgemmPlan plan_int8_brgemm(
+        const GemmDescriptor &desc, const UarchParams &uarch);
 
 } // namespace native
 } // namespace matmul

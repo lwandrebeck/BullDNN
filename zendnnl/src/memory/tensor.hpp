@@ -16,17 +16,17 @@
 #ifndef _TENSOR_HPP_
 #define _TENSOR_HPP_
 
+#include <algorithm>
+#include <cstdint>
 #include <cstdlib>
 #include <iostream>
-#include <cstdint>
-#include <vector>
 #include <memory>
 #include <string>
-#include <algorithm>
+#include <vector>
 
-#include "common/zendnnl_global.hpp"
-#include "common/hash_object.hpp"
 #include "common/data_types.hpp"
+#include "common/hash_object.hpp"
+#include "common/zendnnl_global.hpp"
 #include "tensor_options.hpp"
 #include "tensor_quant.hpp"
 #include "tensor_storage.hpp"
@@ -91,67 +91,67 @@ using namespace zendnnl::error_handling;
  */
 
 class tensor_t final : public hash_object_t {
- public:
-  /** @brief Parent type */
-  using   parent_type       = hash_object_t;
+public:
+    /** @brief Parent type */
+    using parent_type = hash_object_t;
 
-  /** @brief A shared pointer type to tensot storage */
-  using   storage_sptr_type = std::shared_ptr<tensor_storage_t>;
+    /** @brief A shared pointer type to tensot storage */
+    using storage_sptr_type = std::shared_ptr<tensor_storage_t>;
 
-  /** @brief Index type */
-  using   index_type        = tensor_option_t::index_type;
+    /** @brief Index type */
+    using index_type = tensor_option_t::index_type;
 
-  /** @brief Index vector type */
-  using   index_vec_type    = tensor_option_t::index_vec_type;
+    /** @brief Index vector type */
+    using index_vec_type = tensor_option_t::index_vec_type;
 
-  /** @name Constructors, Destructors and Assignment
+    /** @name Constructors, Destructors and Assignment
    */
-  /**@{*/
-  /** @brief Default constuctor */
-  tensor_t();
+    /**@{*/
+    /** @brief Default constuctor */
+    tensor_t();
 
-  /** @brief Copy constuctor */
-  tensor_t(const tensor_t &tensor_)            = default;
+    /** @brief Copy constuctor */
+    tensor_t(const tensor_t &tensor_) = default;
 
-  /** @brief Copy assignment */
-  tensor_t &operator=(const tensor_t &tensor_) = default;
+    /** @brief Copy assignment */
+    tensor_t &operator=(const tensor_t &tensor_) = default;
 
-  /** @brief Move constructor */
-  tensor_t(tensor_t &&other_);
+    /** @brief Move constructor */
+    tensor_t(tensor_t &&other_);
 
-  /** @brief Move assignment */
-  tensor_t &operator=(tensor_t &&other_);
-  /**@}*/
+    /** @brief Move assignment */
+    tensor_t &operator=(tensor_t &&other_);
+    /**@}*/
 
-  /** @name Tensor Dimensions
+    /** @name Tensor Dimensions
    */
-  /**@{*/
-  /** @brief Set tensor size.
+    /**@{*/
+    /** @brief Set tensor size.
    *
    * Tensor creation will fail if size is not set.
    * @param size_ : a vector of tensor sizes.
    * @return A reference to self.
    */
 
-  tensor_t &set_size(index_vec_type size_);
+    tensor_t &set_size(index_vec_type size_);
 
-  /** @brief Get tensor size.
+    /** @brief Get tensor size.
    * @return Size vector.
    */
-  index_vec_type get_size() const;
+    index_vec_type get_size() const;
 
-  /** @brief Get tensor size at an index.
+    /** @brief Get tensor size at an index.
    * @param index_ : size vector index.
    * @return Size at index_.
    */
-  index_type get_size(uint32_t index_) const;
+    index_type get_size(uint32_t index_) const;
 
-  /** @brief Get tensor dimensions.
+    /** @brief Get tensor dimensions.
    * @return Tensor dimensions.
    */
-  uint32_t get_dim() const;
+    uint32_t get_dim() const;
 
-  /** @brief Set aligned size for aligned tensor
+    /** @brief Set aligned size for aligned tensor
    *
    * aligned size defines alignment in each dimension, and may be different than
    * tensor size. These may be used to align one dimension to a boundary,
@@ -168,20 +168,20 @@ class tensor_t final : public hash_object_t {
    * @param  aligned_size_ : a vector of aligned sizes.
    * @return A reference to self.
    */
-  tensor_t &set_aligned_size(index_vec_type aligned_size_);
+    tensor_t &set_aligned_size(index_vec_type aligned_size_);
 
-  /** @brief Get aligned size of the tensor.
+    /** @brief Get aligned size of the tensor.
    * @return Aligned size vector.
    */
-  index_vec_type get_aligned_size() const;
+    index_vec_type get_aligned_size() const;
 
-  /** @brief Get tensor aligned size at an index.
+    /** @brief Get tensor aligned size at an index.
    * @param index_ : aligned size vector index.
    * @return Aligned size at index_.
    */
-  index_type get_aligned_size(uint32_t index_) const;
+    index_type get_aligned_size(uint32_t index_) const;
 
-  /** @brief Set tensor base index.
+    /** @brief Set tensor base index.
    *
    * Base index refers to the index of element to be treated as "zeroth" tensor
    * element. Default base index is an all zero index.
@@ -194,33 +194,33 @@ class tensor_t final : public hash_object_t {
    * @param base_ : base index.
    * @return A reference to self.
    */
-  tensor_t &set_base_index(index_vec_type base_);
+    tensor_t &set_base_index(index_vec_type base_);
 
-  /** @brief Get tensor base index.
+    /** @brief Get tensor base index.
    *
    * Please see @c set_base_index() for base index description.
    * @return Base index.
    */
-  index_vec_type get_base_index() const;
+    index_vec_type get_base_index() const;
 
-  /** @brief Set stride.
+    /** @brief Set stride.
    *
    *  Stride decides the access pattern of a tensor and can be used for a sub-tensor
    *  broadcast along any axis. For example a tensor of size (5,4,3), and stride
    *  (0,3,1) is broadcasting a 4x3 tensor along depth.
    */
-  tensor_t &set_stride(index_vec_type stride_);
+    tensor_t &set_stride(index_vec_type stride_);
 
-  /** @brief Get stride vector.
+    /** @brief Get stride vector.
    *
    *  Stride decides the access pattern of a tensor. Please see @c set_stride() for
    *  for further details.
    *
    *  @return Stride vector.
    */
-  index_vec_type get_stride() const;
+    index_vec_type get_stride() const;
 
-  /** @brief Get stride at an index.
+    /** @brief Get stride at an index.
    *
    *  Stride decides the access pattern of a tensor. Please see @c set_stride() for
    *  for further details.
@@ -228,9 +228,9 @@ class tensor_t final : public hash_object_t {
    *  @param index_ : index of stride vector.
    *  @return Stride at given index.
    */
-  index_type get_stride(uint32_t index_) const;
+    index_type get_stride(uint32_t index_) const;
 
-  /** @brief Check if tensor is transposed based on strides.
+    /** @brief Check if tensor is transposed based on strides.
    *
    *  Determines if the tensor has a non-row-major (transposed/column-major) layout
    *  by comparing the innermost two dimensions' strides against expected row-major
@@ -250,78 +250,79 @@ class tensor_t final : public hash_object_t {
    *  @return true if the tensor layout is transposed (non-row-major),
    *          false otherwise.
    */
-  bool is_transposed() const;
+    bool is_transposed() const;
 
-  /**@}*/
+    /**@}*/
 
-  /** @name Tensor Quantization
+    /** @name Tensor Quantization
    */
-  /**@{*/
+    /**@{*/
 
-  /** @brief set tensor scale */
-  tensor_t &set_quant_scale(const tensor_t &quant_scale_);
+    /** @brief set tensor scale */
+    tensor_t &set_quant_scale(const tensor_t &quant_scale_);
 
-  /** @brief set tensor zero */
-  tensor_t &set_quant_zero_point(const tensor_t &quant_zero_);
+    /** @brief set tensor zero */
+    tensor_t &set_quant_zero_point(const tensor_t &quant_zero_);
 
-  /** @brief check if it is a quantized tensor */
-  bool is_quantized() const;
+    /** @brief check if it is a quantized tensor */
+    bool is_quantized() const;
 
-  /** @brief get quant type */
-  quant_type_t get_quant_type() const;
+    /** @brief get quant type */
+    quant_type_t get_quant_type() const;
 
-  /** @brief get quant subtype */
-  quant_subtype_t get_quant_subtype() const;
+    /** @brief get quant subtype */
+    quant_subtype_t get_quant_subtype() const;
 
-  /** @brief get quant scale size */
-  index_vec_type get_quant_scale_size() const;
+    /** @brief get quant scale size */
+    index_vec_type get_quant_scale_size() const;
 
-  /** @brief get quant scale stride */
-  index_vec_type get_quant_scale_stride() const;
+    /** @brief get quant scale stride */
+    index_vec_type get_quant_scale_stride() const;
 
-  /** @brief get quant scale stride */
-  index_vec_type get_quant_scale_block_size() const;
+    /** @brief get quant scale stride */
+    index_vec_type get_quant_scale_block_size() const;
 
-  /** @brief compute scale offset */
-  uint64_t compute_quant_scale_offset(const index_vec_type &index_) const;
+    /** @brief compute scale offset */
+    uint64_t compute_quant_scale_offset(const index_vec_type &index_) const;
 
-  /** @brief get quant scale data type */
-  data_type_t get_quant_scale_data_type() const;
+    /** @brief get quant scale data type */
+    data_type_t get_quant_scale_data_type() const;
 
-  /** @brief get quant scale raw handle */
-  const void *get_quant_scale_raw_handle_const() const;
+    /** @brief get quant scale raw handle */
+    const void *get_quant_scale_raw_handle_const() const;
 
-  /** @brief get quant scale raw handle */
-  const void *get_quant_scale_raw_handle_const(const index_vec_type &index_)
-  const;
+    /** @brief get quant scale raw handle */
+    const void *get_quant_scale_raw_handle_const(
+            const index_vec_type &index_) const;
 
-  /** @brief get quant scale size */
-  index_vec_type get_quant_zero_size() const;
+    /** @brief get quant scale size */
+    index_vec_type get_quant_zero_size() const;
 
-  /** @brief get quant scale stride */
-  index_vec_type get_quant_zero_stride() const;
+    /** @brief get quant scale stride */
+    index_vec_type get_quant_zero_stride() const;
 
-  /** @brief get quant scale stride */
-  index_vec_type get_quant_zero_block_size() const;
+    /** @brief get quant scale stride */
+    index_vec_type get_quant_zero_block_size() const;
 
-  /** @brief compute quant zero offset */
-  uint64_t compute_quant_zero_offset(const index_vec_type &index_) const;
+    /** @brief compute quant zero offset */
+    uint64_t compute_quant_zero_offset(const index_vec_type &index_) const;
 
-  /** @brief get quant zero data type */
-  data_type_t get_quant_zero_data_type() const;
+    /** @brief get quant zero data type */
+    data_type_t get_quant_zero_data_type() const;
 
-  /** @brief get quant scale data type */
-  const void *get_quant_zero_raw_handle_const() const;
+    /** @brief get quant scale data type */
+    const void *get_quant_zero_raw_handle_const() const;
 
-  /** @brief get quant scale data type */
-  const void *get_quant_zero_raw_handle_const(const index_vec_type &index_) const;
+    /** @brief get quant scale data type */
+    const void *get_quant_zero_raw_handle_const(
+            const index_vec_type &index_) const;
 
-  /**@}*/
+    /**@}*/
 
-  /** @name DataType, Format, Order, Constness
+    /** @name DataType, Format, Order, Constness
    */
-  /**@{*/
-  /** @brief Set tensor data type.
+    /**@{*/
+    /** @brief Set tensor data type.
    *
    * Default data type is data_type_t::f32.
    *
@@ -329,16 +330,16 @@ class tensor_t final : public hash_object_t {
    * @param data_type_ : data type.
    * @return A reference to self.
    */
-  tensor_t &set_data_type(data_type_t data_type_);
+    tensor_t &set_data_type(data_type_t data_type_);
 
-  /** @brief Get tensor data type.
+    /** @brief Get tensor data type.
    *
    * @sa @c data_type_t enum for supported data types.
    * @return The tensor data type.
    */
-  data_type_t get_data_type() const;
+    data_type_t get_data_type() const;
 
-  /** @brief Set tensor layout.
+    /** @brief Set tensor layout.
    *
    * Tensor layout refers to how tensor data is layed out in
    * the tensor memory (contiguous, blocked or strided etc.).
@@ -346,15 +347,15 @@ class tensor_t final : public hash_object_t {
    * @param layout_: tensor layout.
    * @return A reference to self.
    */
-  tensor_t &set_layout(tensor_layout_t layout_);
+    tensor_t &set_layout(tensor_layout_t layout_);
 
-  /** @brief Get tensor layout.
+    /** @brief Get tensor layout.
    * @sa @c tensor_layout_t enum for suppported layouts.
    * @return Tensor layout.
    */
-  uint16_t get_layout() const;
+    uint16_t get_layout() const;
 
-  /** @brief Set tensor channel order.
+    /** @brief Set tensor channel order.
    *
    * Tensor channel order refers to channel order like NCHW or NHCW.
    * Channel order is generally DNN dependent (NCHW does not make sense if
@@ -370,25 +371,25 @@ class tensor_t final : public hash_object_t {
    * @param order_: tensor channel order.
    * @return A reference to self.
    */
-  tensor_t &set_order(std::string order_);
+    tensor_t &set_order(std::string order_);
 
-  /** @brief Get tensor order.
+    /** @brief Get tensor order.
    * @return Tensor order.
    */
-  std::string get_order() const;
+    std::string get_order() const;
 
-  /** @brief Set tensor options
+    /** @brief Set tensor options
    * @param tensor_option_ : tensor option to set.
    * @return A reference to self.
    */
-  tensor_t &set_tensor_option(const tensor_option_t &option_);
+    tensor_t &set_tensor_option(const tensor_option_t &option_);
 
-  /** @brief Get tensor options
+    /** @brief Get tensor options
    * @return Tensor option.
    */
-  tensor_option_t &get_tensor_option();
+    tensor_option_t &get_tensor_option();
 
-  /** @brief Set tensor to be const.
+    /** @brief Set tensor to be const.
    *
    * Only const raw pointer of a const tensor can be taken so that the data
    * pointed by it can not be modified.
@@ -396,20 +397,19 @@ class tensor_t final : public hash_object_t {
    * @param constness_: tensor constness.
    * @return A reference to self.
    */
-  tensor_t &set_const(bool constness_);
+    tensor_t &set_const(bool constness_);
 
-  /** @brief Get tensor constness.
+    /** @brief Get tensor constness.
    * @return Tensor constness.
    */
-  bool get_const() const;
+    bool get_const() const;
 
+    /**@}*/
 
-  /**@}*/
-
-  /** @name Profiling and Diagnostics
+    /** @name Profiling and Diagnostics
    */
-  /**@{*/
-  /** @brief Set tensor name.
+    /**@{*/
+    /** @brief Set tensor name.
    *
    * Name can be used to identify the tensor for profiling and disgnostic
    * purposes.
@@ -420,14 +420,14 @@ class tensor_t final : public hash_object_t {
    * @param name_ : The tensor name.
    * @return A reference to self. This function can be chained to create a tensor.
    */
-  tensor_t &set_name(std::string name_);
+    tensor_t &set_name(std::string name_);
 
-  /** @brief Get tensor name
+    /** @brief Get tensor name
    * @return The tensor name.
    */
-  std::string get_name() const;
+    std::string get_name() const;
 
-  /** @brief Compute offset corresponding to an index.
+    /** @brief Compute offset corresponding to an index.
    *
    * Given an N dim tensor with index_ {i1, i2,...,iN}, and stride
    * {s1,s2,...,sN}, the offset is given by sum(ik*sk).
@@ -435,33 +435,32 @@ class tensor_t final : public hash_object_t {
    * @param index_ : an index for which offset is required.
    * @return offset of the index.
    */
-  uint64_t compute_offset(const index_vec_type &index_) const;
+    uint64_t compute_offset(const index_vec_type &index_) const;
 
-  /** @brief Get tensor element.
+    /** @brief Get tensor element.
    *
    * Tensor element of any other type is either dequantized, or converted to
    * float.
    * @param index_ : element index.
    * @return Dequantized or float converted element.
    */
-  float at(const index_vec_type &index_) const;
+    float at(const index_vec_type &index_) const;
 
+    /**@}*/
 
-  /**@}*/
-
-  /** @name Storage
+    /** @name Storage
    */
-  /**@{*/
-  /** @brief Get element count.
+    /**@{*/
+    /** @brief Get element count.
    *
    * For example a 3x5x10 tensor will have 150 elements.
    *
    * @return Element count.
    */
-  uint64_t get_nelem() const;
-  tensor_t &set_nelem(uint64_t nelem_);
+    uint64_t get_nelem() const;
+    tensor_t &set_nelem(uint64_t nelem_);
 
-  /** @brief Get tensor buffer size in bytes.
+    /** @brief Get tensor buffer size in bytes.
    *
    * Byte size of tensor buffer depends on the data type (f32, bf16...),
    * tensor layout(contiguous, strided...) and the tensor size, set either by
@@ -472,18 +471,18 @@ class tensor_t final : public hash_object_t {
    *
    * @return Tensor buffer size in bytes.
    */
-  uint64_t get_buffer_sz_bytes() const;
+    uint64_t get_buffer_sz_bytes() const;
 
-  /** @brief Get count of tensors sharing same storage.
+    /** @brief Get count of tensors sharing same storage.
    *
    * Tensor storage can be shared by multiple tensors. This is useful either
    * to provide a different view of the tensor, or a sub-tensor.
    *
    * @return Count of tensors sharing same storage.
    */
-  uint32_t get_storage_count()   const;
+    uint32_t get_storage_count() const;
 
-  /** @brief Get the raw hande to tensor memory buffer.
+    /** @brief Get the raw hande to tensor memory buffer.
    *
    * Getting raw handle to the memory buffer is generally unsafe, however this function is
    * provided for faster access to the tensor data. Also many low level routines like
@@ -493,9 +492,9 @@ class tensor_t final : public hash_object_t {
    *
    * @return Raw pointer to the memory buffer.
    */
-  void *get_raw_handle_unsafe() const;
+    void *get_raw_handle_unsafe() const;
 
-  /** @brief Get the raw hande to tensor memory buffer.
+    /** @brief Get the raw hande to tensor memory buffer.
    *
    * Getting raw handle to the memory buffer is generally unsafe, however this function is
    * provided for faster access to the tensor data. Also many low level routines like
@@ -505,27 +504,27 @@ class tensor_t final : public hash_object_t {
    *
    * @return Raw pointer to the memory buffer.
    */
-  void *get_raw_handle_unsafe(const index_vec_type &index_) const;
+    void *get_raw_handle_unsafe(const index_vec_type &index_) const;
 
-  /** @brief Get a const raw handle to tensor memory buffer.
+    /** @brief Get a const raw handle to tensor memory buffer.
    *
    * Const raw handle can be used to read but not modify tensor buffer.
    * This function gives raw pointer to zeroth tensor element.
    *
    * @return Const raw pointer to the memory buffer.
    */
-  const void *get_raw_handle_const() const;
+    const void *get_raw_handle_const() const;
 
-  /** @brief Get a const raw handle to tensor memory buffer.
+    /** @brief Get a const raw handle to tensor memory buffer.
    *
    * Const raw handle can be used to read but not modify tensor buffer.
    * This function gives raw pointer to the tensor element pointed by index_.
    *
    * @return Const raw pointer to the memory buffer.
    */
-  const void *get_raw_handle_const(const index_vec_type &index_) const;
+    const void *get_raw_handle_const(const index_vec_type &index_) const;
 
-  /** @brief Allocate unaligned storage to the tensor.
+    /** @brief Allocate unaligned storage to the tensor.
    *
    * Memory to be allocated is calculated based on tensor data type, tensor format, and
    * tensor size, or tensor stride size.
@@ -535,9 +534,9 @@ class tensor_t final : public hash_object_t {
    * @sa get_buffer_sz_byte() for further description on how buffer size is calculated.
    * @return A reference to self.
    */
-  tensor_t &set_storage();
+    tensor_t &set_storage();
 
-  /** @brief Allocate aligned storage to the tensor.
+    /** @brief Allocate aligned storage to the tensor.
    *
    * Memory to be allocated is calculated based on tensor data type, tensor format, and
    * tensor size, or tensor stride size.
@@ -549,30 +548,30 @@ class tensor_t final : public hash_object_t {
    * @param aligned_to_ : memory boundary the buffer need to be aligned to.
    * @return A reference to self.
    */
-  tensor_t &set_storage(uint32_t aligned_to_);
-  tensor_t &set_storage(uint32_t aligned_to_, uint64_t nelem_);
-  /** @brief Borrow memory buffer from another raw pointer.
+    tensor_t &set_storage(uint32_t aligned_to_);
+    tensor_t &set_storage(uint32_t aligned_to_, uint64_t nelem_);
+    /** @brief Borrow memory buffer from another raw pointer.
    *
    * Needed to borrow tensor buffer from a deep learning framework.
    * @param raw_ptr_ : raw pointer to a memory buffer.
    * @param sz_bytes_ : buffer size in bytes.
    * @return A reference to self.
    */
-  tensor_t &set_storage(void *raw_ptr_, uint64_t sz_bytes_);
+    tensor_t &set_storage(void *raw_ptr_, uint64_t sz_bytes_);
 
-  /** @brief Share tensor storage from another tensor.
+    /** @brief Share tensor storage from another tensor.
    *
    * @param other_ : Tensor to share storage from.
    * @return A reference to self.
    */
-  tensor_t &set_storage(const tensor_t &other_);
-  /**@}**/
+    tensor_t &set_storage(const tensor_t &other_);
+    /**@}**/
 
-  /** @name Create, Reset and Hash
+    /** @name Create, Reset and Hash
    */
-  /**@{*/
+    /**@{*/
 
-  /** @brief Create a tensor.
+    /** @brief Create a tensor.
    *
    * A tensor is created by default tensor constuctor, and chaining it
    * with functions to set its meta data, quant data and storage
@@ -605,16 +604,16 @@ class tensor_t final : public hash_object_t {
    *
    * @return A reference to self.
    */
-  tensor_t &create();
+    tensor_t &create();
 
-  /** @brief Reset the tensor.
+    /** @brief Reset the tensor.
    *
    * Reset all meta data, quant data and tensor storage. If storage is allocated by the
    * libary, free the storage. Reset the hash to zero.
    */
-  void reset();
+    void reset();
 
-  /** @brief Generate object hash.
+    /** @brief Generate object hash.
    *
    * Hash generated by an object uniquely identifies the object, therefore hash is
    * generated by taking all the paramaters that uniquely identify a tensor.
@@ -626,37 +625,37 @@ class tensor_t final : public hash_object_t {
    *
    * @return Object hash.
    */
-  std::size_t hash() override;
-  /**@}*/
+    std::size_t hash() override;
+    /**@}*/
 
-  /** @brief Returns tensor information.
+    /** @brief Returns tensor information.
    *
    * Returns a string containing tensor meta data like size, stride size
    * and data type. This is used for logging and profiling.
    * @return std::string containing tensor information.
    */
-  std::string tensor_info();
+    std::string tensor_info();
 
- protected:
-  /** @brief Sanity check on size
+protected:
+    /** @brief Sanity check on size
    *
    */
-  status_t size_sanity_check() const;
+    status_t size_sanity_check() const;
 
-  /** @brief Check if size and stride_size are consistent.
+    /** @brief Check if size and stride_size are consistent.
    *
    * If size and stride_size both are given, checks if they are of same size,
    * and stride_size is at least equal to size.
    *
    * @se If size and stride_size are inconsistent, sets object to bad_hash_object.
    */
-  status_t aligned_size_sanity_check();
+    status_t aligned_size_sanity_check();
 
-  /** @brief Order sanity check
+    /** @brief Order sanity check
    */
-  status_t order_sanity_check();
+    status_t order_sanity_check();
 
-  /** @brief Compute tensor strides.
+    /** @brief Compute tensor strides.
    *
    * Compute default stride either from stride_size. If both size and
    * stride_size are given using set_size() and set_stride_size() respectively,
@@ -665,96 +664,92 @@ class tensor_t final : public hash_object_t {
    *
    * @se option.stride, option.nelem and option.strided_nelem are computed.
    */
-  void set_default_stride_with_order();
-  void set_default_stride_without_order();
+    void set_default_stride_with_order();
+    void set_default_stride_without_order();
 
-  /** @brief sanity check on stride.
+    /** @brief sanity check on stride.
    *
    */
-  status_t stride_sanity_check_with_order();
-  status_t stride_sanity_check_without_order();
+    status_t stride_sanity_check_with_order();
+    status_t stride_sanity_check_without_order();
 
-  /** @brief Set default base index.
+    /** @brief Set default base index.
    *
    * If no base index is given using @c set_base(), default base index is set
    * to all zero.
    * @se option.base and option.base_offset set to zero.
    */
-  void set_default_base();
+    void set_default_base();
 
-  /** @brief Check if the given index is within the bounds of the tensor size.
+    /** @brief Check if the given index is within the bounds of the tensor size.
    *
    * @return success if the index is within bounds, failure otherwise.
    */
-  status_t index_sanity_check(const index_vec_type &index_) const;
+    status_t index_sanity_check(const index_vec_type &index_) const;
 
-  /** @brief Check if the given index is within the bounds of the tensor size.
+    /** @brief Check if the given index is within the bounds of the tensor size.
    *
    * @return success if the index is within bounds, failure otherwise.
    */
-  index_vec_type permute_axes_order(const index_vec_type &in_vec_,
-                                    bool order_to_default) ;
+    index_vec_type permute_axes_order(
+            const index_vec_type &in_vec_, bool order_to_default);
 
-  /** @brief Validate meta data is consistent and sufficient to create object.
+    /** @brief Validate meta data is consistent and sufficient to create object.
    *
    * @se If meta data is inconsistent or insufficient, sets object to bad_hash_object.
    */
-  status_t validate_meta_info();
+    status_t validate_meta_info();
 
-  /** @brief Compute quant block size
+    /** @brief Compute quant block size
    *
    * @return  quant block size for given size
    */
-  index_vec_type compute_quant_block_size(const index_vec_type &size_);
+    index_vec_type compute_quant_block_size(const index_vec_type &size_);
 
-  /** @brief Compute quant stride
+    /** @brief Compute quant stride
    *
    * @return  quant stride for given size
    */
-  index_vec_type compute_quant_stride(const index_vec_type &size_);
+    index_vec_type compute_quant_stride(const index_vec_type &size_);
 
-  /** @brief Validate quant scale.
+    /** @brief Validate quant scale.
    *
    * @return memory_bad_quant in case of failure.
    */
-  status_t validate_quant_scale();
+    status_t validate_quant_scale();
 
-  /** @brief Validate quant zero point.
+    /** @brief Validate quant zero point.
    *
    * @return memory_bad_quant in case of failure.
    */
-  status_t validate_quant_zero();
+    status_t validate_quant_zero();
 
-  /** @brief Validate scale tensor.
+    /** @brief Validate scale tensor.
    *
    * @se if scale tensor is not proper, set status to memory_bad_quant.
    */
-  status_t validate_quant_info();
+    status_t validate_quant_info();
 
- private:
-  tensor_option_t
-  option; /**< Tensor meta data. See @c tensor_option_t
+private:
+    tensor_option_t option; /**< Tensor meta data. See @c tensor_option_t
                                             for further description. */
-  std::optional<tensor_quant_t>
-  quant; /**< Tensor quantization data. See @c tensor_quant_t
+    std::optional<tensor_quant_t>
+            quant; /**< Tensor quantization data. See @c tensor_quant_t
                                            for further description */
-  storage_sptr_type
-  storage; /**< A shared pointer to tensor storage. See
+    storage_sptr_type storage; /**< A shared pointer to tensor storage. See
                                              @c tensor_storage_t for further description */
 
-  bool                           allocate; /**< Allocate strorage to tensor */
-  std::string
-  name; /**< Tensor name. This is relevant only for profiling
+    bool allocate; /**< Allocate strorage to tensor */
+    std::string name; /**< Tensor name. This is relevant only for profiling
                                           and diagnostic purposes. */
 };
 
-} //memory
+} // namespace memory
 
 namespace interface {
 using tensor_t = zendnnl::memory::tensor_t;
-} //export
+} // namespace interface
 
-} //zendnnl
-
+} // namespace zendnnl
 
 #endif

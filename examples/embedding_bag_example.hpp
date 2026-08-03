@@ -16,23 +16,23 @@
 #ifndef _EMBEDDING_BAG_EXAMPLE_HPP_
 #define _EMBEDDING_BAG_EXAMPLE_HPP_
 
-#include "zendnnl.hpp"
 #include "example_utils.hpp"
+#include "zendnnl.hpp"
 
-#define  OK          (0)
-#define  NOT_OK      (1)
+#define OK (0)
+#define NOT_OK (1)
 
-#define  EMB_ROW 100
-#define  EMB_DIM 16
-#define  EMB_BATCH_SIZE 5
-#define  INDICES_SIZE 10
+#define EMB_ROW 100
+#define EMB_DIM 16
+#define EMB_BATCH_SIZE 5
+#define INDICES_SIZE 10
 
 namespace zendnnl {
 namespace examples {
 
 using namespace zendnnl::lowoha::embag;
-using zendnnl::interface::testlog_info;
 using zendnnl::interface::testlog_error;
+using zendnnl::interface::testlog_info;
 
 /** @fn embedding_bag_f32_kernel_example
  *  @brief Demonstrates embedding bag operator on fp32 inputs.

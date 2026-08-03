@@ -1,5 +1,5 @@
 /********************************************************************************
-# * Copyright (c) 2025 Advanced Micro Devices, Inc. All rights reserved.
+# * Copyright (c) 2025-2026 Advanced Micro Devices, Inc. All rights reserved.
 # *
 # * Licensed under the Apache License, Version 2.0 (the "License");
 # * you may not use this file except in compliance with the License.
@@ -21,106 +21,101 @@ namespace zendnnl {
 namespace ops {
 
 embag_context_t::embag_context_t()
-  : op_context_t(),
-    algo{embag_algo_t::none},
-    padding_index{-1},
-    include_last_offset{false},
-    is_weights{false},
-    fp16_scale_bias{true} {
-}
+    : op_context_t()
+    , algo {embag_algo_t::none}
+    , padding_index {-1}
+    , include_last_offset {false}
+    , is_weights {false}
+    , fp16_scale_bias {true} {}
 
 embag_context_t &embag_context_t::set_algo(embag_algo_t algo_) {
-  LOG_DEBUG_INFO("Setting algo for embag_context_t");
-  algo = algo_;
-  return *this;
+    LOG_DEBUG_INFO("Setting algo for embag_context_t");
+    algo = algo_;
+    return *this;
 }
 
 embag_algo_t embag_context_t::get_algo() const {
-  LOG_DEBUG_INFO("Getting algo for embag_context_t");
-  return algo;
+    LOG_DEBUG_INFO("Getting algo for embag_context_t");
+    return algo;
 }
 
 embag_context_t &embag_context_t::set_padding_index(int64_t padding_index_) {
-  LOG_DEBUG_INFO("Setting padding index for embag_context_t");
-  padding_index = padding_index_;
-  return *this;
+    LOG_DEBUG_INFO("Setting padding index for embag_context_t");
+    padding_index = padding_index_;
+    return *this;
 }
 
 int64_t embag_context_t::get_padding_index() const {
-  LOG_DEBUG_INFO("Getting padding index for embag_context_t");
-  return padding_index;
+    LOG_DEBUG_INFO("Getting padding index for embag_context_t");
+    return padding_index;
 }
 
 embag_context_t &embag_context_t::set_include_last_offset(
-  bool include_last_offset_) {
-  LOG_DEBUG_INFO("Setting include_last_offset parameter for embag_context_t");
-  include_last_offset = include_last_offset_;
-  return *this;
+        bool include_last_offset_) {
+    LOG_DEBUG_INFO("Setting include_last_offset parameter for embag_context_t");
+    include_last_offset = include_last_offset_;
+    return *this;
 }
 
 bool embag_context_t::get_include_last_offset() const {
-  LOG_DEBUG_INFO("Getting include_last_offset parameter for embag_context_t");
-  return include_last_offset;
+    LOG_DEBUG_INFO("Getting include_last_offset parameter for embag_context_t");
+    return include_last_offset;
 }
 
 embag_context_t &embag_context_t::set_is_weights(bool is_weights_) {
-  LOG_DEBUG_INFO("Setting is_weights parameter for embag_context_t");
-  is_weights = is_weights_;
-  return *this;
+    LOG_DEBUG_INFO("Setting is_weights parameter for embag_context_t");
+    is_weights = is_weights_;
+    return *this;
 }
 
 bool embag_context_t::get_is_weights() const {
-  LOG_DEBUG_INFO("Getting is_weights parameter for embag_context_t");
-  return is_weights;
+    LOG_DEBUG_INFO("Getting is_weights parameter for embag_context_t");
+    return is_weights;
 }
 
 embag_context_t &embag_context_t::set_fp16_scale_bias(bool fp16_scale_bias_) {
-  LOG_DEBUG_INFO("Setting fp16_scale_bias parameter for embag_context_t");
-  fp16_scale_bias = fp16_scale_bias_;
-  return *this;
+    LOG_DEBUG_INFO("Setting fp16_scale_bias parameter for embag_context_t");
+    fp16_scale_bias = fp16_scale_bias_;
+    return *this;
 }
 
 bool embag_context_t::get_fp16_scale_bias() const {
-  LOG_DEBUG_INFO("Getting fp16_scale_bias parameter for embag_context_t");
-  return fp16_scale_bias;
+    LOG_DEBUG_INFO("Getting fp16_scale_bias parameter for embag_context_t");
+    return fp16_scale_bias;
 }
 
 status_t embag_context_t::validate() {
-  LOG_DEBUG_INFO("Validating embag_context_t");
-  if (parent_type::validate() != status_t::success) {
-    return status_t::failure;
-  }
-  auto table = get_param("table");
-  if (!table) {
-    apilog_error("Table parameter is null");
-    return status_t::failure;
-  }
+    LOG_DEBUG_INFO("Validating embag_context_t");
+    if (parent_type::validate() != status_t::success) {
+        return status_t::failure;
+    }
+    auto table = get_param("table");
+    if (!table) {
+        apilog_error("Table parameter is null");
+        return status_t::failure;
+    }
 
-  return status_t::success;
+    return status_t::success;
 }
 
 std::string embag_context_t::context_info() {
-  std::stringstream ss;
-  auto table = get_param("table").value();
+    std::stringstream ss;
+    auto table = get_param("table").value();
 
-  if (algo == embag_algo_t::none) {
-    ss << "Embedding context create - " << table.tensor_info();
-  }
-  else {
-    ss << "Embedding bag context create - " << table.tensor_info();
-    if (algo == embag_algo_t::sum) {
-      ss << ",algo:sum" ;
+    if (algo == embag_algo_t::none) {
+        ss << "Embedding context create - " << table.tensor_info();
+    } else {
+        ss << "Embedding bag context create - " << table.tensor_info();
+        if (algo == embag_algo_t::sum) {
+            ss << ",algo:sum";
+        } else if (algo == embag_algo_t::mean) {
+            ss << ",algo:mean";
+        } else {
+            ss << ",algo:max";
+        }
+        ss << ",include_last_offset:" << std::boolalpha << include_last_offset;
     }
-    else if (algo == embag_algo_t::mean) {
-      ss << ",algo:mean" ;
-    }
-    else {
-      ss << ",algo:max" ;
-    }
-    ss << ",include_last_offset:" << std::boolalpha
-       << include_last_offset;
-  }
-  return ss.str();
+    return ss.str();
 }
 
 } //namespace ops

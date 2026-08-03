@@ -37,964 +37,845 @@ namespace {
 // validation paths in parseCLArgs().
 
 bool tryParseInt64(const std::string &val, const char *flag, int64_t &out) {
-  try {
-    size_t pos = 0;
-    out = std::stoll(val, &pos);
-    if (pos != val.size()) {
-      commonlog_error(flag, " value '", val,
-                      "' has trailing characters; expected an integer.");
-      return false;
+    try {
+        size_t pos = 0;
+        out = std::stoll(val, &pos);
+        if (pos != val.size()) {
+            commonlog_error(flag, " value '", val,
+                    "' has trailing characters; expected an integer.");
+            return false;
+        }
+        return true;
+    } catch (const std::invalid_argument &) {
+        commonlog_error(flag, " value '", val, "' is not a valid integer.");
+        return false;
+    } catch (const std::out_of_range &) {
+        commonlog_error(flag, " value '", val,
+                "' is out of range for a 64-bit integer.");
+        return false;
     }
-    return true;
-  }
-  catch (const std::invalid_argument &) {
-    commonlog_error(flag, " value '", val, "' is not a valid integer.");
-    return false;
-  }
-  catch (const std::out_of_range &) {
-    commonlog_error(flag, " value '", val,
-                    "' is out of range for a 64-bit integer.");
-    return false;
-  }
 }
 
 bool tryParseInt(const std::string &val, const char *flag, int &out) {
-  int64_t tmp = 0;
-  if (!tryParseInt64(val, flag, tmp)) {
-    return false;
-  }
-  if (tmp < std::numeric_limits<int>::min() ||
-      tmp > std::numeric_limits<int>::max()) {
-    commonlog_error(flag, " value '", val,
-                    "' is out of range for a 32-bit int.");
-    return false;
-  }
-  out = static_cast<int>(tmp);
-  return true;
+    int64_t tmp = 0;
+    if (!tryParseInt64(val, flag, tmp)) { return false; }
+    if (tmp < std::numeric_limits<int>::min()
+            || tmp > std::numeric_limits<int>::max()) {
+        commonlog_error(
+                flag, " value '", val, "' is out of range for a 32-bit int.");
+        return false;
+    }
+    out = static_cast<int>(tmp);
+    return true;
 }
 
 bool tryParseDouble(const std::string &val, const char *flag, double &out) {
-  try {
-    size_t pos = 0;
-    out = std::stod(val, &pos);
-    if (pos != val.size()) {
-      commonlog_error(flag, " value '", val,
-                      "' has trailing characters; expected a number.");
-      return false;
+    try {
+        size_t pos = 0;
+        out = std::stod(val, &pos);
+        if (pos != val.size()) {
+            commonlog_error(flag, " value '", val,
+                    "' has trailing characters; expected a number.");
+            return false;
+        }
+        return true;
+    } catch (const std::invalid_argument &) {
+        commonlog_error(flag, " value '", val, "' is not a valid number.");
+        return false;
+    } catch (const std::out_of_range &) {
+        commonlog_error(
+                flag, " value '", val, "' is out of range for a double.");
+        return false;
     }
-    return true;
-  }
-  catch (const std::invalid_argument &) {
-    commonlog_error(flag, " value '", val, "' is not a valid number.");
-    return false;
-  }
-  catch (const std::out_of_range &) {
-    commonlog_error(flag, " value '", val,
-                    "' is out of range for a double.");
-    return false;
-  }
 }
 
-bool tryParseOptionalDatatype(const std::string &val, const char *flag,
-                              data_type_t &out) {
-  try {
-    out = strToOptionalDatatype(val);
-    return true;
-  }
-  catch (const std::exception &e) {
-    commonlog_error(flag, " value '", val,
-                    "' is not a recognized data type (", e.what(),
-                    "). Use 'none' or one of the supported dtypes.");
-    return false;
-  }
+bool tryParseOptionalDatatype(
+        const std::string &val, const char *flag, data_type_t &out) {
+    try {
+        out = strToOptionalDatatype(val);
+        return true;
+    } catch (const std::exception &e) {
+        commonlog_error(flag, " value '", val,
+                "' is not a recognized data type (", e.what(),
+                "). Use 'none' or one of the supported dtypes.");
+        return false;
+    }
 }
 
 } // anonymous namespace
 
 void trim(std::string &str) {
-  str.erase(std::remove_if(str.begin(), str.end(), ::isspace), str.end());
+    str.erase(std::remove_if(str.begin(), str.end(), ::isspace), str.end());
 }
 
 std::vector<std::string> split(const std::string &str, char delimiter) {
-  std::vector<std::string> tokens;
-  size_t start = 0, end;
+    std::vector<std::string> tokens;
+    size_t start = 0, end;
 
-  while ((end = str.find(delimiter, start)) != std::string::npos) {
-    std::string token = str.substr(start, end - start);
+    while ((end = str.find(delimiter, start)) != std::string::npos) {
+        std::string token = str.substr(start, end - start);
+        trim(token);
+        tokens.emplace_back(token); // include empty token
+        start = end + 1;
+    }
+
+    std::string token = str.substr(start);
     trim(token);
-    tokens.emplace_back(token);  // include empty token
-    start = end + 1;
-  }
-
-  std:: string token = str.substr(start);
-  trim(token);
-  tokens.emplace_back(token);  // last token (even if empty)
-  return tokens;
+    tokens.emplace_back(token); // last token (even if empty)
+    return tokens;
 }
 
 data_type_t strToDatatype(const std::string &str) {
-  if (str == "f32") {
-    return data_type_t::f32;
-  }
-  if (str == "f16") {
-    return data_type_t::f16;
-  }
-  if (str == "bf16") {
-    return data_type_t::bf16;
-  }
-  if (str == "s32") {
-    return data_type_t::s32;
-  }
-  if (str == "s16") {
-    return data_type_t::s16;
-  }
-  if (str == "s8") {
-    return data_type_t::s8;
-  }
-  if (str == "s4") {
-    return data_type_t::s4;
-  }
-  if (str == "u32") {
-    return data_type_t::u32;
-  }
-  if (str == "u16") {
-    return data_type_t::u16;
-  }
-  if (str == "u8") {
-    return data_type_t::u8;
-  }
-  if (str == "u4") {
-    return data_type_t::u4;
-  }
-  throw std::invalid_argument("Unknown data type string '" + str + "'");
+    if (str == "f32") { return data_type_t::f32; }
+    if (str == "f16") { return data_type_t::f16; }
+    if (str == "bf16") { return data_type_t::bf16; }
+    if (str == "s32") { return data_type_t::s32; }
+    if (str == "s16") { return data_type_t::s16; }
+    if (str == "s8") { return data_type_t::s8; }
+    if (str == "s4") { return data_type_t::s4; }
+    if (str == "u32") { return data_type_t::u32; }
+    if (str == "u16") { return data_type_t::u16; }
+    if (str == "u8") { return data_type_t::u8; }
+    if (str == "u4") { return data_type_t::u4; }
+    throw std::invalid_argument("Unknown data type string '" + str + "'");
 }
 
 data_type_t strToOptionalDatatype(const std::string &str) {
-  if (str == "none") {
-    return data_type_t::none;
-  }
-  return strToDatatype(str);
+    if (str == "none") { return data_type_t::none; }
+    return strToDatatype(str);
 }
 
 std::string datatypeToStr(data_type_t dt) {
-  switch (dt) {
-  case data_type_t::none:
-    return "none";
-  case data_type_t::f32:
-    return "f32";
-  case data_type_t::f16:
-    return "f16";
-  case data_type_t::bf16:
-    return "bf16";
-  case data_type_t::s32:
-    return "s32";
-  case data_type_t::s16:
-    return "s16";
-  case data_type_t::s8:
-    return "s8";
-  case data_type_t::s4:
-    return "s4";
-  case data_type_t::u32:
-    return "u32";
-  case data_type_t::u16:
-    return "u16";
-  case data_type_t::u8:
-    return "u8";
-  case data_type_t::u4:
-    return "u4";
-  default:
-    return "unknown";
-  }
+    switch (dt) {
+        case data_type_t::none: return "none";
+        case data_type_t::f32: return "f32";
+        case data_type_t::f16: return "f16";
+        case data_type_t::bf16: return "bf16";
+        case data_type_t::s32: return "s32";
+        case data_type_t::s16: return "s16";
+        case data_type_t::s8: return "s8";
+        case data_type_t::s4: return "s4";
+        case data_type_t::u32: return "u32";
+        case data_type_t::u16: return "u16";
+        case data_type_t::u8: return "u8";
+        case data_type_t::u4: return "u4";
+        default: return "unknown";
+    }
 }
 
 post_op_type_t strToPostOps(const std::string &str) {
-  if (str == "elu") {
-    return post_op_type_t::elu;
-  }
-  if (str == "relu") {
-    return post_op_type_t::relu;
-  }
-  if (str == "leaky_relu") {
-    return post_op_type_t::leaky_relu;
-  }
-  if (str == "gelu_tanh") {
-    return post_op_type_t::gelu_tanh;
-  }
-  if (str == "gelu_erf") {
-    return post_op_type_t::gelu_erf;
-  }
-  if (str == "sigmoid") {
-    return post_op_type_t::sigmoid;
-  }
-  if (str == "swish") {
-    return post_op_type_t::swish;
-  }
-  if (str == "tanh") {
-    return post_op_type_t::tanh;
-  }
-  if (str == "softmax") {
-    return post_op_type_t::softmax;
-  }
-  if (str == "pooling") {
-    return post_op_type_t::pooling;
-  }
-  if (str == "square") {
-    return post_op_type_t::square;
-  }
-  if (str == "abs") {
-    return post_op_type_t::abs;
-  }
-  if (str == "sqrt") {
-    return post_op_type_t::sqrt;
-  }
-  if (str == "exp") {
-    return post_op_type_t::exp;
-  }
-  if (str == "log") {
-    return post_op_type_t::log;
-  }
-  if (str == "clip") {
-    return post_op_type_t::clip;
-  }
-  if (str == "binary_add") {
-    return post_op_type_t::binary_add;
-  }
-  if (str == "binary_mul") {
-    return post_op_type_t::binary_mul;
-  }
-  if (str == "mish") {
-    return post_op_type_t::mish;
-  }
-  throw std::invalid_argument("Unknown post-op string '" + str + "'");
+    if (str == "elu") { return post_op_type_t::elu; }
+    if (str == "relu") { return post_op_type_t::relu; }
+    if (str == "leaky_relu") { return post_op_type_t::leaky_relu; }
+    if (str == "gelu_tanh") { return post_op_type_t::gelu_tanh; }
+    if (str == "gelu_erf") { return post_op_type_t::gelu_erf; }
+    if (str == "sigmoid") { return post_op_type_t::sigmoid; }
+    if (str == "swish") { return post_op_type_t::swish; }
+    if (str == "tanh") { return post_op_type_t::tanh; }
+    if (str == "softmax") { return post_op_type_t::softmax; }
+    if (str == "pooling") { return post_op_type_t::pooling; }
+    if (str == "square") { return post_op_type_t::square; }
+    if (str == "abs") { return post_op_type_t::abs; }
+    if (str == "sqrt") { return post_op_type_t::sqrt; }
+    if (str == "exp") { return post_op_type_t::exp; }
+    if (str == "log") { return post_op_type_t::log; }
+    if (str == "clip") { return post_op_type_t::clip; }
+    if (str == "binary_add") { return post_op_type_t::binary_add; }
+    if (str == "binary_mul") { return post_op_type_t::binary_mul; }
+    if (str == "mish") { return post_op_type_t::mish; }
+    throw std::invalid_argument("Unknown post-op string '" + str + "'");
 }
 
 std::string postOpsToStr(post_op_type_t post_op) {
-  switch (post_op) {
-  case post_op_type_t::elu:
-    return "elu";
-  case post_op_type_t::relu:
-    return "relu";
-  case post_op_type_t::leaky_relu:
-    return "leaky_relu";
-  case post_op_type_t::gelu_tanh:
-    return "gelu_tanh";
-  case post_op_type_t::gelu_erf:
-    return "gelu_erf";
-  case post_op_type_t::sigmoid:
-    return "sigmoid";
-  case post_op_type_t::swish:
-    return "swish";
-  case post_op_type_t::tanh:
-    return "tanh";
-  case post_op_type_t::softmax:
-    return "softmax";
-  case post_op_type_t::pooling:
-    return "pooling";
-  case post_op_type_t::square:
-    return "square";
-  case post_op_type_t::abs:
-    return "abs";
-  case post_op_type_t::sqrt:
-    return "sqrt";
-  case post_op_type_t::exp:
-    return "exp";
-  case post_op_type_t::log:
-    return "log";
-  case post_op_type_t::clip:
-    return "clip";
-  case post_op_type_t::binary_add:
-    return "binary_add";
-  case post_op_type_t::binary_mul:
-    return "binary_mul";
-  case post_op_type_t::mish:
-    return "mish";
-  default:
-    return "relu";
-  }
+    switch (post_op) {
+        case post_op_type_t::elu: return "elu";
+        case post_op_type_t::relu: return "relu";
+        case post_op_type_t::leaky_relu: return "leaky_relu";
+        case post_op_type_t::gelu_tanh: return "gelu_tanh";
+        case post_op_type_t::gelu_erf: return "gelu_erf";
+        case post_op_type_t::sigmoid: return "sigmoid";
+        case post_op_type_t::swish: return "swish";
+        case post_op_type_t::tanh: return "tanh";
+        case post_op_type_t::softmax: return "softmax";
+        case post_op_type_t::pooling: return "pooling";
+        case post_op_type_t::square: return "square";
+        case post_op_type_t::abs: return "abs";
+        case post_op_type_t::sqrt: return "sqrt";
+        case post_op_type_t::exp: return "exp";
+        case post_op_type_t::log: return "log";
+        case post_op_type_t::clip: return "clip";
+        case post_op_type_t::binary_add: return "binary_add";
+        case post_op_type_t::binary_mul: return "binary_mul";
+        case post_op_type_t::mish: return "mish";
+        default: return "relu";
+    }
 }
 
 matmul_algo_t strToAlgo(std::string str) {
-  if (str == "dynamic_dispatch") {
-    return matmul_algo_t::dynamic_dispatch;
-  }
-  if (str == "aocl_dlp_blocked") {
-    return matmul_algo_t::aocl_dlp_blocked;
-  }
-  if (str == "onednn_blocked") {
-    return matmul_algo_t::onednn_blocked;
-  }
-  if (str == "libxsmm_blocked") {
-    return matmul_algo_t::libxsmm_blocked;
-  }
-  if (str == "aocl_dlp") {
-    return matmul_algo_t::aocl_dlp;
-  }
-  if (str == "onednn") {
-    return matmul_algo_t::onednn;
-  }
-  if (str == "libxsmm") {
-    return matmul_algo_t::libxsmm;
-  }
-  if (str == "batched_sgemm") {
-    return matmul_algo_t::batched_sgemm;
-  }
-  if (str == "auto") {
-    return matmul_algo_t::auto_tuner;
-  }
-  if (str == "reference") {
-    return matmul_algo_t::reference;
-  }
-  return matmul_algo_t::none;
+    if (str == "dynamic_dispatch") { return matmul_algo_t::dynamic_dispatch; }
+    if (str == "aocl_dlp_blocked") { return matmul_algo_t::aocl_dlp_blocked; }
+    if (str == "onednn_blocked") { return matmul_algo_t::onednn_blocked; }
+    if (str == "libxsmm_blocked") { return matmul_algo_t::libxsmm_blocked; }
+    if (str == "aocl_dlp") { return matmul_algo_t::aocl_dlp; }
+    if (str == "onednn") { return matmul_algo_t::onednn; }
+    if (str == "libxsmm") { return matmul_algo_t::libxsmm; }
+    if (str == "batched_sgemm") { return matmul_algo_t::batched_sgemm; }
+    if (str == "auto") { return matmul_algo_t::auto_tuner; }
+    if (str == "reference") { return matmul_algo_t::reference; }
+    return matmul_algo_t::none;
 }
 
 std::string algoToStr(matmul_algo_t algo) {
-  switch (algo) {
-  case matmul_algo_t::dynamic_dispatch:
-    return "dynamic_dispatch";
-  case matmul_algo_t::aocl_dlp_blocked:
-    return "aocl_dlp_blocked";
-  case matmul_algo_t::onednn_blocked:
-    return "onednn_blocked";
-  case matmul_algo_t::libxsmm_blocked:
-    return "libxsmm_blocked";
-  case matmul_algo_t::aocl_dlp:
-    return "aocl_dlp";
-  case matmul_algo_t::onednn:
-    return "onednn";
-  case matmul_algo_t::libxsmm:
-    return "libxsmm";
-  case matmul_algo_t::batched_sgemm:
-    return "batched_sgemm";
-  case matmul_algo_t::auto_tuner:
-    return "auto";
-  case matmul_algo_t::reference:
-    return "reference";
-  default:
-    return "none";
-  }
+    switch (algo) {
+        case matmul_algo_t::dynamic_dispatch: return "dynamic_dispatch";
+        case matmul_algo_t::aocl_dlp_blocked: return "aocl_dlp_blocked";
+        case matmul_algo_t::onednn_blocked: return "onednn_blocked";
+        case matmul_algo_t::libxsmm_blocked: return "libxsmm_blocked";
+        case matmul_algo_t::aocl_dlp: return "aocl_dlp";
+        case matmul_algo_t::onednn: return "onednn";
+        case matmul_algo_t::libxsmm: return "libxsmm";
+        case matmul_algo_t::batched_sgemm: return "batched_sgemm";
+        case matmul_algo_t::auto_tuner: return "auto";
+        case matmul_algo_t::reference: return "reference";
+        default: return "none";
+    }
 }
 
 bool validateMatmulKernelName(const std::string &kernel_name) {
-  return std::find(VALID_KERNEL_NAMES.begin(), VALID_KERNEL_NAMES.end(),
-                   kernel_name) != VALID_KERNEL_NAMES.end();
+    return std::find(VALID_KERNEL_NAMES.begin(), VALID_KERNEL_NAMES.end(),
+                   kernel_name)
+            != VALID_KERNEL_NAMES.end();
 }
 
 void flush_cache(size_t cache_size) {
-  // Pre-calculate to avoid runtime variability
-  size_t buffer_size = cache_size * 2;
+    // Pre-calculate to avoid runtime variability
+    size_t buffer_size = cache_size * 2;
 
-  #pragma omp parallel
-  {
-    static thread_local std::vector<char> tls_buffer(buffer_size);
+#pragma omp parallel
+    {
+        static thread_local std::vector<char> tls_buffer(buffer_size);
 
-    char *buffer = tls_buffer.data();
+        char *buffer = tls_buffer.data();
 
-    // Pollute cache lines - simple sequential write
-    for (size_t i = 0; i < buffer_size; i += CACHE_LINE_SIZE) {
-      buffer[i] = (char)(i & 0xFF);
+        // Pollute cache lines - simple sequential write
+        for (size_t i = 0; i < buffer_size; i += CACHE_LINE_SIZE) {
+            buffer[i] = (char)(i & 0xFF);
+        }
+
+        // Prevent optimization
+        asm volatile("" : : "r"(buffer), "r"(buffer_size) : "memory");
+
+        // Flush cache
+        for (size_t i = 0; i < buffer_size; i += CACHE_LINE_SIZE) {
+            _mm_clflush(&buffer[i]);
+        }
+        _mm_mfence();
     }
-
-    // Prevent optimization
-    asm volatile("" : : "r"(buffer), "r"(buffer_size) : "memory");
-
-    // Flush cache
-    for (size_t i = 0; i < buffer_size; i += CACHE_LINE_SIZE) {
-      _mm_clflush(&buffer[i]);
-    }
-    _mm_mfence();
-  }
 }
 
 size_t read_cache_size(const std::string &path) {
-  std::ifstream file(path);
-  if (!file.is_open()) {
-    return 0;
-  }
-  std::string size_str;
-  file >> size_str;
-  file.close();
+    std::ifstream file(path);
+    if (!file.is_open()) { return 0; }
+    std::string size_str;
+    file >> size_str;
+    file.close();
 
-  size_t multiplier = 1;
-  if (size_str.back() == 'K') {
-    multiplier = 1024;
-  }
-  else if (size_str.back() == 'M') {
-    multiplier = 1024 * 1024;
-  }
-  size_str.pop_back();
-  return std::stoul(size_str) * multiplier;
+    size_t multiplier = 1;
+    if (size_str.back() == 'K') {
+        multiplier = 1024;
+    } else if (size_str.back() == 'M') {
+        multiplier = 1024 * 1024;
+    }
+    size_str.pop_back();
+    return std::stoul(size_str) * multiplier;
 }
 
 size_t get_cache_size() {
-  size_t cache_size = 0;
+    size_t cache_size = 0;
 
-  std::filesystem::path cache_path = "/sys/devices/system/cpu/cpu0/cache";
+    std::filesystem::path cache_path = "/sys/devices/system/cpu/cpu0/cache";
 
-  for (const auto &index : std::filesystem::directory_iterator(cache_path)) {
-    if (index.path().filename().string().find("index") == 0) {
-      std::string size_path = index.path().string() + "/size";
+    for (const auto &index : std::filesystem::directory_iterator(cache_path)) {
+        if (index.path().filename().string().find("index") == 0) {
+            std::string size_path = index.path().string() + "/size";
 
-      size_t size_in_bytes = read_cache_size(size_path);
-      cache_size += size_in_bytes;
+            size_t size_in_bytes = read_cache_size(size_path);
+            cache_size += size_in_bytes;
+        }
     }
-  }
-  return cache_size;
+    return cache_size;
 }
 
 int parseCLArgs(benchdnn::global_options &options, std::string arg) {
-  if (arg.find("--ndims=") == 0) {
-    if (arg.substr(8).empty()) {
-      commonlog_error("ndims value cannot be empty. Please provide a valid number.");
-      return NOT_OK;
+    if (arg.find("--ndims=") == 0) {
+        if (arg.substr(8).empty()) {
+            commonlog_error(
+                    "ndims value cannot be empty. Please provide a valid "
+                    "number.");
+            return NOT_OK;
+        }
+        options.ndims = std::stoi(arg.substr(8));
+    } else if (arg.find("--bs=") == 0) {
+        std::string val = arg.substr(5);
+        if (val.empty()) {
+            commonlog_error(
+                    "bs value cannot be empty. Please provide a valid number.");
+            return NOT_OK;
+        }
+        int bs = std::stoi(val);
+        if (bs <= 0) {
+            commonlog_error("bs value must be > 0.");
+            return NOT_OK;
+        }
+        options.bs = bs;
+    } else if (arg.find("--m=") == 0) {
+        std::string val = arg.substr(4);
+        if (val.empty()) {
+            commonlog_error(
+                    "M value cannot be empty. Please provide a valid number.");
+            return NOT_OK;
+        }
+        int m = std::stoi(val);
+        if (m <= 0) {
+            commonlog_error("M value must be > 0.");
+            return NOT_OK;
+        }
+        options.m = m;
+    } else if (arg.find("--k=") == 0) {
+        std::string val = arg.substr(4);
+        if (val.empty()) {
+            commonlog_error(
+                    "K value cannot be empty. Please provide a valid number.");
+            return NOT_OK;
+        }
+        int k = std::stoi(val);
+        if (k <= 0) {
+            commonlog_error("K value must be > 0.");
+            return NOT_OK;
+        }
+        options.k = k;
+    } else if (arg.find("--n=") == 0) {
+        std::string n_values_str = arg.substr(4);
+        if (n_values_str.empty()) {
+            commonlog_error(
+                    "N values cannot be empty. Please provide valid numbers.");
+            return NOT_OK;
+        }
+        auto n_values = split(n_values_str, ':');
+        for (const auto &n : n_values) {
+            if (n.empty()) {
+                commonlog_error(
+                        "One of the n values is empty. Please provide a valid "
+                        "value.");
+                return NOT_OK;
+            }
+            int n_val = std::stoi(n);
+            if (n_val <= 0) {
+                commonlog_error(
+                        "One of the n values is <= 0. Please provide a valid "
+                        "value.");
+                return NOT_OK;
+            }
+            options.n_values.push_back(n_val);
+        }
+    } else if (arg.find("--bias=") == 0) {
+        std::string bias_str = arg.substr(7);
+        if (bias_str.empty()) {
+            commonlog_error(
+                    "Bias value cannot be empty. Please provide true/false or "
+                    "1/0.");
+            return NOT_OK;
+        }
+        std::transform(
+                bias_str.begin(), bias_str.end(), bias_str.begin(), ::tolower);
+        if (bias_str == "true" || bias_str == "1") {
+            options.isBiasEnabled = true;
+        } else if (bias_str == "false" || bias_str == "0") {
+            options.isBiasEnabled = false;
+        } else {
+            commonlog_error("Invalid value for bias. Use true/false or 1/0.");
+            return NOT_OK;
+        }
+    } else if (arg.find("--post_ops=") == 0) {
+        std::string post_ops_str = arg.substr(11);
+        if (post_ops_str.empty()) {
+            commonlog_error(
+                    "Post-ops string cannot be empty. Please provide valid "
+                    "post-ops.");
+            return NOT_OK;
+        }
+        auto post_ops_vec = split(post_ops_str, ':');
+        for (const auto &post_op_str : post_ops_vec) {
+            options.post_ops.push_back(strToPostOps(post_op_str));
+        }
+    } else if (arg.find("--post_op_dt=") == 0) {
+        if (arg.substr(13).empty()) {
+            commonlog_error(
+                    "Post-op data type cannot be empty. Please provide a valid "
+                    "data type.");
+            return NOT_OK;
+        }
+        options.post_op_dt = strToDatatype(arg.substr(13));
+    } else if (arg.find("--iters=") == 0) {
+        if (arg.substr(8).empty()) {
+            commonlog_error(
+                    "Iterations value cannot be empty. Please provide a valid "
+                    "number.");
+            return NOT_OK;
+        }
+        options.iters = std::stoi(arg.substr(8));
+    } else if (arg.find("--sdt=") == 0) {
+        if (arg.substr(6).empty()) {
+            commonlog_error(
+                    "Source data type cannot be empty. Please provide a valid "
+                    "data type.");
+            return NOT_OK;
+        }
+        options.sdt = strToDatatype(arg.substr(6));
+    } else if (arg.find("--wdt=") == 0) {
+        if (arg.substr(6).empty()) {
+            commonlog_error(
+                    "Weights data type cannot be empty. Please provide a valid "
+                    "data type.");
+            return NOT_OK;
+        }
+        options.wdt = strToDatatype(arg.substr(6));
+    } else if (arg.find("--ddt=") == 0) {
+        if (arg.substr(6).empty()) {
+            commonlog_error(
+                    "Destination data type cannot be empty. Please provide a "
+                    "valid data type.");
+            return NOT_OK;
+        }
+        options.ddt = strToDatatype(arg.substr(6));
+    } else if (arg.find("--kernel_name=") == 0) {
+        if (arg.substr(14).empty()) {
+            commonlog_error(
+                    "Kernel name cannot be empty. Please provide a valid "
+                    "kernel name.");
+            return NOT_OK;
+        }
+        options.kernel_name = arg.substr(14);
+    } else if (arg.find("--bias_dt=") == 0) {
+        if (arg.substr(10).empty()) {
+            commonlog_error(
+                    "Bias data type cannot be empty. Please provide a valid "
+                    "data type.");
+            return NOT_OK;
+        }
+        options.bias_dt = strToDatatype(arg.substr(10));
+    } else if (arg.find("--is_weights_const=") == 0) {
+        if (arg.substr(19).empty()) {
+            commonlog_error(
+                    "is_weights_const value cannot be empty. Please provide "
+                    "true/false or 1/0.");
+            return NOT_OK;
+        }
+        std::string val = arg.substr(19);
+        std::transform(val.begin(), val.end(), val.begin(), ::tolower);
+        if (val == "true" || val == "1") {
+            options.is_weights_const = 1;
+        } else if (val == "false" || val == "0") {
+            options.is_weights_const = 0;
+        } else {
+            commonlog_error(
+                    "Invalid value for is_weights_const. Use true/false or "
+                    "1/0.");
+            return NOT_OK;
+        }
+    } else if (arg.find("--isTransA=") == 0) {
+        if (arg.substr(11).empty()) {
+            commonlog_error(
+                    "isTransA value cannot be empty. Please provide true/false "
+                    "or 1/0.");
+            return NOT_OK;
+        }
+        options.isTransA = (arg.substr(11) == "true");
+    } else if (arg.find("--isTransB=") == 0) {
+        if (arg.substr(11).empty()) {
+            commonlog_error(
+                    "isTransB value cannot be empty. Please provide true/false "
+                    "or 1/0.");
+            return NOT_OK;
+        }
+        options.isTransB = (arg.substr(11) == "true");
+    } else if (arg.find("--alpha=") == 0) {
+        if (arg.substr(8).empty()) {
+            commonlog_error(
+                    "Alpha value cannot be empty. Please provide a valid "
+                    "number.");
+            return NOT_OK;
+        }
+        options.alpha = std::stof(arg.substr(8));
+    } else if (arg.find("--beta=") == 0) {
+        if (arg.substr(7).empty()) {
+            commonlog_error(
+                    "Beta value cannot be empty. Please provide a valid "
+                    "number.");
+            return NOT_OK;
+        }
+        options.beta = std::stof(arg.substr(7));
     }
-    options.ndims = std::stoi(arg.substr(8));
-  }
-  else if (arg.find("--bs=") == 0) {
-    std::string val = arg.substr(5);
-    if (val.empty()) {
-      commonlog_error("bs value cannot be empty. Please provide a valid number.");
-      return NOT_OK;
+    // The "--weight_*" forms are the preferred names and pair symmetrically
+    // with the "--src_*" dynamic-quant flags. The legacy "--scale_granularity",
+    // "--group_size", and "--scale_dt" forms remain accepted for backward
+    // compatibility with existing scripts.
+    else if (arg.find("--scale_granularity=") == 0
+            || arg.find("--weight_scale_granularity=") == 0) {
+        const std::string value = arg.substr(arg.find('=') + 1);
+        if (value.empty()) {
+            commonlog_error(
+                    "Weight scale granularity value cannot be empty. Please "
+                    "provide a valid value.");
+            return NOT_OK;
+        }
+        std::string scale_gran = value;
+        std::transform(scale_gran.begin(), scale_gran.end(), scale_gran.begin(),
+                ::tolower);
+        if (scale_gran == "per-channel" || scale_gran == "channel") {
+            options.scale_granularity = "channel";
+        } else if (scale_gran == "per-group" || scale_gran == "group") {
+            options.scale_granularity = "group";
+        } else if (scale_gran == "per-tensor" || scale_gran == "tensor") {
+            options.scale_granularity = "tensor";
+        } else {
+            options.scale_granularity = "channel";
+            commonlog_warning(
+                    "Invalid value for weight scale granularity. Defaulting to "
+                    "'per-channel'.");
+        }
+    } else if (arg.find("--group_size=") == 0
+            || arg.find("--weight_group_size=") == 0) {
+        const std::string value = arg.substr(arg.find('=') + 1);
+        if (value.empty()) {
+            commonlog_error(
+                    "Weight group size value cannot be empty. Please provide a "
+                    "valid number.");
+            return NOT_OK;
+        }
+        options.group_size = std::stoul(value);
+        // Source and weight group sizes are always kept in sync.
+        options.src_group_size = options.group_size;
+    } else if (arg.find("--scale_dt=") == 0
+            || arg.find("--weight_scale_dt=") == 0) {
+        const std::string value = arg.substr(arg.find('=') + 1);
+        if (value.empty()) {
+            commonlog_error(
+                    "Weight scale data type cannot be empty. Please provide a "
+                    "valid data type.");
+            return NOT_OK;
+        }
+        const data_type_t scale_dt = strToDatatype(value);
+        if (scale_dt != data_type_t::f32 && scale_dt != data_type_t::bf16) {
+            commonlog_error("Invalid value for weight scale_dt='", value,
+                    "'. Weight scales must be f32 or bf16.");
+            return NOT_OK;
+        }
+        options.scale_dt = scale_dt;
+    } else if (arg.find("--warmup_iters=") == 0) {
+        if (arg.substr(15).empty()) {
+            commonlog_error(
+                    "Warmup iterations value cannot be empty. Please provide a "
+                    "valid number.");
+            return NOT_OK;
+        }
+        options.warmup_iters = std::stoi(arg.substr(15));
+    } else if (arg.find("--cache_mode=") == 0) {
+        if (arg.substr(13).empty()) {
+            commonlog_error(
+                    "Cache mode value cannot be empty. Please provide a valid "
+                    "cache mode.");
+            return NOT_OK;
+        }
+        std::string cache_mode = arg.substr(13);
+        std::transform(cache_mode.begin(), cache_mode.end(), cache_mode.begin(),
+                ::tolower);
+        if (cache_mode == "cold") {
+            options.cache_mode = CacheMode::COLD;
+        } else if (cache_mode == "warm") {
+            // Matmul-only semantics (weight buffer pool); main() rejects WARM for
+            // other --op values.
+            options.cache_mode = CacheMode::WARM;
+        } else if (cache_mode == "hot") {
+            options.cache_mode = CacheMode::HOT;
+        } else {
+            commonlog_error(
+                    "Invalid value for cache mode. Use cold, warm, or hot.");
+            return NOT_OK;
+        }
+    } else if (arg.find("--num_weight_buffers=") == 0) {
+        if (arg.substr(21).empty() || std::stoi(arg.substr(21)) <= 0) {
+            commonlog_error(
+                    "Number of weight buffers value cannot be empty or <= 0. "
+                    "Please provide a valid positive number.");
+            return NOT_OK;
+        }
+        options.num_weight_buffers = std::stoi(arg.substr(21));
     }
-    int bs = std::stoi(val);
-    if (bs <= 0) {
-      commonlog_error("bs value must be > 0.");
-      return NOT_OK;
-    }
-    options.bs = bs;
-  }
-  else if (arg.find("--m=") == 0) {
-    std::string val = arg.substr(4);
-    if (val.empty()) {
-      commonlog_error("M value cannot be empty. Please provide a valid number.");
-      return NOT_OK;
-    }
-    int m = std::stoi(val);
-    if (m <= 0) {
-      commonlog_error("M value must be > 0.");
-      return NOT_OK;
-    }
-    options.m = m;
-  }
-  else if (arg.find("--k=") == 0) {
-    std::string val = arg.substr(4);
-    if (val.empty()) {
-      commonlog_error("K value cannot be empty. Please provide a valid number.");
-      return NOT_OK;
-    }
-    int k = std::stoi(val);
-    if (k <= 0) {
-      commonlog_error("K value must be > 0.");
-      return NOT_OK;
-    }
-    options.k = k;
-  }
-  else if (arg.find("--n=") == 0) {
-    std::string n_values_str = arg.substr(4);
-    if (n_values_str.empty()) {
-      commonlog_error("N values cannot be empty. Please provide valid numbers.");
-      return NOT_OK;
-    }
-    auto n_values = split(n_values_str, ':');
-    for (const auto &n : n_values) {
-      if (n.empty()) {
-        commonlog_error("One of the n values is empty. Please provide a valid value.");
+    // ----------------------- SDPA-specific flags --------------------------
+    else if (arg.find("--num_heads=") == 0) {
+        std::string val = arg.substr(12);
+        if (val.empty()) {
+            commonlog_error(
+                    "num_heads value cannot be empty. Please provide a valid "
+                    "number.");
+            return NOT_OK;
+        }
+        int64_t num_heads = 0;
+        if (!tryParseInt64(val, "--num_heads", num_heads)) { return NOT_OK; }
+        if (num_heads <= 0) {
+            commonlog_error("num_heads value must be > 0.");
+            return NOT_OK;
+        }
+        options.num_heads = num_heads;
+    } else if (arg.find("--seq_len=") == 0) {
+        std::string val = arg.substr(10);
+        if (val.empty()) {
+            commonlog_error(
+                    "seq_len value cannot be empty. Please provide a valid "
+                    "number.");
+            return NOT_OK;
+        }
+        int64_t seq_len = 0;
+        if (!tryParseInt64(val, "--seq_len", seq_len)) { return NOT_OK; }
+        if (seq_len <= 0) {
+            commonlog_error("seq_len value must be > 0.");
+            return NOT_OK;
+        }
+        options.seq_len = seq_len;
+    } else if (arg.find("--kv_seq_len=") == 0) {
+        std::string val = arg.substr(13);
+        if (val.empty()) {
+            commonlog_error(
+                    "kv_seq_len value cannot be empty. Please provide a valid "
+                    "number (>= 0).");
+            return NOT_OK;
+        }
+        int64_t kv = 0;
+        if (!tryParseInt64(val, "--kv_seq_len", kv)) { return NOT_OK; }
+        if (kv < 0) {
+            commonlog_error(
+                    "kv_seq_len must be >= 0 (0 means same as seq_len).");
+            return NOT_OK;
+        }
+        options.kv_seq_len = kv;
+    } else if (arg.find("--head_dim=") == 0) {
+        std::string val = arg.substr(11);
+        if (val.empty()) {
+            commonlog_error(
+                    "head_dim value cannot be empty. Please provide a valid "
+                    "number.");
+            return NOT_OK;
+        }
+        int64_t head_dim = 0;
+        if (!tryParseInt64(val, "--head_dim", head_dim)) { return NOT_OK; }
+        if (head_dim <= 0) {
+            commonlog_error("head_dim value must be > 0.");
+            return NOT_OK;
+        }
+        options.head_dim = head_dim;
+    } else if (arg.find("--mask_ndims=") == 0) {
+        std::string val = arg.substr(13);
+        if (val.empty()) {
+            commonlog_error(
+                    "mask_ndims value cannot be empty. Please provide 0, 2, or "
+                    "4.");
+            return NOT_OK;
+        }
+        int v = 0;
+        if (!tryParseInt(val, "--mask_ndims", v)) { return NOT_OK; }
+        if (v != 0 && v != 2 && v != 4) {
+            commonlog_error("mask_ndims must be 0, 2, or 4.");
+            return NOT_OK;
+        }
+        options.mask_ndims = v;
+    } else if (arg.find("--mask_dt=") == 0) {
+        std::string val = arg.substr(10);
+        if (val.empty()) {
+            commonlog_error(
+                    "mask_dt cannot be empty. Use 'none', 'f32', 'f16', or "
+                    "'bf16'.");
+            return NOT_OK;
+        }
+        data_type_t mask_dt = data_type_t::none;
+        if (!tryParseOptionalDatatype(val, "--mask_dt", mask_dt)) {
+            return NOT_OK;
+        }
+        options.mask_dt = mask_dt;
+    } else if (arg.find("--is_causal=") == 0) {
+        std::string val = arg.substr(12);
+        if (val.empty()) {
+            commonlog_error(
+                    "is_causal value cannot be empty. Use true/false or 1/0.");
+            return NOT_OK;
+        }
+        std::transform(val.begin(), val.end(), val.begin(), ::tolower);
+        if (val == "true" || val == "1") {
+            options.is_causal = true;
+        } else if (val == "false" || val == "0") {
+            options.is_causal = false;
+        } else {
+            commonlog_error(
+                    "Invalid value for is_causal. Use true/false or 1/0.");
+            return NOT_OK;
+        }
+    } else if (arg.find("--scale=") == 0) {
+        std::string val = arg.substr(8);
+        if (val.empty()) {
+            commonlog_error(
+                    "scale value cannot be empty. Use 0.0 for auto = "
+                    "1/sqrt(head_dim).");
+            return NOT_OK;
+        }
+        double scale = 0.0;
+        if (!tryParseDouble(val, "--scale", scale)) { return NOT_OK; }
+        options.scale = scale;
+    } else if (arg.find("--num_threads=") == 0) {
+        std::string val = arg.substr(14);
+        if (val.empty()) {
+            commonlog_error(
+                    "num_threads value cannot be empty. Use 0 for auto.");
+            return NOT_OK;
+        }
+        int v = 0;
+        if (!tryParseInt(val, "--num_threads", v)) { return NOT_OK; }
+        if (v < 0) {
+            commonlog_error("num_threads must be >= 0 (0 = auto).");
+            return NOT_OK;
+        }
+        options.num_threads = v;
+    } else if (arg.find("--out_dt=") == 0) {
+        std::string val = arg.substr(9);
+        if (val.empty()) {
+            commonlog_error(
+                    "out_dt cannot be empty. Use 'none', 'f32', 'f16', or "
+                    "'bf16'.");
+            return NOT_OK;
+        }
+        data_type_t out_dt = data_type_t::none;
+        if (!tryParseOptionalDatatype(val, "--out_dt", out_dt)) {
+            return NOT_OK;
+        }
+        options.out_dt = out_dt;
+    } else if (arg.find("--qkv_layout=") == 0) {
+        std::string val = arg.substr(13);
+        if (val.empty()) {
+            commonlog_error(
+                    "qkv_layout value cannot be empty. Use 'bhsd' or 'bshd'.");
+            return NOT_OK;
+        }
+        std::transform(val.begin(), val.end(), val.begin(), ::tolower);
+        if (val != "bhsd" && val != "bshd") {
+            commonlog_error(
+                    "Invalid qkv_layout '", val, "'. Use 'bhsd' or 'bshd'.");
+            return NOT_OK;
+        }
+        options.qkv_layout = val;
+    } else if (arg.find("--dynamic_quant=") == 0) {
+        if (arg.substr(16).empty()) {
+            commonlog_error(
+                    "dynamic_quant value cannot be empty. Please provide "
+                    "true/false or 1/0.");
+            return NOT_OK;
+        }
+        std::string val = arg.substr(16);
+        std::transform(val.begin(), val.end(), val.begin(), ::tolower);
+        if (val == "true" || val == "1") {
+            options.src_dynamic_quant = true;
+        } else if (val == "false" || val == "0") {
+            options.src_dynamic_quant = false;
+        } else {
+            commonlog_error(
+                    "Invalid value for dynamic_quant. Use true/false or 1/0.");
+            return NOT_OK;
+        }
+    } else if (arg.find("--src_scale_granularity=") == 0) {
+        if (arg.substr(24).empty()) {
+            commonlog_error(
+                    "Source scale granularity cannot be empty. "
+                    "Use per-tensor, per-token, or per-group.");
+            return NOT_OK;
+        }
+        std::string gran = arg.substr(24);
+        std::transform(gran.begin(), gran.end(), gran.begin(), ::tolower);
+        if (gran == "per-tensor" || gran == "tensor") {
+            options.src_scale_granularity = "per-tensor";
+        } else if (gran == "per-token" || gran == "token") {
+            options.src_scale_granularity = "per-token";
+        } else if (gran == "per-group" || gran == "group") {
+            options.src_scale_granularity = "per-group";
+        } else {
+            options.src_scale_granularity = "per-tensor";
+            commonlog_warning(
+                    "Invalid value for src_scale_granularity. Defaulting to "
+                    "'per-tensor'.");
+        }
+    } else if (arg.find("--src_group_size=") == 0) {
+        if (arg.substr(17).empty()) {
+            commonlog_error(
+                    "src_group_size value cannot be empty. Please provide a "
+                    "valid number.");
+            return NOT_OK;
+        }
+        options.src_group_size = std::stoul(arg.substr(17));
+        // Source and weight group sizes are always kept in sync.
+        options.group_size = options.src_group_size;
+    } else if (arg.find("--src_scale_dt=") == 0) {
+        if (arg.substr(15).empty()) {
+            commonlog_error(
+                    "src_scale_dt cannot be empty. Please provide a valid data "
+                    "type.");
+            return NOT_OK;
+        }
+        const data_type_t src_scale_dt = strToDatatype(arg.substr(15));
+        if (src_scale_dt != data_type_t::f32
+                && src_scale_dt != data_type_t::bf16) {
+            commonlog_error("Invalid value for src_scale_dt='", arg.substr(15),
+                    "'. Dynamic source quantization only supports f32 or bf16 "
+                    "scale buffers.");
+            return NOT_OK;
+        }
+        options.src_scale_dt = src_scale_dt;
+    } else if (arg.find("--sweep=") == 0) {
+        const std::string val = arg.substr(8);
+        if (val == "true" || val == "1") {
+            options.sweep_enabled = true;
+        } else if (val == "false" || val == "0") {
+            options.sweep_enabled = false;
+        } else {
+            commonlog_error("Invalid value for sweep='", val,
+                    "'. Use true/false or 1/0.");
+            return NOT_OK;
+        }
+    } else if (arg.find("--m_sweep=") == 0) {
+        options.m_sweep_str = arg.substr(10);
+        if (options.m_sweep_str.empty()) {
+            commonlog_error(
+                    "m_sweep cannot be empty. Provide colon-separated M "
+                    "values.");
+            return NOT_OK;
+        }
+    } else if (arg.find("--dtype_sweep=") == 0) {
+        options.dtype_sweep_str = arg.substr(14);
+        if (options.dtype_sweep_str.empty()) {
+            commonlog_error(
+                    "dtype_sweep cannot be empty. Use 'all' or a "
+                    "comma-separated list.");
+            return NOT_OK;
+        }
+    } else if (arg.find("--cache_sweep=") == 0) {
+        options.cache_sweep_str = arg.substr(14);
+        if (options.cache_sweep_str.empty()) {
+            commonlog_error(
+                    "cache_sweep cannot be empty. Use a comma-separated list "
+                    "of hot,cold,warm.");
+            return NOT_OK;
+        }
+    } else {
+        commonlog_error("Unknown argument: ", arg);
         return NOT_OK;
-      }
-      int n_val = std::stoi(n);
-      if (n_val <= 0) {
-        commonlog_error("One of the n values is <= 0. Please provide a valid value.");
-        return NOT_OK;
-      }
-      options.n_values.push_back(n_val);
     }
-  }
-  else if (arg.find("--bias=") == 0) {
-    std::string bias_str = arg.substr(7);
-    if (bias_str.empty()) {
-      commonlog_error("Bias value cannot be empty. Please provide true/false or 1/0.");
-      return NOT_OK;
-    }
-    std::transform(bias_str.begin(), bias_str.end(), bias_str.begin(), ::tolower);
-    if (bias_str == "true" || bias_str == "1") {
-      options.isBiasEnabled = true;
-    }
-    else if (bias_str == "false" || bias_str == "0") {
-      options.isBiasEnabled = false;
-    }
-    else {
-      commonlog_error("Invalid value for bias. Use true/false or 1/0.");
-      return NOT_OK;
-    }
-  }
-  else if (arg.find("--post_ops=") == 0) {
-    std::string post_ops_str = arg.substr(11);
-    if (post_ops_str.empty()) {
-      commonlog_error("Post-ops string cannot be empty. Please provide valid post-ops.");
-      return NOT_OK;
-    }
-    auto post_ops_vec = split(post_ops_str, ':');
-    for (const auto &post_op_str : post_ops_vec) {
-      options.post_ops.push_back(strToPostOps(post_op_str));
-    }
-  }
-  else if (arg.find("--post_op_dt=") == 0) {
-    if (arg.substr(13).empty()) {
-      commonlog_error("Post-op data type cannot be empty. Please provide a valid data type.");
-      return NOT_OK;
-    }
-    options.post_op_dt = strToDatatype(arg.substr(13));
-  }
-  else if (arg.find("--iters=") == 0) {
-    if (arg.substr(8).empty()) {
-      commonlog_error("Iterations value cannot be empty. Please provide a valid number.");
-      return NOT_OK;
-    }
-    options.iters = std::stoi(arg.substr(8));
-  }
-  else if (arg.find("--sdt=") == 0) {
-    if (arg.substr(6).empty()) {
-      commonlog_error("Source data type cannot be empty. Please provide a valid data type.");
-      return NOT_OK;
-    }
-    options.sdt = strToDatatype(arg.substr(6));
-  }
-  else if (arg.find("--wdt=") == 0) {
-    if (arg.substr(6).empty()) {
-      commonlog_error("Weights data type cannot be empty. Please provide a valid data type.");
-      return NOT_OK;
-    }
-    options.wdt = strToDatatype(arg.substr(6));
-  }
-  else if (arg.find("--ddt=") == 0) {
-    if (arg.substr(6).empty()) {
-      commonlog_error("Destination data type cannot be empty. Please provide a valid data type.");
-      return NOT_OK;
-    }
-    options.ddt = strToDatatype(arg.substr(6));
-  }
-  else if (arg.find("--kernel_name=") == 0) {
-    if (arg.substr(14).empty()) {
-      commonlog_error("Kernel name cannot be empty. Please provide a valid kernel name.");
-      return NOT_OK;
-    }
-    options.kernel_name = arg.substr(14);
-  }
-  else if (arg.find("--bias_dt=") == 0) {
-    if (arg.substr(10).empty()) {
-      commonlog_error("Bias data type cannot be empty. Please provide a valid data type.");
-      return NOT_OK;
-    }
-    options.bias_dt = strToDatatype(arg.substr(10));
-  }
-  else if (arg.find("--is_weights_const=") == 0) {
-    if (arg.substr(19).empty()) {
-      commonlog_error("is_weights_const value cannot be empty. Please provide true/false or 1/0.");
-      return NOT_OK;
-    }
-    std::string val = arg.substr(19);
-    std::transform(val.begin(), val.end(), val.begin(), ::tolower);
-    if (val == "true" || val == "1") {
-      options.is_weights_const = 1;
-    }
-    else if (val == "false" || val == "0") {
-      options.is_weights_const = 0;
-    }
-    else {
-      commonlog_error("Invalid value for is_weights_const. Use true/false or 1/0.");
-      return NOT_OK;
-    }
-  }
-  else if (arg.find("--isTransA=") == 0) {
-    if (arg.substr(11).empty()) {
-      commonlog_error("isTransA value cannot be empty. Please provide true/false or 1/0.");
-      return NOT_OK;
-    }
-    options.isTransA = (arg.substr(11) == "true");
-  }
-  else if (arg.find("--isTransB=") == 0) {
-    if (arg.substr(11).empty()) {
-      commonlog_error("isTransB value cannot be empty. Please provide true/false or 1/0.");
-      return NOT_OK;
-    }
-    options.isTransB = (arg.substr(11) == "true");
-  }
-  else if (arg.find("--alpha=") == 0) {
-    if (arg.substr(8).empty()) {
-      commonlog_error("Alpha value cannot be empty. Please provide a valid number.");
-      return NOT_OK;
-    }
-    options.alpha = std::stof(arg.substr(8));
-  }
-  else if (arg.find("--beta=") == 0) {
-    if (arg.substr(7).empty()) {
-      commonlog_error("Beta value cannot be empty. Please provide a valid number.");
-      return NOT_OK;
-    }
-    options.beta = std::stof(arg.substr(7));
-  }
-  // The "--weight_*" forms are the preferred names and pair symmetrically
-  // with the "--src_*" dynamic-quant flags. The legacy "--scale_granularity",
-  // "--group_size", and "--scale_dt" forms remain accepted for backward
-  // compatibility with existing scripts.
-  else if (arg.find("--scale_granularity=") == 0 ||
-           arg.find("--weight_scale_granularity=") == 0) {
-    const std::string value = arg.substr(arg.find('=') + 1);
-    if (value.empty()) {
-      commonlog_error("Weight scale granularity value cannot be empty. Please provide a valid value.");
-      return NOT_OK;
-    }
-    std::string scale_gran = value;
-    std::transform(scale_gran.begin(), scale_gran.end(), scale_gran.begin(),
-                   ::tolower);
-    if (scale_gran == "per-channel" || scale_gran == "channel") {
-      options.scale_granularity = "channel";
-    }
-    else if (scale_gran == "per-group" || scale_gran == "group") {
-      options.scale_granularity = "group";
-    }
-    else if (scale_gran == "per-tensor" || scale_gran == "tensor") {
-      options.scale_granularity = "tensor";
-    }
-    else {
-      options.scale_granularity = "channel";
-      commonlog_warning(
-        "Invalid value for weight scale granularity. Defaulting to 'per-channel'.");
-    }
-  }
-  else if (arg.find("--group_size=") == 0 ||
-           arg.find("--weight_group_size=") == 0) {
-    const std::string value = arg.substr(arg.find('=') + 1);
-    if (value.empty()) {
-      commonlog_error("Weight group size value cannot be empty. Please provide a valid number.");
-      return NOT_OK;
-    }
-    options.group_size = std::stoul(value);
-    // Source and weight group sizes are always kept in sync.
-    options.src_group_size = options.group_size;
-  }
-  else if (arg.find("--scale_dt=") == 0 ||
-           arg.find("--weight_scale_dt=") == 0) {
-    const std::string value = arg.substr(arg.find('=') + 1);
-    if (value.empty()) {
-      commonlog_error("Weight scale data type cannot be empty. Please provide a valid data type.");
-      return NOT_OK;
-    }
-    const data_type_t scale_dt = strToDatatype(value);
-    if (scale_dt != data_type_t::f32 && scale_dt != data_type_t::bf16) {
-      commonlog_error(
-        "Invalid value for weight scale_dt='", value,
-        "'. Weight scales must be f32 or bf16.");
-      return NOT_OK;
-    }
-    options.scale_dt = scale_dt;
-  }
-  else if (arg.find("--warmup_iters=") == 0) {
-    if (arg.substr(15).empty()) {
-      commonlog_error("Warmup iterations value cannot be empty. Please provide a valid number.");
-      return NOT_OK;
-    }
-    options.warmup_iters = std::stoi(arg.substr(15));
-  }
-  else if (arg.find("--cache_mode=") == 0) {
-    if (arg.substr(13).empty()) {
-      commonlog_error("Cache mode value cannot be empty. Please provide a valid cache mode.");
-      return NOT_OK;
-    }
-    std::string cache_mode = arg.substr(13);
-    std::transform(cache_mode.begin(), cache_mode.end(), cache_mode.begin(),
-                   ::tolower);
-    if (cache_mode == "cold") {
-      options.cache_mode = CacheMode::COLD;
-    }
-    else if (cache_mode == "warm") {
-      // Matmul-only semantics (weight buffer pool); main() rejects WARM for
-      // other --op values.
-      options.cache_mode = CacheMode::WARM;
-    }
-    else if (cache_mode == "hot") {
-      options.cache_mode = CacheMode::HOT;
-    }
-    else {
-      commonlog_error("Invalid value for cache mode. Use cold, warm, or hot.");
-      return NOT_OK;
-    }
-  }
-  else if (arg.find("--num_weight_buffers=") == 0) {
-    if (arg.substr(21).empty() || std::stoi(arg.substr(21)) <= 0) {
-      commonlog_error(
-        "Number of weight buffers value cannot be empty or <= 0. Please provide a valid positive number.");
-      return NOT_OK;
-    }
-    options.num_weight_buffers = std::stoi(arg.substr(21));
-  }
-  // ----------------------- SDPA-specific flags --------------------------
-  else if (arg.find("--num_heads=") == 0) {
-    std::string val = arg.substr(12);
-    if (val.empty()) {
-      commonlog_error("num_heads value cannot be empty. Please provide a valid number.");
-      return NOT_OK;
-    }
-    int64_t num_heads = 0;
-    if (!tryParseInt64(val, "--num_heads", num_heads)) {
-      return NOT_OK;
-    }
-    if (num_heads <= 0) {
-      commonlog_error("num_heads value must be > 0.");
-      return NOT_OK;
-    }
-    options.num_heads = num_heads;
-  }
-  else if (arg.find("--seq_len=") == 0) {
-    std::string val = arg.substr(10);
-    if (val.empty()) {
-      commonlog_error("seq_len value cannot be empty. Please provide a valid number.");
-      return NOT_OK;
-    }
-    int64_t seq_len = 0;
-    if (!tryParseInt64(val, "--seq_len", seq_len)) {
-      return NOT_OK;
-    }
-    if (seq_len <= 0) {
-      commonlog_error("seq_len value must be > 0.");
-      return NOT_OK;
-    }
-    options.seq_len = seq_len;
-  }
-  else if (arg.find("--kv_seq_len=") == 0) {
-    std::string val = arg.substr(13);
-    if (val.empty()) {
-      commonlog_error("kv_seq_len value cannot be empty. Please provide a valid number (>= 0).");
-      return NOT_OK;
-    }
-    int64_t kv = 0;
-    if (!tryParseInt64(val, "--kv_seq_len", kv)) {
-      return NOT_OK;
-    }
-    if (kv < 0) {
-      commonlog_error("kv_seq_len must be >= 0 (0 means same as seq_len).");
-      return NOT_OK;
-    }
-    options.kv_seq_len = kv;
-  }
-  else if (arg.find("--head_dim=") == 0) {
-    std::string val = arg.substr(11);
-    if (val.empty()) {
-      commonlog_error("head_dim value cannot be empty. Please provide a valid number.");
-      return NOT_OK;
-    }
-    int64_t head_dim = 0;
-    if (!tryParseInt64(val, "--head_dim", head_dim)) {
-      return NOT_OK;
-    }
-    if (head_dim <= 0) {
-      commonlog_error("head_dim value must be > 0.");
-      return NOT_OK;
-    }
-    options.head_dim = head_dim;
-  }
-  else if (arg.find("--mask_ndims=") == 0) {
-    std::string val = arg.substr(13);
-    if (val.empty()) {
-      commonlog_error("mask_ndims value cannot be empty. Please provide 0, 2, or 4.");
-      return NOT_OK;
-    }
-    int v = 0;
-    if (!tryParseInt(val, "--mask_ndims", v)) {
-      return NOT_OK;
-    }
-    if (v != 0 && v != 2 && v != 4) {
-      commonlog_error("mask_ndims must be 0, 2, or 4.");
-      return NOT_OK;
-    }
-    options.mask_ndims = v;
-  }
-  else if (arg.find("--mask_dt=") == 0) {
-    std::string val = arg.substr(10);
-    if (val.empty()) {
-      commonlog_error("mask_dt cannot be empty. Use 'none', 'f32', 'f16', or 'bf16'.");
-      return NOT_OK;
-    }
-    data_type_t mask_dt = data_type_t::none;
-    if (!tryParseOptionalDatatype(val, "--mask_dt", mask_dt)) {
-      return NOT_OK;
-    }
-    options.mask_dt = mask_dt;
-  }
-  else if (arg.find("--is_causal=") == 0) {
-    std::string val = arg.substr(12);
-    if (val.empty()) {
-      commonlog_error("is_causal value cannot be empty. Use true/false or 1/0.");
-      return NOT_OK;
-    }
-    std::transform(val.begin(), val.end(), val.begin(), ::tolower);
-    if (val == "true" || val == "1") {
-      options.is_causal = true;
-    }
-    else if (val == "false" || val == "0") {
-      options.is_causal = false;
-    }
-    else {
-      commonlog_error("Invalid value for is_causal. Use true/false or 1/0.");
-      return NOT_OK;
-    }
-  }
-  else if (arg.find("--scale=") == 0) {
-    std::string val = arg.substr(8);
-    if (val.empty()) {
-      commonlog_error("scale value cannot be empty. Use 0.0 for auto = 1/sqrt(head_dim).");
-      return NOT_OK;
-    }
-    double scale = 0.0;
-    if (!tryParseDouble(val, "--scale", scale)) {
-      return NOT_OK;
-    }
-    options.scale = scale;
-  }
-  else if (arg.find("--num_threads=") == 0) {
-    std::string val = arg.substr(14);
-    if (val.empty()) {
-      commonlog_error("num_threads value cannot be empty. Use 0 for auto.");
-      return NOT_OK;
-    }
-    int v = 0;
-    if (!tryParseInt(val, "--num_threads", v)) {
-      return NOT_OK;
-    }
-    if (v < 0) {
-      commonlog_error("num_threads must be >= 0 (0 = auto).");
-      return NOT_OK;
-    }
-    options.num_threads = v;
-  }
-  else if (arg.find("--out_dt=") == 0) {
-    std::string val = arg.substr(9);
-    if (val.empty()) {
-      commonlog_error("out_dt cannot be empty. Use 'none', 'f32', 'f16', or 'bf16'.");
-      return NOT_OK;
-    }
-    data_type_t out_dt = data_type_t::none;
-    if (!tryParseOptionalDatatype(val, "--out_dt", out_dt)) {
-      return NOT_OK;
-    }
-    options.out_dt = out_dt;
-  }
-  else if (arg.find("--qkv_layout=") == 0) {
-    std::string val = arg.substr(13);
-    if (val.empty()) {
-      commonlog_error("qkv_layout value cannot be empty. Use 'bhsd' or 'bshd'.");
-      return NOT_OK;
-    }
-    std::transform(val.begin(), val.end(), val.begin(), ::tolower);
-    if (val != "bhsd" && val != "bshd") {
-      commonlog_error("Invalid qkv_layout '", val, "'. Use 'bhsd' or 'bshd'.");
-      return NOT_OK;
-    }
-    options.qkv_layout = val;
-  }
-  else if (arg.find("--dynamic_quant=") == 0) {
-    if (arg.substr(16).empty()) {
-      commonlog_error("dynamic_quant value cannot be empty. Please provide true/false or 1/0.");
-      return NOT_OK;
-    }
-    std::string val = arg.substr(16);
-    std::transform(val.begin(), val.end(), val.begin(), ::tolower);
-    if (val == "true" || val == "1") {
-      options.src_dynamic_quant = true;
-    }
-    else if (val == "false" || val == "0") {
-      options.src_dynamic_quant = false;
-    }
-    else {
-      commonlog_error("Invalid value for dynamic_quant. Use true/false or 1/0.");
-      return NOT_OK;
-    }
-  }
-  else if (arg.find("--src_scale_granularity=") == 0) {
-    if (arg.substr(24).empty()) {
-      commonlog_error("Source scale granularity cannot be empty. "
-                      "Use per-tensor, per-token, or per-group.");
-      return NOT_OK;
-    }
-    std::string gran = arg.substr(24);
-    std::transform(gran.begin(), gran.end(), gran.begin(), ::tolower);
-    if (gran == "per-tensor" || gran == "tensor") {
-      options.src_scale_granularity = "per-tensor";
-    }
-    else if (gran == "per-token" || gran == "token") {
-      options.src_scale_granularity = "per-token";
-    }
-    else if (gran == "per-group" || gran == "group") {
-      options.src_scale_granularity = "per-group";
-    }
-    else {
-      options.src_scale_granularity = "per-tensor";
-      commonlog_warning(
-        "Invalid value for src_scale_granularity. Defaulting to 'per-tensor'.");
-    }
-  }
-  else if (arg.find("--src_group_size=") == 0) {
-    if (arg.substr(17).empty()) {
-      commonlog_error("src_group_size value cannot be empty. Please provide a valid number.");
-      return NOT_OK;
-    }
-    options.src_group_size = std::stoul(arg.substr(17));
-    // Source and weight group sizes are always kept in sync.
-    options.group_size = options.src_group_size;
-  }
-  else if (arg.find("--src_scale_dt=") == 0) {
-    if (arg.substr(15).empty()) {
-      commonlog_error("src_scale_dt cannot be empty. Please provide a valid data type.");
-      return NOT_OK;
-    }
-    const data_type_t src_scale_dt = strToDatatype(arg.substr(15));
-    if (src_scale_dt != data_type_t::f32 && src_scale_dt != data_type_t::bf16) {
-      commonlog_error(
-        "Invalid value for src_scale_dt='", arg.substr(15),
-        "'. Dynamic source quantization only supports f32 or bf16 scale buffers.");
-      return NOT_OK;
-    }
-    options.src_scale_dt = src_scale_dt;
-  }
-  else if (arg.find("--sweep=") == 0) {
-    const std::string val = arg.substr(8);
-    if (val == "true" || val == "1") {
-      options.sweep_enabled = true;
-    }
-    else if (val == "false" || val == "0") {
-      options.sweep_enabled = false;
-    }
-    else {
-      commonlog_error("Invalid value for sweep='", val,
-                      "'. Use true/false or 1/0.");
-      return NOT_OK;
-    }
-  }
-  else if (arg.find("--m_sweep=") == 0) {
-    options.m_sweep_str = arg.substr(10);
-    if (options.m_sweep_str.empty()) {
-      commonlog_error("m_sweep cannot be empty. Provide colon-separated M values.");
-      return NOT_OK;
-    }
-  }
-  else if (arg.find("--dtype_sweep=") == 0) {
-    options.dtype_sweep_str = arg.substr(14);
-    if (options.dtype_sweep_str.empty()) {
-      commonlog_error("dtype_sweep cannot be empty. Use 'all' or a comma-separated list.");
-      return NOT_OK;
-    }
-  }
-  else if (arg.find("--cache_sweep=") == 0) {
-    options.cache_sweep_str = arg.substr(14);
-    if (options.cache_sweep_str.empty()) {
-      commonlog_error("cache_sweep cannot be empty. Use a comma-separated list of hot,cold,warm.");
-      return NOT_OK;
-    }
-  }
-  else {
-    commonlog_error("Unknown argument: ", arg);
-    return NOT_OK;
-  }
-  return OK;
+    return OK;
 }
 
 } // namespace benchdnn

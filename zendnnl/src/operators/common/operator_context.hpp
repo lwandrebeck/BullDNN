@@ -1,5 +1,5 @@
 /********************************************************************************
-# * Copyright (c) 2023-2025 Advanced Micro Devices, Inc. All rights reserved.
+# * Copyright (c) 2023-2026 Advanced Micro Devices, Inc. All rights reserved.
 # *
 # * Licensed under the Apache License, Version 2.0 (the "License");
 # * you may not use this file except in compliance with the License.
@@ -16,18 +16,18 @@
 #ifndef _ZENAI_OPERATOR_CONTEXT_HPP_
 #define _ZENAI_OPERATOR_CONTEXT_HPP_
 
-#include <vector>
-#include <map>
 #include <cstdint>
-#include <string>
-#include <optional>
 #include <functional>
+#include <map>
+#include <optional>
+#include <string>
+#include <vector>
 
-#include "common/zendnnl_global.hpp"
 #include "common/hash_object.hpp"
+#include "common/zendnnl_global.hpp"
+#include "memory/memory_utils.hpp"
 #include "memory/tensor.hpp"
 #include "operators/common/post_op.hpp"
-#include "memory/memory_utils.hpp"
 
 namespace zendnnl {
 /** @namespace zendnnl::ops
@@ -57,30 +57,30 @@ using namespace zendnnl::common;
  *  @todo Remove the requirement that set_opst_op() need to be given in order.
  *  Provide index of the post op with it.
  */
-template<typename OP_CONTEXT_T>
+template <typename OP_CONTEXT_T>
 class op_context_t : public hash_object_t {
- public:
-  /** @brief Parent type. */
-  using   parent_type       = hash_object_t;
+public:
+    /** @brief Parent type. */
+    using parent_type = hash_object_t;
 
-  /** @brief Derived context type as template parameter. */
-  using   context_type      = OP_CONTEXT_T;
+    /** @brief Derived context type as template parameter. */
+    using context_type = OP_CONTEXT_T;
 
-  /** @brief A map type for parameter tensors. */
-  using   params_map_type   = std::map<std::string, tensor_t>;
+    /** @brief A map type for parameter tensors. */
+    using params_map_type = std::map<std::string, tensor_t>;
 
-  /** @brief A vector type for post ops. */
-  using   post_op_vec_type  = std::vector<post_op_t>;
+    /** @brief A vector type for post ops. */
+    using post_op_vec_type = std::vector<post_op_t>;
 
-  /** @brief Virtual destructor
+    /** @brief Virtual destructor
    *
    *  Virtual since this class acts as virtual base class.
    */
-  virtual ~op_context_t();
+    virtual ~op_context_t();
 
-  /** @name Create */
-  /**@{*/
-  /** @brief Set parameter tensor.
+    /** @name Create */
+    /**@{*/
+    /** @brief Set parameter tensor.
    * An operator is expected to identify an parameter tensor by an <em> operator
    * given key </em>. Parameters are validated using @c validate().
    * Missing a mandatory parameter should result in creation failure.
@@ -89,17 +89,17 @@ class op_context_t : public hash_object_t {
    * @param param_tensor_ : parameter tensor.
    * @reurn A referene to self.
    */
-  OP_CONTEXT_T &set_param(std::string key_, tensor_t &param_tensor_);
+    OP_CONTEXT_T &set_param(std::string key_, tensor_t &param_tensor_);
 
-  /** @brief Get parameter tensor.
+    /** @brief Get parameter tensor.
    *
    * Please see @c set_param() for detailed description.
    * @param key_ : key given by operator for parameter identification.
    * @return (optional) parameter tensor.
    */
-  std::optional<tensor_t> get_param(std::string key_) const;
+    std::optional<tensor_t> get_param(std::string key_) const;
 
-  /** @brief Set post op.
+    /** @brief Set post op.
    *
    * Post op refers to a localized computation (mostly elementwise
    * non-linear operators) that can be performed on the output of an
@@ -112,31 +112,31 @@ class op_context_t : public hash_object_t {
    * @param post_op_ : post_op.
    * @return A reference to self.
    */
-  OP_CONTEXT_T &set_post_op(post_op_t &post_op_);
+    OP_CONTEXT_T &set_post_op(post_op_t &post_op_);
 
-  /** @brief Get post op.
+    /** @brief Get post op.
    *
    * Please see @c set_post_op() for further description.
    * @param i_ : index to post op vector.
    * @return Post_op at the given index.
    */
-  post_op_t     get_post_op(uint32_t i_) const;
+    post_op_t get_post_op(uint32_t i_) const;
 
-  /** @brief Get post op.
+    /** @brief Get post op.
    *
    * Please see @c set_post_op() for further description.
    * @return Post_op vector.
    */
-  std::vector<post_op_t> get_post_op() const;
+    std::vector<post_op_t> get_post_op() const;
 
-  /** @brief Get post op count.
+    /** @brief Get post op count.
    *
    * Please see @c set_post_op() for further description.
    * @return Post_op count.
    */
-  uint32_t      get_post_op_count() const;
+    uint32_t get_post_op_count() const;
 
-  /** @brief Create an operator context
+    /** @brief Create an operator context
    *
    * Operator creation follows giving all mandatory parameters using
    * @c set_param() and post-ops using @c set_post_op().
@@ -148,31 +148,31 @@ class op_context_t : public hash_object_t {
    * creation. The status can be checked using @c hash_object_t.check().
    * @return A reference to self.
    */
-  virtual OP_CONTEXT_T &create();
-  /**@}*/
+    virtual OP_CONTEXT_T &create();
+    /**@}*/
 
-  /** @name Execution Context */
-  /**@{*/
-  /** @brief Set core count.
+    /** @name Execution Context */
+    /**@{*/
+    /** @brief Set core count.
    *
    * Set the number of cores for operator execution. This is unused.
    * @return A reference to self.
    */
-  OP_CONTEXT_T &set_core_count(uint32_t count);
+    OP_CONTEXT_T &set_core_count(uint32_t count);
 
-  /** @brief Get core count.
+    /** @brief Get core count.
    *
    * Get the number of cores for operator execution. This is unused.
    * @return A reference to self.
    */
-  uint32_t get_core_count() const;
+    uint32_t get_core_count() const;
 
-  //set and get core binding
-  OP_CONTEXT_T &set_core_binding(std::vector<uint32_t> cores);
-  std::vector<uint32_t> get_core_binding() const;
-  /**@}*/
+    //set and get core binding
+    OP_CONTEXT_T &set_core_binding(std::vector<uint32_t> cores);
+    std::vector<uint32_t> get_core_binding() const;
+    /**@}*/
 
-  /** @brief Generate object hash.
+    /** @brief Generate object hash.
    *
    * Hash generated by an object uniquely identifies the object, therefore hash is
    * generated by taking all the paramaters that uniquely identify a context.
@@ -180,240 +180,236 @@ class op_context_t : public hash_object_t {
    * Only a valid object returns a hash. Invalid object hash is set to zero.
    * @return Object hash.
    */
-  std::size_t   hash() override;
+    std::size_t hash() override;
 
- protected:
-  /** @brief Default constructor.
+protected:
+    /** @brief Default constructor.
    *
    * ZenDNNL follows the convension of making constructors protected (or private),
    * where the class need to serve as a virtual base class, and no object of
    * the class should be created.
    */
-  op_context_t();
+    op_context_t();
 
-  /** @brief Validate context parameters.
+    /** @brief Validate context parameters.
    *
    * Basic validation consists of checking if all parameters are
    * valid tensors. Any other validation can be implemented by overriding.
    * @return status_t::success if successful, else status_t::failure.
    */
-  virtual status_t validate();
+    virtual status_t validate();
 
-  /** @brief Preprocess.
+    /** @brief Preprocess.
    *
    * Do any required preprocessing with parameters. Generally this preprocessing
    * requires reordering of parameter tensors, or post-op creations.
    * @return status_t::success if successful, else status_t::failure.
    */
-  virtual status_t    preprocess();
+    virtual status_t preprocess();
 
-  /** @brief Returns context information.
+    /** @brief Returns context information.
    *
    * Returns a string containing opearator context meta data.
    * This is used for logging and profiling.
    * @return std::string containing context information.
    */
-  virtual std::string context_info();
+    virtual std::string context_info();
 
-  std::map<std::string, tensor_t> params; /**< operator parameters */
-  std::vector<post_op_t> post_ops; /**< operator post ops vector */
-  uint32_t core_count; /**< operator core count */
-  std::vector<uint32_t> core_binding; /**< operator cores vector */
-  uint32_t binary_add_count; /**< element-wise addition count */
-  uint32_t binary_mul_count; /**< element-wise multiplication count */
-  uint32_t activation_count; /**< activation count */
+    std::map<std::string, tensor_t> params; /**< operator parameters */
+    std::vector<post_op_t> post_ops; /**< operator post ops vector */
+    uint32_t core_count; /**< operator core count */
+    std::vector<uint32_t> core_binding; /**< operator cores vector */
+    uint32_t binary_add_count; /**< element-wise addition count */
+    uint32_t binary_mul_count; /**< element-wise multiplication count */
+    uint32_t activation_count; /**< activation count */
 };
 
 //implementation
-template<typename OP_CONTEXT_T>
-op_context_t<OP_CONTEXT_T>::op_context_t():
-  params{}, post_ops{}, core_count{1}, core_binding{},
-  binary_add_count{0}, binary_mul_count{0}, activation_count{0} {
-}
+template <typename OP_CONTEXT_T>
+op_context_t<OP_CONTEXT_T>::op_context_t()
+    : params {}
+    , post_ops {}
+    , core_count {1}
+    , core_binding {}
+    , binary_add_count {0}
+    , binary_mul_count {0}
+    , activation_count {0} {}
 
-template<typename OP_CONTEXT_T>
-op_context_t<OP_CONTEXT_T>::~op_context_t() {
-};
+template <typename OP_CONTEXT_T>
+op_context_t<OP_CONTEXT_T>::~op_context_t() {};
 
-template<typename OP_CONTEXT_T>
+template <typename OP_CONTEXT_T>
 OP_CONTEXT_T &op_context_t<OP_CONTEXT_T>::create() {
-  LOG_DEBUG_INFO("Creating op_context_t");
+    LOG_DEBUG_INFO("Creating op_context_t");
 
-  // create a profiler instance
-  profiler_t obj;
+    // create a profiler instance
+    profiler_t obj;
 
-  std::string op_info;
-  bool is_log = is_profile_enabled();
-  if (is_log) {
-    //start the timer
-    obj.tbp_start();
-  }
-  if (validate() != status_t::success) {
-    status = status_t::failure;
-    apilog_error("Context validation failed");
-    return static_cast<OP_CONTEXT_T &>(*this);
-  }
-
-  if (preprocess() != status_t::success) {
-    status = status_t::failure;
-    apilog_error("Context preprocessing failed");
-    return static_cast<OP_CONTEXT_T &>(*this);
-  }
-
-  status = status_t::success;
-  hash();
-
-  if (apilog_verbose_enabled() || (is_log && profilelog_verbose_enabled())) {
-    op_info = context_info();
-    apilog_verbose(op_info);
+    std::string op_info;
+    bool is_log = is_profile_enabled();
     if (is_log) {
-      //stop the timer
-      obj.tbp_stop();
-      profilelog_verbose(op_info,
-                        ",time:", obj.tbp_elapsedtime(), obj.get_res_str());
+        //start the timer
+        obj.tbp_start();
     }
-  }
+    if (validate() != status_t::success) {
+        status = status_t::failure;
+        apilog_error("Context validation failed");
+        return static_cast<OP_CONTEXT_T &>(*this);
+    }
 
-  return static_cast<OP_CONTEXT_T &>(*this);
+    if (preprocess() != status_t::success) {
+        status = status_t::failure;
+        apilog_error("Context preprocessing failed");
+        return static_cast<OP_CONTEXT_T &>(*this);
+    }
+
+    status = status_t::success;
+    hash();
+
+    if (apilog_verbose_enabled() || (is_log && profilelog_verbose_enabled())) {
+        op_info = context_info();
+        apilog_verbose(op_info);
+        if (is_log) {
+            //stop the timer
+            obj.tbp_stop();
+            profilelog_verbose(op_info, ",time:", obj.tbp_elapsedtime(),
+                    obj.get_res_str());
+        }
+    }
+
+    return static_cast<OP_CONTEXT_T &>(*this);
 };
 
-template<typename OP_CONTEXT_T>
-OP_CONTEXT_T &op_context_t<OP_CONTEXT_T>::set_param(std::string key,
-    tensor_t &param_tensor) {
-  LOG_DEBUG_INFO("Setting param op_context_t");
-  params[key] = param_tensor;
-  hash_key    = 0;
+template <typename OP_CONTEXT_T>
+OP_CONTEXT_T &op_context_t<OP_CONTEXT_T>::set_param(
+        std::string key, tensor_t &param_tensor) {
+    LOG_DEBUG_INFO("Setting param op_context_t");
+    params[key] = param_tensor;
+    hash_key = 0;
 
-  return static_cast<OP_CONTEXT_T &>(*this);
+    return static_cast<OP_CONTEXT_T &>(*this);
 }
 
-template<typename OP_CONTEXT_T>
+template <typename OP_CONTEXT_T>
 std::optional<tensor_t> op_context_t<OP_CONTEXT_T>::get_param(
-  std::string key) const {
-  LOG_DEBUG_INFO("Getting param op_context_t");
-  for (const auto& [k, v] : params) {
-    if (k == key) {
-      return v;
+        std::string key) const {
+    LOG_DEBUG_INFO("Getting param op_context_t");
+    for (const auto &[k, v] : params) {
+        if (k == key) { return v; }
     }
-  }
-  return std::nullopt;
+    return std::nullopt;
 }
 
-template<typename OP_CONTEXT_T>
+template <typename OP_CONTEXT_T>
 OP_CONTEXT_T &op_context_t<OP_CONTEXT_T>::set_post_op(post_op_t &post_op_) {
-  LOG_DEBUG_INFO("Setting post-op op_context_t");
-  if (post_op_.type == post_op_type_t::binary_add) {
-    post_op_.binary_add_params.tensor_name += std::to_string(binary_add_count);
-    binary_add_count++;
-  }
-  else if (post_op_.type == post_op_type_t::binary_mul) {
-    post_op_.binary_mul_params.tensor_name += std::to_string(binary_mul_count);
-    binary_mul_count++;
-  }
-  else {
-    activation_count++;
-  }
-  post_ops.push_back(post_op_);
-  hash_key = 0;
-  return static_cast<OP_CONTEXT_T &>(*this);
+    LOG_DEBUG_INFO("Setting post-op op_context_t");
+    if (post_op_.type == post_op_type_t::binary_add) {
+        post_op_.binary_add_params.tensor_name
+                += std::to_string(binary_add_count);
+        binary_add_count++;
+    } else if (post_op_.type == post_op_type_t::binary_mul) {
+        post_op_.binary_mul_params.tensor_name
+                += std::to_string(binary_mul_count);
+        binary_mul_count++;
+    } else {
+        activation_count++;
+    }
+    post_ops.push_back(post_op_);
+    hash_key = 0;
+    return static_cast<OP_CONTEXT_T &>(*this);
 }
 
-template<typename OP_CONTEXT_T>
+template <typename OP_CONTEXT_T>
 post_op_t op_context_t<OP_CONTEXT_T>::get_post_op(uint32_t i_) const {
-  LOG_DEBUG_INFO("Getting post-op op_context_t");
-  try {
-    return post_ops.at(i_);
-  }
-  catch (const std::out_of_range &ex) {
-    EXCEPTION_WITH_LOC("operator post_op out of range encountered.");
-  }
+    LOG_DEBUG_INFO("Getting post-op op_context_t");
+    try {
+        return post_ops.at(i_);
+    } catch (const std::out_of_range &ex) {
+        EXCEPTION_WITH_LOC("operator post_op out of range encountered.");
+    }
 }
 
-template<typename OP_CONTEXT_T>
+template <typename OP_CONTEXT_T>
 std::vector<post_op_t> op_context_t<OP_CONTEXT_T>::get_post_op() const {
-  LOG_DEBUG_INFO("Getting post-op vector op_context_t");
-  return post_ops;
+    LOG_DEBUG_INFO("Getting post-op vector op_context_t");
+    return post_ops;
 }
 
-template<typename OP_CONTEXT_T>
+template <typename OP_CONTEXT_T>
 uint32_t op_context_t<OP_CONTEXT_T>::get_post_op_count() const {
-  LOG_DEBUG_INFO("Getting post-op count for op_context_t");
-  return post_ops.size();
+    LOG_DEBUG_INFO("Getting post-op count for op_context_t");
+    return post_ops.size();
 }
 
-template<typename OP_CONTEXT_T>
+template <typename OP_CONTEXT_T>
 OP_CONTEXT_T &op_context_t<OP_CONTEXT_T>::set_core_count(uint32_t count) {
-  LOG_DEBUG_INFO("Setting core count for op_context_t");
-  core_count = count;
+    LOG_DEBUG_INFO("Setting core count for op_context_t");
+    core_count = count;
 
-  return static_cast<OP_CONTEXT_T &>(*this);
+    return static_cast<OP_CONTEXT_T &>(*this);
 }
 
-template<typename OP_CONTEXT_T>
+template <typename OP_CONTEXT_T>
 uint32_t op_context_t<OP_CONTEXT_T>::get_core_count() const {
-  LOG_DEBUG_INFO("Getting core count for op_context_t");
-  return core_count;
+    LOG_DEBUG_INFO("Getting core count for op_context_t");
+    return core_count;
 }
 
-template<typename OP_CONTEXT_T>
+template <typename OP_CONTEXT_T>
 OP_CONTEXT_T &op_context_t<OP_CONTEXT_T>::set_core_binding(
-  std::vector<uint32_t> cores) {
-  LOG_DEBUG_INFO("Setting core binding for op_context_t");
-  core_binding = cores;
-  core_count   = core_binding.size();
+        std::vector<uint32_t> cores) {
+    LOG_DEBUG_INFO("Setting core binding for op_context_t");
+    core_binding = cores;
+    core_count = core_binding.size();
 
-  return static_cast<OP_CONTEXT_T &>(*this);
+    return static_cast<OP_CONTEXT_T &>(*this);
 }
 
-template<typename OP_CONTEXT_T>
+template <typename OP_CONTEXT_T>
 std::vector<uint32_t> op_context_t<OP_CONTEXT_T>::get_core_binding() const {
-  LOG_DEBUG_INFO("Getting core binding for op_context_t");
-  return core_binding;
+    LOG_DEBUG_INFO("Getting core binding for op_context_t");
+    return core_binding;
 }
 
-template<typename OP_CONTEXT_T>
+template <typename OP_CONTEXT_T>
 status_t op_context_t<OP_CONTEXT_T>::validate() {
-  LOG_DEBUG_INFO("Validating op_context_t");
-  for (const auto& [k, v] : params) {
-    std::optional<tensor_t> t = v;
-    if (t && !(t->check())) {
-      return status_t::failure;
+    LOG_DEBUG_INFO("Validating op_context_t");
+    for (const auto &[k, v] : params) {
+        std::optional<tensor_t> t = v;
+        if (t && !(t->check())) { return status_t::failure; }
     }
-  }
-  return status_t::success;
+    return status_t::success;
 }
 
-template<typename OP_CONTEXT_T>
+template <typename OP_CONTEXT_T>
 status_t op_context_t<OP_CONTEXT_T>::preprocess() {
-  LOG_DEBUG_INFO("Preprocessing for op_context_t");
-  return status_t::success;
+    LOG_DEBUG_INFO("Preprocessing for op_context_t");
+    return status_t::success;
 }
 
-template<typename OP_CONTEXT_T>
+template <typename OP_CONTEXT_T>
 std::string op_context_t<OP_CONTEXT_T>::context_info() {
-  LOG_DEBUG_INFO("Getting context info");
-  return "";
+    LOG_DEBUG_INFO("Getting context info");
+    return "";
 }
 
-template<typename OP_CONTEXT_T>
+template <typename OP_CONTEXT_T>
 std::size_t op_context_t<OP_CONTEXT_T>::hash() {
-  LOG_DEBUG_INFO("Creating hash for op_context_t");
-  if (status == status_t::success) {
-    if (hash_key) {
-      return hash_key;
+    LOG_DEBUG_INFO("Creating hash for op_context_t");
+    if (status == status_t::success) {
+        if (hash_key) { return hash_key; }
+
+        for (const auto &[k, v] : params) {
+            tensor_t temp = static_cast<tensor_t>(v);
+            hash_key = hash_combine(hash_key, temp);
+        }
+
+        for (const auto &v : post_ops) {
+            hash_key = hash_combine(hash_key, uint32_t(v.type));
+        }
     }
 
-    for (const auto& [k, v] : params) {
-      tensor_t temp = static_cast<tensor_t>(v);
-      hash_key = hash_combine(hash_key, temp);
-    }
-
-    for (const auto &v : post_ops) {
-      hash_key = hash_combine(hash_key, uint32_t(v.type));
-    }
-  }
-
-  return hash_key;
+    return hash_key;
 }
 
 } //namespace ops

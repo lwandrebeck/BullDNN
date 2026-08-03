@@ -1,5 +1,5 @@
 /********************************************************************************
-# * Copyright (c) 2023-2024 Advanced Micro Devices, Inc. All rights reserved.
+# * Copyright (c) 2023-2026 Advanced Micro Devices, Inc. All rights reserved.
 # *
 # * Licensed under the Apache License, Version 2.0 (the "License");
 # * you may not use this file except in compliance with the License.
@@ -19,49 +19,47 @@ namespace zendnnl {
 namespace ops {
 
 compare_context_t::compare_context_t()
-  : op_context_t(),
-    tolerance(0.0f),
-    stats(std::make_shared<compare_stats_t>()) {
-}
+    : op_context_t()
+    , tolerance(0.0f)
+    , stats(std::make_shared<compare_stats_t>()) {}
 
 compare_context_t &compare_context_t::set_tolerance(float tolerance_) {
-  LOG_DEBUG_INFO("Setting tolerance");
-  tolerance = tolerance_;
-  return *this;
+    LOG_DEBUG_INFO("Setting tolerance");
+    tolerance = tolerance_;
+    return *this;
 }
 
 float compare_context_t::get_tolerance() const {
-  LOG_DEBUG_INFO("Getting tolerance");
-  return tolerance;
+    LOG_DEBUG_INFO("Getting tolerance");
+    return tolerance;
 }
 
 std::shared_ptr<compare_stats_t> compare_context_t::get_compare_stats() const {
-  LOG_DEBUG_INFO("Getting compare statistics");
-  return stats;
+    LOG_DEBUG_INFO("Getting compare statistics");
+    return stats;
 }
 
 status_t compare_context_t::validate() {
-  LOG_DEBUG_INFO("Validating compare context parameters");
-  if (parent_type::validate() != status_t::success) {
-    return status_t::failure;
-  }
+    LOG_DEBUG_INFO("Validating compare context parameters");
+    if (parent_type::validate() != status_t::success) {
+        return status_t::failure;
+    }
 
-  if (get_tolerance() < 0) {
-    apilog_error("Tolerance cannot be negative.");
-    return status_t::failure;
-  }
-  return status_t::success;
+    if (get_tolerance() < 0) {
+        apilog_error("Tolerance cannot be negative.");
+        return status_t::failure;
+    }
+    return status_t::success;
 }
 
 std::string compare_context_t::context_info() {
-  std::stringstream ss;
+    std::stringstream ss;
 
-  ss << "Compare context create - "
-     << "tolerance:" << get_tolerance();
+    ss << "Compare context create - "
+       << "tolerance:" << get_tolerance();
 
-  return ss.str();
+    return ss.str();
 }
 
 } //namespace ops
 } //namespace zendnnl
-

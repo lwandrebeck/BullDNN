@@ -19,9 +19,9 @@
 
 #include <cstdint>
 #include <string>
-#include "lowoha_conv_common.hpp"
-#include "common/zendnnl_global.hpp"
 #include "common/logging.hpp"
+#include "common/zendnnl_global.hpp"
+#include "lowoha_conv_common.hpp"
 
 namespace zendnnl {
 namespace lowoha {
@@ -38,12 +38,8 @@ using namespace zendnnl::common;
  * @param params       Convolution parameters
  * @return status_t::success if valid, status_t::failure otherwise
  */
-status_t validate_conv_inputs(
-    const void *input,
-    const void *filter,
-    const void *output,
-    conv_params &params
-);
+status_t validate_conv_inputs(const void *input, const void *filter,
+        const void *output, conv_params &params);
 
 /**
  * @brief Validate DepthwiseConv2D specific constraints

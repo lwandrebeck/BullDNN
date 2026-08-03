@@ -19,8 +19,8 @@
 
 #include "lowoha_operators/matmul/lowoha_common.hpp"
 #if ZENDNNL_DEPENDS_ONEDNN
-  #include "operators/matmul/onednn/matmul_onednn_kernel.hpp"
-  using namespace dnnl;
+#include "operators/matmul/onednn/matmul_onednn_kernel.hpp"
+using namespace dnnl;
 #endif
 
 namespace zendnnl {
@@ -47,14 +47,14 @@ namespace matmul {
  * @param weight_batch_stride Weight batch stride
  * @param dst_batch_stride Destination batch stride
  */
-void matmul_onednn_wrapper(char transA, char transB, int M, int N,
-                           int K, float alpha, const void *A, int lda, const void *B, int ldb, float beta,
-                           void *C, int ldc, matmul_params &lowoha_params,
-                           matmul_batch_params_t &batch_params,
-                           const void *bias, zendnnl::ops::matmul_algo_t &kernel,
-                           size_t src_batch_stride=static_cast<size_t>(-1),
-                           size_t weight_batch_stride=static_cast<size_t>(-1),
-                           size_t dst_batch_stride=static_cast<size_t>(-1));
+void matmul_onednn_wrapper(char transA, char transB, int M, int N, int K,
+        float alpha, const void *A, int lda, const void *B, int ldb, float beta,
+        void *C, int ldc, matmul_params &lowoha_params,
+        matmul_batch_params_t &batch_params, const void *bias,
+        zendnnl::ops::matmul_algo_t &kernel,
+        size_t src_batch_stride = static_cast<size_t>(-1),
+        size_t weight_batch_stride = static_cast<size_t>(-1),
+        size_t dst_batch_stride = static_cast<size_t>(-1));
 /**
  * @brief Gets or creates blocked weights with thread-safe caching
  *
@@ -78,9 +78,9 @@ void matmul_onednn_wrapper(char transA, char transB, int M, int N,
  * @param weight_cache_type 0 = disabled, otherwise enabled
  */
 void getOrCreateBlockedWeights(bool transA, bool transB, int M, int K, int N,
-                               int lda, int ldb, onednn_utils_t::onednn_matmul_params &dnnl_params,
-                               const dnnl::engine &eng, const dnnl::primitive_attr &matmul_attr,
-                               int32_t weight_cache_type);
+        int lda, int ldb, onednn_utils_t::onednn_matmul_params &dnnl_params,
+        const dnnl::engine &eng, const dnnl::primitive_attr &matmul_attr,
+        int32_t weight_cache_type);
 /** Clear oneDNN matmul weight cache. */
 void clear_onednn_matmul_weight_cache();
 #endif

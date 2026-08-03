@@ -94,49 +94,46 @@ namespace matmul {
  *   - @c topk_weights required unless @c skip_weighted is true.
  */
 struct group_matmul_moe_postop_params {
-  /// Number of input tokens (rows in the output buffer).
-  int num_tokens = 0;
+    /// Number of input tokens (rows in the output buffer).
+    int num_tokens = 0;
 
-  /// Number of experts selected per token.
-  int topk = 0;
+    /// Number of experts selected per token.
+    int topk = 0;
 
-  /// Output buffer: row-major [num_tokens, ldc_output].
-  /// First D columns of each row are written (FP32, BF16, or F16).
-  void *output = nullptr;
+    /// Output buffer: row-major [num_tokens, ldc_output].
+    /// First D columns of each row are written (FP32, BF16, or F16).
+    void *output = nullptr;
 
-  /// Leading dimension of the output buffer (>= D).
-  int ldc_output = 0;
+    /// Leading dimension of the output buffer (>= D).
+    int ldc_output = 0;
 
-  /// Routing weights: tightly packed [num_tokens, topk] (row-major).
-  /// Entry [t * topk + k] is the weight for token t's k-th expert.
-  /// Required unless @c skip_weighted is true.
-  const float *topk_weights = nullptr;
+    /// Routing weights: tightly packed [num_tokens, topk] (row-major).
+    /// Entry [t * topk + k] is the weight for token t's k-th expert.
+    /// Required unless @c skip_weighted is true.
+    const float *topk_weights = nullptr;
 
-  /// When true, every routing weight is implicitly 1.0 and
-  /// @c topk_weights may be nullptr (plain gather-sum, no weighting).
-  bool skip_weighted = false;
+    /// When true, every routing weight is implicitly 1.0 and
+    /// @c topk_weights may be nullptr (plain gather-sum, no weighting).
+    bool skip_weighted = false;
 
-  /// Pre-gathered row pointers: flat array of size num_tokens * topk.
-  /// Entry row_ptrs[t * topk + k] points to the start of a D-wide row
-  /// (FP32, BF16, or F16) in an expert dst buffer — the row that
-  /// contributes to token t's k-th expert slot.
-  ///
-  /// The caller builds this during token-to-expert scatter:
-  ///   row_ptrs[t * topk + k] = dst[expert_id] + row_j * ldc[expert_id]
-  /// (with appropriate element-size scaling for the dst dtype).
-  const void **row_ptrs = nullptr;
+    /// Pre-gathered row pointers: flat array of size num_tokens * topk.
+    /// Entry row_ptrs[t * topk + k] points to the start of a D-wide row
+    /// (FP32, BF16, or F16) in an expert dst buffer — the row that
+    /// contributes to token t's k-th expert slot.
+    ///
+    /// The caller builds this during token-to-expert scatter:
+    ///   row_ptrs[t * topk + k] = dst[expert_id] + row_j * ldc[expert_id]
+    /// (with appropriate element-size scaling for the dst dtype).
+    const void **row_ptrs = nullptr;
 };
 
 status_t validate_group_matmul_moe_postop(
-  const group_matmul_moe_postop_params *postop,
-  int D,
-  data_type_t dst_elem);
+        const group_matmul_moe_postop_params *postop, int D,
+        data_type_t dst_elem);
 
 status_t group_matmul_moe_postop_execute(
-  const group_matmul_moe_postop_params *postop,
-  int D,
-  int num_threads,
-  data_type_t dst_elem);
+        const group_matmul_moe_postop_params *postop, int D, int num_threads,
+        data_type_t dst_elem);
 
 // --- MoE gated activation: fused act(gate) * up after GEMM ---
 
@@ -151,10 +148,10 @@ status_t group_matmul_moe_postop_execute(
  * The caller passes ldc=2*dim to the subsequent down_proj GEMM as lda.
  */
 enum class grp_matmul_gated_act_t : int {
-  none = 0,           ///< No gated activation (down_proj or unfused).
-  silu_and_mul = 1,   ///< SiLU(gate) * up — split-halves [gate | up] layout.
-  gelu_and_mul = 2,   ///< GELU(gate) * up — split-halves [gate | up] layout.
-  swiglu_oai_mul = 3  ///< SwigluOAI — interleaved [g0,u0,g1,u1,...] layout.
+    none = 0, ///< No gated activation (down_proj or unfused).
+    silu_and_mul = 1, ///< SiLU(gate) * up — split-halves [gate | up] layout.
+    gelu_and_mul = 2, ///< GELU(gate) * up — split-halves [gate | up] layout.
+    swiglu_oai_mul = 3 ///< SwigluOAI — interleaved [g0,u0,g1,u1,...] layout.
 };
 
 /**
@@ -165,9 +162,9 @@ enum class grp_matmul_gated_act_t : int {
  * dst buffer in-place.
  */
 struct grp_matmul_gated_act_params {
-  grp_matmul_gated_act_t act;  ///< Activation type (or none).
+    grp_matmul_gated_act_t act; ///< Activation type (or none).
 
-  grp_matmul_gated_act_params() : act(grp_matmul_gated_act_t::none) {}
+    grp_matmul_gated_act_params() : act(grp_matmul_gated_act_t::none) {}
 };
 
 /**
@@ -192,13 +189,10 @@ struct grp_matmul_gated_act_params {
  * @param num_threads OMP thread count for parallel execution.
  */
 status_t group_matmul_moe_act_execute(
-  const grp_matmul_gated_act_params *act_params,
-  const std::vector<void *> &dst,
-  const std::vector<int> &M,
-  const std::vector<int> &N,
-  const std::vector<int> &ldc,
-  data_type_t dst_dtype,
-  int num_threads);
+        const grp_matmul_gated_act_params *act_params,
+        const std::vector<void *> &dst, const std::vector<int> &M,
+        const std::vector<int> &N, const std::vector<int> &ldc,
+        data_type_t dst_dtype, int num_threads);
 
 /**
  * @brief Apply gated activation in-place on a row range of a single expert.
@@ -214,10 +208,8 @@ status_t group_matmul_moe_act_execute(
  * @param ldc       Leading dimension of dst.
  * @param dst_dtype Data type of dst (f32, bf16, or f16).
  */
-void apply_gated_act_inplace(
-  grp_matmul_gated_act_t act,
-  void *dst, int row_start, int row_end,
-  int N, int ldc, data_type_t dst_dtype);
+void apply_gated_act_inplace(grp_matmul_gated_act_t act, void *dst,
+        int row_start, int row_end, int N, int ldc, data_type_t dst_dtype);
 
 /**
  * @brief Apply swiglu_oai_mul to an M x pairs interleaved tile, in-place.
@@ -265,9 +257,8 @@ void apply_gated_act_inplace(
  * @param ldc        Leading dimension of dst_buf (elements, not bytes).
  * @param dtype      Buffer element type (f32, bf16, or f16).
  */
-void apply_swiglu_oai_tile_rows(
-  void *dst_buf, int M, int col_start, int pairs,
-  int ldc, data_type_t dtype);
+void apply_swiglu_oai_tile_rows(void *dst_buf, int M, int col_start, int pairs,
+        int ldc, data_type_t dtype);
 
 /**
  * @brief Out-of-place per-thread tile activation for swiglu_oai_mul.
@@ -292,10 +283,9 @@ void apply_swiglu_oai_tile_rows(
  * @param pairs         Number of (g, u) pairs to process (= dst cols written).
  * @param dtype         Buffer element type (f32, bf16, or f16).
  */
-void apply_swiglu_oai_tile_rows_oop(
-  const void *src_buf, int src_ldc, int src_col_start,
-  void *dst_buf, int dst_ldc, int dst_col_start,
-  int M, int pairs, data_type_t dtype);
+void apply_swiglu_oai_tile_rows_oop(const void *src_buf, int src_ldc,
+        int src_col_start, void *dst_buf, int dst_ldc, int dst_col_start, int M,
+        int pairs, data_type_t dtype);
 
 // --- AOCL DLP-backed gated activations (implemented in
 //     group_matmul_moe_act_dlp.cpp).  Same row-range contract as
@@ -323,9 +313,8 @@ void apply_swiglu_oai_tile_rows_oop(
 // Returns true on success (or no-op for empty range/null dst); false
 // when DLP setup/execution fails and the caller must fall back to
 // apply_gated_act_inplace().
-bool silu_and_mul_dlp(
-  void *dst, int row_start, int row_end,
-  int N, int ldc, data_type_t dst_dtype);
+bool silu_and_mul_dlp(void *dst, int row_start, int row_end, int N, int ldc,
+        data_type_t dst_dtype);
 
 /**
  * @brief Apply gelu_and_mul to a row range via AOCL DLP.
@@ -349,17 +338,14 @@ bool silu_and_mul_dlp(
 // Returns true on success (or no-op for empty range/null dst); false
 // when DLP setup/execution fails and the caller must fall back to
 // apply_gated_act_inplace().
-bool gelu_and_mul_dlp(
-  void *dst, int row_start, int row_end,
-  int N, int ldc, data_type_t dst_dtype);
+bool gelu_and_mul_dlp(void *dst, int row_start, int row_end, int N, int ldc,
+        data_type_t dst_dtype);
 
 // Common DLP entry point.  Returns false when DLP can't handle the
 // activation (currently: swiglu_oai_mul); caller must fall back to
 // apply_gated_act_inplace().
-bool apply_gated_act_inplace_dlp(
-  grp_matmul_gated_act_t act,
-  void *dst, int row_start, int row_end,
-  int N, int ldc, data_type_t dst_dtype);
+bool apply_gated_act_inplace_dlp(grp_matmul_gated_act_t act, void *dst,
+        int row_start, int row_end, int N, int ldc, data_type_t dst_dtype);
 
 // --- Fused MoE: Op1(gate+up) → activation → Op2(down_proj) in one pass ---
 
@@ -404,176 +390,172 @@ bool apply_gated_act_inplace_dlp(
  *     only).
  */
 struct grp_matmul_fused_moe_params {
-  /// Per-expert down_proj weights — shape depends on activation
-  /// (see the contract above): [N/2, N_down[i]] for gated acts,
-  /// [N, N_down[i]] for act=none.
-  /// Must use same dtype as Op1 weights (params[i].dtypes.wei).
-  std::vector<const void *> down_weight;
-  std::vector<int>
-  N_down;                ///< Per-expert output columns of down_proj.
-  std::vector<int>
-  ldb_down;              ///< Leading dimension of down_weight per expert.
-  std::vector<const void *>
-  bias_down;    ///< Per-expert bias for down_proj (nullptr OK).
-  data_type_t bias_dt_down =
-    data_type_t::none;  ///< Bias dtype for Op2 (none = no bias).
+    /// Per-expert down_proj weights — shape depends on activation
+    /// (see the contract above): [N/2, N_down[i]] for gated acts,
+    /// [N, N_down[i]] for act=none.
+    /// Must use same dtype as Op1 weights (params[i].dtypes.wei).
+    std::vector<const void *> down_weight;
+    std::vector<int> N_down; ///< Per-expert output columns of down_proj.
+    std::vector<int> ldb_down; ///< Leading dimension of down_weight per expert.
+    std::vector<const void *>
+            bias_down; ///< Per-expert bias for down_proj (nullptr OK).
+    data_type_t bias_dt_down
+            = data_type_t::none; ///< Bias dtype for Op2 (none = no bias).
 
-  // ─── Op2 (down_proj) weight quantization (optional) ──────────────────
-  //
-  // The fused-MoE dispatcher inherits every quant *scheme* knob from
-  // the caller's `params[i]` for Op2 (so Op1 and Op2 always use the
-  // same scheme — same `dtypes.wei`, same `dynamic_quant` flag, same
-  // `dtypes.compute`, same per-token `src_scale.dims`).  The ONLY
-  // thing that has to be carried separately is the down_weight scale
-  // (and optional zero-point) tensor itself, because `down_weight[i]`
-  // is a different tensor from Op1's `weight[i]` and therefore has
-  // its own per-channel / per-group / per-tensor scale buffer.
-  //
-  // The two fields below carry exactly that:
-  //   * `down_scale[i]` — per-expert weight scale for `down_weight[i]`.
-  //   * `down_zp[i]`    — per-expert weight zero-point (asymmetric only;
-  //                     leave default-constructed / `dims.empty()`
-  //                     for symmetric quant).
-  //
-  // Both vectors are OPTIONAL and default-empty.  Behaviour matrix:
-  //
-  //   `params[i].dynamic_quant` | `params[i].dtypes.wei` | `down_scale` | Op2 scheme
-  //   ─────────────────────────── ───────────────────────  ─────────── ────────────
-  //   false                     | bf16 / f32             | empty      | Un-quantized (legacy default)
-  //   false                     | s4 / u4                | populated  | WOQ S4 / U4 on Op2
-  //   false                     | s8                     | populated  | (limited — see note below)
-  //   true                      | s8                     | populated  | Dynamic INT8 on Op2 (runtime BF16→S8 reorder)
-  //
-  // The Op2-side runtime reorder for dynamic INT8 inherits its
-  // `src_scale.dims` (and `dt`) from `params[i].quant_params.src_scale`
-  // and lets the kernel allocate the runtime scratch internally —
-  // the caller never sees nor manages an Op2-side `src_scale.buff`.
-  //
-  // **Per-token source granularity ONLY**: dynamic source quant in
-  // the fused MoE path supports `src_scale.dims = {M, 1}` (and the
-  // trivial per-tensor `{1, 1}` / `{1}` forms).  Per-group
-  // (`{M, ngroups}` with `ngroups > 1`) is rejected up front by
-  // the dispatcher because Op1 reduces over `K[i]` (= K_in) and
-  // Op2 reduces over `op2_k_for_act(N[i], act)` (= K_down), and
-  // K_in != K_down in general — so Op1's ngroups cannot transfer
-  // to Op2 verbatim (the documented invariant at
-  // `docs/operator/low_overhead_operator/lowoha_matmul_operator.md:227` requires
-  // source-side and weight-side ngroups to match along K *per
-  // pass*).  Use per-token granularity instead — it is K-
-  // independent and works on both passes.
-  //
-  // Note on pure WOQ-S8: AOCL DLP's WOQ fast path is gated to s4/u4
-  // only (see `aocl_postop.cpp::is_woq`); a bf16-src + s8-wei combo
-  // without a caller-provided src_scale falls into the BF16-INT8
-  // pre-quant path and is rejected.  Prefer S4 for WOQ or pair S8
-  // weights with `dynamic_quant = true` on `params[i]`.
-  //
-  // Each per-expert quantization vector is validated independently:
-  // if `down_scale` is non-empty it MUST hold at least `num_ops`
-  // entries, and if `down_zp` is non-empty it MUST likewise hold at
-  // least `num_ops` entries. Partial vectors are rejected up front to
-  // avoid silently leaving tail experts un-quantized.
-  struct down_weight_quant_t {
-    const void *buff;              ///< Pointer to quantization data buffer
-    data_type_t dt;                ///< Data type of the buffer
-    std::vector<int64_t> dims;     ///< Dimensions of the quantization tensor
+    // ─── Op2 (down_proj) weight quantization (optional) ──────────────────
+    //
+    // The fused-MoE dispatcher inherits every quant *scheme* knob from
+    // the caller's `params[i]` for Op2 (so Op1 and Op2 always use the
+    // same scheme — same `dtypes.wei`, same `dynamic_quant` flag, same
+    // `dtypes.compute`, same per-token `src_scale.dims`).  The ONLY
+    // thing that has to be carried separately is the down_weight scale
+    // (and optional zero-point) tensor itself, because `down_weight[i]`
+    // is a different tensor from Op1's `weight[i]` and therefore has
+    // its own per-channel / per-group / per-tensor scale buffer.
+    //
+    // The two fields below carry exactly that:
+    //   * `down_scale[i]` — per-expert weight scale for `down_weight[i]`.
+    //   * `down_zp[i]`    — per-expert weight zero-point (asymmetric only;
+    //                     leave default-constructed / `dims.empty()`
+    //                     for symmetric quant).
+    //
+    // Both vectors are OPTIONAL and default-empty.  Behaviour matrix:
+    //
+    //   `params[i].dynamic_quant` | `params[i].dtypes.wei` | `down_scale` | Op2 scheme
+    //   ─────────────────────────── ───────────────────────  ─────────── ────────────
+    //   false                     | bf16 / f32             | empty      | Un-quantized (legacy default)
+    //   false                     | s4 / u4                | populated  | WOQ S4 / U4 on Op2
+    //   false                     | s8                     | populated  | (limited — see note below)
+    //   true                      | s8                     | populated  | Dynamic INT8 on Op2 (runtime BF16→S8 reorder)
+    //
+    // The Op2-side runtime reorder for dynamic INT8 inherits its
+    // `src_scale.dims` (and `dt`) from `params[i].quant_params.src_scale`
+    // and lets the kernel allocate the runtime scratch internally —
+    // the caller never sees nor manages an Op2-side `src_scale.buff`.
+    //
+    // **Per-token source granularity ONLY**: dynamic source quant in
+    // the fused MoE path supports `src_scale.dims = {M, 1}` (and the
+    // trivial per-tensor `{1, 1}` / `{1}` forms).  Per-group
+    // (`{M, ngroups}` with `ngroups > 1`) is rejected up front by
+    // the dispatcher because Op1 reduces over `K[i]` (= K_in) and
+    // Op2 reduces over `op2_k_for_act(N[i], act)` (= K_down), and
+    // K_in != K_down in general — so Op1's ngroups cannot transfer
+    // to Op2 verbatim (the documented invariant at
+    // `docs/operator/low_overhead_operator/lowoha_matmul_operator.md:227` requires
+    // source-side and weight-side ngroups to match along K *per
+    // pass*).  Use per-token granularity instead — it is K-
+    // independent and works on both passes.
+    //
+    // Note on pure WOQ-S8: AOCL DLP's WOQ fast path is gated to s4/u4
+    // only (see `aocl_postop.cpp::is_woq`); a bf16-src + s8-wei combo
+    // without a caller-provided src_scale falls into the BF16-INT8
+    // pre-quant path and is rejected.  Prefer S4 for WOQ or pair S8
+    // weights with `dynamic_quant = true` on `params[i]`.
+    //
+    // Each per-expert quantization vector is validated independently:
+    // if `down_scale` is non-empty it MUST hold at least `num_ops`
+    // entries, and if `down_zp` is non-empty it MUST likewise hold at
+    // least `num_ops` entries. Partial vectors are rejected up front to
+    // avoid silently leaving tail experts un-quantized.
+    struct down_weight_quant_t {
+        const void *buff; ///< Pointer to quantization data buffer
+        data_type_t dt; ///< Data type of the buffer
+        std::vector<int64_t> dims; ///< Dimensions of the quantization tensor
 
-    down_weight_quant_t() : buff(nullptr), dt(data_type_t::none), dims() {}
-  };
+        down_weight_quant_t() : buff(nullptr), dt(data_type_t::none), dims() {}
+    };
 
-  std::vector<down_weight_quant_t>
-  down_scale;  ///< Per-expert Op2 weight scale (down_weight[i]'s scale tensor).
-  std::vector<down_weight_quant_t>
-  down_zp;     ///< Per-expert Op2 weight zero-point (asymmetric quant only; empty for sym).
+    std::vector<down_weight_quant_t>
+            down_scale; ///< Per-expert Op2 weight scale (down_weight[i]'s scale tensor).
+    std::vector<down_weight_quant_t>
+            down_zp; ///< Per-expert Op2 weight zero-point (asymmetric quant only; empty for sym).
 
-  // ─── Op2 output mode selection (dst_down behaviour) ──────────────────
-  //
-  // The fused MoE op supports TWO modes for the down_proj output:
-  //
-  //   (1) Legacy / caller-allocated mode (BACKWARD COMPATIBLE):
-  //       Caller allocates per-expert dst_down[i] buffers and supplies
-  //       ldc_down[i] strides.  The library writes Op2 output there and
-  //       returns.  Caller (or moe_postop) reads from dst_down[i].
-  //       Engaged when dst_down is non-empty.
-  //
-  //   (2) Internal-alloc + src-reuse mode:
-  //       Caller leaves dst_down empty.  The library:
-  //         (a) obtains Op1 output scratch sized [M[i], N[i]] (wide)
-  //             or [M[i], N[i]/2] (tight / swiglu_oai-compact) per
-  //             expert in dst dtype;
-  //         (b) runs Op1 + activation into the scratch;
-  //         (c) runs Op2 reading from the scratch and writing BACK
-  //             INTO the caller's src[] buffer (in-place reuse);
-  //         (d) releases the scratch back to the library's internal
-  //             per-thread arena for reuse.  The arena keeps its
-  //             high-water capacity for subsequent calls.
-  //       Caller then reads Op2 output from the same src[] buffer.
-  //       Caller's `dst` parameter is ignored in this mode (typically
-  //       passed as a vector of nullptrs or an empty vector).
-  //
-  //       Memory-lifetime note for mode (2):
-  //         - The library does NOT call `free()` on the scratch at
-  //           end-of-call.  Instead, Op1 scratch is allocated from a
-  //           `static thread_local` arena (see `FusedMoEArena` in
-  //           group_matmul_fused_moe.cpp) that grows on demand to
-  //           the largest sizeof(M * N * dst_elem) seen on THIS
-  //           thread across all calls, and is retained for the
-  //           lifetime of the thread (freed in the thread-local
-  //           destructor when the thread exits).
-  //         - Similarly, the Op1 setup-side scratch (dst-ptr arrays,
-  //           per-expert ldc vectors, etc.) lives in a thread-local
-  //           `FusedMoEScratch` whose std::vectors keep their
-  //           allocated capacity across calls.
-  //         - Net per-call allocator traffic in steady state is
-  //           O(num_ops) field writes — no malloc/free on the hot
-  //           path.
-  //         - Per-thread resident-set footprint reflects the largest
-  //           fused-MoE shape that thread has ever executed; across
-  //           a pool of N worker threads the total resident footprint
-  //           is bounded above by
-  //             N × max_seen(M_total × N_max × sizeof(dst_elem)).
-  //           Frameworks that briefly run an outsized MoE shape on
-  //           many worker threads and do not want the footprint
-  //           persisted should either (a) use mode (1) (caller-
-  //           allocated dst_down) where the framework owns buffer
-  //           lifetime directly, or (b) execute such shapes on a
-  //           dedicated thread that can be torn down afterwards.
-  //
-  //       Caller-side preconditions for mode (2):
-  //         - src[i] must point to WRITABLE memory.  The const_cast
-  //           inside the library is well-defined because the caller
-  //           opted in by clearing dst_down and dst[].
-  //         - lda[i] >= N_down[i] so the Op2 row stride (which equals
-  //           lda[i] in mode 2) fits within the original src row
-  //           stride.  Naturally holds for MoE layers with
-  //           hidden_dim = K_input = N_down.
-  //         - **MATCHED PRECISION REQUIRED**: params[i].dtypes.src
-  //           MUST equal params[i].dtypes.dst.  Op2 writes dst-typed
-  //           elements at row stride lda[i] (in dst-element units)
-  //           into the caller's src[i] buffer.  When dst element
-  //           size > src element size (e.g. bf16 src + f32 dst) the
-  //           per-row write footprint (lda[i] * sizeof(dst_elem))
-  //           exceeds the per-row allocation footprint
-  //           (lda[i] * sizeof(src_elem)) and corrupts memory.
-  //           This is enforced as an always-on guard inside
-  //           group_matmul_fused_moe_execute() — mixed-precision
-  //           callers must use mode (1) (caller-allocated dst_down)
-  //           where the destination buffer is sized for dst dtype
-  //           independently of src.
-  //         - src[i] buffer size must be at least
-  //               M[i] * lda[i] * sizeof(dtypes.dst) bytes
-  //           (== M[i] * lda[i] * sizeof(dtypes.src) under matched
-  //           precision).  This is the Op2 row-pitched write footprint.
-  //
-  // Mode (2) is targeted at frameworks that do their own token-grouping
-  // scatter on src (so src is already a writable scratch), and their
-  // own weighted-reduce gather on the Op2 output.  ZenDNN allocating
-  // Op1 scratch internally (and freeing it at end-of-call) avoids
-  // forcing the framework to size and own the W13 intermediate.
-  std::vector<void *>
-  dst_down;           ///< Empty → mode (2); non-empty → mode (1).
-  std::vector<int>
-  ldc_down;              ///< Stride for dst_down (mode (1) only).
+    // ─── Op2 output mode selection (dst_down behaviour) ──────────────────
+    //
+    // The fused MoE op supports TWO modes for the down_proj output:
+    //
+    //   (1) Legacy / caller-allocated mode (BACKWARD COMPATIBLE):
+    //       Caller allocates per-expert dst_down[i] buffers and supplies
+    //       ldc_down[i] strides.  The library writes Op2 output there and
+    //       returns.  Caller (or moe_postop) reads from dst_down[i].
+    //       Engaged when dst_down is non-empty.
+    //
+    //   (2) Internal-alloc + src-reuse mode:
+    //       Caller leaves dst_down empty.  The library:
+    //         (a) obtains Op1 output scratch sized [M[i], N[i]] (wide)
+    //             or [M[i], N[i]/2] (tight / swiglu_oai-compact) per
+    //             expert in dst dtype;
+    //         (b) runs Op1 + activation into the scratch;
+    //         (c) runs Op2 reading from the scratch and writing BACK
+    //             INTO the caller's src[] buffer (in-place reuse);
+    //         (d) releases the scratch back to the library's internal
+    //             per-thread arena for reuse.  The arena keeps its
+    //             high-water capacity for subsequent calls.
+    //       Caller then reads Op2 output from the same src[] buffer.
+    //       Caller's `dst` parameter is ignored in this mode (typically
+    //       passed as a vector of nullptrs or an empty vector).
+    //
+    //       Memory-lifetime note for mode (2):
+    //         - The library does NOT call `free()` on the scratch at
+    //           end-of-call.  Instead, Op1 scratch is allocated from a
+    //           `static thread_local` arena (see `FusedMoEArena` in
+    //           group_matmul_fused_moe.cpp) that grows on demand to
+    //           the largest sizeof(M * N * dst_elem) seen on THIS
+    //           thread across all calls, and is retained for the
+    //           lifetime of the thread (freed in the thread-local
+    //           destructor when the thread exits).
+    //         - Similarly, the Op1 setup-side scratch (dst-ptr arrays,
+    //           per-expert ldc vectors, etc.) lives in a thread-local
+    //           `FusedMoEScratch` whose std::vectors keep their
+    //           allocated capacity across calls.
+    //         - Net per-call allocator traffic in steady state is
+    //           O(num_ops) field writes — no malloc/free on the hot
+    //           path.
+    //         - Per-thread resident-set footprint reflects the largest
+    //           fused-MoE shape that thread has ever executed; across
+    //           a pool of N worker threads the total resident footprint
+    //           is bounded above by
+    //             N × max_seen(M_total × N_max × sizeof(dst_elem)).
+    //           Frameworks that briefly run an outsized MoE shape on
+    //           many worker threads and do not want the footprint
+    //           persisted should either (a) use mode (1) (caller-
+    //           allocated dst_down) where the framework owns buffer
+    //           lifetime directly, or (b) execute such shapes on a
+    //           dedicated thread that can be torn down afterwards.
+    //
+    //       Caller-side preconditions for mode (2):
+    //         - src[i] must point to WRITABLE memory.  The const_cast
+    //           inside the library is well-defined because the caller
+    //           opted in by clearing dst_down and dst[].
+    //         - lda[i] >= N_down[i] so the Op2 row stride (which equals
+    //           lda[i] in mode 2) fits within the original src row
+    //           stride.  Naturally holds for MoE layers with
+    //           hidden_dim = K_input = N_down.
+    //         - **MATCHED PRECISION REQUIRED**: params[i].dtypes.src
+    //           MUST equal params[i].dtypes.dst.  Op2 writes dst-typed
+    //           elements at row stride lda[i] (in dst-element units)
+    //           into the caller's src[i] buffer.  When dst element
+    //           size > src element size (e.g. bf16 src + f32 dst) the
+    //           per-row write footprint (lda[i] * sizeof(dst_elem))
+    //           exceeds the per-row allocation footprint
+    //           (lda[i] * sizeof(src_elem)) and corrupts memory.
+    //           This is enforced as an always-on guard inside
+    //           group_matmul_fused_moe_execute() — mixed-precision
+    //           callers must use mode (1) (caller-allocated dst_down)
+    //           where the destination buffer is sized for dst dtype
+    //           independently of src.
+    //         - src[i] buffer size must be at least
+    //               M[i] * lda[i] * sizeof(dtypes.dst) bytes
+    //           (== M[i] * lda[i] * sizeof(dtypes.src) under matched
+    //           precision).  This is the Op2 row-pitched write footprint.
+    //
+    // Mode (2) is targeted at frameworks that do their own token-grouping
+    // scatter on src (so src is already a writable scratch), and their
+    // own weighted-reduce gather on the Op2 output.  ZenDNN allocating
+    // Op1 scratch internally (and freeing it at end-of-call) avoids
+    // forcing the framework to size and own the W13 intermediate.
+    std::vector<void *> dst_down; ///< Empty → mode (2); non-empty → mode (1).
+    std::vector<int> ldc_down; ///< Stride for dst_down (mode (1) only).
 };
 
 /**
@@ -597,21 +579,19 @@ struct grp_matmul_fused_moe_params {
 // weighted-reduce post-op.  No default on moe_postop so the older
 // 5-trailing-arg overload below remains unambiguous.
 status_t group_matmul_fused_moe_execute(
-  const grp_matmul_fused_moe_params &fused,
-  grp_matmul_gated_act_t act, data_type_t act_dtype,
-  const std::vector<char> &layout,
-  const std::vector<bool> &transA, const std::vector<bool> &transB,
-  const std::vector<int> &M, const std::vector<int> &N,
-  const std::vector<int> &K, const std::vector<float> &alpha,
-  const std::vector<const void *> &src, const std::vector<int> &lda,
-  const std::vector<const void *> &weight, const std::vector<int> &ldb,
-  const std::vector<const void *> &bias, const std::vector<float> &beta,
-  const std::vector<void *> &dst, const std::vector<int> &ldc,
-  const std::vector<bool> &is_weights_const,
-  std::vector<matmul_params> &params,
-  int num_threads,
-  const char **gemm_mode_out,
-  const group_matmul_moe_postop_params *moe_postop);
+        const grp_matmul_fused_moe_params &fused, grp_matmul_gated_act_t act,
+        data_type_t act_dtype, const std::vector<char> &layout,
+        const std::vector<bool> &transA, const std::vector<bool> &transB,
+        const std::vector<int> &M, const std::vector<int> &N,
+        const std::vector<int> &K, const std::vector<float> &alpha,
+        const std::vector<const void *> &src, const std::vector<int> &lda,
+        const std::vector<const void *> &weight, const std::vector<int> &ldb,
+        const std::vector<const void *> &bias, const std::vector<float> &beta,
+        const std::vector<void *> &dst, const std::vector<int> &ldc,
+        const std::vector<bool> &is_weights_const,
+        std::vector<matmul_params> &params, int num_threads,
+        const char **gemm_mode_out,
+        const group_matmul_moe_postop_params *moe_postop);
 
 // Legacy ABI-preserving overload: same as the original (pre-postop)
 // signature.  Kept as a separate exported symbol so binaries linked
@@ -620,20 +600,18 @@ status_t group_matmul_fused_moe_execute(
 // moe_postop = nullptr.  Source-level callers that previously relied
 // on `gemm_mode_out`'s default get the same default here.
 status_t group_matmul_fused_moe_execute(
-  const grp_matmul_fused_moe_params &fused,
-  grp_matmul_gated_act_t act, data_type_t act_dtype,
-  const std::vector<char> &layout,
-  const std::vector<bool> &transA, const std::vector<bool> &transB,
-  const std::vector<int> &M, const std::vector<int> &N,
-  const std::vector<int> &K, const std::vector<float> &alpha,
-  const std::vector<const void *> &src, const std::vector<int> &lda,
-  const std::vector<const void *> &weight, const std::vector<int> &ldb,
-  const std::vector<const void *> &bias, const std::vector<float> &beta,
-  const std::vector<void *> &dst, const std::vector<int> &ldc,
-  const std::vector<bool> &is_weights_const,
-  std::vector<matmul_params> &params,
-  int num_threads,
-  const char **gemm_mode_out = nullptr);
+        const grp_matmul_fused_moe_params &fused, grp_matmul_gated_act_t act,
+        data_type_t act_dtype, const std::vector<char> &layout,
+        const std::vector<bool> &transA, const std::vector<bool> &transB,
+        const std::vector<int> &M, const std::vector<int> &N,
+        const std::vector<int> &K, const std::vector<float> &alpha,
+        const std::vector<const void *> &src, const std::vector<int> &lda,
+        const std::vector<const void *> &weight, const std::vector<int> &ldb,
+        const std::vector<const void *> &bias, const std::vector<float> &beta,
+        const std::vector<void *> &dst, const std::vector<int> &ldc,
+        const std::vector<bool> &is_weights_const,
+        std::vector<matmul_params> &params, int num_threads,
+        const char **gemm_mode_out = nullptr);
 
 /**
  * @brief Release all fused-MoE thread-local scratch held by the
@@ -702,28 +680,19 @@ void clear_fused_moe_scratch();
  *                                halves layout does not colocate (g, u)
  *                                pairs on the same thread's N-tile.
  */
-bool group_matmul_run_parallel_dispatch(
-  const std::vector<char> &layout,
-  const std::vector<bool> &transA,
-  const std::vector<bool> &transB,
-  const std::vector<int> &M,
-  const std::vector<int> &N,
-  const std::vector<int> &K,
-  const std::vector<float> &alpha,
-  const std::vector<const void *> &src,
-  const std::vector<int> &lda,
-  const std::vector<const void *> &weight,
-  const std::vector<int> &ldb,
-  const std::vector<const void *> &bias,
-  const std::vector<float> &beta,
-  const std::vector<void *> &dst,
-  const std::vector<int> &ldc,
-  const std::vector<bool> &is_weights_const,
-  std::vector<matmul_params> &params,
-  int num_threads,
-  const char **gemm_mode_out,
-  grp_matmul_gated_act_t fused_act = grp_matmul_gated_act_t::none,
-  data_type_t act_dtype = data_type_t::none);
+bool group_matmul_run_parallel_dispatch(const std::vector<char> &layout,
+        const std::vector<bool> &transA, const std::vector<bool> &transB,
+        const std::vector<int> &M, const std::vector<int> &N,
+        const std::vector<int> &K, const std::vector<float> &alpha,
+        const std::vector<const void *> &src, const std::vector<int> &lda,
+        const std::vector<const void *> &weight, const std::vector<int> &ldb,
+        const std::vector<const void *> &bias, const std::vector<float> &beta,
+        const std::vector<void *> &dst, const std::vector<int> &ldc,
+        const std::vector<bool> &is_weights_const,
+        std::vector<matmul_params> &params, int num_threads,
+        const char **gemm_mode_out,
+        grp_matmul_gated_act_t fused_act = grp_matmul_gated_act_t::none,
+        data_type_t act_dtype = data_type_t::none);
 
 } // namespace matmul
 } // namespace lowoha

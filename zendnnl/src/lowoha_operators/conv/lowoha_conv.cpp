@@ -22,33 +22,31 @@ namespace zendnnl {
 namespace lowoha {
 namespace conv {
 
-status_t conv_kernel_wrapper(
-    const void *input,
-    const void *filter,
-    const void *bias,
-    void *output,
-    const bool is_weights_const,
-    conv_params &params
-) {
+status_t conv_kernel_wrapper(const void *input, const void *filter,
+        const void *bias, void *output, const bool is_weights_const,
+        conv_params &params) {
 
 #if ZENDNNL_DEPENDS_ONEDNN
     // Handle OneDNN implementation (when available)
-    if (params.algo == conv_algo_t::onednn ||
-        params.algo == conv_algo_t::onednn_blocked) {
+    if (params.algo == conv_algo_t::onednn
+            || params.algo == conv_algo_t::onednn_blocked) {
         log_info("Using OneDNN kernel for Conv");
-        status_t status = conv_onednn_wrapper(input, filter, bias, output, is_weights_const, params);
+        status_t status = conv_onednn_wrapper(
+                input, filter, bias, output, is_weights_const, params);
         if (status != status_t::success) {
             log_error("Conv: OneDNN kernel execution failed");
             // Fallback to reference implementation
             log_info("Conv: Falling back to reference implementation");
-            return conv_reference_wrapper(input, filter, bias, output, is_weights_const, params);
+            return conv_reference_wrapper(
+                    input, filter, bias, output, is_weights_const, params);
         }
         return status;
     }
 #else
     if (params.algo == conv_algo_t::reference) {
         log_info("Using Reference kernel for Conv");
-        status_t status = conv_reference_wrapper(input, filter, bias, output, is_weights_const, params);
+        status_t status = conv_reference_wrapper(
+                input, filter, bias, output, is_weights_const, params);
         if (status != status_t::success) {
             log_error("Conv: Reference kernel execution failed");
         }
@@ -59,29 +57,22 @@ status_t conv_kernel_wrapper(
     // If we reach here, no backend was explicitly selected or available
     // Use reference as universal fallback
     log_info("Conv: Using reference implementation as fallback");
-    return conv_reference_wrapper(input, filter, bias, output, is_weights_const, params);
+    return conv_reference_wrapper(
+            input, filter, bias, output, is_weights_const, params);
 }
 
-status_t conv_direct(
-    const void *input,
-    const void *filter,
-    const void *bias,
-    void *output,
-    const bool is_weights_const,
-    conv_params &params
-) {
+status_t conv_direct(const void *input, const void *filter, const void *bias,
+        void *output, const bool is_weights_const, conv_params &params) {
     const conv_dims_t &dims = params.dims;
 
     // Create profiler instance for timing
     zendnnl::profile::profiler_t profiler;
     bool is_profile = is_profile_enabled();
-    if (is_profile) {
-        profiler.tbp_start();
-    }
+    if (is_profile) { profiler.tbp_start(); }
 
     // Validate inputs
     if (validate_conv_inputs(input, filter, output, params)
-        != status_t::success) {
+            != status_t::success) {
         return status_t::failure;
     }
 
@@ -96,19 +87,19 @@ status_t conv_direct(
     [[maybe_unused]] std::ostringstream ss;
     if (apilog_info_enabled() || is_profile) {
         ss << "LOWOHA conv_direct";
-        if (params.depthwise.is_depthwise) {
-            ss << " (DEPTHWISE)";
-        }
-        ss << ": batch=" << dims.batch
-           << ", in_h=" << dims.in_height << ", in_w=" << dims.in_width
-           << ", in_c=" << dims.in_channels
+        if (params.depthwise.is_depthwise) { ss << " (DEPTHWISE)"; }
+        ss << ": batch=" << dims.batch << ", in_h=" << dims.in_height
+           << ", in_w=" << dims.in_width << ", in_c=" << dims.in_channels
            << ", out_h=" << dims.out_height << ", out_w=" << dims.out_width
            << ", out_c=" << dims.out_channels
-           << ", filter_h=" << dims.filter_height << ", filter_w=" << dims.filter_width
-           << ", stride_h=" << params.stride_h << ", stride_w=" << params.stride_w
-           << ", pad_t=" << params.pad_top << ", pad_l=" << params.pad_left
-           << ", pad_b=" << params.pad_bottom << ", pad_r=" << params.pad_right
-           << ", dilation_h=" << params.dilation_h << ", dilation_w=" << params.dilation_w;
+           << ", filter_h=" << dims.filter_height
+           << ", filter_w=" << dims.filter_width
+           << ", stride_h=" << params.stride_h
+           << ", stride_w=" << params.stride_w << ", pad_t=" << params.pad_top
+           << ", pad_l=" << params.pad_left << ", pad_b=" << params.pad_bottom
+           << ", pad_r=" << params.pad_right
+           << ", dilation_h=" << params.dilation_h
+           << ", dilation_w=" << params.dilation_w;
         // Print post-ops list
         ss << ", post_ops=[";
         for (size_t i = 0; i < params.postop_.size(); ++i) {
@@ -117,22 +108,40 @@ status_t conv_direct(
                 case zendnnl::ops::post_op_type_t::none: ss << "none"; break;
                 case zendnnl::ops::post_op_type_t::elu: ss << "elu"; break;
                 case zendnnl::ops::post_op_type_t::relu: ss << "relu"; break;
-                case zendnnl::ops::post_op_type_t::leaky_relu: ss << "leaky_relu"; break;
-                case zendnnl::ops::post_op_type_t::gelu_tanh: ss << "gelu_tanh"; break;
-                case zendnnl::ops::post_op_type_t::gelu_erf: ss << "gelu_erf"; break;
-                case zendnnl::ops::post_op_type_t::sigmoid: ss << "sigmoid"; break;
+                case zendnnl::ops::post_op_type_t::leaky_relu:
+                    ss << "leaky_relu";
+                    break;
+                case zendnnl::ops::post_op_type_t::gelu_tanh:
+                    ss << "gelu_tanh";
+                    break;
+                case zendnnl::ops::post_op_type_t::gelu_erf:
+                    ss << "gelu_erf";
+                    break;
+                case zendnnl::ops::post_op_type_t::sigmoid:
+                    ss << "sigmoid";
+                    break;
                 case zendnnl::ops::post_op_type_t::swish: ss << "swish"; break;
                 case zendnnl::ops::post_op_type_t::tanh: ss << "tanh"; break;
-                case zendnnl::ops::post_op_type_t::softmax: ss << "softmax"; break;
-                case zendnnl::ops::post_op_type_t::pooling: ss << "pooling"; break;
-                case zendnnl::ops::post_op_type_t::square: ss << "square"; break;
+                case zendnnl::ops::post_op_type_t::softmax:
+                    ss << "softmax";
+                    break;
+                case zendnnl::ops::post_op_type_t::pooling:
+                    ss << "pooling";
+                    break;
+                case zendnnl::ops::post_op_type_t::square:
+                    ss << "square";
+                    break;
                 case zendnnl::ops::post_op_type_t::abs: ss << "abs"; break;
                 case zendnnl::ops::post_op_type_t::sqrt: ss << "sqrt"; break;
                 case zendnnl::ops::post_op_type_t::exp: ss << "exp"; break;
                 case zendnnl::ops::post_op_type_t::log: ss << "log"; break;
                 case zendnnl::ops::post_op_type_t::clip: ss << "clip"; break;
-                case zendnnl::ops::post_op_type_t::binary_add: ss << "binary_add"; break;
-                case zendnnl::ops::post_op_type_t::binary_mul: ss << "binary_mul"; break;
+                case zendnnl::ops::post_op_type_t::binary_add:
+                    ss << "binary_add";
+                    break;
+                case zendnnl::ops::post_op_type_t::binary_mul:
+                    ss << "binary_mul";
+                    break;
                 default: ss << "unknown"; break;
             }
         }
@@ -159,11 +168,13 @@ status_t conv_direct(
     }
 
     // Execute convolution
-    status_t exec_status = conv_kernel_wrapper(input, filter, bias, output, is_weights_const, params);
+    status_t exec_status = conv_kernel_wrapper(
+            input, filter, bias, output, is_weights_const, params);
 
     if (is_profile) {
         profiler.tbp_stop();
-        profilelog_verbose(ss.str(), ", time=", profiler.tbp_elapsedtime(), profiler.get_res_str());
+        profilelog_verbose(ss.str(), ", time=", profiler.tbp_elapsedtime(),
+                profiler.get_res_str());
     }
 
     return exec_status;

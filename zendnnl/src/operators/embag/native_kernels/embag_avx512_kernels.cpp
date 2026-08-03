@@ -24,1004 +24,999 @@ namespace ops {
 using namespace zendnnl::memory;
 using namespace zendnnl::error_handling;
 
-template <
-  typename InType,
-  typename IndexType,
-  typename OffsetType,
-  typename OutType>
+template <typename InType, typename IndexType, typename OffsetType,
+        typename OutType>
 void embag_avx512_kernel(const InType *input, const float *weights,
-                         const IndexType *indices, const OffsetType *offsets,
-                         OutType *dst, int64_t width, int64_t indsz,
-                         int64_t offsz, int64_t padidx, bool is_weights,
-                         embag_algo_t reduction_type, int64_t dst_stride,
-                         bool include_last_offset);
+        const IndexType *indices, const OffsetType *offsets, OutType *dst,
+        int64_t width, int64_t indsz, int64_t offsz, int64_t padidx,
+        bool is_weights, embag_algo_t reduction_type, int64_t dst_stride,
+        bool include_last_offset);
 
-template <
-  bool IsInt4,
-  typename InType,
-  typename IndexType,
-  typename OffsetType,
-  typename OutType>
+template <bool IsInt4, typename InType, typename IndexType, typename OffsetType,
+        typename OutType>
 void embag_avx512_int8_int4_kernel(const InType *input, const float *weights,
-                                   const IndexType *indices, const OffsetType *offsets,
-                                   OutType *dst, int64_t width, int64_t indsz,
-                                   int64_t offsz, int64_t padidx, bool is_weights,
-                                   embag_algo_t reduction_type, int64_t dst_stride,
-                                   bool include_last_offset, data_type_t table_dtype, bool fp16_scale_bias);
+        const IndexType *indices, const OffsetType *offsets, OutType *dst,
+        int64_t width, int64_t indsz, int64_t offsz, int64_t padidx,
+        bool is_weights, embag_algo_t reduction_type, int64_t dst_stride,
+        bool include_last_offset, data_type_t table_dtype,
+        bool fp16_scale_bias);
 
 status_t embag_f32_avx512_kernel_t::execute(const context_type &context_,
-    tensor_map_type &inputs_,
-    tensor_map_type &outputs_) {
-  LOG_DEBUG_INFO("Executing embag_f32_avx512_kernel_t");
-  log_info("Executing embag_fp32_avx512 kernel");
+        tensor_map_type &inputs_, tensor_map_type &outputs_) {
+    LOG_DEBUG_INFO("Executing embag_f32_avx512_kernel_t");
+    log_info("Executing embag_fp32_avx512 kernel");
 
-  const auto table_param = context_.get_param("table");
-  const auto &table_tensor = table_param.value();
+    const auto table_param = context_.get_param("table");
+    const auto &table_tensor = table_param.value();
 
-  auto indices_iter = inputs_.find("indices");
-  auto dst_iter = outputs_.find("output");
-  auto offsets_iter   = inputs_.find("offsets");
-  auto weights_iter   = inputs_.find("weights");
+    auto indices_iter = inputs_.find("indices");
+    auto dst_iter = outputs_.find("output");
+    auto offsets_iter = inputs_.find("offsets");
+    auto weights_iter = inputs_.find("weights");
 
-  if (indices_iter == inputs_.end()) {
-    log_error("indices tensor not found");
-    return status_t::failure;
-  }
-  if (dst_iter == outputs_.end()) {
-    log_error("output tensor not found");
-    return status_t::failure;
-  }
-
-  const auto &indices_tensor = indices_iter->second;
-  const auto &dst_tensor = dst_iter->second;
-
-  float const *input    = (const float *)table_tensor.get_raw_handle_const();
-  float       *weights  = nullptr;
-
-  const int64_t  width            = table_tensor.get_size(1);
-  const int64_t  indsz            = indices_tensor.get_size(0);
-  bool is_offsets                 = (offsets_iter != inputs_.end()) ? true :
-                                    false;
-  auto indices_data_type          = indices_tensor.get_data_type();
-  auto output_data_type           = dst_tensor.get_data_type();
-  const int64_t  padidx           = context_.get_padding_index();
-  int64_t stride                  = dst_tensor.get_stride()[0];
-  const embag_algo_t algo         = context_.get_algo();
-  const bool include_last_offset  = context_.get_include_last_offset();
-  const bool is_weights           = context_.get_is_weights();
-  int64_t offsz                   = 0;
-
-  // weights tensor is present
-  if (is_weights) {
-    if (weights_iter == inputs_.end()) {
-      log_error("weights tensor not found but is_weights is true");
-      return status_t::failure;
+    if (indices_iter == inputs_.end()) {
+        log_error("indices tensor not found");
+        return status_t::failure;
     }
-    const auto &weights_tensor = weights_iter->second;
-    weights = (float *)weights_tensor.get_raw_handle_unsafe();
-  }
+    if (dst_iter == outputs_.end()) {
+        log_error("output tensor not found");
+        return status_t::failure;
+    }
 
-  // Offsets tensor is optional - when not provided,
-  // operates as simple embedding lookup rather than embedding bag aggregation
-  if (is_offsets) {
-    auto offsets_tensor = offsets_iter->second;
-    offsz = offsets_tensor.get_size(0);
-    if (include_last_offset==1) {
-      offsz -= 1;
-    }
-  }
+    const auto &indices_tensor = indices_iter->second;
+    const auto &dst_tensor = dst_iter->second;
 
-  if (output_data_type == data_type_t::f32) {
-    float *dst = (float *)dst_tensor.get_raw_handle_unsafe();
-    if (indices_data_type == data_type_t::s64) {
-      int64_t *indices = (int64_t *)indices_tensor.get_raw_handle_unsafe();
-      int64_t *offsets = nullptr;
-      if (is_offsets) {
-        offsets = (int64_t *)offsets_iter->second.get_raw_handle_unsafe();
-      }
-      embag_avx512_kernel<float, int64_t, int64_t, float>(
-        input, weights, indices, offsets, dst, width, indsz, offsz,
-        padidx, is_weights, algo, stride, include_last_offset);
+    float const *input = (const float *)table_tensor.get_raw_handle_const();
+    float *weights = nullptr;
+
+    const int64_t width = table_tensor.get_size(1);
+    const int64_t indsz = indices_tensor.get_size(0);
+    bool is_offsets = (offsets_iter != inputs_.end()) ? true : false;
+    auto indices_data_type = indices_tensor.get_data_type();
+    auto output_data_type = dst_tensor.get_data_type();
+    const int64_t padidx = context_.get_padding_index();
+    int64_t stride = dst_tensor.get_stride()[0];
+    const embag_algo_t algo = context_.get_algo();
+    const bool include_last_offset = context_.get_include_last_offset();
+    const bool is_weights = context_.get_is_weights();
+    int64_t offsz = 0;
+
+    // weights tensor is present
+    if (is_weights) {
+        if (weights_iter == inputs_.end()) {
+            log_error("weights tensor not found but is_weights is true");
+            return status_t::failure;
+        }
+        const auto &weights_tensor = weights_iter->second;
+        weights = (float *)weights_tensor.get_raw_handle_unsafe();
     }
-    else if (indices_data_type == data_type_t::s32) {
-      int32_t *indices = (int32_t *)indices_tensor.get_raw_handle_unsafe();
-      int32_t *offsets = nullptr;
-      if (is_offsets) {
-        offsets = (int32_t *)offsets_iter->second.get_raw_handle_unsafe();
-      }
-      embag_avx512_kernel<float, int32_t, int32_t, float>(
-        input, weights, indices, offsets, dst, width, indsz, offsz,
-        padidx, is_weights, algo, stride, include_last_offset);
+
+    // Offsets tensor is optional - when not provided,
+    // operates as simple embedding lookup rather than embedding bag aggregation
+    if (is_offsets) {
+        auto offsets_tensor = offsets_iter->second;
+        offsz = offsets_tensor.get_size(0);
+        if (include_last_offset == 1) { offsz -= 1; }
     }
-    else {
-      apilog_error("Unsupported data type for indices and offsets");
-      return status_t::unimplemented;
-    }
-  }
-  else if (output_data_type == data_type_t::bf16) {
-    uint16_t *dst = (uint16_t *)dst_tensor.get_raw_handle_unsafe();
-    if (indices_data_type == data_type_t::s64) {
-      int64_t *indices = (int64_t *)indices_tensor.get_raw_handle_unsafe();
-      int64_t *offsets = nullptr;
-      if (is_offsets) {
-        offsets = (int64_t *)offsets_iter->second.get_raw_handle_unsafe();
-      }
-      embag_avx512_kernel<float, int64_t, int64_t, uint16_t>(
-        input, weights, indices, offsets, dst, width, indsz, offsz,
-        padidx, is_weights, algo, stride, include_last_offset);
-    }
-    else if (indices_data_type == data_type_t::s32) {
-      int32_t *indices = (int32_t *)indices_tensor.get_raw_handle_unsafe();
-      int32_t *offsets = nullptr;
-      if (is_offsets) {
-        offsets = (int32_t *)offsets_iter->second.get_raw_handle_unsafe();
-      }
-      embag_avx512_kernel<float, int32_t, int32_t, uint16_t>(
-        input, weights, indices, offsets, dst, width, indsz, offsz,
-        padidx, is_weights, algo, stride, include_last_offset);
-    }
-    else {
-      apilog_error("Unsupported data type for indices and offsets");
-      return status_t::unimplemented;
-    }
-  }
-  else if (output_data_type == data_type_t::f16) {
-    float16_t *dst = (float16_t *)dst_tensor.get_raw_handle_unsafe();
-    if (indices_data_type == data_type_t::s64) {
-      int64_t *indices = (int64_t *)indices_tensor.get_raw_handle_unsafe();
-      int64_t *offsets = nullptr;
-      if (is_offsets) {
-        offsets = (int64_t *)offsets_iter->second.get_raw_handle_unsafe();
-      }
+
+    if (output_data_type == data_type_t::f32) {
+        float *dst = (float *)dst_tensor.get_raw_handle_unsafe();
+        if (indices_data_type == data_type_t::s64) {
+            int64_t *indices
+                    = (int64_t *)indices_tensor.get_raw_handle_unsafe();
+            int64_t *offsets = nullptr;
+            if (is_offsets) {
+                offsets = (int64_t *)
+                                  offsets_iter->second.get_raw_handle_unsafe();
+            }
+            embag_avx512_kernel<float, int64_t, int64_t, float>(input, weights,
+                    indices, offsets, dst, width, indsz, offsz, padidx,
+                    is_weights, algo, stride, include_last_offset);
+        } else if (indices_data_type == data_type_t::s32) {
+            int32_t *indices
+                    = (int32_t *)indices_tensor.get_raw_handle_unsafe();
+            int32_t *offsets = nullptr;
+            if (is_offsets) {
+                offsets = (int32_t *)
+                                  offsets_iter->second.get_raw_handle_unsafe();
+            }
+            embag_avx512_kernel<float, int32_t, int32_t, float>(input, weights,
+                    indices, offsets, dst, width, indsz, offsz, padidx,
+                    is_weights, algo, stride, include_last_offset);
+        } else {
+            apilog_error("Unsupported data type for indices and offsets");
+            return status_t::unimplemented;
+        }
+    } else if (output_data_type == data_type_t::bf16) {
+        uint16_t *dst = (uint16_t *)dst_tensor.get_raw_handle_unsafe();
+        if (indices_data_type == data_type_t::s64) {
+            int64_t *indices
+                    = (int64_t *)indices_tensor.get_raw_handle_unsafe();
+            int64_t *offsets = nullptr;
+            if (is_offsets) {
+                offsets = (int64_t *)
+                                  offsets_iter->second.get_raw_handle_unsafe();
+            }
+            embag_avx512_kernel<float, int64_t, int64_t, uint16_t>(input,
+                    weights, indices, offsets, dst, width, indsz, offsz, padidx,
+                    is_weights, algo, stride, include_last_offset);
+        } else if (indices_data_type == data_type_t::s32) {
+            int32_t *indices
+                    = (int32_t *)indices_tensor.get_raw_handle_unsafe();
+            int32_t *offsets = nullptr;
+            if (is_offsets) {
+                offsets = (int32_t *)
+                                  offsets_iter->second.get_raw_handle_unsafe();
+            }
+            embag_avx512_kernel<float, int32_t, int32_t, uint16_t>(input,
+                    weights, indices, offsets, dst, width, indsz, offsz, padidx,
+                    is_weights, algo, stride, include_last_offset);
+        } else {
+            apilog_error("Unsupported data type for indices and offsets");
+            return status_t::unimplemented;
+        }
+    } else if (output_data_type == data_type_t::f16) {
+        float16_t *dst = (float16_t *)dst_tensor.get_raw_handle_unsafe();
+        if (indices_data_type == data_type_t::s64) {
+            int64_t *indices
+                    = (int64_t *)indices_tensor.get_raw_handle_unsafe();
+            int64_t *offsets = nullptr;
+            if (is_offsets) {
+                offsets = (int64_t *)
+                                  offsets_iter->second.get_raw_handle_unsafe();
+            }
 #if __GNUC__ >= 12
-      if (can_use_f16_fma_kernel()) {
-        embag_config_t::instance().set_accum_type(data_type_t::f16);
-        embag_avx512_f16_fma_kernel<float, int64_t, int64_t, float16_t>(
-          input, weights, indices, offsets, dst, width, indsz, offsz,
-          padidx, is_weights, algo, stride, include_last_offset);
-      }
-      else
+            if (can_use_f16_fma_kernel()) {
+                embag_config_t::instance().set_accum_type(data_type_t::f16);
+                embag_avx512_f16_fma_kernel<float, int64_t, int64_t, float16_t>(
+                        input, weights, indices, offsets, dst, width, indsz,
+                        offsz, padidx, is_weights, algo, stride,
+                        include_last_offset);
+            } else
 #endif
-      {
-        embag_config_t::instance().set_accum_type(data_type_t::f32);
-        embag_avx512_kernel<float, int64_t, int64_t, float16_t>(
-          input, weights, indices, offsets, dst, width, indsz, offsz,
-          padidx, is_weights, algo, stride, include_last_offset);
-      }
-    }
-    else if (indices_data_type == data_type_t::s32) {
-      int32_t *indices = (int32_t *)indices_tensor.get_raw_handle_unsafe();
-      int32_t *offsets = nullptr;
-      if (is_offsets) {
-        offsets = (int32_t *)offsets_iter->second.get_raw_handle_unsafe();
-      }
+            {
+                embag_config_t::instance().set_accum_type(data_type_t::f32);
+                embag_avx512_kernel<float, int64_t, int64_t, float16_t>(input,
+                        weights, indices, offsets, dst, width, indsz, offsz,
+                        padidx, is_weights, algo, stride, include_last_offset);
+            }
+        } else if (indices_data_type == data_type_t::s32) {
+            int32_t *indices
+                    = (int32_t *)indices_tensor.get_raw_handle_unsafe();
+            int32_t *offsets = nullptr;
+            if (is_offsets) {
+                offsets = (int32_t *)
+                                  offsets_iter->second.get_raw_handle_unsafe();
+            }
 #if __GNUC__ >= 12
-      if (can_use_f16_fma_kernel()) {
-        embag_config_t::instance().set_accum_type(data_type_t::f16);
-        embag_avx512_f16_fma_kernel<float, int32_t, int32_t, float16_t>(
-          input, weights, indices, offsets, dst, width, indsz, offsz,
-          padidx, is_weights, algo, stride, include_last_offset);
-      }
-      else
+            if (can_use_f16_fma_kernel()) {
+                embag_config_t::instance().set_accum_type(data_type_t::f16);
+                embag_avx512_f16_fma_kernel<float, int32_t, int32_t, float16_t>(
+                        input, weights, indices, offsets, dst, width, indsz,
+                        offsz, padidx, is_weights, algo, stride,
+                        include_last_offset);
+            } else
 #endif
-      {
-        embag_config_t::instance().set_accum_type(data_type_t::f32);
-        embag_avx512_kernel<float, int32_t, int32_t, float16_t>(
-          input, weights, indices, offsets, dst, width, indsz, offsz,
-          padidx, is_weights, algo, stride, include_last_offset);
-      }
+            {
+                embag_config_t::instance().set_accum_type(data_type_t::f32);
+                embag_avx512_kernel<float, int32_t, int32_t, float16_t>(input,
+                        weights, indices, offsets, dst, width, indsz, offsz,
+                        padidx, is_weights, algo, stride, include_last_offset);
+            }
+        } else {
+            apilog_error("Unsupported data type for indices and offsets");
+            return status_t::unimplemented;
+        }
+    } else {
+        apilog_error("kernel unimplemented.");
+        return status_t::unimplemented;
     }
-    else {
-      apilog_error("Unsupported data type for indices and offsets");
-      return status_t::unimplemented;
-    }
-  }
-  else {
-    apilog_error("kernel unimplemented.");
-    return status_t::unimplemented;
-  }
-  return status_t::success;
-
+    return status_t::success;
 }
 
 status_t embag_bf16_avx512_kernel_t::execute(const context_type &context_,
-    tensor_map_type &inputs_,
-    tensor_map_type &outputs_) {
-  LOG_DEBUG_INFO("Executing embag_bf16_avx512_kernel_t");
-  log_info("Executing embag_bf16_avx512 kernel");
+        tensor_map_type &inputs_, tensor_map_type &outputs_) {
+    LOG_DEBUG_INFO("Executing embag_bf16_avx512_kernel_t");
+    log_info("Executing embag_bf16_avx512 kernel");
 
-  const auto table_param = context_.get_param("table");
-  const auto &table_tensor = table_param.value();
+    const auto table_param = context_.get_param("table");
+    const auto &table_tensor = table_param.value();
 
-  auto indices_iter = inputs_.find("indices");
-  auto dst_iter = outputs_.find("output");
-  auto offsets_iter   = inputs_.find("offsets");
-  auto weights_iter   = inputs_.find("weights");
+    auto indices_iter = inputs_.find("indices");
+    auto dst_iter = outputs_.find("output");
+    auto offsets_iter = inputs_.find("offsets");
+    auto weights_iter = inputs_.find("weights");
 
-  if (indices_iter == inputs_.end()) {
-    log_error("indices tensor not found");
-    return status_t::failure;
-  }
-  if (dst_iter == outputs_.end()) {
-    log_error("output tensor not found");
-    return status_t::failure;
-  }
-
-  const auto &indices_tensor = indices_iter->second;
-  const auto &dst_tensor = dst_iter->second;
-
-  uint16_t const *input   = (const uint16_t *)table_tensor.get_raw_handle_const();
-  float          *weights = nullptr;
-
-  const int64_t  width            = table_tensor.get_size(1);
-  const int64_t  indsz            = indices_tensor.get_size(0);
-  bool is_offsets                 = (offsets_iter != inputs_.end()) ? true :
-                                    false;
-  auto indices_data_type          = indices_tensor.get_data_type();
-  auto output_data_type           = dst_tensor.get_data_type();
-  const int64_t  padidx           = context_.get_padding_index();
-  int64_t stride                  = dst_tensor.get_stride()[0];
-  const embag_algo_t algo         = context_.get_algo();
-  const bool include_last_offset  = context_.get_include_last_offset();
-  const bool is_weights           = context_.get_is_weights();
-  int64_t offsz                   = 0;
-
-  // weights tensor is present
-  if (is_weights) {
-    if (weights_iter == inputs_.end()) {
-      log_error("weights tensor not found but is_weights is true");
-      return status_t::failure;
+    if (indices_iter == inputs_.end()) {
+        log_error("indices tensor not found");
+        return status_t::failure;
     }
-    const auto &weights_tensor = weights_iter->second;
-    weights = (float *)weights_tensor.get_raw_handle_unsafe();
-  }
+    if (dst_iter == outputs_.end()) {
+        log_error("output tensor not found");
+        return status_t::failure;
+    }
 
-  // Offsets tensor is optional - when not provided,
-  // operates as simple embedding lookup rather than embedding bag aggregation
-  if (is_offsets) {
-    auto offsets_tensor = offsets_iter->second;
-    offsz = offsets_tensor.get_size(0);
-    if (include_last_offset==1) {
-      offsz -= 1;
-    }
-  }
+    const auto &indices_tensor = indices_iter->second;
+    const auto &dst_tensor = dst_iter->second;
 
-  if (output_data_type == data_type_t::f32) {
-    float *dst = (float *)dst_tensor.get_raw_handle_unsafe();
-    if (indices_data_type == data_type_t::s64) {
-      int64_t *indices = (int64_t *)indices_tensor.get_raw_handle_unsafe();
-      int64_t *offsets = nullptr;
-      if (is_offsets) {
-        offsets = (int64_t *)offsets_iter->second.get_raw_handle_unsafe();
-      }
-      embag_avx512_kernel<uint16_t, int64_t, int64_t, float>(
-        input, weights, indices, offsets, dst, width, indsz, offsz,
-        padidx, is_weights, algo, stride, include_last_offset);
-    }
-    else if (indices_data_type == data_type_t::s32) {
-      int32_t *indices = (int32_t *)indices_tensor.get_raw_handle_unsafe();
-      int32_t *offsets = nullptr;
-      if (is_offsets) {
-        offsets = (int32_t *)offsets_iter->second.get_raw_handle_unsafe();
-      }
-      embag_avx512_kernel<uint16_t, int32_t, int32_t, float>(
-        input, weights, indices, offsets, dst, width, indsz, offsz,
-        padidx, is_weights, algo, stride, include_last_offset);
-    }
-    else {
-      apilog_error("Unsupported data type for indices and offsets");
-      return status_t::unimplemented;
-    }
-  }
-  else if (output_data_type == data_type_t::bf16) {
-    uint16_t *dst = (uint16_t *)dst_tensor.get_raw_handle_unsafe();
-    if (indices_data_type == data_type_t::s64) {
-      int64_t *indices = (int64_t *)indices_tensor.get_raw_handle_unsafe();
-      int64_t *offsets = nullptr;
-      if (is_offsets) {
-        offsets = (int64_t *)offsets_iter->second.get_raw_handle_unsafe();
-      }
-      embag_avx512_kernel<uint16_t, int64_t, int64_t, uint16_t>(
-        input, weights, indices, offsets, dst, width, indsz, offsz,
-        padidx, is_weights, algo, stride, include_last_offset);
-    }
-    else if (indices_data_type == data_type_t::s32) {
-      int32_t *indices = (int32_t *)indices_tensor.get_raw_handle_unsafe();
-      int32_t *offsets = nullptr;
-      if (is_offsets) {
-        offsets = (int32_t *)offsets_iter->second.get_raw_handle_unsafe();
-      }
-      embag_avx512_kernel<uint16_t, int32_t, int32_t, uint16_t>(
-        input, weights, indices, offsets, dst, width, indsz, offsz,
-        padidx, is_weights, algo, stride, include_last_offset);
-    }
-    else {
-      apilog_error("Unsupported data type for indices and offsets");
-      return status_t::unimplemented;
-    }
-  }
-  else {
-    apilog_error("kernel unimplemented.");
-    return status_t::unimplemented;
-  }
+    uint16_t const *input
+            = (const uint16_t *)table_tensor.get_raw_handle_const();
+    float *weights = nullptr;
 
-  return status_t::success;
+    const int64_t width = table_tensor.get_size(1);
+    const int64_t indsz = indices_tensor.get_size(0);
+    bool is_offsets = (offsets_iter != inputs_.end()) ? true : false;
+    auto indices_data_type = indices_tensor.get_data_type();
+    auto output_data_type = dst_tensor.get_data_type();
+    const int64_t padidx = context_.get_padding_index();
+    int64_t stride = dst_tensor.get_stride()[0];
+    const embag_algo_t algo = context_.get_algo();
+    const bool include_last_offset = context_.get_include_last_offset();
+    const bool is_weights = context_.get_is_weights();
+    int64_t offsz = 0;
+
+    // weights tensor is present
+    if (is_weights) {
+        if (weights_iter == inputs_.end()) {
+            log_error("weights tensor not found but is_weights is true");
+            return status_t::failure;
+        }
+        const auto &weights_tensor = weights_iter->second;
+        weights = (float *)weights_tensor.get_raw_handle_unsafe();
+    }
+
+    // Offsets tensor is optional - when not provided,
+    // operates as simple embedding lookup rather than embedding bag aggregation
+    if (is_offsets) {
+        auto offsets_tensor = offsets_iter->second;
+        offsz = offsets_tensor.get_size(0);
+        if (include_last_offset == 1) { offsz -= 1; }
+    }
+
+    if (output_data_type == data_type_t::f32) {
+        float *dst = (float *)dst_tensor.get_raw_handle_unsafe();
+        if (indices_data_type == data_type_t::s64) {
+            int64_t *indices
+                    = (int64_t *)indices_tensor.get_raw_handle_unsafe();
+            int64_t *offsets = nullptr;
+            if (is_offsets) {
+                offsets = (int64_t *)
+                                  offsets_iter->second.get_raw_handle_unsafe();
+            }
+            embag_avx512_kernel<uint16_t, int64_t, int64_t, float>(input,
+                    weights, indices, offsets, dst, width, indsz, offsz, padidx,
+                    is_weights, algo, stride, include_last_offset);
+        } else if (indices_data_type == data_type_t::s32) {
+            int32_t *indices
+                    = (int32_t *)indices_tensor.get_raw_handle_unsafe();
+            int32_t *offsets = nullptr;
+            if (is_offsets) {
+                offsets = (int32_t *)
+                                  offsets_iter->second.get_raw_handle_unsafe();
+            }
+            embag_avx512_kernel<uint16_t, int32_t, int32_t, float>(input,
+                    weights, indices, offsets, dst, width, indsz, offsz, padidx,
+                    is_weights, algo, stride, include_last_offset);
+        } else {
+            apilog_error("Unsupported data type for indices and offsets");
+            return status_t::unimplemented;
+        }
+    } else if (output_data_type == data_type_t::bf16) {
+        uint16_t *dst = (uint16_t *)dst_tensor.get_raw_handle_unsafe();
+        if (indices_data_type == data_type_t::s64) {
+            int64_t *indices
+                    = (int64_t *)indices_tensor.get_raw_handle_unsafe();
+            int64_t *offsets = nullptr;
+            if (is_offsets) {
+                offsets = (int64_t *)
+                                  offsets_iter->second.get_raw_handle_unsafe();
+            }
+            embag_avx512_kernel<uint16_t, int64_t, int64_t, uint16_t>(input,
+                    weights, indices, offsets, dst, width, indsz, offsz, padidx,
+                    is_weights, algo, stride, include_last_offset);
+        } else if (indices_data_type == data_type_t::s32) {
+            int32_t *indices
+                    = (int32_t *)indices_tensor.get_raw_handle_unsafe();
+            int32_t *offsets = nullptr;
+            if (is_offsets) {
+                offsets = (int32_t *)
+                                  offsets_iter->second.get_raw_handle_unsafe();
+            }
+            embag_avx512_kernel<uint16_t, int32_t, int32_t, uint16_t>(input,
+                    weights, indices, offsets, dst, width, indsz, offsz, padidx,
+                    is_weights, algo, stride, include_last_offset);
+        } else {
+            apilog_error("Unsupported data type for indices and offsets");
+            return status_t::unimplemented;
+        }
+    } else {
+        apilog_error("kernel unimplemented.");
+        return status_t::unimplemented;
+    }
+
+    return status_t::success;
 }
 
 status_t embag_f16_avx512_kernel_t::execute(const context_type &context_,
-    tensor_map_type &inputs_,
-    tensor_map_type &outputs_) {
-  LOG_DEBUG_INFO("Executing embag_f16_avx512_kernel_t");
-  log_info("Executing embag_f16_avx512 kernel");
+        tensor_map_type &inputs_, tensor_map_type &outputs_) {
+    LOG_DEBUG_INFO("Executing embag_f16_avx512_kernel_t");
+    log_info("Executing embag_f16_avx512 kernel");
 
-  // TODO(embag-accum-singleton): the set_accum_type calls below duplicate
-  // the F16-FMA-vs-F32 selection performed by dispatch_avx512_kernel() in
-  // lowoha_operators/embedding_bag/dispatch_kernel.hpp. Keep both paths in
-  // sync until a shared helper is introduced. See embag_config.hpp
-  // set_accum_type doc for the full plan.
+    // TODO(embag-accum-singleton): the set_accum_type calls below duplicate
+    // the F16-FMA-vs-F32 selection performed by dispatch_avx512_kernel() in
+    // lowoha_operators/embedding_bag/dispatch_kernel.hpp. Keep both paths in
+    // sync until a shared helper is introduced. See embag_config.hpp
+    // set_accum_type doc for the full plan.
 
-  const auto table_param = context_.get_param("table");
-  const auto &table_tensor = table_param.value();
+    const auto table_param = context_.get_param("table");
+    const auto &table_tensor = table_param.value();
 
-  auto indices_iter = inputs_.find("indices");
-  auto dst_iter = outputs_.find("output");
-  auto offsets_iter   = inputs_.find("offsets");
-  auto weights_iter   = inputs_.find("weights");
+    auto indices_iter = inputs_.find("indices");
+    auto dst_iter = outputs_.find("output");
+    auto offsets_iter = inputs_.find("offsets");
+    auto weights_iter = inputs_.find("weights");
 
-  if (indices_iter == inputs_.end()) {
-    log_error("indices tensor not found");
-    return status_t::failure;
-  }
-  if (dst_iter == outputs_.end()) {
-    log_error("output tensor not found");
-    return status_t::failure;
-  }
-
-  const auto &indices_tensor = indices_iter->second;
-  const auto &dst_tensor = dst_iter->second;
-
-  const float16_t *input = (const float16_t *)table_tensor.get_raw_handle_const();
-  float            *weights = nullptr;
-
-  const int64_t  width            = table_tensor.get_size(1);
-  const int64_t  indsz            = indices_tensor.get_size(0);
-  bool is_offsets                 = (offsets_iter != inputs_.end()) ? true :
-                                    false;
-  auto indices_data_type          = indices_tensor.get_data_type();
-  auto output_data_type           = dst_tensor.get_data_type();
-  const int64_t  padidx           = context_.get_padding_index();
-  int64_t stride                  = dst_tensor.get_stride()[0];
-  const embag_algo_t algo         = context_.get_algo();
-  const bool include_last_offset  = context_.get_include_last_offset();
-  const bool is_weights           = context_.get_is_weights();
-  int64_t offsz                   = 0;
-
-  if (is_weights) {
-    if (weights_iter == inputs_.end()) {
-      log_error("weights tensor not found but is_weights is true");
-      return status_t::failure;
+    if (indices_iter == inputs_.end()) {
+        log_error("indices tensor not found");
+        return status_t::failure;
     }
-    const auto &weights_tensor = weights_iter->second;
-    weights = (float *)weights_tensor.get_raw_handle_unsafe();
-  }
-
-  if (is_offsets) {
-    auto offsets_tensor = offsets_iter->second;
-    offsz = offsets_tensor.get_size(0);
-    if (include_last_offset==1) {
-      offsz -= 1;
+    if (dst_iter == outputs_.end()) {
+        log_error("output tensor not found");
+        return status_t::failure;
     }
-  }
 
-  if (output_data_type == data_type_t::f32) {
-    float *dst = (float *)dst_tensor.get_raw_handle_unsafe();
-    if (indices_data_type == data_type_t::s64) {
-      int64_t *indices = (int64_t *)indices_tensor.get_raw_handle_unsafe();
-      int64_t *offsets = nullptr;
-      if (is_offsets) {
-        offsets = (int64_t *)offsets_iter->second.get_raw_handle_unsafe();
-      }
+    const auto &indices_tensor = indices_iter->second;
+    const auto &dst_tensor = dst_iter->second;
+
+    const float16_t *input
+            = (const float16_t *)table_tensor.get_raw_handle_const();
+    float *weights = nullptr;
+
+    const int64_t width = table_tensor.get_size(1);
+    const int64_t indsz = indices_tensor.get_size(0);
+    bool is_offsets = (offsets_iter != inputs_.end()) ? true : false;
+    auto indices_data_type = indices_tensor.get_data_type();
+    auto output_data_type = dst_tensor.get_data_type();
+    const int64_t padidx = context_.get_padding_index();
+    int64_t stride = dst_tensor.get_stride()[0];
+    const embag_algo_t algo = context_.get_algo();
+    const bool include_last_offset = context_.get_include_last_offset();
+    const bool is_weights = context_.get_is_weights();
+    int64_t offsz = 0;
+
+    if (is_weights) {
+        if (weights_iter == inputs_.end()) {
+            log_error("weights tensor not found but is_weights is true");
+            return status_t::failure;
+        }
+        const auto &weights_tensor = weights_iter->second;
+        weights = (float *)weights_tensor.get_raw_handle_unsafe();
+    }
+
+    if (is_offsets) {
+        auto offsets_tensor = offsets_iter->second;
+        offsz = offsets_tensor.get_size(0);
+        if (include_last_offset == 1) { offsz -= 1; }
+    }
+
+    if (output_data_type == data_type_t::f32) {
+        float *dst = (float *)dst_tensor.get_raw_handle_unsafe();
+        if (indices_data_type == data_type_t::s64) {
+            int64_t *indices
+                    = (int64_t *)indices_tensor.get_raw_handle_unsafe();
+            int64_t *offsets = nullptr;
+            if (is_offsets) {
+                offsets = (int64_t *)
+                                  offsets_iter->second.get_raw_handle_unsafe();
+            }
 #if __GNUC__ >= 12
-      if (can_use_f16_fma_kernel()) {
-        embag_config_t::instance().set_accum_type(data_type_t::f16);
-        embag_avx512_f16_fma_kernel<float16_t, int64_t, int64_t, float>(
-          input, weights, indices, offsets, dst, width, indsz, offsz,
-          padidx, is_weights, algo, stride, include_last_offset);
-      }
-      else
+            if (can_use_f16_fma_kernel()) {
+                embag_config_t::instance().set_accum_type(data_type_t::f16);
+                embag_avx512_f16_fma_kernel<float16_t, int64_t, int64_t, float>(
+                        input, weights, indices, offsets, dst, width, indsz,
+                        offsz, padidx, is_weights, algo, stride,
+                        include_last_offset);
+            } else
 #endif
-      {
-        embag_config_t::instance().set_accum_type(data_type_t::f32);
-        embag_avx512_kernel<float16_t, int64_t, int64_t, float>(
-          input, weights, indices, offsets, dst, width, indsz, offsz,
-          padidx, is_weights, algo, stride, include_last_offset);
-      }
-    }
-    else if (indices_data_type == data_type_t::s32) {
-      int32_t *indices = (int32_t *)indices_tensor.get_raw_handle_unsafe();
-      int32_t *offsets = nullptr;
-      if (is_offsets) {
-        offsets = (int32_t *)offsets_iter->second.get_raw_handle_unsafe();
-      }
+            {
+                embag_config_t::instance().set_accum_type(data_type_t::f32);
+                embag_avx512_kernel<float16_t, int64_t, int64_t, float>(input,
+                        weights, indices, offsets, dst, width, indsz, offsz,
+                        padidx, is_weights, algo, stride, include_last_offset);
+            }
+        } else if (indices_data_type == data_type_t::s32) {
+            int32_t *indices
+                    = (int32_t *)indices_tensor.get_raw_handle_unsafe();
+            int32_t *offsets = nullptr;
+            if (is_offsets) {
+                offsets = (int32_t *)
+                                  offsets_iter->second.get_raw_handle_unsafe();
+            }
 #if __GNUC__ >= 12
-      if (can_use_f16_fma_kernel()) {
-        embag_config_t::instance().set_accum_type(data_type_t::f16);
-        embag_avx512_f16_fma_kernel<float16_t, int32_t, int32_t, float>(
-          input, weights, indices, offsets, dst, width, indsz, offsz,
-          padidx, is_weights, algo, stride, include_last_offset);
-      }
-      else
+            if (can_use_f16_fma_kernel()) {
+                embag_config_t::instance().set_accum_type(data_type_t::f16);
+                embag_avx512_f16_fma_kernel<float16_t, int32_t, int32_t, float>(
+                        input, weights, indices, offsets, dst, width, indsz,
+                        offsz, padidx, is_weights, algo, stride,
+                        include_last_offset);
+            } else
 #endif
-      {
-        embag_config_t::instance().set_accum_type(data_type_t::f32);
-        embag_avx512_kernel<float16_t, int32_t, int32_t, float>(
-          input, weights, indices, offsets, dst, width, indsz, offsz,
-          padidx, is_weights, algo, stride, include_last_offset);
-      }
-    }
-    else {
-      apilog_error("Unsupported data type for indices and offsets");
-      return status_t::unimplemented;
-    }
-  }
-  else if (output_data_type == data_type_t::f16) {
-    float16_t *dst = (float16_t *)dst_tensor.get_raw_handle_unsafe();
-    if (indices_data_type == data_type_t::s64) {
-      int64_t *indices = (int64_t *)indices_tensor.get_raw_handle_unsafe();
-      int64_t *offsets = nullptr;
-      if (is_offsets) {
-        offsets = (int64_t *)offsets_iter->second.get_raw_handle_unsafe();
-      }
+            {
+                embag_config_t::instance().set_accum_type(data_type_t::f32);
+                embag_avx512_kernel<float16_t, int32_t, int32_t, float>(input,
+                        weights, indices, offsets, dst, width, indsz, offsz,
+                        padidx, is_weights, algo, stride, include_last_offset);
+            }
+        } else {
+            apilog_error("Unsupported data type for indices and offsets");
+            return status_t::unimplemented;
+        }
+    } else if (output_data_type == data_type_t::f16) {
+        float16_t *dst = (float16_t *)dst_tensor.get_raw_handle_unsafe();
+        if (indices_data_type == data_type_t::s64) {
+            int64_t *indices
+                    = (int64_t *)indices_tensor.get_raw_handle_unsafe();
+            int64_t *offsets = nullptr;
+            if (is_offsets) {
+                offsets = (int64_t *)
+                                  offsets_iter->second.get_raw_handle_unsafe();
+            }
 #if __GNUC__ >= 12
-      if (can_use_f16_fma_kernel()) {
-        embag_config_t::instance().set_accum_type(data_type_t::f16);
-        embag_avx512_f16_fma_kernel<float16_t, int64_t, int64_t, float16_t>(
-          input, weights, indices, offsets, dst, width, indsz, offsz,
-          padidx, is_weights, algo, stride, include_last_offset);
-      }
-      else
+            if (can_use_f16_fma_kernel()) {
+                embag_config_t::instance().set_accum_type(data_type_t::f16);
+                embag_avx512_f16_fma_kernel<float16_t, int64_t, int64_t,
+                        float16_t>(input, weights, indices, offsets, dst, width,
+                        indsz, offsz, padidx, is_weights, algo, stride,
+                        include_last_offset);
+            } else
 #endif
-      {
-        embag_config_t::instance().set_accum_type(data_type_t::f32);
-        embag_avx512_kernel<float16_t, int64_t, int64_t, float16_t>(
-          input, weights, indices, offsets, dst, width, indsz, offsz,
-          padidx, is_weights, algo, stride, include_last_offset);
-      }
-    }
-    else if (indices_data_type == data_type_t::s32) {
-      int32_t *indices = (int32_t *)indices_tensor.get_raw_handle_unsafe();
-      int32_t *offsets = nullptr;
-      if (is_offsets) {
-        offsets = (int32_t *)offsets_iter->second.get_raw_handle_unsafe();
-      }
+            {
+                embag_config_t::instance().set_accum_type(data_type_t::f32);
+                embag_avx512_kernel<float16_t, int64_t, int64_t, float16_t>(
+                        input, weights, indices, offsets, dst, width, indsz,
+                        offsz, padidx, is_weights, algo, stride,
+                        include_last_offset);
+            }
+        } else if (indices_data_type == data_type_t::s32) {
+            int32_t *indices
+                    = (int32_t *)indices_tensor.get_raw_handle_unsafe();
+            int32_t *offsets = nullptr;
+            if (is_offsets) {
+                offsets = (int32_t *)
+                                  offsets_iter->second.get_raw_handle_unsafe();
+            }
 #if __GNUC__ >= 12
-      if (can_use_f16_fma_kernel()) {
-        embag_config_t::instance().set_accum_type(data_type_t::f16);
-        embag_avx512_f16_fma_kernel<float16_t, int32_t, int32_t, float16_t>(
-          input, weights, indices, offsets, dst, width, indsz, offsz,
-          padidx, is_weights, algo, stride, include_last_offset);
-      }
-      else
+            if (can_use_f16_fma_kernel()) {
+                embag_config_t::instance().set_accum_type(data_type_t::f16);
+                embag_avx512_f16_fma_kernel<float16_t, int32_t, int32_t,
+                        float16_t>(input, weights, indices, offsets, dst, width,
+                        indsz, offsz, padidx, is_weights, algo, stride,
+                        include_last_offset);
+            } else
 #endif
-      {
-        embag_config_t::instance().set_accum_type(data_type_t::f32);
-        embag_avx512_kernel<float16_t, int32_t, int32_t, float16_t>(
-          input, weights, indices, offsets, dst, width, indsz, offsz,
-          padidx, is_weights, algo, stride, include_last_offset);
-      }
+            {
+                embag_config_t::instance().set_accum_type(data_type_t::f32);
+                embag_avx512_kernel<float16_t, int32_t, int32_t, float16_t>(
+                        input, weights, indices, offsets, dst, width, indsz,
+                        offsz, padidx, is_weights, algo, stride,
+                        include_last_offset);
+            }
+        } else {
+            apilog_error("Unsupported data type for indices and offsets");
+            return status_t::unimplemented;
+        }
+    } else {
+        apilog_error("kernel unimplemented.");
+        return status_t::unimplemented;
     }
-    else {
-      apilog_error("Unsupported data type for indices and offsets");
-      return status_t::unimplemented;
-    }
-  }
-  else {
-    apilog_error("kernel unimplemented.");
-    return status_t::unimplemented;
-  }
 
-  return status_t::success;
+    return status_t::success;
 }
 
 status_t embag_int8_int4_avx512_kernel_t::execute(const context_type &context_,
-    tensor_map_type &inputs_,
-    tensor_map_type &outputs_) {
-  LOG_DEBUG_INFO("Executing embag_int8_int4_avx512_kernel_t");
-  log_info("Executing embag_int8_int4_avx512 kernel");
+        tensor_map_type &inputs_, tensor_map_type &outputs_) {
+    LOG_DEBUG_INFO("Executing embag_int8_int4_avx512_kernel_t");
+    log_info("Executing embag_int8_int4_avx512 kernel");
 
-  const auto table_param = context_.get_param("table");
-  const auto &table_tensor = table_param.value();
+    const auto table_param = context_.get_param("table");
+    const auto &table_tensor = table_param.value();
 
-  auto indices_iter = inputs_.find("indices");
-  auto dst_iter = outputs_.find("output");
-  auto offsets_iter   = inputs_.find("offsets");
-  auto weights_iter   = inputs_.find("weights");
+    auto indices_iter = inputs_.find("indices");
+    auto dst_iter = outputs_.find("output");
+    auto offsets_iter = inputs_.find("offsets");
+    auto weights_iter = inputs_.find("weights");
 
-  if (indices_iter == inputs_.end()) {
-    log_error("indices tensor not found");
-    return status_t::failure;
-  }
-  if (dst_iter == outputs_.end()) {
-    log_error("output tensor not found");
-    return status_t::failure;
-  }
-
-  const auto &indices_tensor = indices_iter->second;
-  const auto &dst_tensor = dst_iter->second;
-
-  int8_t const *input    = (const int8_t *)table_tensor.get_raw_handle_const();
-  void         *dst      = dst_tensor.get_raw_handle_unsafe();
-  float        *weights  = nullptr;
-
-  const int64_t  width            = table_tensor.get_size(1);
-  const int64_t  indsz            = indices_tensor.get_size(0);
-  bool is_offsets                 = (offsets_iter != inputs_.end()) ? true :
-                                    false;
-  auto table_dtype                = table_tensor.get_data_type();
-  auto dst_dtype                  = dst_tensor.get_data_type();
-  auto indices_data_type          = indices_tensor.get_data_type();
-  const int64_t  padidx           = context_.get_padding_index();
-  int64_t stride                  = dst_tensor.get_stride()[0];
-  const embag_algo_t algo         = context_.get_algo();
-  const bool include_last_offset  = context_.get_include_last_offset();
-  const bool is_weights           = context_.get_is_weights();
-  int64_t offsz                   = 0;
-  const bool fp16_scale_bias      = context_.get_fp16_scale_bias();
-
-  // weights tensor is present
-  if (is_weights) {
-    if (weights_iter == inputs_.end()) {
-      log_error("weights tensor not found but is_weights is true");
-      return status_t::failure;
+    if (indices_iter == inputs_.end()) {
+        log_error("indices tensor not found");
+        return status_t::failure;
     }
-    const auto &weights_tensor = weights_iter->second;
-    weights = (float *)weights_tensor.get_raw_handle_unsafe();
-  }
+    if (dst_iter == outputs_.end()) {
+        log_error("output tensor not found");
+        return status_t::failure;
+    }
 
-  // Offsets tensor is optional - when not provided,
-  // operates as simple embedding lookup rather than embedding bag aggregation
-  if (is_offsets) {
-    auto offsets_tensor = offsets_iter->second;
-    offsz = offsets_tensor.get_size(0);
-    if (include_last_offset==1) {
-      offsz -= 1;
-    }
-  }
+    const auto &indices_tensor = indices_iter->second;
+    const auto &dst_tensor = dst_iter->second;
 
-  if (table_dtype == data_type_t::s8 && dst_dtype == data_type_t::f32) {
-    // INT8 input -> FP32 output
-    const int8_t *input_s8 = reinterpret_cast<const int8_t *>(input);
-    float *dst_f32 = reinterpret_cast<float *>(dst);
-    if (indices_data_type == data_type_t::s64) {
-      int64_t *indices = (int64_t *)indices_tensor.get_raw_handle_unsafe();
-      int64_t *offsets = nullptr;
-      if (is_offsets) {
-        offsets = (int64_t *)offsets_iter->second.get_raw_handle_unsafe();
-      }
-      embag_avx512_int8_int4_kernel<false, int8_t, int64_t, int64_t, float>(
-        input_s8, weights, indices, offsets, dst_f32, width, indsz, offsz,
-        padidx, is_weights, algo, stride, include_last_offset, table_dtype,
-        fp16_scale_bias);
+    int8_t const *input = (const int8_t *)table_tensor.get_raw_handle_const();
+    void *dst = dst_tensor.get_raw_handle_unsafe();
+    float *weights = nullptr;
+
+    const int64_t width = table_tensor.get_size(1);
+    const int64_t indsz = indices_tensor.get_size(0);
+    bool is_offsets = (offsets_iter != inputs_.end()) ? true : false;
+    auto table_dtype = table_tensor.get_data_type();
+    auto dst_dtype = dst_tensor.get_data_type();
+    auto indices_data_type = indices_tensor.get_data_type();
+    const int64_t padidx = context_.get_padding_index();
+    int64_t stride = dst_tensor.get_stride()[0];
+    const embag_algo_t algo = context_.get_algo();
+    const bool include_last_offset = context_.get_include_last_offset();
+    const bool is_weights = context_.get_is_weights();
+    int64_t offsz = 0;
+    const bool fp16_scale_bias = context_.get_fp16_scale_bias();
+
+    // weights tensor is present
+    if (is_weights) {
+        if (weights_iter == inputs_.end()) {
+            log_error("weights tensor not found but is_weights is true");
+            return status_t::failure;
+        }
+        const auto &weights_tensor = weights_iter->second;
+        weights = (float *)weights_tensor.get_raw_handle_unsafe();
     }
-    else if (indices_data_type == data_type_t::s32) {
-      int32_t *indices = (int32_t *)indices_tensor.get_raw_handle_unsafe();
-      int32_t *offsets = nullptr;
-      if (is_offsets) {
-        offsets = (int32_t *)offsets_iter->second.get_raw_handle_unsafe();
-      }
-      embag_avx512_int8_int4_kernel<false, int8_t, int32_t, int32_t, float>(
-        input_s8, weights, indices, offsets, dst_f32, width, indsz, offsz,
-        padidx, is_weights, algo, stride, include_last_offset, table_dtype,
-        fp16_scale_bias);
+
+    // Offsets tensor is optional - when not provided,
+    // operates as simple embedding lookup rather than embedding bag aggregation
+    if (is_offsets) {
+        auto offsets_tensor = offsets_iter->second;
+        offsz = offsets_tensor.get_size(0);
+        if (include_last_offset == 1) { offsz -= 1; }
     }
-    else {
-      apilog_error("Unsupported data type for indices and offsets");
-      return status_t::unimplemented;
-    }
-  }
-  else if (table_dtype == data_type_t::s8 && dst_dtype == data_type_t::bf16) {
-    // INT8 input -> BF16 output
-    const int8_t *input_s8 = reinterpret_cast<const int8_t *>(input);
-    uint16_t *dst_bf16 = reinterpret_cast<uint16_t *>(dst);
-    if (indices_data_type == data_type_t::s64) {
-      int64_t *indices = (int64_t *)indices_tensor.get_raw_handle_unsafe();
-      int64_t *offsets = nullptr;
-      if (is_offsets) {
-        offsets = (int64_t *)offsets_iter->second.get_raw_handle_unsafe();
-      }
-      embag_avx512_int8_int4_kernel<false, int8_t, int64_t, int64_t, uint16_t>(
-        input_s8, weights, indices, offsets, dst_bf16, width, indsz, offsz,
-        padidx, is_weights, algo, stride, include_last_offset, table_dtype,
-        fp16_scale_bias);
-    }
-    else if (indices_data_type == data_type_t::s32) {
-      int32_t *indices = (int32_t *)indices_tensor.get_raw_handle_unsafe();
-      int32_t *offsets = nullptr;
-      if (is_offsets) {
-        offsets = (int32_t *)offsets_iter->second.get_raw_handle_unsafe();
-      }
-      embag_avx512_int8_int4_kernel<false, int8_t, int32_t, int32_t, uint16_t>(
-        input_s8, weights, indices, offsets, dst_bf16, width, indsz, offsz,
-        padidx, is_weights, algo, stride, include_last_offset, table_dtype,
-        fp16_scale_bias);
-    }
-    else {
-      apilog_error("Unsupported data type for indices and offsets");
-      return status_t::unimplemented;
-    }
-  }
-  else if (table_dtype == data_type_t::s8 && dst_dtype == data_type_t::f16) {
-    // INT8 input -> F16 output
-    const int8_t *input_s8 = reinterpret_cast<const int8_t *>(input);
-    float16_t *dst_f16 = reinterpret_cast<float16_t *>(dst);
-    if (indices_data_type == data_type_t::s64) {
-      int64_t *indices = (int64_t *)indices_tensor.get_raw_handle_unsafe();
-      int64_t *offsets = nullptr;
-      if (is_offsets) {
-        offsets = (int64_t *)offsets_iter->second.get_raw_handle_unsafe();
-      }
+
+    if (table_dtype == data_type_t::s8 && dst_dtype == data_type_t::f32) {
+        // INT8 input -> FP32 output
+        const int8_t *input_s8 = reinterpret_cast<const int8_t *>(input);
+        float *dst_f32 = reinterpret_cast<float *>(dst);
+        if (indices_data_type == data_type_t::s64) {
+            int64_t *indices
+                    = (int64_t *)indices_tensor.get_raw_handle_unsafe();
+            int64_t *offsets = nullptr;
+            if (is_offsets) {
+                offsets = (int64_t *)
+                                  offsets_iter->second.get_raw_handle_unsafe();
+            }
+            embag_avx512_int8_int4_kernel<false, int8_t, int64_t, int64_t,
+                    float>(input_s8, weights, indices, offsets, dst_f32, width,
+                    indsz, offsz, padidx, is_weights, algo, stride,
+                    include_last_offset, table_dtype, fp16_scale_bias);
+        } else if (indices_data_type == data_type_t::s32) {
+            int32_t *indices
+                    = (int32_t *)indices_tensor.get_raw_handle_unsafe();
+            int32_t *offsets = nullptr;
+            if (is_offsets) {
+                offsets = (int32_t *)
+                                  offsets_iter->second.get_raw_handle_unsafe();
+            }
+            embag_avx512_int8_int4_kernel<false, int8_t, int32_t, int32_t,
+                    float>(input_s8, weights, indices, offsets, dst_f32, width,
+                    indsz, offsz, padidx, is_weights, algo, stride,
+                    include_last_offset, table_dtype, fp16_scale_bias);
+        } else {
+            apilog_error("Unsupported data type for indices and offsets");
+            return status_t::unimplemented;
+        }
+    } else if (table_dtype == data_type_t::s8
+            && dst_dtype == data_type_t::bf16) {
+        // INT8 input -> BF16 output
+        const int8_t *input_s8 = reinterpret_cast<const int8_t *>(input);
+        uint16_t *dst_bf16 = reinterpret_cast<uint16_t *>(dst);
+        if (indices_data_type == data_type_t::s64) {
+            int64_t *indices
+                    = (int64_t *)indices_tensor.get_raw_handle_unsafe();
+            int64_t *offsets = nullptr;
+            if (is_offsets) {
+                offsets = (int64_t *)
+                                  offsets_iter->second.get_raw_handle_unsafe();
+            }
+            embag_avx512_int8_int4_kernel<false, int8_t, int64_t, int64_t,
+                    uint16_t>(input_s8, weights, indices, offsets, dst_bf16,
+                    width, indsz, offsz, padidx, is_weights, algo, stride,
+                    include_last_offset, table_dtype, fp16_scale_bias);
+        } else if (indices_data_type == data_type_t::s32) {
+            int32_t *indices
+                    = (int32_t *)indices_tensor.get_raw_handle_unsafe();
+            int32_t *offsets = nullptr;
+            if (is_offsets) {
+                offsets = (int32_t *)
+                                  offsets_iter->second.get_raw_handle_unsafe();
+            }
+            embag_avx512_int8_int4_kernel<false, int8_t, int32_t, int32_t,
+                    uint16_t>(input_s8, weights, indices, offsets, dst_bf16,
+                    width, indsz, offsz, padidx, is_weights, algo, stride,
+                    include_last_offset, table_dtype, fp16_scale_bias);
+        } else {
+            apilog_error("Unsupported data type for indices and offsets");
+            return status_t::unimplemented;
+        }
+    } else if (table_dtype == data_type_t::s8
+            && dst_dtype == data_type_t::f16) {
+        // INT8 input -> F16 output
+        const int8_t *input_s8 = reinterpret_cast<const int8_t *>(input);
+        float16_t *dst_f16 = reinterpret_cast<float16_t *>(dst);
+        if (indices_data_type == data_type_t::s64) {
+            int64_t *indices
+                    = (int64_t *)indices_tensor.get_raw_handle_unsafe();
+            int64_t *offsets = nullptr;
+            if (is_offsets) {
+                offsets = (int64_t *)
+                                  offsets_iter->second.get_raw_handle_unsafe();
+            }
 #if __GNUC__ >= 12
-      if (can_use_f16_fma_kernel()) {
-        embag_config_t::instance().set_accum_type(data_type_t::f16);
-        embag_avx512_int8_int4_f16_fma_kernel<false, int8_t, int64_t, int64_t, float16_t>
-        (
-          input_s8, weights, indices, offsets, dst_f16, width, indsz, offsz,
-          padidx, is_weights, algo, stride, include_last_offset, table_dtype,
-          fp16_scale_bias);
-      }
-      else
+            if (can_use_f16_fma_kernel()) {
+                embag_config_t::instance().set_accum_type(data_type_t::f16);
+                embag_avx512_int8_int4_f16_fma_kernel<false, int8_t, int64_t,
+                        int64_t, float16_t>(input_s8, weights, indices, offsets,
+                        dst_f16, width, indsz, offsz, padidx, is_weights, algo,
+                        stride, include_last_offset, table_dtype,
+                        fp16_scale_bias);
+            } else
 #endif
-      {
-        embag_config_t::instance().set_accum_type(data_type_t::f32);
-        embag_avx512_int8_int4_kernel<false, int8_t, int64_t, int64_t, float16_t>(
-          input_s8, weights, indices, offsets, dst_f16, width, indsz, offsz,
-          padidx, is_weights, algo, stride, include_last_offset, table_dtype,
-          fp16_scale_bias);
-      }
-    }
-    else if (indices_data_type == data_type_t::s32) {
-      int32_t *indices = (int32_t *)indices_tensor.get_raw_handle_unsafe();
-      int32_t *offsets = nullptr;
-      if (is_offsets) {
-        offsets = (int32_t *)offsets_iter->second.get_raw_handle_unsafe();
-      }
+            {
+                embag_config_t::instance().set_accum_type(data_type_t::f32);
+                embag_avx512_int8_int4_kernel<false, int8_t, int64_t, int64_t,
+                        float16_t>(input_s8, weights, indices, offsets, dst_f16,
+                        width, indsz, offsz, padidx, is_weights, algo, stride,
+                        include_last_offset, table_dtype, fp16_scale_bias);
+            }
+        } else if (indices_data_type == data_type_t::s32) {
+            int32_t *indices
+                    = (int32_t *)indices_tensor.get_raw_handle_unsafe();
+            int32_t *offsets = nullptr;
+            if (is_offsets) {
+                offsets = (int32_t *)
+                                  offsets_iter->second.get_raw_handle_unsafe();
+            }
 #if __GNUC__ >= 12
-      if (can_use_f16_fma_kernel()) {
-        embag_config_t::instance().set_accum_type(data_type_t::f16);
-        embag_avx512_int8_int4_f16_fma_kernel<false, int8_t, int32_t, int32_t, float16_t>
-        (
-          input_s8, weights, indices, offsets, dst_f16, width, indsz, offsz,
-          padidx, is_weights, algo, stride, include_last_offset, table_dtype,
-          fp16_scale_bias);
-      }
-      else
+            if (can_use_f16_fma_kernel()) {
+                embag_config_t::instance().set_accum_type(data_type_t::f16);
+                embag_avx512_int8_int4_f16_fma_kernel<false, int8_t, int32_t,
+                        int32_t, float16_t>(input_s8, weights, indices, offsets,
+                        dst_f16, width, indsz, offsz, padidx, is_weights, algo,
+                        stride, include_last_offset, table_dtype,
+                        fp16_scale_bias);
+            } else
 #endif
-      {
-        embag_config_t::instance().set_accum_type(data_type_t::f32);
-        embag_avx512_int8_int4_kernel<false, int8_t, int32_t, int32_t, float16_t>(
-          input_s8, weights, indices, offsets, dst_f16, width, indsz, offsz,
-          padidx, is_weights, algo, stride, include_last_offset, table_dtype,
-          fp16_scale_bias);
-      }
-    }
-    else {
-      apilog_error("Unsupported data type for indices and offsets");
-      return status_t::unimplemented;
-    }
-  }
-  else if ((table_dtype == data_type_t::s4 || table_dtype == data_type_t::u4) &&
-           dst_dtype == data_type_t::f32) {
-    // INT4 input -> FP32 output
-    const uint8_t *input_s4 = reinterpret_cast<const uint8_t *>(input);
-    float *dst_f32 = reinterpret_cast<float *>(dst);
-    if (indices_data_type == data_type_t::s64) {
-      int64_t *indices = (int64_t *)indices_tensor.get_raw_handle_unsafe();
-      int64_t *offsets = nullptr;
-      if (is_offsets) {
-        offsets = (int64_t *)offsets_iter->second.get_raw_handle_unsafe();
-      }
-      embag_avx512_int8_int4_kernel<true, uint8_t, int64_t, int64_t, float>(
-        input_s4, weights, indices, offsets, dst_f32, width, indsz, offsz,
-        padidx, is_weights, algo, stride, include_last_offset, table_dtype,
-        fp16_scale_bias);
-    }
-    else if (indices_data_type == data_type_t::s32) {
-      int32_t *indices = (int32_t *)indices_tensor.get_raw_handle_unsafe();
-      int32_t *offsets = nullptr;
-      if (is_offsets) {
-        offsets = (int32_t *)offsets_iter->second.get_raw_handle_unsafe();
-      }
-      embag_avx512_int8_int4_kernel<true, uint8_t, int32_t, int32_t, float>(
-        input_s4, weights, indices, offsets, dst_f32, width, indsz, offsz,
-        padidx, is_weights, algo, stride, include_last_offset, table_dtype,
-        fp16_scale_bias);
-    }
-    else {
-      apilog_error("Unsupported data type for indices and offsets");
-      return status_t::unimplemented;
-    }
-  }
-  else if ((table_dtype == data_type_t::s4 || table_dtype == data_type_t::u4) &&
-           dst_dtype == data_type_t::bf16) {
-    // INT4 input -> BF16 output
-    const uint8_t *input_s4 = reinterpret_cast<const uint8_t *>(input);
-    uint16_t *dst_bf16 = reinterpret_cast<uint16_t *>(dst);
-    if (indices_data_type == data_type_t::s64) {
-      int64_t *indices = (int64_t *)indices_tensor.get_raw_handle_unsafe();
-      int64_t *offsets = nullptr;
-      if (is_offsets) {
-        offsets = (int64_t *)offsets_iter->second.get_raw_handle_unsafe();
-      }
-      embag_avx512_int8_int4_kernel<true, uint8_t, int64_t, int64_t, uint16_t>(
-        input_s4, weights, indices, offsets, dst_bf16, width, indsz, offsz,
-        padidx, is_weights, algo, stride, include_last_offset, table_dtype,
-        fp16_scale_bias);
-    }
-    else if (indices_data_type == data_type_t::s32) {
-      int32_t *indices = (int32_t *)indices_tensor.get_raw_handle_unsafe();
-      int32_t *offsets = nullptr;
-      if (is_offsets) {
-        offsets = (int32_t *)offsets_iter->second.get_raw_handle_unsafe();
-      }
-      embag_avx512_int8_int4_kernel<true, uint8_t, int32_t, int32_t, uint16_t>(
-        input_s4, weights, indices, offsets, dst_bf16, width, indsz, offsz,
-        padidx, is_weights, algo, stride, include_last_offset, table_dtype,
-        fp16_scale_bias);
-    }
-    else {
-      apilog_error("Unsupported data type for indices and offsets");
-      return status_t::unimplemented;
-    }
-  }
-  else if ((table_dtype == data_type_t::s4 || table_dtype == data_type_t::u4) &&
-           dst_dtype == data_type_t::f16) {
-    // INT4 input -> F16 output
-    const uint8_t *input_s4 = reinterpret_cast<const uint8_t *>(input);
-    float16_t *dst_f16 = reinterpret_cast<float16_t *>(dst);
-    if (indices_data_type == data_type_t::s64) {
-      int64_t *indices = (int64_t *)indices_tensor.get_raw_handle_unsafe();
-      int64_t *offsets = nullptr;
-      if (is_offsets) {
-        offsets = (int64_t *)offsets_iter->second.get_raw_handle_unsafe();
-      }
+            {
+                embag_config_t::instance().set_accum_type(data_type_t::f32);
+                embag_avx512_int8_int4_kernel<false, int8_t, int32_t, int32_t,
+                        float16_t>(input_s8, weights, indices, offsets, dst_f16,
+                        width, indsz, offsz, padidx, is_weights, algo, stride,
+                        include_last_offset, table_dtype, fp16_scale_bias);
+            }
+        } else {
+            apilog_error("Unsupported data type for indices and offsets");
+            return status_t::unimplemented;
+        }
+    } else if ((table_dtype == data_type_t::s4
+                       || table_dtype == data_type_t::u4)
+            && dst_dtype == data_type_t::f32) {
+        // INT4 input -> FP32 output
+        const uint8_t *input_s4 = reinterpret_cast<const uint8_t *>(input);
+        float *dst_f32 = reinterpret_cast<float *>(dst);
+        if (indices_data_type == data_type_t::s64) {
+            int64_t *indices
+                    = (int64_t *)indices_tensor.get_raw_handle_unsafe();
+            int64_t *offsets = nullptr;
+            if (is_offsets) {
+                offsets = (int64_t *)
+                                  offsets_iter->second.get_raw_handle_unsafe();
+            }
+            embag_avx512_int8_int4_kernel<true, uint8_t, int64_t, int64_t,
+                    float>(input_s4, weights, indices, offsets, dst_f32, width,
+                    indsz, offsz, padidx, is_weights, algo, stride,
+                    include_last_offset, table_dtype, fp16_scale_bias);
+        } else if (indices_data_type == data_type_t::s32) {
+            int32_t *indices
+                    = (int32_t *)indices_tensor.get_raw_handle_unsafe();
+            int32_t *offsets = nullptr;
+            if (is_offsets) {
+                offsets = (int32_t *)
+                                  offsets_iter->second.get_raw_handle_unsafe();
+            }
+            embag_avx512_int8_int4_kernel<true, uint8_t, int32_t, int32_t,
+                    float>(input_s4, weights, indices, offsets, dst_f32, width,
+                    indsz, offsz, padidx, is_weights, algo, stride,
+                    include_last_offset, table_dtype, fp16_scale_bias);
+        } else {
+            apilog_error("Unsupported data type for indices and offsets");
+            return status_t::unimplemented;
+        }
+    } else if ((table_dtype == data_type_t::s4
+                       || table_dtype == data_type_t::u4)
+            && dst_dtype == data_type_t::bf16) {
+        // INT4 input -> BF16 output
+        const uint8_t *input_s4 = reinterpret_cast<const uint8_t *>(input);
+        uint16_t *dst_bf16 = reinterpret_cast<uint16_t *>(dst);
+        if (indices_data_type == data_type_t::s64) {
+            int64_t *indices
+                    = (int64_t *)indices_tensor.get_raw_handle_unsafe();
+            int64_t *offsets = nullptr;
+            if (is_offsets) {
+                offsets = (int64_t *)
+                                  offsets_iter->second.get_raw_handle_unsafe();
+            }
+            embag_avx512_int8_int4_kernel<true, uint8_t, int64_t, int64_t,
+                    uint16_t>(input_s4, weights, indices, offsets, dst_bf16,
+                    width, indsz, offsz, padidx, is_weights, algo, stride,
+                    include_last_offset, table_dtype, fp16_scale_bias);
+        } else if (indices_data_type == data_type_t::s32) {
+            int32_t *indices
+                    = (int32_t *)indices_tensor.get_raw_handle_unsafe();
+            int32_t *offsets = nullptr;
+            if (is_offsets) {
+                offsets = (int32_t *)
+                                  offsets_iter->second.get_raw_handle_unsafe();
+            }
+            embag_avx512_int8_int4_kernel<true, uint8_t, int32_t, int32_t,
+                    uint16_t>(input_s4, weights, indices, offsets, dst_bf16,
+                    width, indsz, offsz, padidx, is_weights, algo, stride,
+                    include_last_offset, table_dtype, fp16_scale_bias);
+        } else {
+            apilog_error("Unsupported data type for indices and offsets");
+            return status_t::unimplemented;
+        }
+    } else if ((table_dtype == data_type_t::s4
+                       || table_dtype == data_type_t::u4)
+            && dst_dtype == data_type_t::f16) {
+        // INT4 input -> F16 output
+        const uint8_t *input_s4 = reinterpret_cast<const uint8_t *>(input);
+        float16_t *dst_f16 = reinterpret_cast<float16_t *>(dst);
+        if (indices_data_type == data_type_t::s64) {
+            int64_t *indices
+                    = (int64_t *)indices_tensor.get_raw_handle_unsafe();
+            int64_t *offsets = nullptr;
+            if (is_offsets) {
+                offsets = (int64_t *)
+                                  offsets_iter->second.get_raw_handle_unsafe();
+            }
 #if __GNUC__ >= 12
-      if (can_use_f16_fma_kernel()) {
-        embag_config_t::instance().set_accum_type(data_type_t::f16);
-        embag_avx512_int8_int4_f16_fma_kernel<true, uint8_t, int64_t, int64_t, float16_t>
-        (
-          input_s4, weights, indices, offsets, dst_f16, width, indsz, offsz,
-          padidx, is_weights, algo, stride, include_last_offset, table_dtype,
-          fp16_scale_bias);
-      }
-      else
+            if (can_use_f16_fma_kernel()) {
+                embag_config_t::instance().set_accum_type(data_type_t::f16);
+                embag_avx512_int8_int4_f16_fma_kernel<true, uint8_t, int64_t,
+                        int64_t, float16_t>(input_s4, weights, indices, offsets,
+                        dst_f16, width, indsz, offsz, padidx, is_weights, algo,
+                        stride, include_last_offset, table_dtype,
+                        fp16_scale_bias);
+            } else
 #endif
-      {
-        embag_config_t::instance().set_accum_type(data_type_t::f32);
-        embag_avx512_int8_int4_kernel<true, uint8_t, int64_t, int64_t, float16_t>(
-          input_s4, weights, indices, offsets, dst_f16, width, indsz, offsz,
-          padidx, is_weights, algo, stride, include_last_offset, table_dtype,
-          fp16_scale_bias);
-      }
-    }
-    else if (indices_data_type == data_type_t::s32) {
-      int32_t *indices = (int32_t *)indices_tensor.get_raw_handle_unsafe();
-      int32_t *offsets = nullptr;
-      if (is_offsets) {
-        offsets = (int32_t *)offsets_iter->second.get_raw_handle_unsafe();
-      }
+            {
+                embag_config_t::instance().set_accum_type(data_type_t::f32);
+                embag_avx512_int8_int4_kernel<true, uint8_t, int64_t, int64_t,
+                        float16_t>(input_s4, weights, indices, offsets, dst_f16,
+                        width, indsz, offsz, padidx, is_weights, algo, stride,
+                        include_last_offset, table_dtype, fp16_scale_bias);
+            }
+        } else if (indices_data_type == data_type_t::s32) {
+            int32_t *indices
+                    = (int32_t *)indices_tensor.get_raw_handle_unsafe();
+            int32_t *offsets = nullptr;
+            if (is_offsets) {
+                offsets = (int32_t *)
+                                  offsets_iter->second.get_raw_handle_unsafe();
+            }
 #if __GNUC__ >= 12
-      if (can_use_f16_fma_kernel()) {
-        embag_config_t::instance().set_accum_type(data_type_t::f16);
-        embag_avx512_int8_int4_f16_fma_kernel<true, uint8_t, int32_t, int32_t, float16_t>
-        (
-          input_s4, weights, indices, offsets, dst_f16, width, indsz, offsz,
-          padidx, is_weights, algo, stride, include_last_offset, table_dtype,
-          fp16_scale_bias);
-      }
-      else
+            if (can_use_f16_fma_kernel()) {
+                embag_config_t::instance().set_accum_type(data_type_t::f16);
+                embag_avx512_int8_int4_f16_fma_kernel<true, uint8_t, int32_t,
+                        int32_t, float16_t>(input_s4, weights, indices, offsets,
+                        dst_f16, width, indsz, offsz, padidx, is_weights, algo,
+                        stride, include_last_offset, table_dtype,
+                        fp16_scale_bias);
+            } else
 #endif
-      {
-        embag_config_t::instance().set_accum_type(data_type_t::f32);
-        embag_avx512_int8_int4_kernel<true, uint8_t, int32_t, int32_t, float16_t>(
-          input_s4, weights, indices, offsets, dst_f16, width, indsz, offsz,
-          padidx, is_weights, algo, stride, include_last_offset, table_dtype,
-          fp16_scale_bias);
-      }
+            {
+                embag_config_t::instance().set_accum_type(data_type_t::f32);
+                embag_avx512_int8_int4_kernel<true, uint8_t, int32_t, int32_t,
+                        float16_t>(input_s4, weights, indices, offsets, dst_f16,
+                        width, indsz, offsz, padidx, is_weights, algo, stride,
+                        include_last_offset, table_dtype, fp16_scale_bias);
+            }
+        } else {
+            apilog_error("Unsupported data type for indices and offsets");
+            return status_t::unimplemented;
+        }
+    } else {
+        apilog_error("kernel unimplemented.");
+        return status_t::unimplemented;
     }
-    else {
-      apilog_error("Unsupported data type for indices and offsets");
-      return status_t::unimplemented;
-    }
-  }
-  else {
-    apilog_error("kernel unimplemented.");
-    return status_t::unimplemented;
-  }
-  return status_t::success;
-
+    return status_t::success;
 }
 
 // Template instantiations
-template void embag_avx512_kernel<float, int64_t, int64_t, float>(
-  const float *, const float *, const int64_t *, const int64_t *, float *,
-  int64_t, int64_t, int64_t, int64_t, bool, embag_algo_t, int64_t, bool);
+template void embag_avx512_kernel<float, int64_t, int64_t, float>(const float *,
+        const float *, const int64_t *, const int64_t *, float *, int64_t,
+        int64_t, int64_t, int64_t, bool, embag_algo_t, int64_t, bool);
 
-template void embag_avx512_kernel<float, int32_t, int32_t, float>(
-  const float *, const float *, const int32_t *, const int32_t *, float *,
-  int64_t, int64_t, int64_t, int64_t, bool, embag_algo_t, int64_t, bool);
+template void embag_avx512_kernel<float, int32_t, int32_t, float>(const float *,
+        const float *, const int32_t *, const int32_t *, float *, int64_t,
+        int64_t, int64_t, int64_t, bool, embag_algo_t, int64_t, bool);
 
 template void embag_avx512_kernel<float, int64_t, int64_t, uint16_t>(
-  const float *, const float *, const int64_t *, const int64_t *, uint16_t *,
-  int64_t, int64_t, int64_t, int64_t, bool, embag_algo_t, int64_t, bool);
+        const float *, const float *, const int64_t *, const int64_t *,
+        uint16_t *, int64_t, int64_t, int64_t, int64_t, bool, embag_algo_t,
+        int64_t, bool);
 
 template void embag_avx512_kernel<float, int32_t, int32_t, uint16_t>(
-  const float *, const float *, const int32_t *, const int32_t *, uint16_t *,
-  int64_t, int64_t, int64_t, int64_t, bool, embag_algo_t, int64_t, bool);
+        const float *, const float *, const int32_t *, const int32_t *,
+        uint16_t *, int64_t, int64_t, int64_t, int64_t, bool, embag_algo_t,
+        int64_t, bool);
 
 template void embag_avx512_kernel<uint16_t, int64_t, int64_t, uint16_t>(
-  const uint16_t *, const float *, const int64_t *, const int64_t *, uint16_t *,
-  int64_t, int64_t, int64_t, int64_t, bool, embag_algo_t, int64_t, bool);
+        const uint16_t *, const float *, const int64_t *, const int64_t *,
+        uint16_t *, int64_t, int64_t, int64_t, int64_t, bool, embag_algo_t,
+        int64_t, bool);
 
 template void embag_avx512_kernel<uint16_t, int32_t, int32_t, uint16_t>(
-  const uint16_t *, const float *, const int32_t *, const int32_t *, uint16_t *,
-  int64_t, int64_t, int64_t, int64_t, bool, embag_algo_t, int64_t, bool);
+        const uint16_t *, const float *, const int32_t *, const int32_t *,
+        uint16_t *, int64_t, int64_t, int64_t, int64_t, bool, embag_algo_t,
+        int64_t, bool);
 
 template void embag_avx512_kernel<uint16_t, int64_t, int64_t, float>(
-  const uint16_t *, const float *, const int64_t *, const int64_t *, float *,
-  int64_t, int64_t, int64_t, int64_t, bool, embag_algo_t, int64_t, bool);
+        const uint16_t *, const float *, const int64_t *, const int64_t *,
+        float *, int64_t, int64_t, int64_t, int64_t, bool, embag_algo_t,
+        int64_t, bool);
 
 template void embag_avx512_kernel<uint16_t, int32_t, int32_t, float>(
-  const uint16_t *, const float *, const int32_t *, const int32_t *, float *,
-  int64_t, int64_t, int64_t, int64_t, bool, embag_algo_t, int64_t, bool);
+        const uint16_t *, const float *, const int32_t *, const int32_t *,
+        float *, int64_t, int64_t, int64_t, int64_t, bool, embag_algo_t,
+        int64_t, bool);
 
 template void embag_avx512_kernel<float16_t, int64_t, int64_t, float16_t>(
-  const float16_t *, const float *, const int64_t *, const int64_t *, float16_t *,
-  int64_t, int64_t, int64_t, int64_t, bool, embag_algo_t, int64_t, bool);
+        const float16_t *, const float *, const int64_t *, const int64_t *,
+        float16_t *, int64_t, int64_t, int64_t, int64_t, bool, embag_algo_t,
+        int64_t, bool);
 
 template void embag_avx512_kernel<float16_t, int32_t, int32_t, float16_t>(
-  const float16_t *, const float *, const int32_t *, const int32_t *, float16_t *,
-  int64_t, int64_t, int64_t, int64_t, bool, embag_algo_t, int64_t, bool);
+        const float16_t *, const float *, const int32_t *, const int32_t *,
+        float16_t *, int64_t, int64_t, int64_t, int64_t, bool, embag_algo_t,
+        int64_t, bool);
 
 template void embag_avx512_kernel<float16_t, int64_t, int64_t, float>(
-  const float16_t *, const float *, const int64_t *, const int64_t *, float *,
-  int64_t, int64_t, int64_t, int64_t, bool, embag_algo_t, int64_t, bool);
+        const float16_t *, const float *, const int64_t *, const int64_t *,
+        float *, int64_t, int64_t, int64_t, int64_t, bool, embag_algo_t,
+        int64_t, bool);
 
 template void embag_avx512_kernel<float16_t, int32_t, int32_t, float>(
-  const float16_t *, const float *, const int32_t *, const int32_t *, float *,
-  int64_t, int64_t, int64_t, int64_t, bool, embag_algo_t, int64_t, bool);
+        const float16_t *, const float *, const int32_t *, const int32_t *,
+        float *, int64_t, int64_t, int64_t, int64_t, bool, embag_algo_t,
+        int64_t, bool);
 
 template void embag_avx512_kernel<float, int64_t, int64_t, float16_t>(
-  const float *, const float *, const int64_t *, const int64_t *, float16_t *,
-  int64_t, int64_t, int64_t, int64_t, bool, embag_algo_t, int64_t, bool);
+        const float *, const float *, const int64_t *, const int64_t *,
+        float16_t *, int64_t, int64_t, int64_t, int64_t, bool, embag_algo_t,
+        int64_t, bool);
 
 template void embag_avx512_kernel<float, int32_t, int32_t, float16_t>(
-  const float *, const float *, const int32_t *, const int32_t *, float16_t *,
-  int64_t, int64_t, int64_t, int64_t, bool, embag_algo_t, int64_t, bool);
+        const float *, const float *, const int32_t *, const int32_t *,
+        float16_t *, int64_t, int64_t, int64_t, int64_t, bool, embag_algo_t,
+        int64_t, bool);
 
 template void
 embag_avx512_int8_int4_kernel<true, uint8_t, int64_t, int64_t, float>(
-  const uint8_t *, const float *, const int64_t *, const int64_t *, float *,
-  int64_t, int64_t, int64_t, int64_t, bool, embag_algo_t, int64_t, bool,
-  data_type_t, bool);
+        const uint8_t *, const float *, const int64_t *, const int64_t *,
+        float *, int64_t, int64_t, int64_t, int64_t, bool, embag_algo_t,
+        int64_t, bool, data_type_t, bool);
 
 template void
 embag_avx512_int8_int4_kernel<true, uint8_t, int32_t, int32_t, float>(
-  const uint8_t *, const float *, const int32_t *, const int32_t *, float *,
-  int64_t, int64_t, int64_t, int64_t, bool, embag_algo_t, int64_t, bool,
-  data_type_t, bool);
+        const uint8_t *, const float *, const int32_t *, const int32_t *,
+        float *, int64_t, int64_t, int64_t, int64_t, bool, embag_algo_t,
+        int64_t, bool, data_type_t, bool);
 
 template void
 embag_avx512_int8_int4_kernel<true, uint8_t, int64_t, int64_t, uint16_t>(
-  const uint8_t *, const float *, const int64_t *, const int64_t *, uint16_t *,
-  int64_t, int64_t, int64_t, int64_t, bool, embag_algo_t, int64_t, bool,
-  data_type_t, bool);
+        const uint8_t *, const float *, const int64_t *, const int64_t *,
+        uint16_t *, int64_t, int64_t, int64_t, int64_t, bool, embag_algo_t,
+        int64_t, bool, data_type_t, bool);
 
 template void
 embag_avx512_int8_int4_kernel<true, uint8_t, int32_t, int32_t, uint16_t>(
-  const uint8_t *, const float *, const int32_t *, const int32_t *, uint16_t *,
-  int64_t, int64_t, int64_t, int64_t, bool, embag_algo_t, int64_t, bool,
-  data_type_t, bool);
+        const uint8_t *, const float *, const int32_t *, const int32_t *,
+        uint16_t *, int64_t, int64_t, int64_t, int64_t, bool, embag_algo_t,
+        int64_t, bool, data_type_t, bool);
 
 template void
 embag_avx512_int8_int4_kernel<false, int8_t, int64_t, int64_t, float>(
-  const int8_t *, const float *, const int64_t *, const int64_t *, float *,
-  int64_t, int64_t, int64_t, int64_t, bool, embag_algo_t, int64_t, bool,
-  data_type_t, bool);
+        const int8_t *, const float *, const int64_t *, const int64_t *,
+        float *, int64_t, int64_t, int64_t, int64_t, bool, embag_algo_t,
+        int64_t, bool, data_type_t, bool);
 
 template void
 embag_avx512_int8_int4_kernel<false, int8_t, int32_t, int32_t, float>(
-  const int8_t *, const float *, const int32_t *, const int32_t *, float *,
-  int64_t, int64_t, int64_t, int64_t, bool, embag_algo_t, int64_t, bool,
-  data_type_t, bool);
+        const int8_t *, const float *, const int32_t *, const int32_t *,
+        float *, int64_t, int64_t, int64_t, int64_t, bool, embag_algo_t,
+        int64_t, bool, data_type_t, bool);
 
 template void
 embag_avx512_int8_int4_kernel<false, int8_t, int64_t, int64_t, uint16_t>(
-  const int8_t *, const float *, const int64_t *, const int64_t *, uint16_t *,
-  int64_t, int64_t, int64_t, int64_t, bool, embag_algo_t, int64_t, bool,
-  data_type_t, bool);
+        const int8_t *, const float *, const int64_t *, const int64_t *,
+        uint16_t *, int64_t, int64_t, int64_t, int64_t, bool, embag_algo_t,
+        int64_t, bool, data_type_t, bool);
 
 template void
 embag_avx512_int8_int4_kernel<false, int8_t, int32_t, int32_t, uint16_t>(
-  const int8_t *, const float *, const int32_t *, const int32_t *, uint16_t *,
-  int64_t, int64_t, int64_t, int64_t, bool, embag_algo_t, int64_t, bool,
-  data_type_t, bool);
+        const int8_t *, const float *, const int32_t *, const int32_t *,
+        uint16_t *, int64_t, int64_t, int64_t, int64_t, bool, embag_algo_t,
+        int64_t, bool, data_type_t, bool);
 
 // INT4 -> F16 output
 template void
 embag_avx512_int8_int4_kernel<true, uint8_t, int64_t, int64_t, float16_t>(
-  const uint8_t *, const float *, const int64_t *, const int64_t *, float16_t *,
-  int64_t, int64_t, int64_t, int64_t, bool, embag_algo_t, int64_t, bool,
-  data_type_t, bool);
+        const uint8_t *, const float *, const int64_t *, const int64_t *,
+        float16_t *, int64_t, int64_t, int64_t, int64_t, bool, embag_algo_t,
+        int64_t, bool, data_type_t, bool);
 
 template void
 embag_avx512_int8_int4_kernel<true, uint8_t, int32_t, int32_t, float16_t>(
-  const uint8_t *, const float *, const int32_t *, const int32_t *, float16_t *,
-  int64_t, int64_t, int64_t, int64_t, bool, embag_algo_t, int64_t, bool,
-  data_type_t, bool);
+        const uint8_t *, const float *, const int32_t *, const int32_t *,
+        float16_t *, int64_t, int64_t, int64_t, int64_t, bool, embag_algo_t,
+        int64_t, bool, data_type_t, bool);
 
 // INT8 -> F16 output
 template void
 embag_avx512_int8_int4_kernel<false, int8_t, int64_t, int64_t, float16_t>(
-  const int8_t *, const float *, const int64_t *, const int64_t *, float16_t *,
-  int64_t, int64_t, int64_t, int64_t, bool, embag_algo_t, int64_t, bool,
-  data_type_t, bool);
+        const int8_t *, const float *, const int64_t *, const int64_t *,
+        float16_t *, int64_t, int64_t, int64_t, int64_t, bool, embag_algo_t,
+        int64_t, bool, data_type_t, bool);
 
 template void
 embag_avx512_int8_int4_kernel<false, int8_t, int32_t, int32_t, float16_t>(
-  const int8_t *, const float *, const int32_t *, const int32_t *, float16_t *,
-  int64_t, int64_t, int64_t, int64_t, bool, embag_algo_t, int64_t, bool,
-  data_type_t, bool);
+        const int8_t *, const float *, const int32_t *, const int32_t *,
+        float16_t *, int64_t, int64_t, int64_t, int64_t, bool, embag_algo_t,
+        int64_t, bool, data_type_t, bool);
 
 // F16 FMA kernel instantiations (INT4 -> F16 output)
 #if __GNUC__ >= 12
-template void
-embag_avx512_int8_int4_f16_fma_kernel<true, uint8_t, int64_t, int64_t, float16_t>
-(
-  const uint8_t *, const float *, const int64_t *, const int64_t *, float16_t *,
-  int64_t, int64_t, int64_t, int64_t, bool, embag_algo_t, int64_t, bool,
-  data_type_t, bool);
+template void embag_avx512_int8_int4_f16_fma_kernel<true, uint8_t, int64_t,
+        int64_t, float16_t>(const uint8_t *, const float *, const int64_t *,
+        const int64_t *, float16_t *, int64_t, int64_t, int64_t, int64_t, bool,
+        embag_algo_t, int64_t, bool, data_type_t, bool);
 
-template void
-embag_avx512_int8_int4_f16_fma_kernel<true, uint8_t, int32_t, int32_t, float16_t>
-(
-  const uint8_t *, const float *, const int32_t *, const int32_t *, float16_t *,
-  int64_t, int64_t, int64_t, int64_t, bool, embag_algo_t, int64_t, bool,
-  data_type_t, bool);
+template void embag_avx512_int8_int4_f16_fma_kernel<true, uint8_t, int32_t,
+        int32_t, float16_t>(const uint8_t *, const float *, const int32_t *,
+        const int32_t *, float16_t *, int64_t, int64_t, int64_t, int64_t, bool,
+        embag_algo_t, int64_t, bool, data_type_t, bool);
 
 // F16 FMA kernel instantiations (INT8 -> F16 output)
-template void
-embag_avx512_int8_int4_f16_fma_kernel<false, int8_t, int64_t, int64_t, float16_t>
-(
-  const int8_t *, const float *, const int64_t *, const int64_t *, float16_t *,
-  int64_t, int64_t, int64_t, int64_t, bool, embag_algo_t, int64_t, bool,
-  data_type_t, bool);
+template void embag_avx512_int8_int4_f16_fma_kernel<false, int8_t, int64_t,
+        int64_t, float16_t>(const int8_t *, const float *, const int64_t *,
+        const int64_t *, float16_t *, int64_t, int64_t, int64_t, int64_t, bool,
+        embag_algo_t, int64_t, bool, data_type_t, bool);
 
-template void
-embag_avx512_int8_int4_f16_fma_kernel<false, int8_t, int32_t, int32_t, float16_t>
-(
-  const int8_t *, const float *, const int32_t *, const int32_t *, float16_t *,
-  int64_t, int64_t, int64_t, int64_t, bool, embag_algo_t, int64_t, bool,
-  data_type_t, bool);
+template void embag_avx512_int8_int4_f16_fma_kernel<false, int8_t, int32_t,
+        int32_t, float16_t>(const int8_t *, const float *, const int32_t *,
+        const int32_t *, float16_t *, int64_t, int64_t, int64_t, int64_t, bool,
+        embag_algo_t, int64_t, bool, data_type_t, bool);
 #endif
 
 extern "C" {
-  embag_f32_avx512_kernel_t *get_embag_f32_avx512_kernel() {
+embag_f32_avx512_kernel_t *get_embag_f32_avx512_kernel() {
     return new embag_f32_avx512_kernel_t();
-  }
+}
 
-  embag_bf16_avx512_kernel_t *get_embag_bf16_avx512_kernel() {
+embag_bf16_avx512_kernel_t *get_embag_bf16_avx512_kernel() {
     return new embag_bf16_avx512_kernel_t();
-  }
+}
 
-  embag_f16_avx512_kernel_t *get_embag_f16_avx512_kernel() {
+embag_f16_avx512_kernel_t *get_embag_f16_avx512_kernel() {
     return new embag_f16_avx512_kernel_t();
-  }
+}
 
-  embag_int8_int4_avx512_kernel_t *get_embag_int8_int4_avx512_kernel() {
+embag_int8_int4_avx512_kernel_t *get_embag_int8_int4_avx512_kernel() {
     return new embag_int8_int4_avx512_kernel_t();
-  }
+}
 }
 
 } //namespace ops
 } //namespace zendnnl
-

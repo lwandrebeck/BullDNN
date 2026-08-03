@@ -1,5 +1,5 @@
 /********************************************************************************
-# * Copyright (c) 2025 Advanced Micro Devices, Inc. All rights reserved.
+# * Copyright (c) 2025-2026 Advanced Micro Devices, Inc. All rights reserved.
 # *
 # * Licensed under the Apache License, Version 2.0 (the "License");
 # * you may not use this file except in compliance with the License.
@@ -28,27 +28,23 @@ namespace ops {
 using namespace zendnnl::error_handling;
 
 class embag_f32_avx2_kernel_t final : public op_kernel_t<embag_context_t> {
- public:
-  status_t execute(const context_type &context_,
-                   tensor_map_type &inputs_,
-                   tensor_map_type &outputs_) override;
+public:
+    status_t execute(const context_type &context_, tensor_map_type &inputs_,
+            tensor_map_type &outputs_) override;
 };
 
 class embag_bf16_avx2_kernel_t final : public op_kernel_t<embag_context_t> {
- public:
-  status_t execute(const context_type &context_,
-                   tensor_map_type &inputs_,
-                   tensor_map_type &outputs_) override;
+public:
+    status_t execute(const context_type &context_, tensor_map_type &inputs_,
+            tensor_map_type &outputs_) override;
 };
 
 extern "C" {
-  embag_f32_avx2_kernel_t *get_embag_f32_avx2_kernel();
-  embag_bf16_avx2_kernel_t *get_embag_bf16_avx2_kernel();
+embag_f32_avx2_kernel_t *get_embag_f32_avx2_kernel();
+embag_bf16_avx2_kernel_t *get_embag_bf16_avx2_kernel();
 }
-
 
 } //namespace ops
 } //namespace zendnnl
-
 
 #endif

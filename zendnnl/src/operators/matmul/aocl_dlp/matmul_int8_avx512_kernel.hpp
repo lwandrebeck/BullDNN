@@ -16,11 +16,11 @@
 #ifndef _MATMUL_INT8_AVX512_KERNEL_HPP_
 #define _MATMUL_INT8_AVX512_KERNEL_HPP_
 
-#include <vector>
+#include <cstdlib>
+#include <cstring>
 #include <iostream>
 #include <memory>
-#include <cstring>
-#include <cstdlib>
+#include <vector>
 
 #include "common/zendnnl_global.hpp"
 #include "operators/common/operator_kernel.hpp"
@@ -35,16 +35,15 @@ namespace ops {
 
 class matmul_int8_avx512_kernel_t final : public op_kernel_t<matmul_context_t> {
 public:
-  status_t execute(const context_type& context_,
-                   tensor_map_type& inputs_,
-                   tensor_map_type& outputs_) override;
+    status_t execute(const context_type &context_, tensor_map_type &inputs_,
+            tensor_map_type &outputs_) override;
 };
 
 } //namespace ops
 } //namespace zendnnl
 
 extern "C" {
-  zendnnl::ops::matmul_int8_avx512_kernel_t *get_matmul_int8_avx512_kernel();
+zendnnl::ops::matmul_int8_avx512_kernel_t *get_matmul_int8_avx512_kernel();
 }
 
 #endif

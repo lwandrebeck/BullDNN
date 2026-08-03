@@ -16,11 +16,11 @@
 #ifndef _SAMPLE_EXAMPLE_HPP_
 #define _SAMPLE_EXAMPLE_HPP_
 
-#include "zendnnl.hpp"
 #include "example_utils.hpp"
+#include "zendnnl.hpp"
 
-#define  OK          (0)
-#define  NOT_OK      (1)
+#define OK (0)
+#define NOT_OK (1)
 
 namespace zendnnl {
 namespace examples {
@@ -49,7 +49,7 @@ int sample_f32_kernel_example();
  */
 int sample_bf16_kernel_example();
 
-} //examples
-} //zendnnl
+} // namespace examples
+} // namespace zendnnl
 
 #endif

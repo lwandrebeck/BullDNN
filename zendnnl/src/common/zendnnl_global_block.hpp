@@ -13,20 +13,20 @@
  * See the License for the specific language governing permissions and
  * limitations under the License.
  *******************************************************************************/
-#ifndef  _ZENDNNL_GLOBAL_BLOCK_HPP_
-#define  _ZENDNNL_GLOBAL_BLOCK_HPP_
+#ifndef _ZENDNNL_GLOBAL_BLOCK_HPP_
+#define _ZENDNNL_GLOBAL_BLOCK_HPP_
 
-#include <cstdlib>
 #include <cstdint>
+#include <cstdlib>
 #include <mutex>
 #include <string>
-#include "common/error_status.hpp"
-#include "common/zendnnl_exceptions.hpp"
-#include "common/platform_info.hpp"
-#include "logging.hpp"
 #include "common/config_manager.hpp"
-#include "profiler.hpp"
+#include "common/error_status.hpp"
 #include "common/lru.hpp"
+#include "common/platform_info.hpp"
+#include "common/zendnnl_exceptions.hpp"
+#include "logging.hpp"
+#include "profiler.hpp"
 
 namespace zendnnl {
 namespace common {
@@ -54,71 +54,69 @@ using namespace zendnnl::error_handling;
  */
 class zendnnl_global_block_t {
 public:
-
-  /** @brief Get pointer to the singleton
+    /** @brief Get pointer to the singleton
    *
    * Returns a pointer to the siggleton object, creating the object if
    * it is not already created. This call is thread-safe.
    *
    * @return A pointer to the singleton object.
    **/
-  static zendnnl_global_block_t* get();
+    static zendnnl_global_block_t *get();
 
-  /** @brief Get config manager
+    /** @brief Get config manager
    * @return A reference to config manager.
    */
-  config_manager_t& get_config_manager();
+    config_manager_t &get_config_manager();
 
-  /** @brief Get platform info
+    /** @brief Get platform info
    * @return A reference to platform info object.
    */
-  platform_info_t& get_platform_info();
+    platform_info_t &get_platform_info();
 
-  /** @brief Get logger
+    /** @brief Get logger
    * @return A reference to logger.
    */
-  logger_t&        get_logger();
+    logger_t &get_logger();
 
-  /** @brief Get lru_cache
+    /** @brief Get lru_cache
    * @return A reference to lru cache.
    */
-  sptr_lru_cache_t&        get_lru_cache();
+    sptr_lru_cache_t &get_lru_cache();
 
 private:
-  /** @brief private constructor
+    /** @brief private constructor
    *
    * Made private to prevent multiple instances creation.
    */
-  zendnnl_global_block_t();
+    zendnnl_global_block_t();
 
-  /** @brief deleted copy constuctor
+    /** @brief deleted copy constuctor
    *
    * Deleted to create multiple instances creation.
    */
-  zendnnl_global_block_t(const zendnnl_global_block_t&) = delete;
+    zendnnl_global_block_t(const zendnnl_global_block_t &) = delete;
 
-  /** @brief deleted copy assignment
+    /** @brief deleted copy assignment
    *
    * Deleted to prevent multiple instances creation.
    */
-  zendnnl_global_block_t& operator=(const zendnnl_global_block_t&) = delete;
+    zendnnl_global_block_t &operator=(const zendnnl_global_block_t &) = delete;
 
-  static std::once_flag              init_flag;  /*!< flag for thread-safe initialization */
-  static zendnnl_global_block_t*     instance;   /*!< singleton instance pointer */
+    static std::once_flag init_flag; /*!< flag for thread-safe initialization */
+    static zendnnl_global_block_t *instance; /*!< singleton instance pointer */
 
-  config_manager_t                   config_manager; /*!< config manager */
-  platform_info_t                    platform_info;  /*!< platform info */
-  logger_t                           logger;         /*!< logger */
-  sptr_lru_cache_t                   lru_cache;      /*!< global lru cache */
+    config_manager_t config_manager; /*!< config manager */
+    platform_info_t platform_info; /*!< platform info */
+    logger_t logger; /*!< logger */
+    sptr_lru_cache_t lru_cache; /*!< global lru cache */
 };
 
-
-}//common
+} // namespace common
 
 // namespace interface{
 // using zendnnl::common::zendnnl_global_block_t;
 // }//interface
 
-}//zendnnl
+} // namespace zendnnl
 
 #endif

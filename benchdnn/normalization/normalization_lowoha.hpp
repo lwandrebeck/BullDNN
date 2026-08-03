@@ -17,8 +17,8 @@
 #define _NORMALIZATION_LOWOHA_HPP_
 
 #include "benchdnn.hpp"
-#include "normalization_utils.hpp"
 #include "normalization_tensor_factory.hpp"
+#include "normalization_utils.hpp"
 
 using zendnnl::lowoha::normalization::norm_params;
 using zendnnl::lowoha::normalization::normalization_direct;
@@ -40,11 +40,10 @@ namespace normalization {
  * @param cache_size Cache size for cold cache flushing (if enabled).
  * @return int Returns OK (0) on success, NOT_OK (1) on failure.
  */
-int normalization_lowoha_benchdnn(
-  std::vector<NormalizationConfig> configs,
-  std::vector<std::pair<NormalizationConfig, TimingStats>> &normalization_results,
-  const global_options &options,
-  size_t cache_size);
+int normalization_lowoha_benchdnn(std::vector<NormalizationConfig> configs,
+        std::vector<std::pair<NormalizationConfig, TimingStats>>
+                &normalization_results,
+        const global_options &options, size_t cache_size);
 
 } // namespace normalization
 } // namespace benchdnn

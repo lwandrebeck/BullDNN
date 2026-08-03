@@ -31,13 +31,8 @@ namespace sdpa {
  * runtime dtype; score accumulation and softmax run in FP32 for numerical
  * stability. Tensor layout and strides are described by @c sdpa_params.
  */
-status_t reference_sdpa(
-  const void *query,
-  const void *key,
-  const void *value,
-  const void *attn_mask,
-  void *output,
-  const sdpa_params &params);
+status_t reference_sdpa(const void *query, const void *key, const void *value,
+        const void *attn_mask, void *output, const sdpa_params &params);
 
 } // namespace sdpa
 } // namespace lowoha

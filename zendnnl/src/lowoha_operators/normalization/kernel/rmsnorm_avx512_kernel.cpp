@@ -15,10 +15,10 @@
 # *******************************************************************************/
 
 #include "rmsnorm_avx512_kernel.hpp"
-#include "avx512_utils.hpp"
 #include <algorithm>
 #include <cmath>
 #include <omp.h>
+#include "avx512_utils.hpp"
 
 namespace zendnnl {
 namespace lowoha {
@@ -28,11 +28,11 @@ namespace normalization {
 #pragma GCC target("avx512f,avx512bw,avx512dq,avx512vl,avx512bf16,fma")
 #endif
 
+using avx512::elem_size;
 using avx512::load16;
 using avx512::load16_mask;
 using avx512::store16;
 using avx512::store16_mask;
-using avx512::elem_size;
 using zendnnl::common::data_type_t;
 
 // =============================================================================
@@ -64,127 +64,142 @@ using zendnnl::common::data_type_t;
 //   Load-bound: input re-read hits L1 (warm from pass 1).
 // =============================================================================
 
-static inline void rms_norm_row_avx512(
-  const void  *__restrict__ in_row,
-  void        *__restrict__ out_row,
-  const void  *__restrict__ gamma,
-  uint64_t norm_size,
-  float    inv_n,
-  float    epsilon,
-  bool     use_scale,
-  data_type_t src_dt,
-  data_type_t dst_dt,
-  data_type_t gamma_dt
-) {
-  const size_t src_sz = elem_size(src_dt);
-  const size_t dst_sz = elem_size(dst_dt);
-  const size_t g_sz   = elem_size(gamma_dt);
+static inline void rms_norm_row_avx512(const void *__restrict__ in_row,
+        void *__restrict__ out_row, const void *__restrict__ gamma,
+        uint64_t norm_size, float inv_n, float epsilon, bool use_scale,
+        data_type_t src_dt, data_type_t dst_dt, data_type_t gamma_dt) {
+    const size_t src_sz = elem_size(src_dt);
+    const size_t dst_sz = elem_size(dst_dt);
+    const size_t g_sz = elem_size(gamma_dt);
 
-  // ---- Pass 1: sum-of-squares ----
-  __m512 acc0 = _mm512_setzero_ps(), acc1 = _mm512_setzero_ps();
-  __m512 acc2 = _mm512_setzero_ps(), acc3 = _mm512_setzero_ps();
+    // ---- Pass 1: sum-of-squares ----
+    __m512 acc0 = _mm512_setzero_ps(), acc1 = _mm512_setzero_ps();
+    __m512 acc2 = _mm512_setzero_ps(), acc3 = _mm512_setzero_ps();
 
-  uint64_t i = 0;
-  const uint64_t vec64 = norm_size & ~63ULL;
+    uint64_t i = 0;
+    const uint64_t vec64 = norm_size & ~63ULL;
 
-  for (; i < vec64; i += 64) {
-    const void *p = static_cast<const char *>(in_row) + i * src_sz;
-    __m512 s0 = load16(p,                    src_dt);
-    __m512 s1 = load16((const char *)p + 16*src_sz, src_dt);
-    __m512 s2 = load16((const char *)p + 32*src_sz, src_dt);
-    __m512 s3 = load16((const char *)p + 48*src_sz, src_dt);
-
-    acc0 = _mm512_fmadd_ps(s0, s0, acc0);
-    acc1 = _mm512_fmadd_ps(s1, s1, acc1);
-    acc2 = _mm512_fmadd_ps(s2, s2, acc2);
-    acc3 = _mm512_fmadd_ps(s3, s3, acc3);
-  }
-  for (; i + 15 < norm_size; i += 16) {
-    __m512 s0 = load16(static_cast<const char *>(in_row) + i*src_sz, src_dt);
-    acc0 = _mm512_fmadd_ps(s0, s0, acc0);
-  }
-  if (i < norm_size) {
-    __mmask16 mask = (__mmask16)((1U << (norm_size - i)) - 1);
-    __m512 s0 = load16_mask(static_cast<const char *>(in_row) + i*src_sz, mask,
-                            src_dt);
-    acc0 = _mm512_fmadd_ps(s0, s0, acc0);
-  }
-
-  acc0 = _mm512_add_ps(_mm512_add_ps(acc0, acc1), _mm512_add_ps(acc2, acc3));
-  float inv_rms = 1.0f / std::sqrt(_mm512_reduce_add_ps(acc0) * inv_n + epsilon);
-  __m512 inv_rms_v = _mm512_set1_ps(inv_rms);
-
-  // ---- Pass 2: normalize + optional gamma ----
-  i = 0;
-  if (use_scale) {
     for (; i < vec64; i += 64) {
-      const void *np = static_cast<const char *>(in_row) + i*src_sz;
-      const void *gp = static_cast<const char *>(gamma)  + i*g_sz;
-      void *op       = static_cast<char *>(out_row)      + i*dst_sz;
-      __m512 g0 = _mm512_mul_ps(load16(gp,                       gamma_dt),
-                                inv_rms_v);
-      __m512 g1 = _mm512_mul_ps(load16((const char *)gp+16*g_sz, gamma_dt),
-                                inv_rms_v);
-      __m512 g2 = _mm512_mul_ps(load16((const char *)gp+32*g_sz, gamma_dt),
-                                inv_rms_v);
-      __m512 g3 = _mm512_mul_ps(load16((const char *)gp+48*g_sz, gamma_dt),
-                                inv_rms_v);
-      store16(op,                     _mm512_mul_ps(load16(np,
-              src_dt), g0), dst_dt);
-      store16((char *)op + 16*dst_sz,
-              _mm512_mul_ps(load16((const char *)np+16*src_sz, src_dt), g1), dst_dt);
-      store16((char *)op + 32*dst_sz,
-              _mm512_mul_ps(load16((const char *)np+32*src_sz, src_dt), g2), dst_dt);
-      store16((char *)op + 48*dst_sz,
-              _mm512_mul_ps(load16((const char *)np+48*src_sz, src_dt), g3), dst_dt);
+        const void *p = static_cast<const char *>(in_row) + i * src_sz;
+        __m512 s0 = load16(p, src_dt);
+        __m512 s1 = load16((const char *)p + 16 * src_sz, src_dt);
+        __m512 s2 = load16((const char *)p + 32 * src_sz, src_dt);
+        __m512 s3 = load16((const char *)p + 48 * src_sz, src_dt);
+
+        acc0 = _mm512_fmadd_ps(s0, s0, acc0);
+        acc1 = _mm512_fmadd_ps(s1, s1, acc1);
+        acc2 = _mm512_fmadd_ps(s2, s2, acc2);
+        acc3 = _mm512_fmadd_ps(s3, s3, acc3);
     }
     for (; i + 15 < norm_size; i += 16) {
-      __m512 g0 = _mm512_mul_ps(
-                    load16(static_cast<const char *>(gamma)+i*g_sz, gamma_dt), inv_rms_v);
-      store16(static_cast<char *>(out_row) + i*dst_sz,
-              _mm512_mul_ps(load16(static_cast<const char *>(in_row)+i*src_sz, src_dt),
-                            g0), dst_dt);
+        __m512 s0 = load16(
+                static_cast<const char *>(in_row) + i * src_sz, src_dt);
+        acc0 = _mm512_fmadd_ps(s0, s0, acc0);
     }
     if (i < norm_size) {
-      __mmask16 mask = (__mmask16)((1U << (norm_size - i)) - 1);
-      __m512 g0 = _mm512_mul_ps(
-                    load16_mask(static_cast<const char *>(gamma)+i*g_sz, mask, gamma_dt),
+        __mmask16 mask = (__mmask16)((1U << (norm_size - i)) - 1);
+        __m512 s0 = load16_mask(
+                static_cast<const char *>(in_row) + i * src_sz, mask, src_dt);
+        acc0 = _mm512_fmadd_ps(s0, s0, acc0);
+    }
+
+    acc0 = _mm512_add_ps(_mm512_add_ps(acc0, acc1), _mm512_add_ps(acc2, acc3));
+    float inv_rms
+            = 1.0f / std::sqrt(_mm512_reduce_add_ps(acc0) * inv_n + epsilon);
+    __m512 inv_rms_v = _mm512_set1_ps(inv_rms);
+
+    // ---- Pass 2: normalize + optional gamma ----
+    i = 0;
+    if (use_scale) {
+        for (; i < vec64; i += 64) {
+            const void *np = static_cast<const char *>(in_row) + i * src_sz;
+            const void *gp = static_cast<const char *>(gamma) + i * g_sz;
+            void *op = static_cast<char *>(out_row) + i * dst_sz;
+            __m512 g0 = _mm512_mul_ps(load16(gp, gamma_dt), inv_rms_v);
+            __m512 g1 = _mm512_mul_ps(
+                    load16((const char *)gp + 16 * g_sz, gamma_dt), inv_rms_v);
+            __m512 g2 = _mm512_mul_ps(
+                    load16((const char *)gp + 32 * g_sz, gamma_dt), inv_rms_v);
+            __m512 g3 = _mm512_mul_ps(
+                    load16((const char *)gp + 48 * g_sz, gamma_dt), inv_rms_v);
+            store16(op, _mm512_mul_ps(load16(np, src_dt), g0), dst_dt);
+            store16((char *)op + 16 * dst_sz,
+                    _mm512_mul_ps(
+                            load16((const char *)np + 16 * src_sz, src_dt), g1),
+                    dst_dt);
+            store16((char *)op + 32 * dst_sz,
+                    _mm512_mul_ps(
+                            load16((const char *)np + 32 * src_sz, src_dt), g2),
+                    dst_dt);
+            store16((char *)op + 48 * dst_sz,
+                    _mm512_mul_ps(
+                            load16((const char *)np + 48 * src_sz, src_dt), g3),
+                    dst_dt);
+        }
+        for (; i + 15 < norm_size; i += 16) {
+            __m512 g0 = _mm512_mul_ps(
+                    load16(static_cast<const char *>(gamma) + i * g_sz,
+                            gamma_dt),
                     inv_rms_v);
-      store16_mask(static_cast<char *>(out_row) + i*dst_sz,
-                   _mm512_mul_ps(load16_mask(static_cast<const char *>(in_row)+i*src_sz, mask,
-                                             src_dt), g0),
-                   mask, dst_dt);
+            store16(static_cast<char *>(out_row) + i * dst_sz,
+                    _mm512_mul_ps(load16(static_cast<const char *>(in_row)
+                                                  + i * src_sz,
+                                          src_dt),
+                            g0),
+                    dst_dt);
+        }
+        if (i < norm_size) {
+            __mmask16 mask = (__mmask16)((1U << (norm_size - i)) - 1);
+            __m512 g0 = _mm512_mul_ps(
+                    load16_mask(static_cast<const char *>(gamma) + i * g_sz,
+                            mask, gamma_dt),
+                    inv_rms_v);
+            store16_mask(static_cast<char *>(out_row) + i * dst_sz,
+                    _mm512_mul_ps(load16_mask(static_cast<const char *>(in_row)
+                                                  + i * src_sz,
+                                          mask, src_dt),
+                            g0),
+                    mask, dst_dt);
+        }
+    } else {
+        for (; i < vec64; i += 64) {
+            const void *np = static_cast<const char *>(in_row) + i * src_sz;
+            void *op = static_cast<char *>(out_row) + i * dst_sz;
+            store16(op, _mm512_mul_ps(load16(np, src_dt), inv_rms_v), dst_dt);
+            store16((char *)op + 16 * dst_sz,
+                    _mm512_mul_ps(
+                            load16((const char *)np + 16 * src_sz, src_dt),
+                            inv_rms_v),
+                    dst_dt);
+            store16((char *)op + 32 * dst_sz,
+                    _mm512_mul_ps(
+                            load16((const char *)np + 32 * src_sz, src_dt),
+                            inv_rms_v),
+                    dst_dt);
+            store16((char *)op + 48 * dst_sz,
+                    _mm512_mul_ps(
+                            load16((const char *)np + 48 * src_sz, src_dt),
+                            inv_rms_v),
+                    dst_dt);
+        }
+        for (; i + 15 < norm_size; i += 16) {
+            store16(static_cast<char *>(out_row) + i * dst_sz,
+                    _mm512_mul_ps(load16(static_cast<const char *>(in_row)
+                                                  + i * src_sz,
+                                          src_dt),
+                            inv_rms_v),
+                    dst_dt);
+        }
+        if (i < norm_size) {
+            __mmask16 mask = (__mmask16)((1U << (norm_size - i)) - 1);
+            store16_mask(static_cast<char *>(out_row) + i * dst_sz,
+                    _mm512_mul_ps(load16_mask(static_cast<const char *>(in_row)
+                                                  + i * src_sz,
+                                          mask, src_dt),
+                            inv_rms_v),
+                    mask, dst_dt);
+        }
     }
-  }
-  else {
-    for (; i < vec64; i += 64) {
-      const void *np = static_cast<const char *>(in_row) + i*src_sz;
-      void *op       = static_cast<char *>(out_row)      + i*dst_sz;
-      store16(op,                     _mm512_mul_ps(load16(np,
-              src_dt), inv_rms_v), dst_dt);
-      store16((char *)op + 16*dst_sz,
-              _mm512_mul_ps(load16((const char *)np+16*src_sz, src_dt), inv_rms_v),
-              dst_dt);
-      store16((char *)op + 32*dst_sz,
-              _mm512_mul_ps(load16((const char *)np+32*src_sz, src_dt), inv_rms_v),
-              dst_dt);
-      store16((char *)op + 48*dst_sz,
-              _mm512_mul_ps(load16((const char *)np+48*src_sz, src_dt), inv_rms_v),
-              dst_dt);
-    }
-    for (; i + 15 < norm_size; i += 16) {
-      store16(static_cast<char *>(out_row) + i*dst_sz,
-              _mm512_mul_ps(load16(static_cast<const char *>(in_row)+i*src_sz, src_dt),
-                            inv_rms_v), dst_dt);
-    }
-    if (i < norm_size) {
-      __mmask16 mask = (__mmask16)((1U << (norm_size - i)) - 1);
-      store16_mask(static_cast<char *>(out_row) + i*dst_sz,
-                   _mm512_mul_ps(load16_mask(static_cast<const char *>(in_row)+i*src_sz, mask,
-                                             src_dt), inv_rms_v),
-                   mask, dst_dt);
-    }
-  }
 }
 
 // =============================================================================
@@ -221,198 +236,207 @@ static inline void rms_norm_row_avx512(
 //   semantics.
 // =============================================================================
 
-static inline void fused_add_rms_row_avx512(
-  const void  *__restrict__ in_row,
-  void        *__restrict__ out_row,
-  void        *__restrict__ res_row,
-  const void  *__restrict__ gamma,
-  uint64_t norm_size,
-  float    inv_n,
-  float    epsilon,
-  bool     use_scale,
-  data_type_t src_dt,
-  data_type_t dst_dt,
-  data_type_t gamma_dt
-) {
-  const size_t src_sz = elem_size(src_dt);
-  const size_t dst_sz = elem_size(dst_dt);
-  const size_t g_sz   = elem_size(gamma_dt);
+static inline void fused_add_rms_row_avx512(const void *__restrict__ in_row,
+        void *__restrict__ out_row, void *__restrict__ res_row,
+        const void *__restrict__ gamma, uint64_t norm_size, float inv_n,
+        float epsilon, bool use_scale, data_type_t src_dt, data_type_t dst_dt,
+        data_type_t gamma_dt) {
+    const size_t src_sz = elem_size(src_dt);
+    const size_t dst_sz = elem_size(dst_dt);
+    const size_t g_sz = elem_size(gamma_dt);
 
-  // ---- Pass 1: residual += input, accumulate sum-of-squares ----
-  __m512 acc0 = _mm512_setzero_ps(), acc1 = _mm512_setzero_ps();
-  __m512 acc2 = _mm512_setzero_ps(), acc3 = _mm512_setzero_ps();
+    // ---- Pass 1: residual += input, accumulate sum-of-squares ----
+    __m512 acc0 = _mm512_setzero_ps(), acc1 = _mm512_setzero_ps();
+    __m512 acc2 = _mm512_setzero_ps(), acc3 = _mm512_setzero_ps();
 
-  uint64_t i = 0;
-  const uint64_t vec64 = norm_size & ~63ULL;
+    uint64_t i = 0;
+    const uint64_t vec64 = norm_size & ~63ULL;
 
-  for (; i < vec64; i += 64) {
-    const void *ip = static_cast<const char *>(in_row)  + i*src_sz;
-    void       *rp = static_cast<char *>(res_row)       + i*src_sz;
-
-    __m512 s0 = _mm512_add_ps(load16(rp,                      src_dt),
-                              load16(ip,                      src_dt));
-    __m512 s1 = _mm512_add_ps(load16((char *)rp + 16*src_sz,   src_dt),
-                              load16((const char *)ip+16*src_sz, src_dt));
-    __m512 s2 = _mm512_add_ps(load16((char *)rp + 32*src_sz,   src_dt),
-                              load16((const char *)ip+32*src_sz, src_dt));
-    __m512 s3 = _mm512_add_ps(load16((char *)rp + 48*src_sz,   src_dt),
-                              load16((const char *)ip+48*src_sz, src_dt));
-
-    store16(rp,                     s0, src_dt);
-    store16((char *)rp + 16*src_sz,  s1, src_dt);
-    store16((char *)rp + 32*src_sz,  s2, src_dt);
-    store16((char *)rp + 48*src_sz,  s3, src_dt);
-
-    acc0 = _mm512_fmadd_ps(s0, s0, acc0);
-    acc1 = _mm512_fmadd_ps(s1, s1, acc1);
-    acc2 = _mm512_fmadd_ps(s2, s2, acc2);
-    acc3 = _mm512_fmadd_ps(s3, s3, acc3);
-  }
-  for (; i + 15 < norm_size; i += 16) {
-    __m512 s0 = _mm512_add_ps(
-                  load16(static_cast<char *>(res_row) + i*src_sz, src_dt),
-                  load16(static_cast<const char *>(in_row) + i*src_sz, src_dt));
-    store16(static_cast<char *>(res_row) + i*src_sz, s0, src_dt);
-    acc0 = _mm512_fmadd_ps(s0, s0, acc0);
-  }
-  if (i < norm_size) {
-    __mmask16 mask = (__mmask16)((1U << (norm_size - i)) - 1);
-    __m512 s0 = _mm512_add_ps(
-                  load16_mask(static_cast<char *>(res_row) + i*src_sz, mask, src_dt),
-                  load16_mask(static_cast<const char *>(in_row) + i*src_sz, mask, src_dt));
-    store16_mask(static_cast<char *>(res_row) + i*src_sz, s0, mask, src_dt);
-    acc0 = _mm512_fmadd_ps(s0, s0, acc0);
-  }
-
-  acc0 = _mm512_add_ps(_mm512_add_ps(acc0, acc1), _mm512_add_ps(acc2, acc3));
-  float inv_rms = 1.0f / std::sqrt(_mm512_reduce_add_ps(acc0) * inv_n + epsilon);
-  __m512 inv_rms_v = _mm512_set1_ps(inv_rms);
-
-  // ---- Pass 2: normalize updated residual + optional gamma ----
-  i = 0;
-  if (use_scale) {
     for (; i < vec64; i += 64) {
-      const void *np = static_cast<char *>(res_row)  + i*src_sz;
-      const void *gp = static_cast<const char *>(gamma) + i*g_sz;
-      void *op       = static_cast<char *>(out_row)  + i*dst_sz;
-      __m512 g0 = _mm512_mul_ps(load16(gp,                       gamma_dt),
-                                inv_rms_v);
-      __m512 g1 = _mm512_mul_ps(load16((const char *)gp+16*g_sz, gamma_dt),
-                                inv_rms_v);
-      __m512 g2 = _mm512_mul_ps(load16((const char *)gp+32*g_sz, gamma_dt),
-                                inv_rms_v);
-      __m512 g3 = _mm512_mul_ps(load16((const char *)gp+48*g_sz, gamma_dt),
-                                inv_rms_v);
-      store16(op,                     _mm512_mul_ps(load16(np,
-              src_dt), g0), dst_dt);
-      store16((char *)op + 16*dst_sz,
-              _mm512_mul_ps(load16((const char *)np+16*src_sz, src_dt), g1), dst_dt);
-      store16((char *)op + 32*dst_sz,
-              _mm512_mul_ps(load16((const char *)np+32*src_sz, src_dt), g2), dst_dt);
-      store16((char *)op + 48*dst_sz,
-              _mm512_mul_ps(load16((const char *)np+48*src_sz, src_dt), g3), dst_dt);
+        const void *ip = static_cast<const char *>(in_row) + i * src_sz;
+        void *rp = static_cast<char *>(res_row) + i * src_sz;
+
+        __m512 s0 = _mm512_add_ps(load16(rp, src_dt), load16(ip, src_dt));
+        __m512 s1 = _mm512_add_ps(load16((char *)rp + 16 * src_sz, src_dt),
+                load16((const char *)ip + 16 * src_sz, src_dt));
+        __m512 s2 = _mm512_add_ps(load16((char *)rp + 32 * src_sz, src_dt),
+                load16((const char *)ip + 32 * src_sz, src_dt));
+        __m512 s3 = _mm512_add_ps(load16((char *)rp + 48 * src_sz, src_dt),
+                load16((const char *)ip + 48 * src_sz, src_dt));
+
+        store16(rp, s0, src_dt);
+        store16((char *)rp + 16 * src_sz, s1, src_dt);
+        store16((char *)rp + 32 * src_sz, s2, src_dt);
+        store16((char *)rp + 48 * src_sz, s3, src_dt);
+
+        acc0 = _mm512_fmadd_ps(s0, s0, acc0);
+        acc1 = _mm512_fmadd_ps(s1, s1, acc1);
+        acc2 = _mm512_fmadd_ps(s2, s2, acc2);
+        acc3 = _mm512_fmadd_ps(s3, s3, acc3);
     }
     for (; i + 15 < norm_size; i += 16) {
-      __m512 g0 = _mm512_mul_ps(
-                    load16(static_cast<const char *>(gamma)+i*g_sz, gamma_dt), inv_rms_v);
-      store16(static_cast<char *>(out_row) + i*dst_sz,
-              _mm512_mul_ps(load16(static_cast<char *>(res_row)+i*src_sz, src_dt), g0),
-              dst_dt);
+        __m512 s0 = _mm512_add_ps(
+                load16(static_cast<char *>(res_row) + i * src_sz, src_dt),
+                load16(static_cast<const char *>(in_row) + i * src_sz, src_dt));
+        store16(static_cast<char *>(res_row) + i * src_sz, s0, src_dt);
+        acc0 = _mm512_fmadd_ps(s0, s0, acc0);
     }
     if (i < norm_size) {
-      __mmask16 mask = (__mmask16)((1U << (norm_size - i)) - 1);
-      __m512 g0 = _mm512_mul_ps(
-                    load16_mask(static_cast<const char *>(gamma)+i*g_sz, mask, gamma_dt),
+        __mmask16 mask = (__mmask16)((1U << (norm_size - i)) - 1);
+        __m512 s0 = _mm512_add_ps(
+                load16_mask(static_cast<char *>(res_row) + i * src_sz, mask,
+                        src_dt),
+                load16_mask(static_cast<const char *>(in_row) + i * src_sz,
+                        mask, src_dt));
+        store16_mask(
+                static_cast<char *>(res_row) + i * src_sz, s0, mask, src_dt);
+        acc0 = _mm512_fmadd_ps(s0, s0, acc0);
+    }
+
+    acc0 = _mm512_add_ps(_mm512_add_ps(acc0, acc1), _mm512_add_ps(acc2, acc3));
+    float inv_rms
+            = 1.0f / std::sqrt(_mm512_reduce_add_ps(acc0) * inv_n + epsilon);
+    __m512 inv_rms_v = _mm512_set1_ps(inv_rms);
+
+    // ---- Pass 2: normalize updated residual + optional gamma ----
+    i = 0;
+    if (use_scale) {
+        for (; i < vec64; i += 64) {
+            const void *np = static_cast<char *>(res_row) + i * src_sz;
+            const void *gp = static_cast<const char *>(gamma) + i * g_sz;
+            void *op = static_cast<char *>(out_row) + i * dst_sz;
+            __m512 g0 = _mm512_mul_ps(load16(gp, gamma_dt), inv_rms_v);
+            __m512 g1 = _mm512_mul_ps(
+                    load16((const char *)gp + 16 * g_sz, gamma_dt), inv_rms_v);
+            __m512 g2 = _mm512_mul_ps(
+                    load16((const char *)gp + 32 * g_sz, gamma_dt), inv_rms_v);
+            __m512 g3 = _mm512_mul_ps(
+                    load16((const char *)gp + 48 * g_sz, gamma_dt), inv_rms_v);
+            store16(op, _mm512_mul_ps(load16(np, src_dt), g0), dst_dt);
+            store16((char *)op + 16 * dst_sz,
+                    _mm512_mul_ps(
+                            load16((const char *)np + 16 * src_sz, src_dt), g1),
+                    dst_dt);
+            store16((char *)op + 32 * dst_sz,
+                    _mm512_mul_ps(
+                            load16((const char *)np + 32 * src_sz, src_dt), g2),
+                    dst_dt);
+            store16((char *)op + 48 * dst_sz,
+                    _mm512_mul_ps(
+                            load16((const char *)np + 48 * src_sz, src_dt), g3),
+                    dst_dt);
+        }
+        for (; i + 15 < norm_size; i += 16) {
+            __m512 g0 = _mm512_mul_ps(
+                    load16(static_cast<const char *>(gamma) + i * g_sz,
+                            gamma_dt),
                     inv_rms_v);
-      store16_mask(static_cast<char *>(out_row) + i*dst_sz,
-                   _mm512_mul_ps(load16_mask(static_cast<char *>(res_row)+i*src_sz, mask,
-                                             src_dt), g0),
-                   mask, dst_dt);
+            store16(static_cast<char *>(out_row) + i * dst_sz,
+                    _mm512_mul_ps(
+                            load16(static_cast<char *>(res_row) + i * src_sz,
+                                    src_dt),
+                            g0),
+                    dst_dt);
+        }
+        if (i < norm_size) {
+            __mmask16 mask = (__mmask16)((1U << (norm_size - i)) - 1);
+            __m512 g0 = _mm512_mul_ps(
+                    load16_mask(static_cast<const char *>(gamma) + i * g_sz,
+                            mask, gamma_dt),
+                    inv_rms_v);
+            store16_mask(static_cast<char *>(out_row) + i * dst_sz,
+                    _mm512_mul_ps(load16_mask(static_cast<char *>(res_row)
+                                                  + i * src_sz,
+                                          mask, src_dt),
+                            g0),
+                    mask, dst_dt);
+        }
+    } else {
+        for (; i < vec64; i += 64) {
+            const void *np = static_cast<char *>(res_row) + i * src_sz;
+            void *op = static_cast<char *>(out_row) + i * dst_sz;
+            store16(op, _mm512_mul_ps(load16(np, src_dt), inv_rms_v), dst_dt);
+            store16((char *)op + 16 * dst_sz,
+                    _mm512_mul_ps(
+                            load16((const char *)np + 16 * src_sz, src_dt),
+                            inv_rms_v),
+                    dst_dt);
+            store16((char *)op + 32 * dst_sz,
+                    _mm512_mul_ps(
+                            load16((const char *)np + 32 * src_sz, src_dt),
+                            inv_rms_v),
+                    dst_dt);
+            store16((char *)op + 48 * dst_sz,
+                    _mm512_mul_ps(
+                            load16((const char *)np + 48 * src_sz, src_dt),
+                            inv_rms_v),
+                    dst_dt);
+        }
+        for (; i + 15 < norm_size; i += 16) {
+            store16(static_cast<char *>(out_row) + i * dst_sz,
+                    _mm512_mul_ps(
+                            load16(static_cast<char *>(res_row) + i * src_sz,
+                                    src_dt),
+                            inv_rms_v),
+                    dst_dt);
+        }
+        if (i < norm_size) {
+            __mmask16 mask = (__mmask16)((1U << (norm_size - i)) - 1);
+            store16_mask(static_cast<char *>(out_row) + i * dst_sz,
+                    _mm512_mul_ps(load16_mask(static_cast<char *>(res_row)
+                                                  + i * src_sz,
+                                          mask, src_dt),
+                            inv_rms_v),
+                    mask, dst_dt);
+        }
     }
-  }
-  else {
-    for (; i < vec64; i += 64) {
-      const void *np = static_cast<char *>(res_row)  + i*src_sz;
-      void *op       = static_cast<char *>(out_row)  + i*dst_sz;
-      store16(op,                     _mm512_mul_ps(load16(np,
-              src_dt), inv_rms_v), dst_dt);
-      store16((char *)op + 16*dst_sz,
-              _mm512_mul_ps(load16((const char *)np+16*src_sz, src_dt), inv_rms_v),
-              dst_dt);
-      store16((char *)op + 32*dst_sz,
-              _mm512_mul_ps(load16((const char *)np+32*src_sz, src_dt), inv_rms_v),
-              dst_dt);
-      store16((char *)op + 48*dst_sz,
-              _mm512_mul_ps(load16((const char *)np+48*src_sz, src_dt), inv_rms_v),
-              dst_dt);
-    }
-    for (; i + 15 < norm_size; i += 16) {
-      store16(static_cast<char *>(out_row) + i*dst_sz,
-              _mm512_mul_ps(load16(static_cast<char *>(res_row)+i*src_sz, src_dt),
-                            inv_rms_v), dst_dt);
-    }
-    if (i < norm_size) {
-      __mmask16 mask = (__mmask16)((1U << (norm_size - i)) - 1);
-      store16_mask(static_cast<char *>(out_row) + i*dst_sz,
-                   _mm512_mul_ps(load16_mask(static_cast<char *>(res_row)+i*src_sz, mask,
-                                             src_dt), inv_rms_v),
-                   mask, dst_dt);
-    }
-  }
 }
 
 // =====================================================================
 // Dispatches RMS_NORM and FUSED_ADD_RMS_NORM
 // =====================================================================
 
-status_t rms_norm_avx512(
-  const void *input,
-  void       *output,
-  void       *residual,
-  const void *gamma,
-  norm_params &params
-) {
-  const float inv_n = 1.0f / static_cast<float>(params.norm_size);
-  const data_type_t src_dt   = params.src_dt;
-  const data_type_t dst_dt   = params.dst_dt;
-  const data_type_t gamma_dt = params.gamma_dt;
-  const size_t src_sz = elem_size(src_dt);
-  const size_t dst_sz = elem_size(dst_dt);
-  const uint64_t N = params.norm_size;
-  const int64_t batch = static_cast<int64_t>(params.batch);
-  const bool is_fused = (params.norm_type == norm_type_t::FUSED_ADD_RMS_NORM &&
-                         residual);
+status_t rms_norm_avx512(const void *input, void *output, void *residual,
+        const void *gamma, norm_params &params) {
+    const float inv_n = 1.0f / static_cast<float>(params.norm_size);
+    const data_type_t src_dt = params.src_dt;
+    const data_type_t dst_dt = params.dst_dt;
+    const data_type_t gamma_dt = params.gamma_dt;
+    const size_t src_sz = elem_size(src_dt);
+    const size_t dst_sz = elem_size(dst_dt);
+    const uint64_t N = params.norm_size;
+    const int64_t batch = static_cast<int64_t>(params.batch);
+    const bool is_fused
+            = (params.norm_type == norm_type_t::FUSED_ADD_RMS_NORM && residual);
 
-  auto row_loop = [&](int64_t b) {
-    if (!is_fused) {
-      rms_norm_row_avx512(
-        static_cast<const char *>(input)  + b * N * src_sz,
-        static_cast<char *>(output)       + b * N * dst_sz,
-        gamma, N, inv_n, params.epsilon,
-        params.use_scale, src_dt, dst_dt, gamma_dt);
-    }
-    else {
-      fused_add_rms_row_avx512(
-        static_cast<const char *>(input)    + b * N * src_sz,
-        static_cast<char *>(output)         + b * N * dst_sz,
-        static_cast<char *>(residual)       + b * N * src_sz,
-        gamma, N, inv_n, params.epsilon,
-        params.use_scale, src_dt, dst_dt, gamma_dt);
-    }
-  };
+    auto row_loop = [&](int64_t b) {
+        if (!is_fused) {
+            rms_norm_row_avx512(
+                    static_cast<const char *>(input) + b * N * src_sz,
+                    static_cast<char *>(output) + b * N * dst_sz, gamma, N,
+                    inv_n, params.epsilon, params.use_scale, src_dt, dst_dt,
+                    gamma_dt);
+        } else {
+            fused_add_rms_row_avx512(
+                    static_cast<const char *>(input) + b * N * src_sz,
+                    static_cast<char *>(output) + b * N * dst_sz,
+                    static_cast<char *>(residual) + b * N * src_sz, gamma, N,
+                    inv_n, params.epsilon, params.use_scale, src_dt, dst_dt,
+                    gamma_dt);
+        }
+    };
 
-  if (batch <= 1) {
-    for (int64_t b = 0; b < batch; ++b) {
-      row_loop(b);
+    if (batch <= 1) {
+        for (int64_t b = 0; b < batch; ++b) {
+            row_loop(b);
+        }
+    } else {
+#pragma omp parallel for schedule(static)
+        for (int64_t b = 0; b < batch; ++b) {
+            row_loop(b);
+        }
     }
-  }
-  else {
-    #pragma omp parallel for schedule(static)
-    for (int64_t b = 0; b < batch; ++b) {
-      row_loop(b);
-    }
-  }
-  return status_t::success;
+    return status_t::success;
 }
 
 } // namespace normalization

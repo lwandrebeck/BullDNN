@@ -80,16 +80,16 @@ namespace group_matmul_internal {
 using zendnnl::error_handling::status_t;
 
 enum class internal_alloc_mode {
-  /// O(1) probe at `v[0]` only.  Treats empty vector and `v[0] ==
-  /// nullptr` (when fused_moe_present) as internal.  Never reports
-  /// mixed state; assumes a sibling diagnostic-mode call catches
-  /// caller-contract breaks.  Used by the production inline guard.
-  quick_o1,
+    /// O(1) probe at `v[0]` only.  Treats empty vector and `v[0] ==
+    /// nullptr` (when fused_moe_present) as internal.  Never reports
+    /// mixed state; assumes a sibling diagnostic-mode call catches
+    /// caller-contract breaks.  Used by the production inline guard.
+    quick_o1,
 
-  /// O(num_ops) sweep of `[0, min(num_ops, v.size()))`.  Detects mixed
-  /// null/non-null active ranges and returns `status_t::failure` so
-  /// the caller can `log_error` with its own prefix.
-  sweep_active,
+    /// O(num_ops) sweep of `[0, min(num_ops, v.size()))`.  Detects mixed
+    /// null/non-null active ranges and returns `status_t::failure` so
+    /// the caller can `log_error` with its own prefix.
+    sweep_active,
 };
 
 /// Detect whether `v` signals internal-alloc for one fused-MoE side.
@@ -107,36 +107,34 @@ enum class internal_alloc_mode {
 ///                          detected in the active range.  Caller
 ///                          should `log_error` with its prefix.
 inline status_t detect_internal_alloc(const std::vector<void *> &v,
-                                      size_t                      num_ops,
-                                      bool                        fused_moe_present,
-                                      internal_alloc_mode         mode,
-                                      bool                       *out_internal) {
-  if (!fused_moe_present) {
-    *out_internal = false;
-    return status_t::success;
-  }
-  if (v.empty()) {
-    *out_internal = true;
-    return status_t::success;
-  }
-  if (mode == internal_alloc_mode::quick_o1) {
-    *out_internal = (v[0] == nullptr);
-    return status_t::success;
-  }
+        size_t num_ops, bool fused_moe_present, internal_alloc_mode mode,
+        bool *out_internal) {
+    if (!fused_moe_present) {
+        *out_internal = false;
+        return status_t::success;
+    }
+    if (v.empty()) {
+        *out_internal = true;
+        return status_t::success;
+    }
+    if (mode == internal_alloc_mode::quick_o1) {
+        *out_internal = (v[0] == nullptr);
+        return status_t::success;
+    }
 
-  // sweep_active
-  bool any_null = false;
-  bool any_nonnull = false;
-  const size_t sweep = std::min<size_t>(num_ops, v.size());
-  for (size_t i = 0; i < sweep; ++i) {
-    if (v[i] == nullptr) any_null = true;
-    else any_nonnull = true;
-  }
-  if (any_null && any_nonnull) {
-    return status_t::failure;
-  }
-  *out_internal = any_null;
-  return status_t::success;
+    // sweep_active
+    bool any_null = false;
+    bool any_nonnull = false;
+    const size_t sweep = std::min<size_t>(num_ops, v.size());
+    for (size_t i = 0; i < sweep; ++i) {
+        if (v[i] == nullptr)
+            any_null = true;
+        else
+            any_nonnull = true;
+    }
+    if (any_null && any_nonnull) { return status_t::failure; }
+    *out_internal = any_null;
+    return status_t::success;
 }
 
 } // namespace group_matmul_internal

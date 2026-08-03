@@ -17,9 +17,9 @@
 #ifndef _LOWOHA_NORMALIZATION_AVX512_UTILS_HPP
 #define _LOWOHA_NORMALIZATION_AVX512_UTILS_HPP
 
-#include <immintrin.h>
-#include <cstdint>
 #include <cstddef>
+#include <cstdint>
+#include <immintrin.h>
 #include "common/data_types.hpp"
 
 #if defined(__GNUC__) && !defined(__clang__)
@@ -38,24 +38,23 @@ using zendnnl::common::data_type_t;
 // =============================================================================
 
 inline __m512 bf16x16_to_fp32(const int16_t *ptr) {
-  __m256i bf16 = _mm256_loadu_si256((const __m256i *)ptr);
-  return _mm512_castsi512_ps(
-           _mm512_slli_epi32(_mm512_cvtepu16_epi32(bf16), 16));
+    __m256i bf16 = _mm256_loadu_si256((const __m256i *)ptr);
+    return _mm512_castsi512_ps(
+            _mm512_slli_epi32(_mm512_cvtepu16_epi32(bf16), 16));
 }
 
 inline __m512 bf16x16_to_fp32_mask(const int16_t *ptr, __mmask16 mask) {
-  __m256i bf16 = _mm256_maskz_loadu_epi16(mask, ptr);
-  return _mm512_castsi512_ps(
-           _mm512_slli_epi32(_mm512_cvtepu16_epi32(bf16), 16));
+    __m256i bf16 = _mm256_maskz_loadu_epi16(mask, ptr);
+    return _mm512_castsi512_ps(
+            _mm512_slli_epi32(_mm512_cvtepu16_epi32(bf16), 16));
 }
 
 inline void store_fp32_as_bf16(int16_t *ptr, __m512 val) {
-  _mm256_storeu_si256((__m256i *)ptr, (__m256i)_mm512_cvtneps_pbh(val));
+    _mm256_storeu_si256((__m256i *)ptr, (__m256i)_mm512_cvtneps_pbh(val));
 }
 
-inline void store_fp32_as_bf16_mask(int16_t *ptr, __m512 val,
-                                    __mmask16 mask) {
-  _mm256_mask_storeu_epi16(ptr, mask, (__m256i)_mm512_cvtneps_pbh(val));
+inline void store_fp32_as_bf16_mask(int16_t *ptr, __m512 val, __mmask16 mask) {
+    _mm256_mask_storeu_epi16(ptr, mask, (__m256i)_mm512_cvtneps_pbh(val));
 }
 
 // =============================================================================
@@ -68,24 +67,23 @@ inline void store_fp32_as_bf16_mask(int16_t *ptr, __m512 val,
 // =============================================================================
 
 inline __m512 f16x16_to_fp32(const uint16_t *ptr) {
-  return _mm512_cvtph_ps(_mm256_loadu_si256((const __m256i *)ptr));
+    return _mm512_cvtph_ps(_mm256_loadu_si256((const __m256i *)ptr));
 }
 
 inline __m512 f16x16_to_fp32_mask(const uint16_t *ptr, __mmask16 mask) {
-  return _mm512_cvtph_ps(_mm256_maskz_loadu_epi16(mask, ptr));
+    return _mm512_cvtph_ps(_mm256_maskz_loadu_epi16(mask, ptr));
 }
 
 inline void store_fp32_as_f16(uint16_t *ptr, __m512 val) {
-  _mm256_storeu_si256((__m256i *)ptr,
-                      _mm512_cvtps_ph(val,
-                                      _MM_FROUND_TO_NEAREST_INT | _MM_FROUND_NO_EXC));
+    _mm256_storeu_si256((__m256i *)ptr,
+            _mm512_cvtps_ph(
+                    val, _MM_FROUND_TO_NEAREST_INT | _MM_FROUND_NO_EXC));
 }
 
-inline void store_fp32_as_f16_mask(uint16_t *ptr, __m512 val,
-                                   __mmask16 mask) {
-  _mm256_mask_storeu_epi16(ptr, mask,
-                           _mm512_cvtps_ph(val,
-                               _MM_FROUND_TO_NEAREST_INT | _MM_FROUND_NO_EXC));
+inline void store_fp32_as_f16_mask(uint16_t *ptr, __m512 val, __mmask16 mask) {
+    _mm256_mask_storeu_epi16(ptr, mask,
+            _mm512_cvtps_ph(
+                    val, _MM_FROUND_TO_NEAREST_INT | _MM_FROUND_NO_EXC));
 }
 
 // =============================================================================
@@ -102,53 +100,47 @@ inline void store_fp32_as_f16_mask(uint16_t *ptr, __m512 val,
 // =============================================================================
 
 inline __m512 load16(const void *p, data_type_t dt) {
-  switch (dt) {
-  case data_type_t::bf16:
-    return bf16x16_to_fp32(static_cast<const int16_t *>(p));
-  case data_type_t::f16:
-    return f16x16_to_fp32(static_cast<const uint16_t *>(p));
-  default:
-    return _mm512_loadu_ps(static_cast<const float *>(p));
-  }
+    switch (dt) {
+        case data_type_t::bf16:
+            return bf16x16_to_fp32(static_cast<const int16_t *>(p));
+        case data_type_t::f16:
+            return f16x16_to_fp32(static_cast<const uint16_t *>(p));
+        default: return _mm512_loadu_ps(static_cast<const float *>(p));
+    }
 }
 
 inline __m512 load16_mask(const void *p, __mmask16 m, data_type_t dt) {
-  switch (dt) {
-  case data_type_t::bf16:
-    return bf16x16_to_fp32_mask(static_cast<const int16_t *>(p), m);
-  case data_type_t::f16:
-    return f16x16_to_fp32_mask(static_cast<const uint16_t *>(p), m);
-  default:
-    return _mm512_maskz_loadu_ps(m, static_cast<const float *>(p));
-  }
+    switch (dt) {
+        case data_type_t::bf16:
+            return bf16x16_to_fp32_mask(static_cast<const int16_t *>(p), m);
+        case data_type_t::f16:
+            return f16x16_to_fp32_mask(static_cast<const uint16_t *>(p), m);
+        default: return _mm512_maskz_loadu_ps(m, static_cast<const float *>(p));
+    }
 }
 
 inline void store16(void *p, __m512 v, data_type_t dt) {
-  switch (dt) {
-  case data_type_t::bf16:
-    store_fp32_as_bf16(static_cast<int16_t *>(p), v);
-    break;
-  case data_type_t::f16:
-    store_fp32_as_f16(static_cast<uint16_t *>(p), v);
-    break;
-  default:
-    _mm512_storeu_ps(static_cast<float *>(p), v);
-    break;
-  }
+    switch (dt) {
+        case data_type_t::bf16:
+            store_fp32_as_bf16(static_cast<int16_t *>(p), v);
+            break;
+        case data_type_t::f16:
+            store_fp32_as_f16(static_cast<uint16_t *>(p), v);
+            break;
+        default: _mm512_storeu_ps(static_cast<float *>(p), v); break;
+    }
 }
 
 inline void store16_mask(void *p, __m512 v, __mmask16 m, data_type_t dt) {
-  switch (dt) {
-  case data_type_t::bf16:
-    store_fp32_as_bf16_mask(static_cast<int16_t *>(p), v, m);
-    break;
-  case data_type_t::f16:
-    store_fp32_as_f16_mask(static_cast<uint16_t *>(p), v, m);
-    break;
-  default:
-    _mm512_mask_storeu_ps(static_cast<float *>(p), m, v);
-    break;
-  }
+    switch (dt) {
+        case data_type_t::bf16:
+            store_fp32_as_bf16_mask(static_cast<int16_t *>(p), v, m);
+            break;
+        case data_type_t::f16:
+            store_fp32_as_f16_mask(static_cast<uint16_t *>(p), v, m);
+            break;
+        default: _mm512_mask_storeu_ps(static_cast<float *>(p), m, v); break;
+    }
 }
 
 // =============================================================================
@@ -160,13 +152,11 @@ inline void store16_mask(void *p, __m512 v, __mmask16 m, data_type_t dt) {
 // =============================================================================
 
 inline size_t elem_size(data_type_t dt) {
-  switch (dt) {
-  case data_type_t::bf16:
-  case data_type_t::f16:
-    return 2;
-  default:
-    return 4;
-  }
+    switch (dt) {
+        case data_type_t::bf16:
+        case data_type_t::f16: return 2;
+        default: return 4;
+    }
 }
 
 } // namespace avx512

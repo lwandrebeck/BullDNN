@@ -16,16 +16,16 @@
 #ifndef _CONFIG_MANAGER_HPP_
 #define _CONFIG_MANAGER_HPP_
 
-#include <iostream>
-#include <fstream>
-#include <string>
-#include <cctype>
-#include <cstdlib>
-#include <climits>
 #include <algorithm>
-#include "nlohmann/json.hpp"
-#include "common/error_status.hpp"
+#include <cctype>
+#include <climits>
+#include <cstdlib>
+#include <fstream>
+#include <iostream>
+#include <string>
 #include "common/config_params.hpp"
+#include "common/error_status.hpp"
+#include "nlohmann/json.hpp"
 #include "operators/matmul/matmul_config.hpp"
 
 namespace zendnnl {
@@ -62,178 +62,176 @@ using json = nlohmann::json;
  *  tries to set user parameters from environment variables.
  */
 class config_manager_t final {
- public:
-  /** @name Configure
+public:
+    /** @name Configure
    */
-  /**@{*/
-  /** @brief Configure ZenDNNL
+    /**@{*/
+    /** @brief Configure ZenDNNL
    *
    *  Configures the library.
    */
-  void                        config();
-  /**@}*/
+    void config();
+    /**@}*/
 
-  /** @name Get Configurations
+    /** @name Get Configurations
    */
-  /**@{*/
-  /** @brief Get logger configuration
+    /**@{*/
+    /** @brief Get logger configuration
    *
    *  @return Logger configuration.
    */
-  const config_logger_t      &get_logger_config() const;
+    const config_logger_t &get_logger_config() const;
 
-  /** @brief Get profiler configuration
+    /** @brief Get profiler configuration
    *
    *  @return Profiler configuration.
    */
-  const config_profiler_t   &get_profiler_config() const;
+    const config_profiler_t &get_profiler_config() const;
 
-  /** @brief Get profiler configuration
+    /** @brief Get profiler configuration
    *
    *  @return Profiler configuration.
    */
-  const config_lru_cache_t   &get_lru_cache_config() const;
+    const config_lru_cache_t &get_lru_cache_config() const;
 
-  /** @brief Get post-op cache configuration
+    /** @brief Get post-op cache configuration
    *
    *  @return Post-op metadata cache configuration. Drives the runtime
    *          kill switch for the per-layer AOCL DLP post-op cache
    *          (see is_postop_cache_enabled in zendnnl_global.hpp).
    */
-  const config_postop_cache_t &get_postop_cache_config() const;
+    const config_postop_cache_t &get_postop_cache_config() const;
 
-  /** @brief Check if the process-wide cache kill switch is active.
+    /** @brief Check if the process-wide cache kill switch is active.
    *
    *  @return true if all covered caches should be forced off.
    */
-  bool is_global_cache_off() const;
+    bool is_global_cache_off() const;
 
-  /**@}*/
+    /**@}*/
 
- private:
-
-  /** @brief Parse a JSON file.
+private:
+    /** @brief Parse a JSON file.
    *
    *  Parse a JSON file and get object in @c config_json.
    *  @param file_name_ : JSON file to be parsed.
    *  @return success if successful.
    */
-  status_t          parse(std::string file_name_);
+    status_t parse(std::string file_name_);
 
-  /** @brief Set default configuration.
+    /** @brief Set default configuration.
    */
-  void              set_default_config();
+    void set_default_config();
 
-  /** @brief Set user configuration from JSON file.
+    /** @brief Set user configuration from JSON file.
    */
-  void              set_user_config();
+    void set_user_config();
 
-  /** @brief Set config using environment variables.
+    /** @brief Set config using environment variables.
    */
-  void              set_env_config();
+    void set_env_config();
 
-  /** @brief Set default logger config.
+    /** @brief Set default logger config.
    *
    * @return success.
    */
-  status_t          set_default_logger_config();
+    status_t set_default_logger_config();
 
-  /** @brief Set logger config from JSON file.
+    /** @brief Set logger config from JSON file.
    *
    * @return success.
    */
-  status_t          set_user_logger_config();
+    status_t set_user_logger_config();
 
-  /** @brief Set logger config from environment variables.
+    /** @brief Set logger config from environment variables.
    *
    * @return success.
    */
-  status_t          set_env_logger_config();
+    status_t set_env_logger_config();
 
-  /** @brief Set default profiler config.
+    /** @brief Set default profiler config.
    *
    * @return success.
    */
-  status_t          set_default_profiler_config();
+    status_t set_default_profiler_config();
 
-  /** @brief Set profiler config from JSON file.
+    /** @brief Set profiler config from JSON file.
    *
    * @return success.
    */
-  status_t          set_user_profiler_config();
+    status_t set_user_profiler_config();
 
-  /** @brief Set profiler config from environment variables.
+    /** @brief Set profiler config from environment variables.
    *
    * @return success.
    */
-  status_t           set_env_profiler_config();
+    status_t set_env_profiler_config();
 
-  /** @brief Set default profiler config.
+    /** @brief Set default profiler config.
    *
    * @return success.
    */
-  status_t          set_default_lru_cache_config();
+    status_t set_default_lru_cache_config();
 
-  /** @brief Set profiler config from JSON file.
+    /** @brief Set profiler config from JSON file.
    *
    * @return success.
    */
-  status_t          set_user_lru_cache_config();
+    status_t set_user_lru_cache_config();
 
-  /** @brief Set profiler config from environment variables.
+    /** @brief Set profiler config from environment variables.
    *
    * @return success.
    */
-  status_t           set_env_lru_cache_config();
+    status_t set_env_lru_cache_config();
 
-  /** @brief Set default process-wide cache kill switch state.
+    /** @brief Set default process-wide cache kill switch state.
    *
    * @return success.
    */
-  status_t          set_default_global_cache_config();
+    status_t set_default_global_cache_config();
 
-  /** @brief Set process-wide cache kill switch state from JSON file.
+    /** @brief Set process-wide cache kill switch state from JSON file.
    *
    * @return success.
    */
-  status_t          set_user_global_cache_config();
+    status_t set_user_global_cache_config();
 
-  /** @brief Set process-wide cache kill switch state from environment.
+    /** @brief Set process-wide cache kill switch state from environment.
    *
    * @return success.
    */
-  status_t          set_env_global_cache_config();
+    status_t set_env_global_cache_config();
 
-  /** @brief Set default post-op cache config.
+    /** @brief Set default post-op cache config.
    *
    * @return success.
    */
-  status_t          set_default_postop_cache_config();
+    status_t set_default_postop_cache_config();
 
-  /** @brief Set post-op cache config from JSON file.
+    /** @brief Set post-op cache config from JSON file.
    *
    * @return success.
    */
-  status_t          set_user_postop_cache_config();
+    status_t set_user_postop_cache_config();
 
-  /** @brief Set post-op cache config from environment variables.
+    /** @brief Set post-op cache config from environment variables.
    *
    * @return success.
    */
-  status_t          set_env_postop_cache_config();
+    status_t set_env_postop_cache_config();
 
-  json               config_json;     /**< JSON object read from
+    json config_json; /**< JSON object read from
                                        config file */
-  config_logger_t    config_logger;   /**< Logger config */
-  config_profiler_t  config_profiler; /**< Profiler config */
-  config_lru_cache_t config_lru_cache; /**< Global LRU cache config */
-  bool global_cache_off = false; /**< Process-wide cache kill switch. */
-  config_postop_cache_t config_postop_cache; /**< Post-op metadata
+    config_logger_t config_logger; /**< Logger config */
+    config_profiler_t config_profiler; /**< Profiler config */
+    config_lru_cache_t config_lru_cache; /**< Global LRU cache config */
+    bool global_cache_off = false; /**< Process-wide cache kill switch. */
+    config_postop_cache_t config_postop_cache; /**< Post-op metadata
                                        cache toggle */
 };
 
-
-} //common
-} //zendnnl
+} // namespace common
+} // namespace zendnnl
 
 #endif

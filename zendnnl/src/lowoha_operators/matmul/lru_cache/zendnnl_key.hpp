@@ -23,79 +23,81 @@
 using matmul_algo_t = zendnnl::ops::matmul_algo_t;
 //structure to make key
 struct Key_matmul {
-  bool transpose_inp = false;
-  bool transpose_weights = false;
-  unsigned int m = 0;
-  unsigned int k = 0;
-  unsigned int n = 0;
-  unsigned int lda = 0;
-  unsigned int ldb = 0;
-  const void *weights = nullptr;
-  uint32_t algo = static_cast<uint32_t>(matmul_algo_t::none);
-  size_t extra_input_hash = 0;
+    bool transpose_inp = false;
+    bool transpose_weights = false;
+    unsigned int m = 0;
+    unsigned int k = 0;
+    unsigned int n = 0;
+    unsigned int lda = 0;
+    unsigned int ldb = 0;
+    const void *weights = nullptr;
+    uint32_t algo = static_cast<uint32_t>(matmul_algo_t::none);
+    size_t extra_input_hash = 0;
 
-  // Default constructor, uses the default member initializers
-  Key_matmul() = default;
+    // Default constructor, uses the default member initializers
+    Key_matmul() = default;
 
-  // Constructor for the most common case, relies on defaults for m, lda, and transpose_inp
-  Key_matmul(bool TransB, unsigned int K,
-             unsigned int N,
-             unsigned int ldb, const void *B_Array,
-             uint32_t algo, size_t extra_input_hash = 0)
-    : transpose_weights(TransB), k(K), n(N),
-      ldb(ldb), weights(B_Array), algo(algo), extra_input_hash(extra_input_hash) {
-  }
+    // Constructor for the most common case, relies on defaults for m, lda, and transpose_inp
+    Key_matmul(bool TransB, unsigned int K, unsigned int N, unsigned int ldb,
+            const void *B_Array, uint32_t algo, size_t extra_input_hash = 0)
+        : transpose_weights(TransB)
+        , k(K)
+        , n(N)
+        , ldb(ldb)
+        , weights(B_Array)
+        , algo(algo)
+        , extra_input_hash(extra_input_hash) {}
 
-  // Constructor for weight-unpack caching (keyed on weights pointer and dimensions only)
-  Key_matmul(const void *B_Array, unsigned int N, unsigned int K,
-             size_t extra_input_hash = 0)
-    : k(K), n(N), weights(B_Array), extra_input_hash(extra_input_hash) {
-  }
+    // Constructor for weight-unpack caching (keyed on weights pointer and dimensions only)
+    Key_matmul(const void *B_Array, unsigned int N, unsigned int K,
+            size_t extra_input_hash = 0)
+        : k(K), n(N), weights(B_Array), extra_input_hash(extra_input_hash) {}
 
-  // Constructor to initialize all member variables
-  Key_matmul(bool TransA, bool TransB, unsigned int M, unsigned int K,
-             unsigned int N,
-             unsigned int lda, unsigned int ldb, const void *B_Array,
-             uint32_t algo, size_t extra_input_hash = 0)
-    : transpose_inp(TransA), transpose_weights(TransB), m(M), k(K), n(N),
-      lda(lda), ldb(ldb), weights(B_Array), algo(algo), extra_input_hash(extra_input_hash) {
-  }
+    // Constructor to initialize all member variables
+    Key_matmul(bool TransA, bool TransB, unsigned int M, unsigned int K,
+            unsigned int N, unsigned int lda, unsigned int ldb,
+            const void *B_Array, uint32_t algo, size_t extra_input_hash = 0)
+        : transpose_inp(TransA)
+        , transpose_weights(TransB)
+        , m(M)
+        , k(K)
+        , n(N)
+        , lda(lda)
+        , ldb(ldb)
+        , weights(B_Array)
+        , algo(algo)
+        , extra_input_hash(extra_input_hash) {}
 
-  bool operator==(const Key_matmul &other) const {
-    return (m == other.m
-            && k == other.k
-            && n == other.n
-            && lda == other.lda
-            && ldb == other.ldb
-            && weights == other.weights
-            && transpose_inp == other.transpose_inp
-            && transpose_weights == other.transpose_weights
-            && algo == other.algo
-            && extra_input_hash == other.extra_input_hash
-           );
-  }
+    bool operator==(const Key_matmul &other) const {
+        return (m == other.m && k == other.k && n == other.n && lda == other.lda
+                && ldb == other.ldb && weights == other.weights
+                && transpose_inp == other.transpose_inp
+                && transpose_weights == other.transpose_weights
+                && algo == other.algo
+                && extra_input_hash == other.extra_input_hash);
+    }
 };
 
 namespace std {
 
 template <>
 struct hash<Key_matmul> {
-  std::size_t operator()(const Key_matmul &k) const {
-    std::size_t seed = 0;
-    seed = zendnnl::common::hash_combine(seed, (k.transpose_inp));
-    seed = zendnnl::common::hash_combine(seed, (k.transpose_weights));
-    seed = zendnnl::common::hash_combine(seed, (k.m));
-    seed = zendnnl::common::hash_combine(seed, (k.k));
-    seed = zendnnl::common::hash_combine(seed, (k.n));
-    seed = zendnnl::common::hash_combine(seed, (k.lda));
-    seed = zendnnl::common::hash_combine(seed, (k.ldb));
-    seed = zendnnl::common::hash_combine(seed, (k.weights));
-    seed = zendnnl::common::hash_combine(seed, (k.algo));
-    seed = zendnnl::common::hash_combine(seed, (k.extra_input_hash));
-    return seed;
-  }
+    std::size_t operator()(const Key_matmul &k) const {
+        std::size_t seed = 0;
+        seed = zendnnl::common::hash_combine(seed, (k.transpose_inp));
+        seed = zendnnl::common::hash_combine(seed, (k.transpose_weights));
+        seed = zendnnl::common::hash_combine(seed, (k.m));
+        seed = zendnnl::common::hash_combine(seed, (k.k));
+        seed = zendnnl::common::hash_combine(seed, (k.n));
+        seed = zendnnl::common::hash_combine(seed, (k.lda));
+        seed = zendnnl::common::hash_combine(seed, (k.ldb));
+        seed = zendnnl::common::hash_combine(seed, (k.weights));
+        seed = zendnnl::common::hash_combine(seed, (k.algo));
+        seed = zendnnl::common::hash_combine(seed, (k.extra_input_hash));
+        return seed;
+    }
 };
 
-}
+} // namespace std
 
 #endif // _ZENDNNL_KEY_HPP

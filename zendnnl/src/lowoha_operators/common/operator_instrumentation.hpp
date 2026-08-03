@@ -24,6 +24,8 @@
 namespace zendnnl {
 namespace common {
 
+using error_handling::status_t;
+
 // ═══════════════════════════════════════════════════════════════════════════
 //  Operator instrumentation — runtime-gated diagnostic layer.
 //
@@ -48,23 +50,20 @@ namespace common {
 // ═══════════════════════════════════════════════════════════════════════════
 struct op_instrumentation {
 
-  static bool is_enabled() {
-    static const bool val = []() {
-      const char *env = std::getenv("ZENDNNL_DIAGNOSTICS_ENABLE");
-      // Default ON: only an explicit leading '0' disables diagnostics.
-      return !env || env[0] != '0';
-    }();
-    return val;
-  }
-
-  template <typename Fn>
-  static inline status_t validate(Fn &&fn) {
-    if (__builtin_expect(is_enabled(), 1)) {
-      return fn();
+    static bool is_enabled() {
+        static const bool val = []() {
+            const char *env = std::getenv("ZENDNNL_DIAGNOSTICS_ENABLE");
+            // Default ON: only an explicit leading '0' disables diagnostics.
+            return !env || env[0] != '0';
+        }();
+        return val;
     }
-    return status_t::success;
-  }
 
+    template <typename Fn>
+    static inline status_t validate(Fn &&fn) {
+        if (__builtin_expect(is_enabled(), 1)) { return fn(); }
+        return status_t::success;
+    }
 };
 
 } // namespace common

@@ -44,26 +44,25 @@ namespace ops {
  * The supported-dtype list is owned by @c sdpa_encoder_impl_t::kernel_factory();
  * @c execute() rejects anything outside that list defensively.
  */
-class sdpa_encoder_ref_kernel_t final : public
-  op_kernel_t<sdpa_encoder_context_t> {
- public:
-  /** @brief Default destructor */
-  ~sdpa_encoder_ref_kernel_t() = default;
+class sdpa_encoder_ref_kernel_t final
+    : public op_kernel_t<sdpa_encoder_context_t> {
+public:
+    /** @brief Default destructor */
+    ~sdpa_encoder_ref_kernel_t() = default;
 
-  /** @brief Execute */
-  status_t execute(const context_type &context_,
-                   tensor_map_type &inputs_,
-                   tensor_map_type &outputs_) override;
+    /** @brief Execute */
+    status_t execute(const context_type &context_, tensor_map_type &inputs_,
+            tensor_map_type &outputs_) override;
 };
 
 } //namespace ops
 } //namespace zendnnl
 
 extern "C" {
-  /** @fn get_sdpa_encoder_ref_kernel
+/** @fn get_sdpa_encoder_ref_kernel
    *  @brief returns a raw pointer to a newly-allocated sdpa_encoder_ref_kernel_t instance
    */
-  zendnnl::ops::sdpa_encoder_ref_kernel_t *get_sdpa_encoder_ref_kernel();
+zendnnl::ops::sdpa_encoder_ref_kernel_t *get_sdpa_encoder_ref_kernel();
 } //extern "C"
 
 #endif //_SDPA_ENCODER_REF_KERNEL_HPP_

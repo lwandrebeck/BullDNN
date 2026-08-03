@@ -22,42 +22,40 @@ namespace lowoha {
 namespace pooling {
 
 status_t validate_pooling_inputs(
-    const void *input,
-    const void *output,
-    pool_params &params
-) {
+        const void *input, const void *output, pool_params &params) {
     // Check for null pointers
     if (input == nullptr) {
         log_error("Pooling: Input pointer is null");
         return status_t::failure;
     }
-    
+
     if (output == nullptr) {
         log_error("Pooling: Output pointer is null");
         return status_t::failure;
     }
-    
+
     // Validate dimensions
-    if (params.dims.batch == 0 || params.dims.in_height == 0 || params.dims.in_width == 0 || params.dims.channels == 0) {
+    if (params.dims.batch == 0 || params.dims.in_height == 0
+            || params.dims.in_width == 0 || params.dims.channels == 0) {
         log_error("Pooling: Invalid input dimensions");
         return status_t::failure;
     }
-    
+
     if (params.dims.kernel_height == 0 || params.dims.kernel_width == 0) {
         log_error("Pooling: Invalid kernel dimensions");
         return status_t::failure;
     }
-    
+
     if (params.stride_h == 0 || params.stride_w == 0) {
         log_error("Pooling: Invalid stride values");
         return status_t::failure;
     }
-    
+
     if (params.dims.out_height == 0 || params.dims.out_width == 0) {
         log_error("Pooling: Invalid output dimensions");
         return status_t::failure;
     }
-    
+
     return status_t::success;
 }
 

@@ -16,17 +16,17 @@
 #ifndef _SDPA_ENCODER_EXAMPLE_HPP_
 #define _SDPA_ENCODER_EXAMPLE_HPP_
 
-#include "zendnnl.hpp"
 #include "example_utils.hpp"
+#include "zendnnl.hpp"
 
-#define  OK          (0)
-#define  NOT_OK      (1)
+#define OK (0)
+#define NOT_OK (1)
 
 // SDPA dimensions
-#define  BS  2
-#define  NUM_HEADS   8
-#define  SEQ_LEN     64
-#define  HEAD_DIM    64
+#define BS 2
+#define NUM_HEADS 8
+#define SEQ_LEN 64
+#define HEAD_DIM 64
 
 namespace zendnnl {
 namespace examples {
@@ -47,7 +47,7 @@ int sdpa_example();
  * sdpa_direct directly.
  */
 int sdpa_direct_example();
-} //examples
-} //zendnnl
+} // namespace examples
+} // namespace zendnnl
 
 #endif

@@ -17,12 +17,12 @@
 #ifndef _LOWOHA_MATMUL_EXAMPLE_HPP_
 #define _LOWOHA_MATMUL_EXAMPLE_HPP_
 
-#include "zendnnl.hpp"
 #include <iostream>
 #include <vector>
+#include "zendnnl.hpp"
 
-#define  OK          (0)
-#define  NOT_OK      (1)
+#define OK (0)
+#define NOT_OK (1)
 
 namespace zendnnl {
 namespace examples {
@@ -138,7 +138,7 @@ int group_matmul_f32_kernel_example();
  */
 int sequential_gemm_f32_kernel_example();
 
-} // examples
-} // zendnnl
+} // namespace examples
+} // namespace zendnnl
 
 #endif

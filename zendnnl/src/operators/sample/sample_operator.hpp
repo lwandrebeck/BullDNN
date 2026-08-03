@@ -1,5 +1,5 @@
 /********************************************************************************
-# * Copyright (c) 2023-2025 Advanced Micro Devices, Inc. All rights reserved.
+# * Copyright (c) 2023-2026 Advanced Micro Devices, Inc. All rights reserved.
 # *
 # * Licensed under the Apache License, Version 2.0 (the "License");
 # * you may not use this file except in compliance with the License.
@@ -49,27 +49,27 @@ namespace ops {
  * - Output(s)
  *   1. (mandatory) sample_output : An arbitrary tensor.
  */
-class sample_operator_t final : public operator_t<sample_operator_t,
-                                                  sample_context_t,
-                                                  sample_impl_t> {
+class sample_operator_t final
+    : public operator_t<sample_operator_t, sample_context_t, sample_impl_t> {
 public:
-  /** @brief Self type **/
-  using self_type = sample_operator_t;
-  /** @brief Parent type **/
-  using parent_type = operator_t<sample_operator_t, sample_context_t, sample_impl_t>;
-  /** @brief context type **/
-  using context_type = parent_type::context_type;
-  /** @brief impl type **/
-  using impl_type = parent_type::impl_type;
-  /** @brief impl pointer type **/
-  using impl_sptr_type = parent_type::impl_sptr_type;
+    /** @brief Self type **/
+    using self_type = sample_operator_t;
+    /** @brief Parent type **/
+    using parent_type
+            = operator_t<sample_operator_t, sample_context_t, sample_impl_t>;
+    /** @brief context type **/
+    using context_type = parent_type::context_type;
+    /** @brief impl type **/
+    using impl_type = parent_type::impl_type;
+    /** @brief impl pointer type **/
+    using impl_sptr_type = parent_type::impl_sptr_type;
 };
 
 } //namespace ops
 
 namespace interface {
 using sample_operator_t = zendnnl::ops::sample_operator_t;
-} //export
+} // namespace interface
 
 } //namespace zendnnl
 #endif

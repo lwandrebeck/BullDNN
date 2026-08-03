@@ -39,8 +39,8 @@ namespace sdpa_encoder_ref {
  * and the contiguous element count when it does not.
  */
 struct mask_layout {
-  int64_t stride_b;
-  int64_t stride_h;
+    int64_t stride_b;
+    int64_t stride_h;
 };
 
 /**
@@ -62,21 +62,20 @@ struct mask_layout {
  *       dims are either 1 or match the corresponding Q dim (the SDPA
  *       operator's @c validate() does this up front).
  */
-inline mask_layout compute_mask_strides(
-  const std::vector<uint64_t> &mask_shape,
-  int64_t seq_len_q, int64_t seq_len_kv) {
-  mask_layout layout{0, 0};
-  const int64_t inner = seq_len_q * seq_len_kv;
-  if (mask_shape.size() == 2) {
-    return layout;  // 2D mask broadcasts across both batch and heads.
-  }
-  // 4D: leading dim of size 1 means broadcast; otherwise the matching
-  // physical stride is mask_shape[1] * inner (batch) or inner (head).
-  layout.stride_h = (mask_shape[1] != 1) ? inner : 0;
-  layout.stride_b = (mask_shape[0] != 1)
-                    ? static_cast<int64_t>(mask_shape[1]) * inner
-                    : 0;
-  return layout;
+inline mask_layout compute_mask_strides(const std::vector<uint64_t> &mask_shape,
+        int64_t seq_len_q, int64_t seq_len_kv) {
+    mask_layout layout {0, 0};
+    const int64_t inner = seq_len_q * seq_len_kv;
+    if (mask_shape.size() == 2) {
+        return layout; // 2D mask broadcasts across both batch and heads.
+    }
+    // 4D: leading dim of size 1 means broadcast; otherwise the matching
+    // physical stride is mask_shape[1] * inner (batch) or inner (head).
+    layout.stride_h = (mask_shape[1] != 1) ? inner : 0;
+    layout.stride_b = (mask_shape[0] != 1)
+            ? static_cast<int64_t>(mask_shape[1]) * inner
+            : 0;
+    return layout;
 }
 
 /**
@@ -100,13 +99,13 @@ inline mask_layout compute_mask_strides(
 /** @brief Convert any element type to float (used at load time). */
 template <typename T>
 inline float to_float(T v) {
-  return static_cast<float>(v);
+    return static_cast<float>(v);
 }
 
 /** @brief Convert float to any element type (used at store time). */
 template <typename T>
 inline T from_float(float f) {
-  return static_cast<T>(f);
+    return static_cast<T>(f);
 }
 
 /**
@@ -132,21 +131,19 @@ inline T from_float(float f) {
  */
 template <typename qkv_t>
 inline void matmul_qk(const qkv_t *q_data, const qkv_t *k_data,
-                      float *attention_scores,
-                      int64_t seq_len_q, int64_t seq_len_kv,
-                      int64_t head_dim,
-                      int64_t q_seq_stride, int64_t k_seq_stride,
-                      float scale) {
-  for (int64_t i = 0; i < seq_len_q; i++) {
-    for (int64_t j = 0; j < seq_len_kv; j++) {
-      float sum = 0.0f;
-      for (int64_t k = 0; k < head_dim; k++) {
-        sum += to_float(q_data[i * q_seq_stride + k]) *
-               to_float(k_data[j * k_seq_stride + k]);
-      }
-      attention_scores[i * seq_len_kv + j] = sum * scale;
+        float *attention_scores, int64_t seq_len_q, int64_t seq_len_kv,
+        int64_t head_dim, int64_t q_seq_stride, int64_t k_seq_stride,
+        float scale) {
+    for (int64_t i = 0; i < seq_len_q; i++) {
+        for (int64_t j = 0; j < seq_len_kv; j++) {
+            float sum = 0.0f;
+            for (int64_t k = 0; k < head_dim; k++) {
+                sum += to_float(q_data[i * q_seq_stride + k])
+                        * to_float(k_data[j * k_seq_stride + k]);
+            }
+            attention_scores[i * seq_len_kv + j] = sum * scale;
+        }
     }
-  }
 }
 
 /**
@@ -169,18 +166,18 @@ inline void matmul_qk(const qkv_t *q_data, const qkv_t *k_data,
  */
 template <typename qkv_t>
 inline void matmul_sv(const float *scores, const qkv_t *v_data, qkv_t *output,
-                      int64_t seq_len_q, int64_t seq_len_kv, int64_t head_dim,
-                      int64_t v_seq_stride, int64_t o_seq_stride) {
-  for (int64_t i = 0; i < seq_len_q; i++) {
-    for (int64_t j = 0; j < head_dim; j++) {
-      float sum = 0.0f;
-      for (int64_t k = 0; k < seq_len_kv; k++) {
-        sum += scores[i * seq_len_kv + k] *
-               to_float(v_data[k * v_seq_stride + j]);
-      }
-      output[i * o_seq_stride + j] = from_float<qkv_t>(sum);
+        int64_t seq_len_q, int64_t seq_len_kv, int64_t head_dim,
+        int64_t v_seq_stride, int64_t o_seq_stride) {
+    for (int64_t i = 0; i < seq_len_q; i++) {
+        for (int64_t j = 0; j < head_dim; j++) {
+            float sum = 0.0f;
+            for (int64_t k = 0; k < seq_len_kv; k++) {
+                sum += scores[i * seq_len_kv + k]
+                        * to_float(v_data[k * v_seq_stride + j]);
+            }
+            output[i * o_seq_stride + j] = from_float<qkv_t>(sum);
+        }
     }
-  }
 }
 
 /**
@@ -191,22 +188,23 @@ inline void matmul_sv(const float *scores, const qkv_t *v_data, qkv_t *output,
  * rows is normalised independently.
  */
 inline void softmax(float *scores, int64_t seq_len_q, int64_t seq_len_kv) {
-  for (int64_t i = 0; i < seq_len_q; i++) {
-    float max_val = scores[i * seq_len_kv];
-    for (int64_t j = 1; j < seq_len_kv; j++) {
-      if (scores[i * seq_len_kv + j] > max_val) {
-        max_val = scores[i * seq_len_kv + j];
-      }
+    for (int64_t i = 0; i < seq_len_q; i++) {
+        float max_val = scores[i * seq_len_kv];
+        for (int64_t j = 1; j < seq_len_kv; j++) {
+            if (scores[i * seq_len_kv + j] > max_val) {
+                max_val = scores[i * seq_len_kv + j];
+            }
+        }
+        float sum = 0.0f;
+        for (int64_t j = 0; j < seq_len_kv; j++) {
+            scores[i * seq_len_kv + j]
+                    = std::exp(scores[i * seq_len_kv + j] - max_val);
+            sum += scores[i * seq_len_kv + j];
+        }
+        for (int64_t j = 0; j < seq_len_kv; j++) {
+            scores[i * seq_len_kv + j] /= sum;
+        }
     }
-    float sum = 0.0f;
-    for (int64_t j = 0; j < seq_len_kv; j++) {
-      scores[i * seq_len_kv + j] = std::exp(scores[i * seq_len_kv + j] - max_val);
-      sum += scores[i * seq_len_kv + j];
-    }
-    for (int64_t j = 0; j < seq_len_kv; j++) {
-      scores[i * seq_len_kv + j] /= sum;
-    }
-  }
 }
 
 /**
@@ -216,14 +214,14 @@ inline void softmax(float *scores, int64_t seq_len_q, int64_t seq_len_kv) {
  * triangle (j <= i) is left untouched. Matches the flash-SDPA convention:
  * query position i attends to key positions [0..i].
  */
-inline void apply_causal_mask(float *attention_scores,
-                              int64_t seq_len_q, int64_t seq_len_kv) {
-  constexpr float neg_inf = -std::numeric_limits<float>::infinity();
-  for (int64_t i = 0; i < seq_len_q; i++) {
-    for (int64_t j = i + 1; j < seq_len_kv; j++) {
-      attention_scores[i * seq_len_kv + j] = neg_inf;
+inline void apply_causal_mask(
+        float *attention_scores, int64_t seq_len_q, int64_t seq_len_kv) {
+    constexpr float neg_inf = -std::numeric_limits<float>::infinity();
+    for (int64_t i = 0; i < seq_len_q; i++) {
+        for (int64_t j = i + 1; j < seq_len_kv; j++) {
+            attention_scores[i * seq_len_kv + j] = neg_inf;
+        }
     }
-  }
 }
 
 /**
@@ -249,14 +247,13 @@ inline void apply_causal_mask(float *attention_scores,
  */
 template <typename mask_t>
 inline void apply_attention_mask(float *attention_scores,
-                                 const mask_t *mask_ptr,
-                                 int64_t seq_len_q, int64_t seq_len_kv) {
-  for (int64_t i = 0; i < seq_len_q; i++) {
-    for (int64_t j = 0; j < seq_len_kv; j++) {
-      attention_scores[i * seq_len_kv + j] +=
-        to_float(mask_ptr[i * seq_len_kv + j]);
+        const mask_t *mask_ptr, int64_t seq_len_q, int64_t seq_len_kv) {
+    for (int64_t i = 0; i < seq_len_q; i++) {
+        for (int64_t j = 0; j < seq_len_kv; j++) {
+            attention_scores[i * seq_len_kv + j]
+                    += to_float(mask_ptr[i * seq_len_kv + j]);
+        }
     }
-  }
 }
 
 /**
@@ -298,35 +295,29 @@ inline void apply_attention_mask(float *attention_scores,
  */
 template <typename qkv_t, typename mask_t>
 inline void compute_sdpa_per_head(const qkv_t *q_new, const qkv_t *k_new,
-                                  const qkv_t *v_new, qkv_t *out_new,
-                                  const mask_t *mask_ptr,
-                                  int64_t seq_len_q, int64_t seq_len_kv,
-                                  int64_t head_dim,
-                                  int64_t q_seq_stride, int64_t k_seq_stride,
-                                  int64_t v_seq_stride, int64_t o_seq_stride,
-                                  float scale,
-                                  bool is_causal, bool has_mask) {
-  // FP32 score buffer keeps softmax numerically stable for low-precision QKV.
-  std::vector<float> attention_scores(
-    static_cast<size_t>(seq_len_q * seq_len_kv), 0.0f);
+        const qkv_t *v_new, qkv_t *out_new, const mask_t *mask_ptr,
+        int64_t seq_len_q, int64_t seq_len_kv, int64_t head_dim,
+        int64_t q_seq_stride, int64_t k_seq_stride, int64_t v_seq_stride,
+        int64_t o_seq_stride, float scale, bool is_causal, bool has_mask) {
+    // FP32 score buffer keeps softmax numerically stable for low-precision QKV.
+    std::vector<float> attention_scores(
+            static_cast<size_t>(seq_len_q * seq_len_kv), 0.0f);
 
-  matmul_qk<qkv_t>(q_new, k_new, attention_scores.data(),
-                   seq_len_q, seq_len_kv, head_dim,
-                   q_seq_stride, k_seq_stride, scale);
+    matmul_qk<qkv_t>(q_new, k_new, attention_scores.data(), seq_len_q,
+            seq_len_kv, head_dim, q_seq_stride, k_seq_stride, scale);
 
-  if (is_causal) {
-    apply_causal_mask(attention_scores.data(), seq_len_q, seq_len_kv);
-  }
-  if (has_mask && mask_ptr != nullptr) {
-    apply_attention_mask<mask_t>(attention_scores.data(), mask_ptr,
-                                 seq_len_q, seq_len_kv);
-  }
+    if (is_causal) {
+        apply_causal_mask(attention_scores.data(), seq_len_q, seq_len_kv);
+    }
+    if (has_mask && mask_ptr != nullptr) {
+        apply_attention_mask<mask_t>(
+                attention_scores.data(), mask_ptr, seq_len_q, seq_len_kv);
+    }
 
-  softmax(attention_scores.data(), seq_len_q, seq_len_kv);
+    softmax(attention_scores.data(), seq_len_q, seq_len_kv);
 
-  matmul_sv<qkv_t>(attention_scores.data(), v_new, out_new,
-                   seq_len_q, seq_len_kv, head_dim,
-                   v_seq_stride, o_seq_stride);
+    matmul_sv<qkv_t>(attention_scores.data(), v_new, out_new, seq_len_q,
+            seq_len_kv, head_dim, v_seq_stride, o_seq_stride);
 }
 
 } // namespace sdpa_encoder_ref

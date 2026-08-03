@@ -17,19 +17,17 @@
 #ifndef MATMUL_NATIVE_COMMON_FP32_PACKING_HPP
 #define MATMUL_NATIVE_COMMON_FP32_PACKING_HPP
 
+#include <algorithm>
 #include <cstdint>
 #include <cstring>
-#include <algorithm>
 
 namespace zendnnl {
 namespace lowoha {
 namespace matmul {
 namespace native {
 
-inline void pack_a_block(
-    const float *A_src, float *pack_buf,
-    int ic, int pc, int M, int K, int lda, bool transA,
-    int mb, int kb, int MR) {
+inline void pack_a_block(const float *A_src, float *pack_buf, int ic, int pc,
+        int M, int K, int lda, bool transA, int mb, int kb, int MR) {
 
     const int m_actual = std::min(mb, M - ic);
     const int k_actual = std::min(kb, K - pc);
@@ -42,9 +40,8 @@ inline void pack_a_block(
             const int mr = std::min(MR, m_actual - i0);
             float *dst = pack_buf + ip * MR * k_actual;
             for (int m = 0; m < mr; ++m)
-                std::memcpy(dst + m * k_actual,
-                            A_block + (i0 + m) * lda,
-                            k_actual * sizeof(float));
+                std::memcpy(dst + m * k_actual, A_block + (i0 + m) * lda,
+                        k_actual * sizeof(float));
             for (int m = mr; m < MR; ++m)
                 std::memset(dst + m * k_actual, 0, k_actual * sizeof(float));
         }
@@ -56,7 +53,8 @@ inline void pack_a_block(
             float *dst = pack_buf + ip * MR * k_actual;
             for (int m = 0; m < mr; ++m)
                 for (int kk = 0; kk < k_actual; ++kk)
-                    dst[m * k_actual + kk] = A_block[static_cast<size_t>(kk) * lda + (i0 + m)];
+                    dst[m * k_actual + kk]
+                            = A_block[static_cast<size_t>(kk) * lda + (i0 + m)];
             for (int m = mr; m < MR; ++m)
                 std::memset(dst + m * k_actual, 0, k_actual * sizeof(float));
         }

@@ -16,11 +16,11 @@
 #ifndef _REORDER_BENCHDNN_HPP_
 #define _REORDER_BENCHDNN_HPP_
 
-#include "example_utils.hpp"
 #include "benchdnn.hpp"
-#include "reorder_utils.hpp"
-#include "reorder_tensor_factory.hpp"
+#include "example_utils.hpp"
 #include "reorder_lowoha.hpp"
+#include "reorder_tensor_factory.hpp"
+#include "reorder_utils.hpp"
 
 namespace zendnnl {
 namespace benchdnn {
@@ -39,7 +39,7 @@ using namespace zendnnl::examples;
  * @return int OK (0) on success, NOT_OK (1) on failure.
  */
 int run_reorder(tensor_t input_tensor, const ReorderConfig &cfg,
-                TimingStats &stats, bool isNotWarmup = false);
+        TimingStats &stats, bool isNotWarmup = false);
 
 /**
  * @brief Runs the regular reorder benchmark for a set of configurations.
@@ -55,8 +55,8 @@ int run_reorder(tensor_t input_tensor, const ReorderConfig &cfg,
  * @return int Returns OK (0) on success, NOT_OK (1) on failure.
  */
 int reorder_benchdnn(const std::vector<ReorderConfig> &configs,
-                     std::vector<std::pair<ReorderConfig, TimingStats>> &reorder_results,
-                     const global_options &options, size_t cache_size);
+        std::vector<std::pair<ReorderConfig, TimingStats>> &reorder_results,
+        const global_options &options, size_t cache_size);
 
 /**
  * @brief Entry point for the reorder benchmark.
@@ -72,7 +72,7 @@ int reorder_benchdnn(const std::vector<ReorderConfig> &configs,
  * @return int Returns OK (0) on success, NOT_OK (1) on failure.
  */
 int bench(const std::string &in_filename, const std::string &out_filename,
-          const global_options &options, const bool isLOWOHA, size_t cache_size);
+        const global_options &options, const bool isLOWOHA, size_t cache_size);
 
 } // namespace reorder
 } // namespace benchdnn

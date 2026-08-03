@@ -14,59 +14,61 @@
 # * limitations under the License.
 # *******************************************************************************/
 
-#include <gtest/gtest.h>
 #include "gtest_utils.hpp"
+#include <gtest/gtest.h>
 
 /** @brief TestEmbedding is a test class to handle parameters */
 class TestEmbedding : public ::testing::TestWithParam<EmbeddingType> {
- protected:
-  /** @brief SetUp is to initialize test parameters
+protected:
+    /** @brief SetUp is to initialize test parameters
    *
    *  This method is a standard and is used in googletests to initialize parameters
    *  for each test and also acts as fixtures i.e. handling the common part of
    *  each test.
    *
    * */
-  virtual void SetUp() {
-    EmbeddingType params = GetParam();
-    num_embeddings     = params.num_embeddings;
-    embedding_dim      = params.embedding_dim;
-    num_indices        = params.num_indices;
-    padding_index      = params.padding_index;
-    is_weights         = params.is_weights;
-    indices_dtype      = params.indices_dtype;
-    fp16_scale_bias    = params.fp16_scale_bias;
-    strided            = params.strided;
-    use_LOWOHA         = params.use_LOWOHA;
-    // LOWOHA-only mode: tests are masked when the user explicitly selects the
-    // regular (non-LOWOHA) API. Skip with a message asking the user to use the
-    // LOA (LOWOHA) API. Run this guard *before* any global side effects
-    // (e.g. omp_set_num_threads) so skipped tests don't mutate process state
-    // that subsequent test suites rely on.
-    if (!use_LOWOHA) {
-      GTEST_SKIP() << "Skipping: please use LOA (LOWOHA) API. "
-                   << "Omit --lowoha or pass --lowoha true to run these tests.";
+    virtual void SetUp() {
+        EmbeddingType params = GetParam();
+        num_embeddings = params.num_embeddings;
+        embedding_dim = params.embedding_dim;
+        num_indices = params.num_indices;
+        padding_index = params.padding_index;
+        is_weights = params.is_weights;
+        indices_dtype = params.indices_dtype;
+        fp16_scale_bias = params.fp16_scale_bias;
+        strided = params.strided;
+        use_LOWOHA = params.use_LOWOHA;
+        // LOWOHA-only mode: tests are masked when the user explicitly selects the
+        // regular (non-LOWOHA) API. Skip with a message asking the user to use the
+        // LOA (LOWOHA) API. Run this guard *before* any global side effects
+        // (e.g. omp_set_num_threads) so skipped tests don't mutate process state
+        // that subsequent test suites rely on.
+        if (!use_LOWOHA) {
+            GTEST_SKIP() << "Skipping: please use LOA (LOWOHA) API. "
+                         << "Omit --lowoha or pass --lowoha true to run these "
+                            "tests.";
+        }
+        num_threads = params.num_threads;
+        omp_set_num_threads(num_threads);
+
+        log_info("num_embeddings: ", num_embeddings,
+                " embedding_dim: ", embedding_dim,
+                " num_indices: ", num_indices,
+                " padding_index: ", padding_index, " is_weights: ", is_weights,
+                " fp16_scale_bias: ", fp16_scale_bias, " strided: ", strided,
+                " use_LOWOHA: ", use_LOWOHA, " num_threads: ", num_threads);
     }
-    num_threads        = params.num_threads;
-    omp_set_num_threads(num_threads);
 
-    log_info("num_embeddings: ", num_embeddings, " embedding_dim: ", embedding_dim,
-             " num_indices: ", num_indices, " padding_index: ", padding_index,
-             " is_weights: ", is_weights, " fp16_scale_bias: ", fp16_scale_bias,
-             " strided: ", strided, " use_LOWOHA: ", use_LOWOHA,
-             " num_threads: ", num_threads);
-  }
+    /** @brief TearDown is used to free resource used in test */
+    virtual void TearDown() {}
 
-  /** @brief TearDown is used to free resource used in test */
-  virtual void TearDown() {}
-
-  uint64_t num_embeddings, embedding_dim, num_indices;
-  int64_t padding_index;
-  bool is_weights, fp16_scale_bias;
-  data_type_t indices_dtype;
-  bool use_LOWOHA, strided;
-  int32_t num_threads;
-  tensor_factory_t tensor_factory{};
+    uint64_t num_embeddings, embedding_dim, num_indices;
+    int64_t padding_index;
+    bool is_weights, fp16_scale_bias;
+    data_type_t indices_dtype;
+    bool use_LOWOHA, strided;
+    int32_t num_threads;
+    tensor_factory_t tensor_factory {};
 };
 
 //TODO: Implement single test for all datatypes and iterate over input and o/p data type
@@ -76,33 +78,36 @@ class TestEmbedding : public ::testing::TestWithParam<EmbeddingType> {
  *  @brief Test to validate embedding F32 input F32 output kernel support wrt Reference kernel
  */
 TEST_P(TestEmbedding, F32_F32) {
-  auto table_tensor      = tensor_factory.uniform_dist_tensor({num_embeddings, embedding_dim},
-                           data_type_t::f32, 2.0f);
-  auto indices_tensor    = tensor_factory.random_indices_tensor({num_indices},
-                           num_embeddings, indices_dtype);
-  auto weights_tensor    = is_weights ? tensor_factory.uniform_dist_tensor({num_indices},
-                           data_type_t::f32, 2.0f) : tensor_t();
-  auto output_tensor     = tensor_factory.zero_tensor({num_indices, embedding_dim},
-                           data_type_t::f32, tensor_t(), tensor_t(), strided);
-  auto output_tensor_ref = tensor_factory.zero_tensor({num_indices, embedding_dim},
-                           data_type_t::f32, tensor_t(), tensor_t(), strided);
+    auto table_tensor = tensor_factory.uniform_dist_tensor(
+            {num_embeddings, embedding_dim}, data_type_t::f32, 2.0f);
+    auto indices_tensor = tensor_factory.random_indices_tensor(
+            {num_indices}, num_embeddings, indices_dtype);
+    auto weights_tensor = is_weights
+            ? tensor_factory.uniform_dist_tensor(
+                      {num_indices}, data_type_t::f32, 2.0f)
+            : tensor_t();
+    auto output_tensor
+            = tensor_factory.zero_tensor({num_indices, embedding_dim},
+                    data_type_t::f32, tensor_t(), tensor_t(), strided);
+    auto output_tensor_ref
+            = tensor_factory.zero_tensor({num_indices, embedding_dim},
+                    data_type_t::f32, tensor_t(), tensor_t(), strided);
 
-  status_t status         = embedding_kernel_test(table_tensor, indices_tensor,
-                            weights_tensor, output_tensor, padding_index, is_weights,
-                            fp16_scale_bias, embag_kernel_t::none, use_LOWOHA);
-  status_t ref_status     = embedding_kernel_test(table_tensor,
-                            indices_tensor, weights_tensor,
-                            output_tensor_ref, padding_index, is_weights, fp16_scale_bias,
-                            embag_kernel_t::reference, use_LOWOHA);
-  bool is_test_successful =
-    (status == status_t::success && ref_status == status_t::success);
+    status_t status = embedding_kernel_test(table_tensor, indices_tensor,
+            weights_tensor, output_tensor, padding_index, is_weights,
+            fp16_scale_bias, embag_kernel_t::none, use_LOWOHA);
+    status_t ref_status = embedding_kernel_test(table_tensor, indices_tensor,
+            weights_tensor, output_tensor_ref, padding_index, is_weights,
+            fp16_scale_bias, embag_kernel_t::reference, use_LOWOHA);
+    bool is_test_successful
+            = (status == status_t::success && ref_status == status_t::success);
 
-  if (is_test_successful) {
-    compare_tensor_2D(output_tensor, output_tensor_ref, num_indices, embedding_dim,
-                      EMBAG_F32_TOL, is_test_successful);
-  }
+    if (is_test_successful) {
+        compare_tensor_2D(output_tensor, output_tensor_ref, num_indices,
+                embedding_dim, EMBAG_F32_TOL, is_test_successful);
+    }
 
-  EXPECT_TRUE(is_test_successful);
+    EXPECT_TRUE(is_test_successful);
 }
 
 /** @fn TEST_P
@@ -111,32 +116,35 @@ TEST_P(TestEmbedding, F32_F32) {
  *  @brief Test to validate embedding F32 input BF16 output kernel support wrt Reference kernel
  */
 TEST_P(TestEmbedding, F32_BF16) {
-  auto table_tensor      = tensor_factory.uniform_dist_tensor({num_embeddings, embedding_dim},
-                           data_type_t::f32, 2.0f);
-  auto indices_tensor    = tensor_factory.random_indices_tensor({num_indices},
-                           num_embeddings, indices_dtype);
-  auto weights_tensor    = is_weights ? tensor_factory.uniform_dist_tensor({num_indices},
-                           data_type_t::f32, 2.0f) : tensor_t();
-  auto output_tensor     = tensor_factory.zero_tensor({num_indices, embedding_dim},
-                           data_type_t::bf16, tensor_t(), tensor_t(), strided);
-  auto output_tensor_ref = tensor_factory.zero_tensor({num_indices, embedding_dim},
-                           data_type_t::bf16, tensor_t(), tensor_t(), strided);
+    auto table_tensor = tensor_factory.uniform_dist_tensor(
+            {num_embeddings, embedding_dim}, data_type_t::f32, 2.0f);
+    auto indices_tensor = tensor_factory.random_indices_tensor(
+            {num_indices}, num_embeddings, indices_dtype);
+    auto weights_tensor = is_weights
+            ? tensor_factory.uniform_dist_tensor(
+                      {num_indices}, data_type_t::f32, 2.0f)
+            : tensor_t();
+    auto output_tensor
+            = tensor_factory.zero_tensor({num_indices, embedding_dim},
+                    data_type_t::bf16, tensor_t(), tensor_t(), strided);
+    auto output_tensor_ref
+            = tensor_factory.zero_tensor({num_indices, embedding_dim},
+                    data_type_t::bf16, tensor_t(), tensor_t(), strided);
 
-  status_t status         = embedding_kernel_test(table_tensor, indices_tensor,
-                            weights_tensor, output_tensor,
-                            padding_index, is_weights, fp16_scale_bias, embag_kernel_t::none, use_LOWOHA);
-  status_t ref_status     = embedding_kernel_test(table_tensor,
-                            indices_tensor, weights_tensor,
-                            output_tensor_ref, padding_index, is_weights, fp16_scale_bias,
-                            embag_kernel_t::reference, use_LOWOHA);
-  bool is_test_successful =
-    (status == status_t::success && ref_status == status_t::success);
-  if (is_test_successful) {
-    compare_tensor_2D(output_tensor, output_tensor_ref, num_indices, embedding_dim,
-                      EMBAG_BF16_TOL, is_test_successful);
-  }
+    status_t status = embedding_kernel_test(table_tensor, indices_tensor,
+            weights_tensor, output_tensor, padding_index, is_weights,
+            fp16_scale_bias, embag_kernel_t::none, use_LOWOHA);
+    status_t ref_status = embedding_kernel_test(table_tensor, indices_tensor,
+            weights_tensor, output_tensor_ref, padding_index, is_weights,
+            fp16_scale_bias, embag_kernel_t::reference, use_LOWOHA);
+    bool is_test_successful
+            = (status == status_t::success && ref_status == status_t::success);
+    if (is_test_successful) {
+        compare_tensor_2D(output_tensor, output_tensor_ref, num_indices,
+                embedding_dim, EMBAG_BF16_TOL, is_test_successful);
+    }
 
-  EXPECT_TRUE(is_test_successful);
+    EXPECT_TRUE(is_test_successful);
 }
 
 /** @fn TEST_P
@@ -145,33 +153,36 @@ TEST_P(TestEmbedding, F32_BF16) {
  *  @brief Test to validate embedding BF16 input F32 output kernel support wrt Reference kernel
  */
 TEST_P(TestEmbedding, BF16_F32) {
-  auto table_tensor      = tensor_factory.uniform_dist_tensor({num_embeddings, embedding_dim},
-                           data_type_t::bf16, 2.0f);
-  auto indices_tensor    = tensor_factory.random_indices_tensor({num_indices},
-                           num_embeddings, indices_dtype);
-  auto weights_tensor    = is_weights ? tensor_factory.uniform_dist_tensor({num_indices},
-                           data_type_t::f32, 2.0f) : tensor_t();
-  auto output_tensor     = tensor_factory.zero_tensor({num_indices, embedding_dim},
-                           data_type_t::f32, tensor_t(), tensor_t(), strided);
-  auto output_tensor_ref = tensor_factory.zero_tensor({num_indices, embedding_dim},
-                           data_type_t::f32, tensor_t(), tensor_t(), strided);
+    auto table_tensor = tensor_factory.uniform_dist_tensor(
+            {num_embeddings, embedding_dim}, data_type_t::bf16, 2.0f);
+    auto indices_tensor = tensor_factory.random_indices_tensor(
+            {num_indices}, num_embeddings, indices_dtype);
+    auto weights_tensor = is_weights
+            ? tensor_factory.uniform_dist_tensor(
+                      {num_indices}, data_type_t::f32, 2.0f)
+            : tensor_t();
+    auto output_tensor
+            = tensor_factory.zero_tensor({num_indices, embedding_dim},
+                    data_type_t::f32, tensor_t(), tensor_t(), strided);
+    auto output_tensor_ref
+            = tensor_factory.zero_tensor({num_indices, embedding_dim},
+                    data_type_t::f32, tensor_t(), tensor_t(), strided);
 
-  status_t status         = embedding_kernel_test(table_tensor, indices_tensor,
-                            weights_tensor, output_tensor,
-                            padding_index, is_weights, fp16_scale_bias, embag_kernel_t::none, use_LOWOHA);
-  status_t ref_status     = embedding_kernel_test(table_tensor,
-                            indices_tensor, weights_tensor,
-                            output_tensor_ref, padding_index, is_weights, fp16_scale_bias,
-                            embag_kernel_t::reference, use_LOWOHA);
-  bool is_test_successful =
-    (status == status_t::success && ref_status == status_t::success);
+    status_t status = embedding_kernel_test(table_tensor, indices_tensor,
+            weights_tensor, output_tensor, padding_index, is_weights,
+            fp16_scale_bias, embag_kernel_t::none, use_LOWOHA);
+    status_t ref_status = embedding_kernel_test(table_tensor, indices_tensor,
+            weights_tensor, output_tensor_ref, padding_index, is_weights,
+            fp16_scale_bias, embag_kernel_t::reference, use_LOWOHA);
+    bool is_test_successful
+            = (status == status_t::success && ref_status == status_t::success);
 
-  if (is_test_successful) {
-    compare_tensor_2D(output_tensor, output_tensor_ref, num_indices, embedding_dim,
-                      EMBAG_F32_TOL, is_test_successful);
-  }
+    if (is_test_successful) {
+        compare_tensor_2D(output_tensor, output_tensor_ref, num_indices,
+                embedding_dim, EMBAG_F32_TOL, is_test_successful);
+    }
 
-  EXPECT_TRUE(is_test_successful);
+    EXPECT_TRUE(is_test_successful);
 }
 
 /** @fn TEST_P
@@ -180,33 +191,36 @@ TEST_P(TestEmbedding, BF16_F32) {
  *  @brief Test to validate embedding BF16 input BF16 output kernel support wrt Reference kernel
  */
 TEST_P(TestEmbedding, BF16_BF16) {
-  auto table_tensor      = tensor_factory.uniform_dist_tensor({num_embeddings, embedding_dim},
-                           data_type_t::bf16, 2.0f);
-  auto indices_tensor    = tensor_factory.random_indices_tensor({num_indices},
-                           num_embeddings, indices_dtype);
-  auto weights_tensor    = is_weights ? tensor_factory.uniform_dist_tensor({num_indices},
-                           data_type_t::f32, 2.0f) : tensor_t();
-  auto output_tensor     = tensor_factory.zero_tensor({num_indices, embedding_dim},
-                           data_type_t::bf16, tensor_t(), tensor_t(), strided);
-  auto output_tensor_ref = tensor_factory.zero_tensor({num_indices, embedding_dim},
-                           data_type_t::bf16, tensor_t(), tensor_t(), strided);
+    auto table_tensor = tensor_factory.uniform_dist_tensor(
+            {num_embeddings, embedding_dim}, data_type_t::bf16, 2.0f);
+    auto indices_tensor = tensor_factory.random_indices_tensor(
+            {num_indices}, num_embeddings, indices_dtype);
+    auto weights_tensor = is_weights
+            ? tensor_factory.uniform_dist_tensor(
+                      {num_indices}, data_type_t::f32, 2.0f)
+            : tensor_t();
+    auto output_tensor
+            = tensor_factory.zero_tensor({num_indices, embedding_dim},
+                    data_type_t::bf16, tensor_t(), tensor_t(), strided);
+    auto output_tensor_ref
+            = tensor_factory.zero_tensor({num_indices, embedding_dim},
+                    data_type_t::bf16, tensor_t(), tensor_t(), strided);
 
-  status_t status         = embedding_kernel_test(table_tensor, indices_tensor,
-                            weights_tensor, output_tensor, padding_index, is_weights,
-                            fp16_scale_bias, embag_kernel_t::none, use_LOWOHA);
-  status_t ref_status     = embedding_kernel_test(table_tensor,
-                            indices_tensor, weights_tensor,
-                            output_tensor_ref, padding_index, is_weights, fp16_scale_bias,
-                            embag_kernel_t::reference, use_LOWOHA);
-  bool is_test_successful =
-    (status == status_t::success && ref_status == status_t::success);
+    status_t status = embedding_kernel_test(table_tensor, indices_tensor,
+            weights_tensor, output_tensor, padding_index, is_weights,
+            fp16_scale_bias, embag_kernel_t::none, use_LOWOHA);
+    status_t ref_status = embedding_kernel_test(table_tensor, indices_tensor,
+            weights_tensor, output_tensor_ref, padding_index, is_weights,
+            fp16_scale_bias, embag_kernel_t::reference, use_LOWOHA);
+    bool is_test_successful
+            = (status == status_t::success && ref_status == status_t::success);
 
-  if (is_test_successful) {
-    compare_tensor_2D(output_tensor, output_tensor_ref, num_indices, embedding_dim,
-                      EMBAG_BF16_TOL, is_test_successful);
-  }
+    if (is_test_successful) {
+        compare_tensor_2D(output_tensor, output_tensor_ref, num_indices,
+                embedding_dim, EMBAG_BF16_TOL, is_test_successful);
+    }
 
-  EXPECT_TRUE(is_test_successful);
+    EXPECT_TRUE(is_test_successful);
 }
 
 /** @fn TEST_P
@@ -215,36 +229,39 @@ TEST_P(TestEmbedding, BF16_BF16) {
  *  @brief Test to validate embedding F32 input F16 output kernel support wrt Reference kernel
  */
 TEST_P(TestEmbedding, F32_F16) {
-  auto table_tensor      = tensor_factory.uniform_dist_tensor({num_embeddings, embedding_dim},
-                           data_type_t::f32, 2.0f);
-  auto indices_tensor    = tensor_factory.random_indices_tensor({num_indices},
-                           num_embeddings, indices_dtype);
-  auto weights_tensor    = is_weights ? tensor_factory.uniform_dist_tensor({num_indices},
-                           data_type_t::f32, 2.0f) : tensor_t();
-  auto output_tensor     = tensor_factory.zero_tensor({num_indices, embedding_dim},
-                           data_type_t::f16, tensor_t(), tensor_t(), strided);
-  auto output_tensor_ref = tensor_factory.zero_tensor({num_indices, embedding_dim},
-                           data_type_t::f16, tensor_t(), tensor_t(), strided);
+    auto table_tensor = tensor_factory.uniform_dist_tensor(
+            {num_embeddings, embedding_dim}, data_type_t::f32, 2.0f);
+    auto indices_tensor = tensor_factory.random_indices_tensor(
+            {num_indices}, num_embeddings, indices_dtype);
+    auto weights_tensor = is_weights
+            ? tensor_factory.uniform_dist_tensor(
+                      {num_indices}, data_type_t::f32, 2.0f)
+            : tensor_t();
+    auto output_tensor
+            = tensor_factory.zero_tensor({num_indices, embedding_dim},
+                    data_type_t::f16, tensor_t(), tensor_t(), strided);
+    auto output_tensor_ref
+            = tensor_factory.zero_tensor({num_indices, embedding_dim},
+                    data_type_t::f16, tensor_t(), tensor_t(), strided);
 
-  status_t status         = embedding_kernel_test(table_tensor, indices_tensor,
-                            weights_tensor, output_tensor, padding_index, is_weights,
-                            fp16_scale_bias, embag_kernel_t::none, use_LOWOHA);
-  if (status == status_t::isa_unsupported) {
-    GTEST_SKIP() << "F16 not supported: requires F16-capable ISA";
-  }
-  status_t ref_status     = embedding_kernel_test(table_tensor,
-                            indices_tensor, weights_tensor,
-                            output_tensor_ref, padding_index, is_weights, fp16_scale_bias,
-                            embag_kernel_t::reference, use_LOWOHA);
-  bool is_test_successful =
-    (status == status_t::success && ref_status == status_t::success);
+    status_t status = embedding_kernel_test(table_tensor, indices_tensor,
+            weights_tensor, output_tensor, padding_index, is_weights,
+            fp16_scale_bias, embag_kernel_t::none, use_LOWOHA);
+    if (status == status_t::isa_unsupported) {
+        GTEST_SKIP() << "F16 not supported: requires F16-capable ISA";
+    }
+    status_t ref_status = embedding_kernel_test(table_tensor, indices_tensor,
+            weights_tensor, output_tensor_ref, padding_index, is_weights,
+            fp16_scale_bias, embag_kernel_t::reference, use_LOWOHA);
+    bool is_test_successful
+            = (status == status_t::success && ref_status == status_t::success);
 
-  if (is_test_successful) {
-    compare_tensor_2D(output_tensor, output_tensor_ref, num_indices, embedding_dim,
-                      EMBAG_F16_TOL, is_test_successful);
-  }
+    if (is_test_successful) {
+        compare_tensor_2D(output_tensor, output_tensor_ref, num_indices,
+                embedding_dim, EMBAG_F16_TOL, is_test_successful);
+    }
 
-  EXPECT_TRUE(is_test_successful);
+    EXPECT_TRUE(is_test_successful);
 }
 
 /** @fn TEST_P
@@ -253,36 +270,39 @@ TEST_P(TestEmbedding, F32_F16) {
  *  @brief Test to validate embedding F16 input F32 output kernel support wrt Reference kernel
  */
 TEST_P(TestEmbedding, F16_F32) {
-  auto table_tensor      = tensor_factory.uniform_dist_tensor({num_embeddings, embedding_dim},
-                           data_type_t::f16, 2.0f);
-  auto indices_tensor    = tensor_factory.random_indices_tensor({num_indices},
-                           num_embeddings, indices_dtype);
-  auto weights_tensor    = is_weights ? tensor_factory.uniform_dist_tensor({num_indices},
-                           data_type_t::f32, 2.0f) : tensor_t();
-  auto output_tensor     = tensor_factory.zero_tensor({num_indices, embedding_dim},
-                           data_type_t::f32, tensor_t(), tensor_t(), strided);
-  auto output_tensor_ref = tensor_factory.zero_tensor({num_indices, embedding_dim},
-                           data_type_t::f32, tensor_t(), tensor_t(), strided);
+    auto table_tensor = tensor_factory.uniform_dist_tensor(
+            {num_embeddings, embedding_dim}, data_type_t::f16, 2.0f);
+    auto indices_tensor = tensor_factory.random_indices_tensor(
+            {num_indices}, num_embeddings, indices_dtype);
+    auto weights_tensor = is_weights
+            ? tensor_factory.uniform_dist_tensor(
+                      {num_indices}, data_type_t::f32, 2.0f)
+            : tensor_t();
+    auto output_tensor
+            = tensor_factory.zero_tensor({num_indices, embedding_dim},
+                    data_type_t::f32, tensor_t(), tensor_t(), strided);
+    auto output_tensor_ref
+            = tensor_factory.zero_tensor({num_indices, embedding_dim},
+                    data_type_t::f32, tensor_t(), tensor_t(), strided);
 
-  status_t status         = embedding_kernel_test(table_tensor, indices_tensor,
-                            weights_tensor, output_tensor, padding_index, is_weights,
-                            fp16_scale_bias, embag_kernel_t::none, use_LOWOHA);
-  if (status == status_t::isa_unsupported) {
-    GTEST_SKIP() << "F16 not supported: requires F16-capable ISA";
-  }
-  status_t ref_status     = embedding_kernel_test(table_tensor,
-                            indices_tensor, weights_tensor,
-                            output_tensor_ref, padding_index, is_weights, fp16_scale_bias,
-                            embag_kernel_t::reference, use_LOWOHA);
-  bool is_test_successful =
-    (status == status_t::success && ref_status == status_t::success);
+    status_t status = embedding_kernel_test(table_tensor, indices_tensor,
+            weights_tensor, output_tensor, padding_index, is_weights,
+            fp16_scale_bias, embag_kernel_t::none, use_LOWOHA);
+    if (status == status_t::isa_unsupported) {
+        GTEST_SKIP() << "F16 not supported: requires F16-capable ISA";
+    }
+    status_t ref_status = embedding_kernel_test(table_tensor, indices_tensor,
+            weights_tensor, output_tensor_ref, padding_index, is_weights,
+            fp16_scale_bias, embag_kernel_t::reference, use_LOWOHA);
+    bool is_test_successful
+            = (status == status_t::success && ref_status == status_t::success);
 
-  if (is_test_successful) {
-    compare_tensor_2D(output_tensor, output_tensor_ref, num_indices, embedding_dim,
-                      EMBAG_F16_TOL, is_test_successful);
-  }
+    if (is_test_successful) {
+        compare_tensor_2D(output_tensor, output_tensor_ref, num_indices,
+                embedding_dim, EMBAG_F16_TOL, is_test_successful);
+    }
 
-  EXPECT_TRUE(is_test_successful);
+    EXPECT_TRUE(is_test_successful);
 }
 
 /** @fn TEST_P
@@ -291,36 +311,39 @@ TEST_P(TestEmbedding, F16_F32) {
  *  @brief Test to validate embedding F16 input F16 output kernel support wrt Reference kernel
  */
 TEST_P(TestEmbedding, F16_F16) {
-  auto table_tensor      = tensor_factory.uniform_dist_tensor({num_embeddings, embedding_dim},
-                           data_type_t::f16, 2.0f);
-  auto indices_tensor    = tensor_factory.random_indices_tensor({num_indices},
-                           num_embeddings, indices_dtype);
-  auto weights_tensor    = is_weights ? tensor_factory.uniform_dist_tensor({num_indices},
-                           data_type_t::f32, 2.0f) : tensor_t();
-  auto output_tensor     = tensor_factory.zero_tensor({num_indices, embedding_dim},
-                           data_type_t::f16, tensor_t(), tensor_t(), strided);
-  auto output_tensor_ref = tensor_factory.zero_tensor({num_indices, embedding_dim},
-                           data_type_t::f16, tensor_t(), tensor_t(), strided);
+    auto table_tensor = tensor_factory.uniform_dist_tensor(
+            {num_embeddings, embedding_dim}, data_type_t::f16, 2.0f);
+    auto indices_tensor = tensor_factory.random_indices_tensor(
+            {num_indices}, num_embeddings, indices_dtype);
+    auto weights_tensor = is_weights
+            ? tensor_factory.uniform_dist_tensor(
+                      {num_indices}, data_type_t::f32, 2.0f)
+            : tensor_t();
+    auto output_tensor
+            = tensor_factory.zero_tensor({num_indices, embedding_dim},
+                    data_type_t::f16, tensor_t(), tensor_t(), strided);
+    auto output_tensor_ref
+            = tensor_factory.zero_tensor({num_indices, embedding_dim},
+                    data_type_t::f16, tensor_t(), tensor_t(), strided);
 
-  status_t status         = embedding_kernel_test(table_tensor, indices_tensor,
-                            weights_tensor, output_tensor, padding_index, is_weights,
-                            fp16_scale_bias, embag_kernel_t::none, use_LOWOHA);
-  if (status == status_t::isa_unsupported) {
-    GTEST_SKIP() << "F16 not supported: requires F16-capable ISA";
-  }
-  status_t ref_status     = embedding_kernel_test(table_tensor,
-                            indices_tensor, weights_tensor,
-                            output_tensor_ref, padding_index, is_weights, fp16_scale_bias,
-                            embag_kernel_t::reference, use_LOWOHA);
-  bool is_test_successful =
-    (status == status_t::success && ref_status == status_t::success);
+    status_t status = embedding_kernel_test(table_tensor, indices_tensor,
+            weights_tensor, output_tensor, padding_index, is_weights,
+            fp16_scale_bias, embag_kernel_t::none, use_LOWOHA);
+    if (status == status_t::isa_unsupported) {
+        GTEST_SKIP() << "F16 not supported: requires F16-capable ISA";
+    }
+    status_t ref_status = embedding_kernel_test(table_tensor, indices_tensor,
+            weights_tensor, output_tensor_ref, padding_index, is_weights,
+            fp16_scale_bias, embag_kernel_t::reference, use_LOWOHA);
+    bool is_test_successful
+            = (status == status_t::success && ref_status == status_t::success);
 
-  if (is_test_successful) {
-    compare_tensor_2D(output_tensor, output_tensor_ref, num_indices, embedding_dim,
-                      EMBAG_F16_TOL, is_test_successful);
-  }
+    if (is_test_successful) {
+        compare_tensor_2D(output_tensor, output_tensor_ref, num_indices,
+                embedding_dim, EMBAG_F16_TOL, is_test_successful);
+    }
 
-  EXPECT_TRUE(is_test_successful);
+    EXPECT_TRUE(is_test_successful);
 }
 
 /** @fn TEST_P
@@ -329,35 +352,39 @@ TEST_P(TestEmbedding, F16_F16) {
  *  @brief Test to validate embedding INT8 input F32 output kernel support wrt Reference kernel
  */
 TEST_P(TestEmbedding, INT8_F32) {
-  auto table_tensor      = tensor_factory.quantized_embedding_tensor_random({num_embeddings, embedding_dim},
-                           data_type_t::s8, "table", fp16_scale_bias);
-  auto indices_tensor    = tensor_factory.random_indices_tensor({num_indices},
-                           num_embeddings, indices_dtype);
-  auto weights_tensor    = is_weights ? tensor_factory.uniform_dist_tensor({num_indices},
-                           data_type_t::f32, 2.0f) : tensor_t();
-  auto output_tensor     = tensor_factory.zero_tensor({num_indices, embedding_dim},
-                           data_type_t::f32, tensor_t(), tensor_t(), strided);
-  auto output_tensor_ref = tensor_factory.zero_tensor({num_indices, embedding_dim},
-                           data_type_t::f32, tensor_t(), tensor_t(), strided);
+    auto table_tensor = tensor_factory.quantized_embedding_tensor_random(
+            {num_embeddings, embedding_dim}, data_type_t::s8, "table",
+            fp16_scale_bias);
+    auto indices_tensor = tensor_factory.random_indices_tensor(
+            {num_indices}, num_embeddings, indices_dtype);
+    auto weights_tensor = is_weights
+            ? tensor_factory.uniform_dist_tensor(
+                      {num_indices}, data_type_t::f32, 2.0f)
+            : tensor_t();
+    auto output_tensor
+            = tensor_factory.zero_tensor({num_indices, embedding_dim},
+                    data_type_t::f32, tensor_t(), tensor_t(), strided);
+    auto output_tensor_ref
+            = tensor_factory.zero_tensor({num_indices, embedding_dim},
+                    data_type_t::f32, tensor_t(), tensor_t(), strided);
 
-  status_t status         = embedding_kernel_test(table_tensor, indices_tensor,
-                            weights_tensor, output_tensor, padding_index, is_weights,
-                            fp16_scale_bias, embag_kernel_t::none, use_LOWOHA);
-  status_t ref_status     = embedding_kernel_test(table_tensor,
-                            indices_tensor, weights_tensor, output_tensor_ref,
-                            padding_index, is_weights, fp16_scale_bias, embag_kernel_t::reference,
-                            use_LOWOHA);
-  bool is_test_successful =
-    (status == status_t::success && ref_status == status_t::success);
+    status_t status = embedding_kernel_test(table_tensor, indices_tensor,
+            weights_tensor, output_tensor, padding_index, is_weights,
+            fp16_scale_bias, embag_kernel_t::none, use_LOWOHA);
+    status_t ref_status = embedding_kernel_test(table_tensor, indices_tensor,
+            weights_tensor, output_tensor_ref, padding_index, is_weights,
+            fp16_scale_bias, embag_kernel_t::reference, use_LOWOHA);
+    bool is_test_successful
+            = (status == status_t::success && ref_status == status_t::success);
 
-  if (is_test_successful) {
-    compare_tensor_2D(output_tensor, output_tensor_ref, num_indices, embedding_dim,
-                      EMBAG_INT4_TOL, is_test_successful);
-  }
-  //free this table pointer after use
-  free(table_tensor.get_raw_handle_unsafe());
-  table_tensor.reset();
-  EXPECT_TRUE(is_test_successful);
+    if (is_test_successful) {
+        compare_tensor_2D(output_tensor, output_tensor_ref, num_indices,
+                embedding_dim, EMBAG_INT4_TOL, is_test_successful);
+    }
+    //free this table pointer after use
+    free(table_tensor.get_raw_handle_unsafe());
+    table_tensor.reset();
+    EXPECT_TRUE(is_test_successful);
 }
 
 /** @fn TEST_P
@@ -366,35 +393,39 @@ TEST_P(TestEmbedding, INT8_F32) {
  *  @brief Test to validate embedding INT8 input BF16 output kernel support wrt Reference kernel
  */
 TEST_P(TestEmbedding, INT8_BF16) {
-  auto table_tensor      = tensor_factory.quantized_embedding_tensor_random({num_embeddings, embedding_dim},
-                           data_type_t::s8, "table", fp16_scale_bias);
-  auto indices_tensor    = tensor_factory.random_indices_tensor({num_indices},
-                           num_embeddings, indices_dtype);
-  auto weights_tensor    = is_weights ? tensor_factory.uniform_dist_tensor({num_indices},
-                           data_type_t::f32, 2.0f) : tensor_t();
-  auto output_tensor     = tensor_factory.zero_tensor({num_indices, embedding_dim},
-                           data_type_t::bf16, tensor_t(), tensor_t(), strided);
-  auto output_tensor_ref = tensor_factory.zero_tensor({num_indices, embedding_dim},
-                           data_type_t::bf16, tensor_t(), tensor_t(), strided);
+    auto table_tensor = tensor_factory.quantized_embedding_tensor_random(
+            {num_embeddings, embedding_dim}, data_type_t::s8, "table",
+            fp16_scale_bias);
+    auto indices_tensor = tensor_factory.random_indices_tensor(
+            {num_indices}, num_embeddings, indices_dtype);
+    auto weights_tensor = is_weights
+            ? tensor_factory.uniform_dist_tensor(
+                      {num_indices}, data_type_t::f32, 2.0f)
+            : tensor_t();
+    auto output_tensor
+            = tensor_factory.zero_tensor({num_indices, embedding_dim},
+                    data_type_t::bf16, tensor_t(), tensor_t(), strided);
+    auto output_tensor_ref
+            = tensor_factory.zero_tensor({num_indices, embedding_dim},
+                    data_type_t::bf16, tensor_t(), tensor_t(), strided);
 
-  status_t status         = embedding_kernel_test(table_tensor, indices_tensor,
-                            weights_tensor, output_tensor, padding_index, is_weights,
-                            fp16_scale_bias, embag_kernel_t::none, use_LOWOHA);
-  status_t ref_status     = embedding_kernel_test(table_tensor,
-                            indices_tensor, weights_tensor, output_tensor_ref,
-                            padding_index, is_weights, fp16_scale_bias, embag_kernel_t::reference,
-                            use_LOWOHA);
-  bool is_test_successful =
-    (status == status_t::success && ref_status == status_t::success);
+    status_t status = embedding_kernel_test(table_tensor, indices_tensor,
+            weights_tensor, output_tensor, padding_index, is_weights,
+            fp16_scale_bias, embag_kernel_t::none, use_LOWOHA);
+    status_t ref_status = embedding_kernel_test(table_tensor, indices_tensor,
+            weights_tensor, output_tensor_ref, padding_index, is_weights,
+            fp16_scale_bias, embag_kernel_t::reference, use_LOWOHA);
+    bool is_test_successful
+            = (status == status_t::success && ref_status == status_t::success);
 
-  if (is_test_successful) {
-    compare_tensor_2D(output_tensor, output_tensor_ref, num_indices, embedding_dim,
-                      EMBAG_INT4_TOL, is_test_successful);
-  }
-  //free this table pointer after use
-  free(table_tensor.get_raw_handle_unsafe());
-  table_tensor.reset();
-  EXPECT_TRUE(is_test_successful);
+    if (is_test_successful) {
+        compare_tensor_2D(output_tensor, output_tensor_ref, num_indices,
+                embedding_dim, EMBAG_INT4_TOL, is_test_successful);
+    }
+    //free this table pointer after use
+    free(table_tensor.get_raw_handle_unsafe());
+    table_tensor.reset();
+    EXPECT_TRUE(is_test_successful);
 }
 
 /** @fn TEST_P
@@ -403,38 +434,42 @@ TEST_P(TestEmbedding, INT8_BF16) {
  *  @brief Test to validate embedding INT8 input F16 output kernel support wrt Reference kernel
  */
 TEST_P(TestEmbedding, INT8_F16) {
-  auto table_tensor      = tensor_factory.quantized_embedding_tensor_random({num_embeddings, embedding_dim},
-                           data_type_t::s8, "table", fp16_scale_bias);
-  auto indices_tensor    = tensor_factory.random_indices_tensor({num_indices},
-                           num_embeddings, indices_dtype);
-  auto weights_tensor    = is_weights ? tensor_factory.uniform_dist_tensor({num_indices},
-                           data_type_t::f32, 2.0f) : tensor_t();
-  auto output_tensor     = tensor_factory.zero_tensor({num_indices, embedding_dim},
-                           data_type_t::f16, tensor_t(), tensor_t(), strided);
-  auto output_tensor_ref = tensor_factory.zero_tensor({num_indices, embedding_dim},
-                           data_type_t::f16, tensor_t(), tensor_t(), strided);
+    auto table_tensor = tensor_factory.quantized_embedding_tensor_random(
+            {num_embeddings, embedding_dim}, data_type_t::s8, "table",
+            fp16_scale_bias);
+    auto indices_tensor = tensor_factory.random_indices_tensor(
+            {num_indices}, num_embeddings, indices_dtype);
+    auto weights_tensor = is_weights
+            ? tensor_factory.uniform_dist_tensor(
+                      {num_indices}, data_type_t::f32, 2.0f)
+            : tensor_t();
+    auto output_tensor
+            = tensor_factory.zero_tensor({num_indices, embedding_dim},
+                    data_type_t::f16, tensor_t(), tensor_t(), strided);
+    auto output_tensor_ref
+            = tensor_factory.zero_tensor({num_indices, embedding_dim},
+                    data_type_t::f16, tensor_t(), tensor_t(), strided);
 
-  status_t status         = embedding_kernel_test(table_tensor, indices_tensor,
-                            weights_tensor, output_tensor, padding_index, is_weights,
-                            fp16_scale_bias, embag_kernel_t::none, use_LOWOHA);
-  if (status == status_t::isa_unsupported) {
-    GTEST_SKIP() << "F16 not supported: requires F16-capable ISA";
-  }
-  status_t ref_status     = embedding_kernel_test(table_tensor,
-                            indices_tensor, weights_tensor, output_tensor_ref,
-                            padding_index, is_weights, fp16_scale_bias, embag_kernel_t::reference,
-                            use_LOWOHA);
-  bool is_test_successful =
-    (status == status_t::success && ref_status == status_t::success);
+    status_t status = embedding_kernel_test(table_tensor, indices_tensor,
+            weights_tensor, output_tensor, padding_index, is_weights,
+            fp16_scale_bias, embag_kernel_t::none, use_LOWOHA);
+    if (status == status_t::isa_unsupported) {
+        GTEST_SKIP() << "F16 not supported: requires F16-capable ISA";
+    }
+    status_t ref_status = embedding_kernel_test(table_tensor, indices_tensor,
+            weights_tensor, output_tensor_ref, padding_index, is_weights,
+            fp16_scale_bias, embag_kernel_t::reference, use_LOWOHA);
+    bool is_test_successful
+            = (status == status_t::success && ref_status == status_t::success);
 
-  if (is_test_successful) {
-    compare_tensor_2D(output_tensor, output_tensor_ref, num_indices, embedding_dim,
-                      EMBAG_INT4_TOL, is_test_successful);
-  }
-  //free this table pointer after use
-  free(table_tensor.get_raw_handle_unsafe());
-  table_tensor.reset();
-  EXPECT_TRUE(is_test_successful);
+    if (is_test_successful) {
+        compare_tensor_2D(output_tensor, output_tensor_ref, num_indices,
+                embedding_dim, EMBAG_INT4_TOL, is_test_successful);
+    }
+    //free this table pointer after use
+    free(table_tensor.get_raw_handle_unsafe());
+    table_tensor.reset();
+    EXPECT_TRUE(is_test_successful);
 }
 
 /** @fn TEST_P
@@ -443,35 +478,39 @@ TEST_P(TestEmbedding, INT8_F16) {
  *  @brief Test to validate embedding S4 input F32 output kernel support wrt Reference kernel
  */
 TEST_P(TestEmbedding, S4_F32) {
-  auto table_tensor      = tensor_factory.quantized_embedding_tensor_random({num_embeddings, embedding_dim},
-                           data_type_t::s4, "table", fp16_scale_bias);
-  auto indices_tensor    = tensor_factory.random_indices_tensor({num_indices},
-                           num_embeddings, indices_dtype);
-  auto weights_tensor    = is_weights ? tensor_factory.uniform_dist_tensor({num_indices},
-                           data_type_t::f32, 2.0f) : tensor_t();
-  auto output_tensor     = tensor_factory.zero_tensor({num_indices, embedding_dim},
-                           data_type_t::f32, tensor_t(), tensor_t(), strided);
-  auto output_tensor_ref = tensor_factory.zero_tensor({num_indices, embedding_dim},
-                           data_type_t::f32, tensor_t(), tensor_t(), strided);
+    auto table_tensor = tensor_factory.quantized_embedding_tensor_random(
+            {num_embeddings, embedding_dim}, data_type_t::s4, "table",
+            fp16_scale_bias);
+    auto indices_tensor = tensor_factory.random_indices_tensor(
+            {num_indices}, num_embeddings, indices_dtype);
+    auto weights_tensor = is_weights
+            ? tensor_factory.uniform_dist_tensor(
+                      {num_indices}, data_type_t::f32, 2.0f)
+            : tensor_t();
+    auto output_tensor
+            = tensor_factory.zero_tensor({num_indices, embedding_dim},
+                    data_type_t::f32, tensor_t(), tensor_t(), strided);
+    auto output_tensor_ref
+            = tensor_factory.zero_tensor({num_indices, embedding_dim},
+                    data_type_t::f32, tensor_t(), tensor_t(), strided);
 
-  status_t status         = embedding_kernel_test(table_tensor, indices_tensor,
-                            weights_tensor, output_tensor, padding_index, is_weights,
-                            fp16_scale_bias, embag_kernel_t::none, use_LOWOHA);
-  status_t ref_status     = embedding_kernel_test(table_tensor,
-                            indices_tensor, weights_tensor, output_tensor_ref,
-                            padding_index, is_weights, fp16_scale_bias, embag_kernel_t::reference,
-                            use_LOWOHA);
-  bool is_test_successful =
-    (status == status_t::success && ref_status == status_t::success);
+    status_t status = embedding_kernel_test(table_tensor, indices_tensor,
+            weights_tensor, output_tensor, padding_index, is_weights,
+            fp16_scale_bias, embag_kernel_t::none, use_LOWOHA);
+    status_t ref_status = embedding_kernel_test(table_tensor, indices_tensor,
+            weights_tensor, output_tensor_ref, padding_index, is_weights,
+            fp16_scale_bias, embag_kernel_t::reference, use_LOWOHA);
+    bool is_test_successful
+            = (status == status_t::success && ref_status == status_t::success);
 
-  if (is_test_successful) {
-    compare_tensor_2D(output_tensor, output_tensor_ref, num_indices, embedding_dim,
-                      EMBAG_INT4_TOL, is_test_successful);
-  }
-  //free this table pointer after use
-  free(table_tensor.get_raw_handle_unsafe());
-  table_tensor.reset();
-  EXPECT_TRUE(is_test_successful);
+    if (is_test_successful) {
+        compare_tensor_2D(output_tensor, output_tensor_ref, num_indices,
+                embedding_dim, EMBAG_INT4_TOL, is_test_successful);
+    }
+    //free this table pointer after use
+    free(table_tensor.get_raw_handle_unsafe());
+    table_tensor.reset();
+    EXPECT_TRUE(is_test_successful);
 }
 
 /** @fn TEST_P
@@ -480,37 +519,40 @@ TEST_P(TestEmbedding, S4_F32) {
  *  @brief Test to validate embedding S4 input BF16 output kernel support wrt Reference kernel
  */
 TEST_P(TestEmbedding, S4_BF16) {
-  auto table_tensor      = tensor_factory.quantized_embedding_tensor_random({num_embeddings, embedding_dim},
-                           data_type_t::s4, "table", fp16_scale_bias);
-  auto indices_tensor    = tensor_factory.random_indices_tensor({num_indices},
-                           num_embeddings, indices_dtype);
-  auto weights_tensor    = is_weights ? tensor_factory.uniform_dist_tensor({num_indices},
-                           data_type_t::f32, 2.0f) : tensor_t();
-  auto output_tensor     = tensor_factory.zero_tensor({num_indices, embedding_dim},
-                           data_type_t::bf16, tensor_t(), tensor_t(), strided);
-  auto output_tensor_ref = tensor_factory.zero_tensor({num_indices, embedding_dim},
-                           data_type_t::bf16, tensor_t(), tensor_t(), strided);
+    auto table_tensor = tensor_factory.quantized_embedding_tensor_random(
+            {num_embeddings, embedding_dim}, data_type_t::s4, "table",
+            fp16_scale_bias);
+    auto indices_tensor = tensor_factory.random_indices_tensor(
+            {num_indices}, num_embeddings, indices_dtype);
+    auto weights_tensor = is_weights
+            ? tensor_factory.uniform_dist_tensor(
+                      {num_indices}, data_type_t::f32, 2.0f)
+            : tensor_t();
+    auto output_tensor
+            = tensor_factory.zero_tensor({num_indices, embedding_dim},
+                    data_type_t::bf16, tensor_t(), tensor_t(), strided);
+    auto output_tensor_ref
+            = tensor_factory.zero_tensor({num_indices, embedding_dim},
+                    data_type_t::bf16, tensor_t(), tensor_t(), strided);
 
-  status_t status         = embedding_kernel_test(table_tensor, indices_tensor,
-                            weights_tensor, output_tensor, padding_index, is_weights,
-                            fp16_scale_bias, embag_kernel_t::none, use_LOWOHA);
-  status_t ref_status     = embedding_kernel_test(table_tensor,
-                            indices_tensor, weights_tensor, output_tensor_ref,
-                            padding_index, is_weights, fp16_scale_bias, embag_kernel_t::reference,
-                            use_LOWOHA);
-  bool is_test_successful =
-    (status == status_t::success && ref_status == status_t::success);
+    status_t status = embedding_kernel_test(table_tensor, indices_tensor,
+            weights_tensor, output_tensor, padding_index, is_weights,
+            fp16_scale_bias, embag_kernel_t::none, use_LOWOHA);
+    status_t ref_status = embedding_kernel_test(table_tensor, indices_tensor,
+            weights_tensor, output_tensor_ref, padding_index, is_weights,
+            fp16_scale_bias, embag_kernel_t::reference, use_LOWOHA);
+    bool is_test_successful
+            = (status == status_t::success && ref_status == status_t::success);
 
-  if (is_test_successful) {
-    compare_tensor_2D(output_tensor, output_tensor_ref, num_indices, embedding_dim,
-                      EMBAG_INT4_TOL, is_test_successful);
-  }
-  //free this table pointer after use
-  free(table_tensor.get_raw_handle_unsafe());
-  table_tensor.reset();
-  EXPECT_TRUE(is_test_successful);
+    if (is_test_successful) {
+        compare_tensor_2D(output_tensor, output_tensor_ref, num_indices,
+                embedding_dim, EMBAG_INT4_TOL, is_test_successful);
+    }
+    //free this table pointer after use
+    free(table_tensor.get_raw_handle_unsafe());
+    table_tensor.reset();
+    EXPECT_TRUE(is_test_successful);
 }
-
 
 /** @fn TEST_P
  *  @param TestEmbedding parameterized test class to initialize parameters
@@ -518,38 +560,42 @@ TEST_P(TestEmbedding, S4_BF16) {
  *  @brief Test to validate embedding S4 input F16 output kernel support wrt Reference kernel
  */
 TEST_P(TestEmbedding, S4_F16) {
-  auto table_tensor      = tensor_factory.quantized_embedding_tensor_random({num_embeddings, embedding_dim},
-                           data_type_t::s4, "table", fp16_scale_bias);
-  auto indices_tensor    = tensor_factory.random_indices_tensor({num_indices},
-                           num_embeddings, indices_dtype);
-  auto weights_tensor    = is_weights ? tensor_factory.uniform_dist_tensor({num_indices},
-                           data_type_t::f32, 2.0f) : tensor_t();
-  auto output_tensor     = tensor_factory.zero_tensor({num_indices, embedding_dim},
-                           data_type_t::f16, tensor_t(), tensor_t(), strided);
-  auto output_tensor_ref = tensor_factory.zero_tensor({num_indices, embedding_dim},
-                           data_type_t::f16, tensor_t(), tensor_t(), strided);
+    auto table_tensor = tensor_factory.quantized_embedding_tensor_random(
+            {num_embeddings, embedding_dim}, data_type_t::s4, "table",
+            fp16_scale_bias);
+    auto indices_tensor = tensor_factory.random_indices_tensor(
+            {num_indices}, num_embeddings, indices_dtype);
+    auto weights_tensor = is_weights
+            ? tensor_factory.uniform_dist_tensor(
+                      {num_indices}, data_type_t::f32, 2.0f)
+            : tensor_t();
+    auto output_tensor
+            = tensor_factory.zero_tensor({num_indices, embedding_dim},
+                    data_type_t::f16, tensor_t(), tensor_t(), strided);
+    auto output_tensor_ref
+            = tensor_factory.zero_tensor({num_indices, embedding_dim},
+                    data_type_t::f16, tensor_t(), tensor_t(), strided);
 
-  status_t status         = embedding_kernel_test(table_tensor, indices_tensor,
-                            weights_tensor, output_tensor, padding_index, is_weights,
-                            fp16_scale_bias, embag_kernel_t::none, use_LOWOHA);
-  if (status == status_t::isa_unsupported) {
-    GTEST_SKIP() << "F16 not supported: requires F16-capable ISA";
-  }
-  status_t ref_status     = embedding_kernel_test(table_tensor,
-                            indices_tensor, weights_tensor, output_tensor_ref,
-                            padding_index, is_weights, fp16_scale_bias, embag_kernel_t::reference,
-                            use_LOWOHA);
-  bool is_test_successful =
-    (status == status_t::success && ref_status == status_t::success);
+    status_t status = embedding_kernel_test(table_tensor, indices_tensor,
+            weights_tensor, output_tensor, padding_index, is_weights,
+            fp16_scale_bias, embag_kernel_t::none, use_LOWOHA);
+    if (status == status_t::isa_unsupported) {
+        GTEST_SKIP() << "F16 not supported: requires F16-capable ISA";
+    }
+    status_t ref_status = embedding_kernel_test(table_tensor, indices_tensor,
+            weights_tensor, output_tensor_ref, padding_index, is_weights,
+            fp16_scale_bias, embag_kernel_t::reference, use_LOWOHA);
+    bool is_test_successful
+            = (status == status_t::success && ref_status == status_t::success);
 
-  if (is_test_successful) {
-    compare_tensor_2D(output_tensor, output_tensor_ref, num_indices, embedding_dim,
-                      EMBAG_INT4_TOL, is_test_successful);
-  }
-  //free this table pointer after use
-  free(table_tensor.get_raw_handle_unsafe());
-  table_tensor.reset();
-  EXPECT_TRUE(is_test_successful);
+    if (is_test_successful) {
+        compare_tensor_2D(output_tensor, output_tensor_ref, num_indices,
+                embedding_dim, EMBAG_INT4_TOL, is_test_successful);
+    }
+    //free this table pointer after use
+    free(table_tensor.get_raw_handle_unsafe());
+    table_tensor.reset();
+    EXPECT_TRUE(is_test_successful);
 }
 
 /** @fn TEST_P
@@ -558,35 +604,39 @@ TEST_P(TestEmbedding, S4_F16) {
  *  @brief Test to validate embedding U4 input F32 output kernel support wrt Reference kernel
  */
 TEST_P(TestEmbedding, U4_F32) {
-  auto table_tensor      = tensor_factory.quantized_embedding_tensor_random({num_embeddings, embedding_dim},
-                           data_type_t::u4, "table", fp16_scale_bias);
-  auto indices_tensor    = tensor_factory.random_indices_tensor({num_indices},
-                           num_embeddings, indices_dtype);
-  auto weights_tensor    = is_weights ? tensor_factory.uniform_dist_tensor({num_indices},
-                           data_type_t::f32, 2.0f) : tensor_t();
-  auto output_tensor     = tensor_factory.zero_tensor({num_indices, embedding_dim},
-                           data_type_t::f32, tensor_t(), tensor_t(), strided);
-  auto output_tensor_ref = tensor_factory.zero_tensor({num_indices, embedding_dim},
-                           data_type_t::f32, tensor_t(), tensor_t(), strided);
+    auto table_tensor = tensor_factory.quantized_embedding_tensor_random(
+            {num_embeddings, embedding_dim}, data_type_t::u4, "table",
+            fp16_scale_bias);
+    auto indices_tensor = tensor_factory.random_indices_tensor(
+            {num_indices}, num_embeddings, indices_dtype);
+    auto weights_tensor = is_weights
+            ? tensor_factory.uniform_dist_tensor(
+                      {num_indices}, data_type_t::f32, 2.0f)
+            : tensor_t();
+    auto output_tensor
+            = tensor_factory.zero_tensor({num_indices, embedding_dim},
+                    data_type_t::f32, tensor_t(), tensor_t(), strided);
+    auto output_tensor_ref
+            = tensor_factory.zero_tensor({num_indices, embedding_dim},
+                    data_type_t::f32, tensor_t(), tensor_t(), strided);
 
-  status_t status         = embedding_kernel_test(table_tensor, indices_tensor,
-                            weights_tensor, output_tensor, padding_index, is_weights,
-                            fp16_scale_bias, embag_kernel_t::none, use_LOWOHA);
-  status_t ref_status     = embedding_kernel_test(table_tensor,
-                            indices_tensor, weights_tensor, output_tensor_ref,
-                            padding_index, is_weights, fp16_scale_bias, embag_kernel_t::reference,
-                            use_LOWOHA);
-  bool is_test_successful =
-    (status == status_t::success && ref_status == status_t::success);
+    status_t status = embedding_kernel_test(table_tensor, indices_tensor,
+            weights_tensor, output_tensor, padding_index, is_weights,
+            fp16_scale_bias, embag_kernel_t::none, use_LOWOHA);
+    status_t ref_status = embedding_kernel_test(table_tensor, indices_tensor,
+            weights_tensor, output_tensor_ref, padding_index, is_weights,
+            fp16_scale_bias, embag_kernel_t::reference, use_LOWOHA);
+    bool is_test_successful
+            = (status == status_t::success && ref_status == status_t::success);
 
-  if (is_test_successful) {
-    compare_tensor_2D(output_tensor, output_tensor_ref, num_indices, embedding_dim,
-                      EMBAG_INT4_TOL, is_test_successful);
-  }
-  //free this table pointer after use
-  free(table_tensor.get_raw_handle_unsafe());
-  table_tensor.reset();
-  EXPECT_TRUE(is_test_successful);
+    if (is_test_successful) {
+        compare_tensor_2D(output_tensor, output_tensor_ref, num_indices,
+                embedding_dim, EMBAG_INT4_TOL, is_test_successful);
+    }
+    //free this table pointer after use
+    free(table_tensor.get_raw_handle_unsafe());
+    table_tensor.reset();
+    EXPECT_TRUE(is_test_successful);
 }
 
 /** @fn TEST_P
@@ -595,35 +645,39 @@ TEST_P(TestEmbedding, U4_F32) {
  *  @brief Test to validate embedding U4 input BF16 output kernel support wrt Reference kernel
  */
 TEST_P(TestEmbedding, U4_BF16) {
-  auto table_tensor      = tensor_factory.quantized_embedding_tensor_random({num_embeddings, embedding_dim},
-                           data_type_t::u4, "table", fp16_scale_bias);
-  auto indices_tensor    = tensor_factory.random_indices_tensor({num_indices},
-                           num_embeddings, indices_dtype);
-  auto weights_tensor    = is_weights ? tensor_factory.uniform_dist_tensor({num_indices},
-                           data_type_t::f32, 2.0f) : tensor_t();
-  auto output_tensor     = tensor_factory.zero_tensor({num_indices, embedding_dim},
-                           data_type_t::bf16, tensor_t(), tensor_t(), strided);
-  auto output_tensor_ref = tensor_factory.zero_tensor({num_indices, embedding_dim},
-                           data_type_t::bf16, tensor_t(), tensor_t(), strided);
+    auto table_tensor = tensor_factory.quantized_embedding_tensor_random(
+            {num_embeddings, embedding_dim}, data_type_t::u4, "table",
+            fp16_scale_bias);
+    auto indices_tensor = tensor_factory.random_indices_tensor(
+            {num_indices}, num_embeddings, indices_dtype);
+    auto weights_tensor = is_weights
+            ? tensor_factory.uniform_dist_tensor(
+                      {num_indices}, data_type_t::f32, 2.0f)
+            : tensor_t();
+    auto output_tensor
+            = tensor_factory.zero_tensor({num_indices, embedding_dim},
+                    data_type_t::bf16, tensor_t(), tensor_t(), strided);
+    auto output_tensor_ref
+            = tensor_factory.zero_tensor({num_indices, embedding_dim},
+                    data_type_t::bf16, tensor_t(), tensor_t(), strided);
 
-  status_t status         = embedding_kernel_test(table_tensor, indices_tensor,
-                            weights_tensor, output_tensor, padding_index, is_weights,
-                            fp16_scale_bias, embag_kernel_t::none, use_LOWOHA);
-  status_t ref_status     = embedding_kernel_test(table_tensor,
-                            indices_tensor, weights_tensor, output_tensor_ref,
-                            padding_index, is_weights, fp16_scale_bias, embag_kernel_t::reference,
-                            use_LOWOHA);
-  bool is_test_successful =
-    (status == status_t::success && ref_status == status_t::success);
+    status_t status = embedding_kernel_test(table_tensor, indices_tensor,
+            weights_tensor, output_tensor, padding_index, is_weights,
+            fp16_scale_bias, embag_kernel_t::none, use_LOWOHA);
+    status_t ref_status = embedding_kernel_test(table_tensor, indices_tensor,
+            weights_tensor, output_tensor_ref, padding_index, is_weights,
+            fp16_scale_bias, embag_kernel_t::reference, use_LOWOHA);
+    bool is_test_successful
+            = (status == status_t::success && ref_status == status_t::success);
 
-  if (is_test_successful) {
-    compare_tensor_2D(output_tensor, output_tensor_ref, num_indices, embedding_dim,
-                      EMBAG_INT4_TOL, is_test_successful);
-  }
-  //free this table pointer after use
-  free(table_tensor.get_raw_handle_unsafe());
-  table_tensor.reset();
-  EXPECT_TRUE(is_test_successful);
+    if (is_test_successful) {
+        compare_tensor_2D(output_tensor, output_tensor_ref, num_indices,
+                embedding_dim, EMBAG_INT4_TOL, is_test_successful);
+    }
+    //free this table pointer after use
+    free(table_tensor.get_raw_handle_unsafe());
+    table_tensor.reset();
+    EXPECT_TRUE(is_test_successful);
 }
 
 /** @fn TEST_P
@@ -632,42 +686,46 @@ TEST_P(TestEmbedding, U4_BF16) {
  *  @brief Test to validate embedding U4 input F16 output kernel support wrt Reference kernel
  */
 TEST_P(TestEmbedding, U4_F16) {
-  auto table_tensor      = tensor_factory.quantized_embedding_tensor_random({num_embeddings, embedding_dim},
-                           data_type_t::u4, "table", fp16_scale_bias);
-  auto indices_tensor    = tensor_factory.random_indices_tensor({num_indices},
-                           num_embeddings, indices_dtype);
-  auto weights_tensor    = is_weights ? tensor_factory.uniform_dist_tensor({num_indices},
-                           data_type_t::f32, 2.0f) : tensor_t();
-  auto output_tensor     = tensor_factory.zero_tensor({num_indices, embedding_dim},
-                           data_type_t::f16, tensor_t(), tensor_t(), strided);
-  auto output_tensor_ref = tensor_factory.zero_tensor({num_indices, embedding_dim},
-                           data_type_t::f16, tensor_t(), tensor_t(), strided);
+    auto table_tensor = tensor_factory.quantized_embedding_tensor_random(
+            {num_embeddings, embedding_dim}, data_type_t::u4, "table",
+            fp16_scale_bias);
+    auto indices_tensor = tensor_factory.random_indices_tensor(
+            {num_indices}, num_embeddings, indices_dtype);
+    auto weights_tensor = is_weights
+            ? tensor_factory.uniform_dist_tensor(
+                      {num_indices}, data_type_t::f32, 2.0f)
+            : tensor_t();
+    auto output_tensor
+            = tensor_factory.zero_tensor({num_indices, embedding_dim},
+                    data_type_t::f16, tensor_t(), tensor_t(), strided);
+    auto output_tensor_ref
+            = tensor_factory.zero_tensor({num_indices, embedding_dim},
+                    data_type_t::f16, tensor_t(), tensor_t(), strided);
 
-  status_t status         = embedding_kernel_test(table_tensor, indices_tensor,
-                            weights_tensor, output_tensor, padding_index, is_weights,
-                            fp16_scale_bias, embag_kernel_t::none, use_LOWOHA);
-  if (status == status_t::isa_unsupported) {
-    GTEST_SKIP() << "F16 not supported: requires F16-capable ISA";
-  }
-  status_t ref_status     = embedding_kernel_test(table_tensor,
-                            indices_tensor, weights_tensor, output_tensor_ref,
-                            padding_index, is_weights, fp16_scale_bias, embag_kernel_t::reference,
-                            use_LOWOHA);
-  bool is_test_successful =
-    (status == status_t::success && ref_status == status_t::success);
+    status_t status = embedding_kernel_test(table_tensor, indices_tensor,
+            weights_tensor, output_tensor, padding_index, is_weights,
+            fp16_scale_bias, embag_kernel_t::none, use_LOWOHA);
+    if (status == status_t::isa_unsupported) {
+        GTEST_SKIP() << "F16 not supported: requires F16-capable ISA";
+    }
+    status_t ref_status = embedding_kernel_test(table_tensor, indices_tensor,
+            weights_tensor, output_tensor_ref, padding_index, is_weights,
+            fp16_scale_bias, embag_kernel_t::reference, use_LOWOHA);
+    bool is_test_successful
+            = (status == status_t::success && ref_status == status_t::success);
 
-  if (is_test_successful) {
-    compare_tensor_2D(output_tensor, output_tensor_ref, num_indices, embedding_dim,
-                      EMBAG_INT4_TOL, is_test_successful);
-  }
-  //free this table pointer after use
-  free(table_tensor.get_raw_handle_unsafe());
-  table_tensor.reset();
-  EXPECT_TRUE(is_test_successful);
+    if (is_test_successful) {
+        compare_tensor_2D(output_tensor, output_tensor_ref, num_indices,
+                embedding_dim, EMBAG_INT4_TOL, is_test_successful);
+    }
+    //free this table pointer after use
+    free(table_tensor.get_raw_handle_unsafe());
+    table_tensor.reset();
+    EXPECT_TRUE(is_test_successful);
 }
 
 /** @fn INSTANTIATE_TEST_SUITE_P
  *  @brief Triggers Embedding parameterized test suite
  */
-INSTANTIATE_TEST_SUITE_P(Embedding, TestEmbedding,
-                         ::testing::ValuesIn(embedding_test));
+INSTANTIATE_TEST_SUITE_P(
+        Embedding, TestEmbedding, ::testing::ValuesIn(embedding_test));

@@ -1,0 +1,20 @@
+# ******************************************************************************
+# Copyright (c) 2026 Advanced Micro Devices, Inc.
+# All rights reserved.
+# ******************************************************************************
+# Files and directories excluded from clang-format checks.
+# Syntax follows .gitignore-style glob patterns.
+
+# Build output
+build/
+
+# Third-party / vendored dependencies
+dependencies/
+
+# Generated documentation
+docs/html/
+docs/latex/
+
+# Third-party subtrees (defensive, in case of untracked files)
+**/third_party/
+**/external/

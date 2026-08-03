@@ -35,8 +35,8 @@ namespace lowoha {
  * @param current_max  Value previously captured via thread_guard::max_threads()
  * @return current_max when requested == 0, otherwise requested
  */
-inline int32_t resolve_num_threads(int32_t requested,
-                                   int32_t current_max) noexcept {
+inline int32_t resolve_num_threads(
+        int32_t requested, int32_t current_max) noexcept {
     return (requested == 0) ? current_max : requested;
 }
 
@@ -102,10 +102,8 @@ public:
      *                     the per-task ICV inside a parallel region.
      */
     thread_guard(int32_t desired, int32_t current_max) noexcept
-        : old_(current_max)
-        , modified_(desired != current_max) {
-        if (modified_)
-            omp_set_num_threads(desired);
+        : old_(current_max), modified_(desired != current_max) {
+        if (modified_) omp_set_num_threads(desired);
     }
 
     /**
@@ -117,16 +115,15 @@ public:
         : thread_guard(desired, omp_get_max_threads()) {}
 
     ~thread_guard() noexcept {
-        if (modified_)
-            omp_set_num_threads(old_);
+        if (modified_) omp_set_num_threads(old_);
     }
 
-    thread_guard(const thread_guard&) = delete;
-    thread_guard& operator=(const thread_guard&) = delete;
+    thread_guard(const thread_guard &) = delete;
+    thread_guard &operator=(const thread_guard &) = delete;
 
 private:
     const int32_t old_;
-    const bool    modified_;
+    const bool modified_;
 };
 
 /**
@@ -157,23 +154,20 @@ public:
      * @param desired  Desired maximum number of active nested parallel regions
      */
     explicit scoped_active_levels(int32_t desired) noexcept
-        : old_(omp_get_max_active_levels())
-        , modified_(desired != old_) {
-        if (modified_)
-            omp_set_max_active_levels(desired);
+        : old_(omp_get_max_active_levels()), modified_(desired != old_) {
+        if (modified_) omp_set_max_active_levels(desired);
     }
 
     ~scoped_active_levels() noexcept {
-        if (modified_)
-            omp_set_max_active_levels(old_);
+        if (modified_) omp_set_max_active_levels(old_);
     }
 
-    scoped_active_levels(const scoped_active_levels&) = delete;
-    scoped_active_levels& operator=(const scoped_active_levels&) = delete;
+    scoped_active_levels(const scoped_active_levels &) = delete;
+    scoped_active_levels &operator=(const scoped_active_levels &) = delete;
 
 private:
     const int32_t old_;
-    const bool    modified_;
+    const bool modified_;
 };
 
 } // namespace lowoha

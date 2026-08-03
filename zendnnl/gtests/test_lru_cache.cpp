@@ -48,25 +48,25 @@ namespace {
 
 // A populated key reads back as a hit with the stored value.
 TEST(LruCacheTryGet, HitReturnsTrueAndValue) {
-  lru_cache_t<int, int> cache(8);
-  cache.add(42, 100);
+    lru_cache_t<int, int> cache(8);
+    cache.add(42, 100);
 
-  int out = -1;
-  EXPECT_TRUE(cache.try_get(42, out));
-  EXPECT_EQ(out, 100);
+    int out = -1;
+    EXPECT_TRUE(cache.try_get(42, out));
+    EXPECT_EQ(out, 100);
 }
 
 // A missing key reports false and must leave the out-parameter untouched —
 // the ggml / oneDNN / AOCL miss paths rely on the out-param being undisturbed
 // so their fall-through compute/reorder logic runs against a known value.
 TEST(LruCacheTryGet, MissReturnsFalseAndLeavesOutUntouched) {
-  lru_cache_t<int, int> cache(8);
-  cache.add(1, 10);
+    lru_cache_t<int, int> cache(8);
+    cache.add(1, 10);
 
-  constexpr int kSentinel = 0x5A5A;
-  int out = kSentinel;
-  EXPECT_FALSE(cache.try_get(999, out));
-  EXPECT_EQ(out, kSentinel);
+    constexpr int kSentinel = 0x5A5A;
+    int out = kSentinel;
+    EXPECT_FALSE(cache.try_get(999, out));
+    EXPECT_EQ(out, kSentinel);
 }
 
 // The critical case: a key whose stored value is nullptr is a HIT, not a miss.
@@ -74,101 +74,100 @@ TEST(LruCacheTryGet, MissReturnsFalseAndLeavesOutUntouched) {
 // done, reuse the user buffer"). A naive "return null on miss" design would
 // be indistinguishable here; the bool/out split makes it unambiguous.
 TEST(LruCacheTryGet, NullptrValueIsHitNotMiss) {
-  lru_cache_t<int, void *> cache(8);
-  cache.add(7, nullptr);
+    lru_cache_t<int, void *> cache(8);
+    cache.add(7, nullptr);
 
-  int sentinel = 0;
-  void *out = &sentinel;                // non-null sentinel
-  EXPECT_TRUE(cache.try_get(7, out));   // present...
-  EXPECT_EQ(out, nullptr);              // ...and the value is nullptr
-  // evict() skips std::free on nullptr, so destruction here is safe.
+    int sentinel = 0;
+    void *out = &sentinel; // non-null sentinel
+    EXPECT_TRUE(cache.try_get(7, out)); // present...
+    EXPECT_EQ(out, nullptr); // ...and the value is nullptr
+    // evict() skips std::free on nullptr, so destruction here is safe.
 }
 
 // try_get() must bump the LRU timestamp exactly like get() did, so a bumped
 // entry survives eviction while the un-bumped one is evicted.
 TEST(LruCacheTryGet, BumpsRecencyLikeGet) {
-  lru_cache_t<int, int> cache(2);
-  cache.add(1, 10);
-  cache.add(2, 20);
+    lru_cache_t<int, int> cache(2);
+    cache.add(1, 10);
+    cache.add(2, 20);
 
-  int out = -1;
-  ASSERT_TRUE(cache.try_get(1, out));  // bump key 1 -> key 2 is now LRU
+    int out = -1;
+    ASSERT_TRUE(cache.try_get(1, out)); // bump key 1 -> key 2 is now LRU
 
-  cache.add(3, 30);                    // capacity 2 -> evict the LRU (key 2)
+    cache.add(3, 30); // capacity 2 -> evict the LRU (key 2)
 
-  EXPECT_TRUE(cache.find_key(1));
-  EXPECT_FALSE(cache.find_key(2));
-  EXPECT_TRUE(cache.find_key(3));
+    EXPECT_TRUE(cache.find_key(1));
+    EXPECT_FALSE(cache.find_key(2));
+    EXPECT_TRUE(cache.find_key(3));
 }
 
 // For a populated key, try_get() is behaviorally equivalent to the old
 // find_key()+get() pair: presence agrees and the returned value agrees.
 TEST(LruCacheTryGet, EquivalentToFindKeyPlusGet) {
-  lru_cache_t<int, int> cache(8);
-  cache.add(5, 55);
+    lru_cache_t<int, int> cache(8);
+    cache.add(5, 55);
 
-  ASSERT_TRUE(cache.find_key(5));
-  EXPECT_EQ(cache.get(5), 55);
+    ASSERT_TRUE(cache.find_key(5));
+    EXPECT_EQ(cache.get(5), 55);
 
-  int out = -1;
-  EXPECT_TRUE(cache.try_get(5, out));
-  EXPECT_EQ(out, 55);
+    int out = -1;
+    EXPECT_TRUE(cache.try_get(5, out));
+    EXPECT_EQ(out, 55);
 }
 
 // An evicted key must read back as a miss through try_get() itself (not only
 // via find_key) — this is exactly the "entry gone -> recompute/reorder" path
 // the weight/pack caches rely on after eviction under capacity pressure.
 TEST(LruCacheTryGet, EvictedKeyMissesViaTryGet) {
-  lru_cache_t<int, int> cache(1);
-  cache.add(1, 10);
-  cache.add(2, 20);  // capacity 1 -> key 1 is evicted
+    lru_cache_t<int, int> cache(1);
+    cache.add(1, 10);
+    cache.add(2, 20); // capacity 1 -> key 1 is evicted
 
-  int out = -1;
-  EXPECT_FALSE(cache.try_get(1, out));  // evicted -> miss
-  EXPECT_EQ(out, -1);                   // out untouched on miss
+    int out = -1;
+    EXPECT_FALSE(cache.try_get(1, out)); // evicted -> miss
+    EXPECT_EQ(out, -1); // out untouched on miss
 
-  out = -1;
-  EXPECT_TRUE(cache.try_get(2, out));   // survivor still present
-  EXPECT_EQ(out, 20);
+    out = -1;
+    EXPECT_TRUE(cache.try_get(2, out)); // survivor still present
+    EXPECT_EQ(out, 20);
 }
 
 // try_get() on a never-populated cache is a clean miss.
 TEST(LruCacheTryGet, EmptyCacheMisses) {
-  lru_cache_t<int, int> cache(8);
+    lru_cache_t<int, int> cache(8);
 
-  int out = 123;
-  EXPECT_FALSE(cache.try_get(0, out));
-  EXPECT_EQ(out, 123);
-  EXPECT_EQ(cache.get_size(), 0);
+    int out = 123;
+    EXPECT_FALSE(cache.try_get(0, out));
+    EXPECT_EQ(out, 123);
+    EXPECT_EQ(cache.get_size(), 0);
 }
 
 // Fidelity: exercise try_get() with the real production key type Key_matmul
 // (custom std::hash + operator==) rather than a trivial int key, so the
 // container's hashing/equality path is covered the way every call site uses it.
 TEST(LruCacheTryGet, WorksWithKeyMatmul) {
-  lru_cache_t<Key_matmul, int> cache(8);
+    lru_cache_t<Key_matmul, int> cache(8);
 
-  int weight_a = 0;
-  int weight_b = 0;
-  const Key_matmul key_a(/*TransB=*/false, /*K=*/64, /*N=*/128, /*ldb=*/64,
-                         &weight_a,
-                         static_cast<uint32_t>(matmul_algo_t::aocl_dlp_blocked));
-  const Key_matmul key_b(/*TransB=*/false, /*K=*/64, /*N=*/128, /*ldb=*/64,
-                         &weight_b,
-                         static_cast<uint32_t>(matmul_algo_t::aocl_dlp_blocked));
+    int weight_a = 0;
+    int weight_b = 0;
+    const Key_matmul key_a(/*TransB=*/false, /*K=*/64, /*N=*/128, /*ldb=*/64,
+            &weight_a, static_cast<uint32_t>(matmul_algo_t::aocl_dlp_blocked));
+    const Key_matmul key_b(/*TransB=*/false, /*K=*/64, /*N=*/128, /*ldb=*/64,
+            &weight_b, static_cast<uint32_t>(matmul_algo_t::aocl_dlp_blocked));
 
-  cache.add(key_a, 7);
+    cache.add(key_a, 7);
 
-  int out = -1;
-  EXPECT_TRUE(cache.try_get(key_a, out));  // present
-  EXPECT_EQ(out, 7);
+    int out = -1;
+    EXPECT_TRUE(cache.try_get(key_a, out)); // present
+    EXPECT_EQ(out, 7);
 
-  out = -1;
-  EXPECT_FALSE(cache.try_get(key_b, out));  // distinct weight ptr -> distinct key
-  EXPECT_EQ(out, -1);
+    out = -1;
+    EXPECT_FALSE(
+            cache.try_get(key_b, out)); // distinct weight ptr -> distinct key
+    EXPECT_EQ(out, -1);
 }
 
-}  // namespace
-}  // namespace matmul
-}  // namespace lowoha
-}  // namespace zendnnl
+} // namespace
+} // namespace matmul
+} // namespace lowoha
+} // namespace zendnnl

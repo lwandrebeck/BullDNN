@@ -17,9 +17,9 @@
 #ifndef REORDER_QUANTIZATION_HPP
 #define REORDER_QUANTIZATION_HPP
 
-#include "lowoha_operators/matmul/lowoha_matmul_utils.hpp"
 #include <cstdlib>
 #include <vector>
+#include "lowoha_operators/matmul/lowoha_matmul_utils.hpp"
 
 namespace zendnnl {
 namespace lowoha {
@@ -30,59 +30,62 @@ namespace matmul {
  *        Automatically frees on scope exit; non-copyable, move-only.
  */
 struct reorder_quant_buffers_t {
-  uint8_t *src_buf   = nullptr;
-  uint8_t *scale_buf = nullptr;
-  uint8_t *zp_buf    = nullptr;
+    uint8_t *src_buf = nullptr;
+    uint8_t *scale_buf = nullptr;
+    uint8_t *zp_buf = nullptr;
 
-  reorder_quant_buffers_t() = default;
-  ~reorder_quant_buffers_t() {
-    free(src_buf);
-    free(scale_buf);
-    free(zp_buf);
-  }
-
-  reorder_quant_buffers_t(const reorder_quant_buffers_t &) = delete;
-  reorder_quant_buffers_t &operator=(const reorder_quant_buffers_t &) = delete;
-  reorder_quant_buffers_t(reorder_quant_buffers_t &&o) noexcept
-    : src_buf(o.src_buf), scale_buf(o.scale_buf), zp_buf(o.zp_buf) {
-    o.src_buf = o.scale_buf = o.zp_buf = nullptr;
-  }
-  reorder_quant_buffers_t &operator=(reorder_quant_buffers_t &&o) noexcept {
-    if (this != &o) {
-      free(src_buf);
-      free(scale_buf);
-      free(zp_buf);
-      src_buf = o.src_buf;
-      scale_buf = o.scale_buf;
-      zp_buf = o.zp_buf;
-      o.src_buf = o.scale_buf = o.zp_buf = nullptr;
+    reorder_quant_buffers_t() = default;
+    ~reorder_quant_buffers_t() {
+        free(src_buf);
+        free(scale_buf);
+        free(zp_buf);
     }
-    return *this;
-  }
+
+    reorder_quant_buffers_t(const reorder_quant_buffers_t &) = delete;
+    reorder_quant_buffers_t &operator=(const reorder_quant_buffers_t &)
+            = delete;
+    reorder_quant_buffers_t(reorder_quant_buffers_t &&o) noexcept
+        : src_buf(o.src_buf), scale_buf(o.scale_buf), zp_buf(o.zp_buf) {
+        o.src_buf = o.scale_buf = o.zp_buf = nullptr;
+    }
+    reorder_quant_buffers_t &operator=(reorder_quant_buffers_t &&o) noexcept {
+        if (this != &o) {
+            free(src_buf);
+            free(scale_buf);
+            free(zp_buf);
+            src_buf = o.src_buf;
+            scale_buf = o.scale_buf;
+            zp_buf = o.zp_buf;
+            o.src_buf = o.scale_buf = o.zp_buf = nullptr;
+        }
+        return *this;
+    }
 };
 
 struct group_reorder_quant_buffers_t {
-  // Per-expert NON-OWNING views into the arenas below (grouped path), or
-  // unused (the per-expert fallback path owns its memory via fallback_buf).
-  std::vector<uint8_t *> src_buf;
-  std::vector<uint8_t *> scale_buf;
-  std::vector<reorder_quant_buffers_t> fallback_buf;
-  // Single backing allocations for the grouped path: one malloc for all
-  // experts' s8 dst rows, one for the scale rows the caller did not
-  // pre-allocate — instead of two mallocs PER expert.  `src_buf` /
-  // `scale_buf` index into these and must not be freed individually.
-  uint8_t *src_arena   = nullptr;
-  uint8_t *scale_arena = nullptr;
+    // Per-expert NON-OWNING views into the arenas below (grouped path), or
+    // unused (the per-expert fallback path owns its memory via fallback_buf).
+    std::vector<uint8_t *> src_buf;
+    std::vector<uint8_t *> scale_buf;
+    std::vector<reorder_quant_buffers_t> fallback_buf;
+    // Single backing allocations for the grouped path: one malloc for all
+    // experts' s8 dst rows, one for the scale rows the caller did not
+    // pre-allocate — instead of two mallocs PER expert.  `src_buf` /
+    // `scale_buf` index into these and must not be freed individually.
+    uint8_t *src_arena = nullptr;
+    uint8_t *scale_arena = nullptr;
 
-  group_reorder_quant_buffers_t() = default;
-  ~group_reorder_quant_buffers_t() {
-    free(src_arena);
-    free(scale_arena);
-  }
+    group_reorder_quant_buffers_t() = default;
+    ~group_reorder_quant_buffers_t() {
+        free(src_arena);
+        free(scale_arena);
+    }
 
-  group_reorder_quant_buffers_t(const group_reorder_quant_buffers_t &) = delete;
-  group_reorder_quant_buffers_t &operator=(
-    const group_reorder_quant_buffers_t &) = delete;
+    group_reorder_quant_buffers_t(const group_reorder_quant_buffers_t &)
+            = delete;
+    group_reorder_quant_buffers_t &operator=(
+            const group_reorder_quant_buffers_t &)
+            = delete;
 };
 
 /**
@@ -121,11 +124,10 @@ struct group_reorder_quant_buffers_t {
  *                            or reorder failed gracefully
  * @return status_t::failure  Validation failed — caller should propagate
  */
-status_t reorder_quantization_wrapper(
-  const void *&src, const int lda, int &reordered_lda, size_t &src_type_size,
-  matmul_params &params, matmul_batch_params_t &batch_params,
-  const bool transA, const int M, const int K, const int num_threads,
-  reorder_quant_buffers_t &buffers);
+status_t reorder_quantization_wrapper(const void *&src, const int lda,
+        int &reordered_lda, size_t &src_type_size, matmul_params &params,
+        matmul_batch_params_t &batch_params, const bool transA, const int M,
+        const int K, const int num_threads, reorder_quant_buffers_t &buffers);
 
 /**
  * @brief Grouped dynamic-quant pre-pass for MoE / group matmul sources.
@@ -136,29 +138,21 @@ status_t reorder_quantization_wrapper(
  * modified at the API boundary.
  */
 status_t group_reorder_quantization_wrapper(
-  const std::vector<const void *> &src,
-  const std::vector<int> &lda,
-  const std::vector<bool> &transA,
-  const std::vector<int> &M,
-  const std::vector<int> &K,
-  const int num_threads,
-  std::vector<matmul_params> &params,
-  std::vector<const void *> &quantized_src,
-  std::vector<int> &quantized_lda,
-  group_reorder_quant_buffers_t &buffers,
-  bool &quantized);
+        const std::vector<const void *> &src, const std::vector<int> &lda,
+        const std::vector<bool> &transA, const std::vector<int> &M,
+        const std::vector<int> &K, const int num_threads,
+        std::vector<matmul_params> &params,
+        std::vector<const void *> &quantized_src,
+        std::vector<int> &quantized_lda, group_reorder_quant_buffers_t &buffers,
+        bool &quantized);
 
 inline bool group_reorder_quantization_required(
-  const std::vector<matmul_params> &params, size_t num_ops) {
-  if (params.size() < num_ops) {
-    return false;
-  }
-  for (size_t i = 0; i < num_ops; ++i) {
-    if (is_dynamic_quant_config(params[i])) {
-      return true;
+        const std::vector<matmul_params> &params, size_t num_ops) {
+    if (params.size() < num_ops) { return false; }
+    for (size_t i = 0; i < num_ops; ++i) {
+        if (is_dynamic_quant_config(params[i])) { return true; }
     }
-  }
-  return false;
+    return false;
 }
 
 } // namespace matmul

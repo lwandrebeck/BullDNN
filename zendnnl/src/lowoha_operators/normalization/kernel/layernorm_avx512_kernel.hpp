@@ -42,13 +42,8 @@ namespace normalization {
 //
 // @return status_t::success on successful execution
 // ---------------------------------------------------------------------------
-status_t layer_norm_avx512(
-  const void *input,
-  void       *output,
-  const void *gamma,
-  const void *beta,
-  norm_params &params
-);
+status_t layer_norm_avx512(const void *input, void *output, const void *gamma,
+        const void *beta, norm_params &params);
 
 } // namespace normalization
 } // namespace lowoha

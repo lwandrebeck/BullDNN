@@ -22,9 +22,9 @@
 // keeping NP=5,6 in the main CU would add ~1.2KB to the instruction
 // footprint, evicting frequently-used NP=4 code.
 
+#include <algorithm>
 #include <cstdint>
 #include <cstring>
-#include <algorithm>
 #include <immintrin.h>
 #include "lowoha_operators/matmul/matmul_native/brgemm/kernel/bf16/bf16_gemv_bkc.hpp"
 #include "lowoha_operators/matmul/matmul_native/common/avx512_math.hpp"
@@ -35,18 +35,14 @@ namespace lowoha {
 namespace matmul {
 namespace native {
 
-template<int NP>
-__attribute__((noinline, target("avx512f,avx512bf16,avx512bw,avx512vl,fma")))
-static void bf16_gemv_bkc_wide_core(
-    const uint16_t *__restrict__ A,
-    const uint16_t *__restrict__ B_bkc,
-    uint16_t *__restrict__ C_bf16,
-    float *__restrict__ C_fp32,
-    const float *__restrict__ bias_f,
-    fused_postop_t fused_op,
-    float alpha, float beta,
-    bool dst_is_bf16,
-    int k_pairs, int n_stride, int K, int N, int jc) {
+template <int NP>
+__attribute__((noinline,
+        target("avx512f,avx512bf16,avx512bw,avx512vl,fma"))) static void
+bf16_gemv_bkc_wide_core(const uint16_t *__restrict__ A,
+        const uint16_t *__restrict__ B_bkc, uint16_t *__restrict__ C_bf16,
+        float *__restrict__ C_fp32, const float *__restrict__ bias_f,
+        fused_postop_t fused_op, float alpha, float beta, bool dst_is_bf16,
+        int k_pairs, int n_stride, int K, int N, int jc) {
 
     constexpr int NV = 4;
     constexpr int NR = 64;
@@ -66,23 +62,21 @@ static void bf16_gemv_bkc_wide_core(
             const uint16_t *bpp = bp + p * NR * VNNI_PAIR;
             for (int v = 0; v < NV; ++v) {
                 __m512bh bv = (__m512bh)_mm512_loadu_si512(
-                    bpp + v * 16 * VNNI_PAIR);
-                acc[p * NV + v] = _mm512_dpbf16_ps(
-                    acc[p * NV + v], av, bv);
+                        bpp + v * 16 * VNNI_PAIR);
+                acc[p * NV + v] = _mm512_dpbf16_ps(acc[p * NV + v], av, bv);
             }
         }
     }
     if (K & 1) {
         __m512bh av = (__m512bh)_mm512_set1_epi32(
-            static_cast<int32_t>(static_cast<uint32_t>(A[K - 1])));
+                static_cast<int32_t>(static_cast<uint32_t>(A[K - 1])));
         const uint16_t *bp = B_bkc + k_pairs_even * n_stride;
         for (int p = 0; p < NP; ++p) {
             const uint16_t *bpp = bp + p * NR * VNNI_PAIR;
             for (int v = 0; v < NV; ++v) {
                 __m512bh bv = (__m512bh)_mm512_loadu_si512(
-                    bpp + v * 16 * VNNI_PAIR);
-                acc[p * NV + v] = _mm512_dpbf16_ps(
-                    acc[p * NV + v], av, bv);
+                        bpp + v * 16 * VNNI_PAIR);
+                acc[p * NV + v] = _mm512_dpbf16_ps(acc[p * NV + v], av, bv);
             }
         }
     }
@@ -91,24 +85,27 @@ static void bf16_gemv_bkc_wide_core(
         const int n_off = jc + i * 16;
         if (n_off >= N) break;
         const int elems = std::min(16, N - n_off);
-        const __mmask16 mask = (elems == 16) ? __mmask16(0xFFFF)
-            : static_cast<__mmask16>((1u << elems) - 1);
+        const __mmask16 mask = (elems == 16)
+                ? __mmask16(0xFFFF)
+                : static_cast<__mmask16>((1u << elems) - 1);
 
         __m512 val = (alpha != 1.0f)
-            ? _mm512_mul_ps(acc[i], _mm512_set1_ps(alpha)) : acc[i];
+                ? _mm512_mul_ps(acc[i], _mm512_set1_ps(alpha))
+                : acc[i];
 
         if (beta != 0.0f) {
             __m512 c_old;
             if (dst_is_bf16 && C_bf16) {
                 __m256i raw = (elems == 16)
-                    ? _mm256_loadu_si256(reinterpret_cast<const __m256i *>(C_bf16 + n_off))
-                    : _mm256_maskz_loadu_epi16(mask, C_bf16 + n_off);
-                c_old = _mm512_castsi512_ps(_mm512_slli_epi32(
-                    _mm512_cvtepu16_epi32(raw), 16));
+                        ? _mm256_loadu_si256(reinterpret_cast<const __m256i *>(
+                                  C_bf16 + n_off))
+                        : _mm256_maskz_loadu_epi16(mask, C_bf16 + n_off);
+                c_old = _mm512_castsi512_ps(
+                        _mm512_slli_epi32(_mm512_cvtepu16_epi32(raw), 16));
             } else if (C_fp32) {
                 c_old = (elems == 16)
-                    ? _mm512_loadu_ps(C_fp32 + n_off)
-                    : _mm512_maskz_loadu_ps(mask, C_fp32 + n_off);
+                        ? _mm512_loadu_ps(C_fp32 + n_off)
+                        : _mm512_maskz_loadu_ps(mask, C_fp32 + n_off);
             } else {
                 c_old = _mm512_setzero_ps();
             }
@@ -116,9 +113,10 @@ static void bf16_gemv_bkc_wide_core(
         }
 
         if (bias_f)
-            val = _mm512_add_ps(val, (elems == 16)
-                ? _mm512_loadu_ps(bias_f + n_off)
-                : _mm512_maskz_loadu_ps(mask, bias_f + n_off));
+            val = _mm512_add_ps(val,
+                    (elems == 16)
+                            ? _mm512_loadu_ps(bias_f + n_off)
+                            : _mm512_maskz_loadu_ps(mask, bias_f + n_off));
 
         if (fused_op != fused_postop_t::none)
             val = apply_fused_postop(val, fused_op);
@@ -126,8 +124,8 @@ static void bf16_gemv_bkc_wide_core(
         if (dst_is_bf16) {
             __m256bh bf = _mm512_cvtneps_pbh(val);
             if (elems == 16)
-                _mm256_storeu_si256(
-                    reinterpret_cast<__m256i *>(C_bf16 + n_off), (__m256i)bf);
+                _mm256_storeu_si256(reinterpret_cast<__m256i *>(C_bf16 + n_off),
+                        (__m256i)bf);
             else
                 _mm256_mask_storeu_epi16(C_bf16 + n_off, mask, (__m256i)bf);
         } else {
@@ -139,34 +137,27 @@ static void bf16_gemv_bkc_wide_core(
     }
 }
 
-void bf16_gemv_bkc_wide_dispatch(
-    const uint16_t *__restrict__ A,
-    const uint16_t *__restrict__ B_bkc,
-    uint16_t *__restrict__ C_bf16,
-    float *__restrict__ C_fp32,
-    const float *__restrict__ bias_f,
-    fused_postop_t fused_op,
-    float alpha, float beta,
-    bool dst_is_bf16,
-    int k_pairs, int n_stride, int K, int N,
-    int jc, int nb) {
+void bf16_gemv_bkc_wide_dispatch(const uint16_t *__restrict__ A,
+        const uint16_t *__restrict__ B_bkc, uint16_t *__restrict__ C_bf16,
+        float *__restrict__ C_fp32, const float *__restrict__ bias_f,
+        fused_postop_t fused_op, float alpha, float beta, bool dst_is_bf16,
+        int k_pairs, int n_stride, int K, int N, int jc, int nb) {
 
     constexpr int NR = 64;
     const int np = nb / NR;
 
     switch (np) {
-    case 6:
-        bf16_gemv_bkc_wide_core<6>(
-            A, B_bkc, C_bf16, C_fp32, bias_f, fused_op,
-            alpha, beta, dst_is_bf16, k_pairs, n_stride, K, N, jc);
-        break;
-    case 5:
-        bf16_gemv_bkc_wide_core<5>(
-            A, B_bkc, C_bf16, C_fp32, bias_f, fused_op,
-            alpha, beta, dst_is_bf16, k_pairs, n_stride, K, N, jc);
-        break;
-    default:
-        break;
+        case 6:
+            bf16_gemv_bkc_wide_core<6>(A, B_bkc, C_bf16, C_fp32, bias_f,
+                    fused_op, alpha, beta, dst_is_bf16, k_pairs, n_stride, K, N,
+                    jc);
+            break;
+        case 5:
+            bf16_gemv_bkc_wide_core<5>(A, B_bkc, C_bf16, C_fp32, bias_f,
+                    fused_op, alpha, beta, dst_is_bf16, k_pairs, n_stride, K, N,
+                    jc);
+            break;
+        default: break;
     }
 }
 

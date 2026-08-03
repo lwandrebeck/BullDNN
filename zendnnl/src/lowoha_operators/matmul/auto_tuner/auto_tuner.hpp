@@ -27,8 +27,8 @@
 #include <cstdlib>
 #include <sstream>
 #include <tuple>
-#include <unordered_map>
 #include <vector>
+#include <unordered_map>
 
 namespace zendnnl {
 namespace lowoha {
@@ -91,8 +91,7 @@ const std::vector<matmul_algo_t> &get_algo_candidates();
  * @param candidates The candidate set returned by get_algo_candidates.
  * @return matmul_algo_t The selected algorithm.
  */
-matmul_algo_t get_algo(int index,
-                       const std::vector<matmul_algo_t> &candidates);
+matmul_algo_t get_algo(int index, const std::vector<matmul_algo_t> &candidates);
 
 /**
  * @brief Auto-tunes and executes matrix multiplication using the optimal algorithm
@@ -139,13 +138,12 @@ matmul_algo_t get_algo(int index,
  * @return matmul_algo_t The selected algorithm that was used for execution
  */
 matmul_algo_t auto_compute_matmul_v1(char layout, char transA, char transB,
-                                     int M,
-                                     int N, int K, float alpha, const void *A, int lda, const void *B, int ldb,
-                                     float beta, void *C, int ldc, matmul_data_types &dtypes,
-                                     zendnnl::ops::matmul_algo_t kernel, char mem_format_a, char mem_format_b,
-                                     matmul_params &lowoha_param, matmul_batch_params_t &batch_params,
-                                     const void *bias, bool is_weights_const,
-                                     int num_threads);
+        int M, int N, int K, float alpha, const void *A, int lda, const void *B,
+        int ldb, float beta, void *C, int ldc, matmul_data_types &dtypes,
+        zendnnl::ops::matmul_algo_t kernel, char mem_format_a,
+        char mem_format_b, matmul_params &lowoha_param,
+        matmul_batch_params_t &batch_params, const void *bias,
+        bool is_weights_const, int num_threads);
 
 /**
  * @brief Auto-tunes and executes matrix multiplication using alternative tuning strategy
@@ -196,13 +194,12 @@ matmul_algo_t auto_compute_matmul_v1(char layout, char transA, char transB,
  * @return matmul_algo_t The selected algorithm that was used for execution
  */
 matmul_algo_t auto_compute_matmul_v2(char layout, char transA, char transB,
-                                     int M,
-                                     int N, int K, float alpha, const void *A, int lda, const void *B, int ldb,
-                                     float beta, void *C, int ldc, matmul_data_types &dtypes,
-                                     zendnnl::ops::matmul_algo_t kernel, char mem_format_a, char mem_format_b,
-                                     matmul_params &lowoha_param, matmul_batch_params_t &batch_params,
-                                     const void *bias, bool is_weights_const,
-                                     int num_threads);
+        int M, int N, int K, float alpha, const void *A, int lda, const void *B,
+        int ldb, float beta, void *C, int ldc, matmul_data_types &dtypes,
+        zendnnl::ops::matmul_algo_t kernel, char mem_format_a,
+        char mem_format_b, matmul_params &lowoha_param,
+        matmul_batch_params_t &batch_params, const void *bias,
+        bool is_weights_const, int num_threads);
 } // namespace matmul
 } // namespace lowoha
 } // namespace zendnnl

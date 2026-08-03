@@ -17,9 +17,9 @@
 #ifndef MATMUL_NATIVE_LOOPER_BF16_GEMM_LOOPER_HPP
 #define MATMUL_NATIVE_LOOPER_BF16_GEMM_LOOPER_HPP
 
-#include "lowoha_operators/matmul/matmul_native/common/gemm_descriptor.hpp"
-#include "lowoha_operators/matmul/matmul_native/common/cost_model.hpp"
 #include "lowoha_operators/matmul/lowoha_common.hpp"
+#include "lowoha_operators/matmul/matmul_native/common/cost_model.hpp"
+#include "lowoha_operators/matmul/matmul_native/common/gemm_descriptor.hpp"
 
 namespace zendnnl {
 namespace lowoha {
@@ -33,11 +33,9 @@ namespace native {
 /// Calls: microkernels from kernel/bf16/bf16_gemm_ukernel.
 ///
 /// This is a drop-in replacement for the original bf16_gemm_execute().
-void bf16_gemm_execute(
-    const GemmDescriptor &desc,
-    const UarchParams &uarch,
-    const void *src, const void *weight, void *dst,
-    const void *bias, matmul_params &params);
+void bf16_gemm_execute(const GemmDescriptor &desc, const UarchParams &uarch,
+        const void *src, const void *weight, void *dst, const void *bias,
+        matmul_params &params);
 
 } // namespace native
 } // namespace matmul

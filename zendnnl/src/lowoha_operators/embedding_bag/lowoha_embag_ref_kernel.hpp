@@ -17,8 +17,8 @@
 #ifndef _LOWOHA_EMBAG_REF_KERNEL_HPP_
 #define _LOWOHA_EMBAG_REF_KERNEL_HPP_
 
-#include "lowoha_embag_common.hpp"
 #include "common/zendnnl_global.hpp"
+#include "lowoha_embag_common.hpp"
 #include "operators/embag/embag_config.hpp"
 #include "operators/embag/native_kernels/embag_avx512_int8_int4_utils.hpp"
 
@@ -26,20 +26,12 @@ namespace zendnnl {
 namespace lowoha {
 namespace embag {
 
-status_t embedding_bag_ref_direct(
-  const void *table,
-  const void *indices,
-  const void *offsets,
-  const void *weights,
-  void *dst,
-  embag_params_t params);
+status_t embedding_bag_ref_direct(const void *table, const void *indices,
+        const void *offsets, const void *weights, void *dst,
+        embag_params_t params);
 
-status_t embedding_ref_direct(
-  const void *table,
-  const void *indices,
-  const void *weights,
-  void *dst,
-  embag_params_t params);
+status_t embedding_ref_direct(const void *table, const void *indices,
+        const void *weights, void *dst, embag_params_t params);
 
 } // namespace embag
 } // namespace lowoha

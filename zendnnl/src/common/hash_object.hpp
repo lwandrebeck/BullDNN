@@ -1,5 +1,5 @@
 /********************************************************************************
-# * Copyright (c) 2023-2024 Advanced Micro Devices, Inc. All rights reserved.
+# * Copyright (c) 2023-2026 Advanced Micro Devices, Inc. All rights reserved.
 # *
 # * Licensed under the Apache License, Version 2.0 (the "License");
 # * you may not use this file except in compliance with the License.
@@ -17,8 +17,8 @@
 #define _HASH_OBJECT_HPP_
 
 #include <string>
-#include "zendnnl_global.hpp"
 #include "hash_utils.hpp"
+#include "zendnnl_global.hpp"
 
 namespace zendnnl {
 namespace common {
@@ -39,40 +39,40 @@ using namespace zendnnl::error_handling;
  */
 class hash_object_t {
 public:
-  /** @brief default destructor */
-  virtual ~hash_object_t() = default;
+    /** @brief default destructor */
+    virtual ~hash_object_t() = default;
 
-  /** @brief default copy constructor
+    /** @brief default copy constructor
    *  @param other_ : other hash object
    */
-  hash_object_t(const hash_object_t& other_) = default;
+    hash_object_t(const hash_object_t &other_) = default;
 
-  /** @brief default copy assignment
+    /** @brief default copy assignment
    *  @param other_ : other hash object
    */
-  hash_object_t& operator=(const hash_object_t& other_) = default;
+    hash_object_t &operator=(const hash_object_t &other_) = default;
 
-  /** @brief move constructor
+    /** @brief move constructor
    *  @param other_ : other hash object
    */
-  hash_object_t(hash_object_t&& other_);
+    hash_object_t(hash_object_t &&other_);
 
-  /** @brief move assignment */
-  hash_object_t& operator=(hash_object_t&& other_);
+    /** @brief move assignment */
+    hash_object_t &operator=(hash_object_t &&other_);
 
-  /** @brief Compare hash objects for equality
+    /** @brief Compare hash objects for equality
    *
    * Two hash objects are considered equal if their hash is nonzero and equal.
    */
-  bool operator==(const hash_object_t& other_) const;
+    bool operator==(const hash_object_t &other_) const;
 
-  /** @brief Compare hash objects for equality
+    /** @brief Compare hash objects for equality
    *
    * Two hash objects are considered equal if their hash is nonzero and equal.
    */
-  bool operator!=(const hash_object_t& other_) const;
+    bool operator!=(const hash_object_t &other_) const;
 
-  /** @brief Set the last status of a hashable object.
+    /** @brief Set the last status of a hashable object.
    *
    * Many hashable objects like tensor_t and operator_t are created by chaining
    * creation apis. In such cases, last status being status_t::success denotes
@@ -85,55 +85,56 @@ public:
    *
    * @param status_ : object status to set.
    */
-  void                  set_last_status(status_t status_);
+    void set_last_status(status_t status_);
 
-  /** @brief Reset the object
+    /** @brief Reset the object
    *
    * Resets the object to make hash_key = 0, and status = status_t::bad_hash_object.
    */
-  void                  reset();
+    void reset();
 
-  /** @brief Get the hash.
+    /** @brief Get the hash.
    * @return hash of the object.
    */
-  std::size_t           get_hash() const;
+    std::size_t get_hash() const;
 
-  /** @brief Get the last status.
+    /** @brief Get the last status.
    * @sa set_last_status().
    * @return last status of the object.
    */
-  status_t              get_last_status() const;
+    status_t get_last_status() const;
 
-  /** @brief Check the last status.
+    /** @brief Check the last status.
    * @sa set_last_status()
    * @return True if the last status is status_t::success, else false.
    */
-  bool                  check() const;
+    bool check() const;
 
-  /** @brief Compute hash of the object.
+    /** @brief Compute hash of the object.
    *
    * Hash computation uses parameters and members of an object that make it unique.
    *
    * This is a pure virtual function and makes the class a pure virtual class.
    * @return computed hash of the object.
    */
-  virtual std::size_t   hash() = 0;
+    virtual std::size_t hash() = 0;
 
 protected:
-  /** @brief Default constructor.
+    /** @brief Default constructor.
    *
    * Though this class is made pure virtual class by hash(), ZenDNNL follows the convension
    * of making constructors protected (or private), where a class need to serve as a
    * virtual base class, and no object of the class should be created.
    */
-  hash_object_t();
+    hash_object_t();
 
-  std::size_t   hash_key; /*!< Hash of the object. If hash is not generated its default
+    std::size_t
+            hash_key; /*!< Hash of the object. If hash is not generated its default
                             value is zero. */
-  status_t      status; /*!< Last status of the object. */
+    status_t status; /*!< Last status of the object. */
 };
 
-} //common
-} //zendnnl
+} // namespace common
+} // namespace zendnnl
 
 #endif

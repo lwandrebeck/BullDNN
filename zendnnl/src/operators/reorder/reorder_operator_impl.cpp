@@ -23,215 +23,214 @@ namespace zendnnl {
 namespace ops {
 
 status_t reorder_impl_t::validate() {
-  if (parent_type::validate() != status_t::success) {
-    return status_t::failure;
-  }
-
-  auto input        = get_input("reorder_input");
-  auto output       = get_output("reorder_output");
-
-  if (!input || !output) {
-    apilog_error("Invalid input or output tensor.");
-    return status_t::failure;
-  }
-
-  // The AOCL reorder is a pure layout transformation (contiguous <-> blocked).
-  // It does not perform any data-type conversion: the kernel selects the
-  // element type from the input dtype only and copies element-wise into the
-  // output buffer. A dtype mismatch would therefore either reinterpret bits
-  // (same-size types) or overrun the output buffer (different-size types).
-  // Any dtype change must go through the LOWOHA reorder path instead.
-  if (input->get_data_type() != output->get_data_type()) {
-    apilog_error("Reorder requires input and output to have the same data type "
-                 "(input=", dtype_info(input->get_data_type()),
-                 ", output=", dtype_info(output->get_data_type()),
-                 "). Use LOWOHA reorder for data-type conversion.");
-    return status_t::failure;
-  }
-
-  if (input->get_data_type() == data_type_t::f16 ||
-      output->get_data_type() == data_type_t::f16) {
-    // F16 requires AVX512-FP16 ISA support
-    if (!platform_info.get_avx512_f16_status()) {
-      apilog_error("F16 data type is not supported on this platform "
-                   "(requires AVX512-FP16 ISA).");
-      reorder_status = status_t::isa_unsupported;
-      return reorder_status;
-    }
-  }
-
-  auto input_size  = input->get_size();
-  auto output_size = output->get_size();
-
-  bool memory_reorder         = ((!(input->get_layout() | uint16_t(
-                                      tensor_layout_t::contiguous)) ||
-                                  (input->get_layout() & uint16_t(tensor_layout_t::aligned))) &&
-                                 (output->get_layout() & uint16_t(tensor_layout_t::blocked)));
-
-  bool memory_unreorder       = ((input->get_layout() & uint16_t(
-                                    tensor_layout_t::blocked)) &&
-                                 !(output->get_layout() | uint16_t(tensor_layout_t::contiguous)));
-
-  if (!(memory_reorder || memory_unreorder)) {
-    apilog_error("Mismatch in layout is observed for conversion");
-    return status_t::failure;
-  }
-
-  if (memory_reorder) {
-    if (input->get_raw_handle_unsafe() == output->get_raw_handle_unsafe()) {
-      size_t input_buffer_size = input->get_buffer_sz_bytes();
-
-      if (reorder_size != input_buffer_size) {
-        apilog_error("Reorder size mismatch, Inplace reorder doesn't work for given matrix: reorder_size=",
-                     reorder_size, " input_buffer_size=", input_buffer_size);
+    if (parent_type::validate() != status_t::success) {
         return status_t::failure;
-      }
-      else {
-        apilog_info("Inplace reorder works for given matrix");
-      }
     }
-  }
 
-  if ((input_size.size() != 2) || (output_size.size() != 2)) {
-    apilog_error("Input or output size is not valid");
-    return status_t::failure;
-  }
+    auto input = get_input("reorder_input");
+    auto output = get_output("reorder_output");
 
-  if (input_size.at(0) != output_size.at(0)) {
-    apilog_error("Input and output size mismatch at dim - 0: input_size=",
-                 input_size.at(0), " output_size=", output_size.at(0));
-    return status_t::failure;
-  }
+    if (!input || !output) {
+        apilog_error("Invalid input or output tensor.");
+        return status_t::failure;
+    }
 
-  if (input_size.at(1) != output_size.at(1)) {
-    apilog_error("Input and output size mismatch at dim - 1: input_size=",
-                 input_size.at(1), " output_size=", output_size.at(1));
-    return status_t::failure;
-  }
+    // The AOCL reorder is a pure layout transformation (contiguous <-> blocked).
+    // It does not perform any data-type conversion: the kernel selects the
+    // element type from the input dtype only and copies element-wise into the
+    // output buffer. A dtype mismatch would therefore either reinterpret bits
+    // (same-size types) or overrun the output buffer (different-size types).
+    // Any dtype change must go through the LOWOHA reorder path instead.
+    if (input->get_data_type() != output->get_data_type()) {
+        apilog_error(
+                "Reorder requires input and output to have the same data type "
+                "(input=",
+                dtype_info(input->get_data_type()),
+                ", output=", dtype_info(output->get_data_type()),
+                "). Use LOWOHA reorder for data-type conversion.");
+        return status_t::failure;
+    }
 
-  auto source_dtype  = context.get_source_dtype();
-  if ((input->get_data_type() == data_type_t::s8) &&
-      (!((source_dtype == data_type_t::s8) || (source_dtype == data_type_t::u8)))) {
-    apilog_error("Source data type mismatch for s8: source_dtype=",
-                 dtype_info(source_dtype));
-    return status_t::failure;
-  }
+    if (input->get_data_type() == data_type_t::f16
+            || output->get_data_type() == data_type_t::f16) {
+        // F16 requires AVX512-FP16 ISA support
+        if (!platform_info.get_avx512_f16_status()) {
+            apilog_error(
+                    "F16 data type is not supported on this platform "
+                    "(requires AVX512-FP16 ISA).");
+            reorder_status = status_t::isa_unsupported;
+            return reorder_status;
+        }
+    }
 
-  return status_t::success;
+    auto input_size = input->get_size();
+    auto output_size = output->get_size();
+
+    bool memory_reorder
+            = ((!(input->get_layout() | uint16_t(tensor_layout_t::contiguous))
+                       || (input->get_layout()
+                               & uint16_t(tensor_layout_t::aligned)))
+                    && (output->get_layout()
+                            & uint16_t(tensor_layout_t::blocked)));
+
+    bool memory_unreorder = ((input->get_layout()
+                                     & uint16_t(tensor_layout_t::blocked))
+            && !(output->get_layout() | uint16_t(tensor_layout_t::contiguous)));
+
+    if (!(memory_reorder || memory_unreorder)) {
+        apilog_error("Mismatch in layout is observed for conversion");
+        return status_t::failure;
+    }
+
+    if (memory_reorder) {
+        if (input->get_raw_handle_unsafe() == output->get_raw_handle_unsafe()) {
+            size_t input_buffer_size = input->get_buffer_sz_bytes();
+
+            if (reorder_size != input_buffer_size) {
+                apilog_error(
+                        "Reorder size mismatch, Inplace reorder doesn't work "
+                        "for given matrix: reorder_size=",
+                        reorder_size, " input_buffer_size=", input_buffer_size);
+                return status_t::failure;
+            } else {
+                apilog_info("Inplace reorder works for given matrix");
+            }
+        }
+    }
+
+    if ((input_size.size() != 2) || (output_size.size() != 2)) {
+        apilog_error("Input or output size is not valid");
+        return status_t::failure;
+    }
+
+    if (input_size.at(0) != output_size.at(0)) {
+        apilog_error("Input and output size mismatch at dim - 0: input_size=",
+                input_size.at(0), " output_size=", output_size.at(0));
+        return status_t::failure;
+    }
+
+    if (input_size.at(1) != output_size.at(1)) {
+        apilog_error("Input and output size mismatch at dim - 1: input_size=",
+                input_size.at(1), " output_size=", output_size.at(1));
+        return status_t::failure;
+    }
+
+    auto source_dtype = context.get_source_dtype();
+    if ((input->get_data_type() == data_type_t::s8)
+            && (!((source_dtype == data_type_t::s8)
+                    || (source_dtype == data_type_t::u8)))) {
+        apilog_error("Source data type mismatch for s8: source_dtype=",
+                dtype_info(source_dtype));
+        return status_t::failure;
+    }
+
+    return status_t::success;
 }
 
 std::string reorder_impl_t::op_create_info() {
-  std::stringstream ss;
+    std::stringstream ss;
 
-  ss << "Reorder operator create - ";
-  if (!(get_name().empty())) {
-    ss << get_name() << ",";
-  }
+    ss << "Reorder operator create - ";
+    if (!(get_name().empty())) { ss << get_name() << ","; }
 
-  auto algo_format = context.get_algo_format();
-  ss << "algo_format:" << algo_format;
+    auto algo_format = context.get_algo_format();
+    ss << "algo_format:" << algo_format;
 
-  return ss.str();
+    return ss.str();
 }
 
 std::string reorder_impl_t::op_execute_info() {
-  std::stringstream ss;
+    std::stringstream ss;
 
-  ss << "Reorder operator execute - ";
-  if (!(get_name().empty())) {
-    ss << get_name() << ",";
-  }
+    ss << "Reorder operator execute - ";
+    if (!(get_name().empty())) { ss << get_name() << ","; }
 
-  auto input       = get_input("reorder_input");
-  auto output      = get_output("reorder_output");
-  auto algo_format = context.get_algo_format();
+    auto input = get_input("reorder_input");
+    auto output = get_output("reorder_output");
+    auto algo_format = context.get_algo_format();
 
-  ss << input.value().tensor_info() << ","
-     << output.value().tensor_info() << ","
-     << "algo_format:" << algo_format;
+    ss << input.value().tensor_info() << "," << output.value().tensor_info()
+       << ","
+       << "algo_format:" << algo_format;
 
-  return ss.str();
+    return ss.str();
 }
 
 status_t reorder_impl_t::kernel_factory() {
-  auto algo_format = context.get_algo_format();
+    auto algo_format = context.get_algo_format();
 
-  if (algo_format == "aocl") {
+    if (algo_format == "aocl") {
 #if ZENDNNL_DEPENDS_AOCLDLP
-    kernel = std::shared_ptr<reorder_kernel_t>(get_reorder_aocl_kernel());
+        kernel = std::shared_ptr<reorder_kernel_t>(get_reorder_aocl_kernel());
 #else
-    apilog_error("AOCL-DLP reorder kernel selected but ZenDNNL was built "
-                 "without AOCL-DLP support (ZENDNNL_DEPENDS_AOCLDLP=0).");
-    return status_t::unimplemented;
+        apilog_error(
+                "AOCL-DLP reorder kernel selected but ZenDNNL was built "
+                "without AOCL-DLP support (ZENDNNL_DEPENDS_AOCLDLP=0).");
+        return status_t::unimplemented;
 #endif
-  }
-  else if (algo_format == "onednn") {
-    apilog_error("onednn kernel is not supported");
-    return status_t::unimplemented;
-  }
-  else {
-    return status_t::unimplemented;
-  }
+    } else if (algo_format == "onednn") {
+        apilog_error("onednn kernel is not supported");
+        return status_t::unimplemented;
+    } else {
+        return status_t::unimplemented;
+    }
 
-  kernel->create();
-  if (! kernel->check()) {
-    return status_t::failure;
-  }
+    kernel->create();
+    if (!kernel->check()) { return status_t::failure; }
 
-  return status_t::success;
+    return status_t::success;
 }
 
 status_t reorder_impl_t::get_reorder_isa_status() const {
-  return reorder_status;
+    return reorder_status;
 }
 
 size_t reorder_impl_t::get_reorder_size() {
-  // Reset every call so a previous failure on a reused operator instance
-  // does not leak into get_reorder_isa_status().
-  reorder_status = status_t::success;
-  reorder_size   = 0;
+    // Reset every call so a previous failure on a reused operator instance
+    // does not leak into get_reorder_isa_status().
+    reorder_status = status_t::success;
+    reorder_size = 0;
 
-  auto algo_format = context.get_algo_format();
+    auto algo_format = context.get_algo_format();
 
-  if (algo_format == "aocl") {
+    if (algo_format == "aocl") {
 #if !ZENDNNL_DEPENDS_AOCLDLP
-    apilog_error("AOCL-DLP reorder selected but ZenDNNL was built without "
-                 "AOCL-DLP support (ZENDNNL_DEPENDS_AOCLDLP=0).");
-    reorder_status = status_t::unimplemented;
+        apilog_error(
+                "AOCL-DLP reorder selected but ZenDNNL was built without "
+                "AOCL-DLP support (ZENDNNL_DEPENDS_AOCLDLP=0).");
+        reorder_status = status_t::unimplemented;
 #else
-    auto input_tensor = get_input("reorder_input");
+        auto input_tensor = get_input("reorder_input");
 
-    if (!input_tensor) {
-      apilog_error("Input tensor is not available");
-      reorder_status = status_t::op_bad_io;
-      return reorder_size;
-    }
+        if (!input_tensor) {
+            apilog_error("Input tensor is not available");
+            reorder_status = status_t::op_bad_io;
+            return reorder_size;
+        }
 
-    // F16 requires AVX512-FP16 ISA support
-    if (input_tensor->get_data_type() == data_type_t::f16) {
-      if (!platform_info.get_avx512_f16_status()) {
-        apilog_error("F16 data type is not supported on this platform "
-                     "(requires AVX512-FP16 ISA).");
-        reorder_status = status_t::isa_unsupported;
-        return reorder_size;
-      }
-    }
+        // F16 requires AVX512-FP16 ISA support
+        if (input_tensor->get_data_type() == data_type_t::f16) {
+            if (!platform_info.get_avx512_f16_status()) {
+                apilog_error(
+                        "F16 data type is not supported on this platform "
+                        "(requires AVX512-FP16 ISA).");
+                reorder_status = status_t::isa_unsupported;
+                return reorder_size;
+            }
+        }
 
-    reorder_size = aocl_dlp_reorder_utils_t::get_aocl_reorder_size(context,
-                   *input_tensor);
+        reorder_size = aocl_dlp_reorder_utils_t::get_aocl_reorder_size(
+                context, *input_tensor);
 #endif
-  }
-  else if (algo_format == "onednn") {
-    apilog_error("onednn reorder is not supported");
-    reorder_status = status_t::unimplemented;
-  }
-  else {
-    apilog_error("Unsupported algorithm format for reorder");
-    reorder_status = status_t::unimplemented;
-  }
-  return reorder_size;
+    } else if (algo_format == "onednn") {
+        apilog_error("onednn reorder is not supported");
+        reorder_status = status_t::unimplemented;
+    } else {
+        apilog_error("Unsupported algorithm format for reorder");
+        reorder_status = status_t::unimplemented;
+    }
+    return reorder_size;
 }
 
 } //namespace ops
 } //namespace zendnnl
-

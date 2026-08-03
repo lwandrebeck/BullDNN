@@ -14,73 +14,68 @@
 # * limitations under the License.
 # *******************************************************************************/
 
-#include <gtest/gtest.h>
 #include "gtest_utils.hpp"
+#include <gtest/gtest.h>
 
 /** @brief TestSoftmax is a parameterized test class for softmax (OneDNN vs Reference) */
 class TestSoftmax : public ::testing::TestWithParam<SoftmaxType> {
- protected:
-  virtual void SetUp() {
-    SoftmaxType params = GetParam();
-    ndims        = params.ndims;
-    for (int i = 0; i < ndims; ++i) {
-      shape.push_back(params.shape[i]);
+protected:
+    virtual void SetUp() {
+        SoftmaxType params = GetParam();
+        ndims = params.ndims;
+        for (int i = 0; i < ndims; ++i) {
+            shape.push_back(params.shape[i]);
+        }
+        axis = params.axis;
+        log_softmax = params.log_softmax;
+        softmin = params.softmin;
+        num_threads = params.num_threads;
+        omp_set_num_threads(num_threads);
+
+        total_elements = 1;
+        for (auto d : shape) {
+            total_elements *= d;
+        }
+
+        log_info("ndims: ", ndims, " total_elements: ", total_elements,
+                " axis: ", axis, " log_softmax: ", log_softmax,
+                " softmin: ", softmin, " num_threads: ", num_threads);
     }
-    axis         = params.axis;
-    log_softmax  = params.log_softmax;
-    softmin      = params.softmin;
-    num_threads  = params.num_threads;
-    omp_set_num_threads(num_threads);
 
-    total_elements = 1;
-    for (auto d : shape) {
-      total_elements *= d;
-    }
+    virtual void TearDown() {}
 
-    log_info("ndims: ", ndims,
-             " total_elements: ", total_elements,
-             " axis: ", axis,
-             " log_softmax: ", log_softmax,
-             " softmin: ", softmin,
-             " num_threads: ", num_threads);
-  }
-
-  virtual void TearDown() {}
-
-  /**
+    /**
    * @brief Build a softmax_params struct from test fixture members.
    *
    * Returns the status of setup_softmax_shape() so callers can abort the
    * test early (e.g., via ASSERT_EQ) if shape/axis validation fails,
    * rather than proceeding with invalid params.
    */
-  status_t build_params(data_type_t test_src_dt, data_type_t test_dst_dt,
-                        softmax_params &sp) {
-    uint64_t shape_arr[SOFTMAX_MAX_NDIMS];
-    for (int i = 0; i < ndims; ++i) {
-      shape_arr[i] = shape[i];
+    status_t build_params(data_type_t test_src_dt, data_type_t test_dst_dt,
+            softmax_params &sp) {
+        uint64_t shape_arr[SOFTMAX_MAX_NDIMS];
+        for (int i = 0; i < ndims; ++i) {
+            shape_arr[i] = shape[i];
+        }
+        status_t st = setup_softmax_shape(sp, shape_arr, ndims, axis);
+        if (st != status_t::success) { return st; }
+        sp.src_dt = test_src_dt;
+        sp.dst_dt = test_dst_dt;
+        sp.log_softmax = log_softmax;
+        sp.softmin = softmin;
+        sp.num_threads = num_threads;
+        return st;
     }
-    status_t st = setup_softmax_shape(sp, shape_arr, ndims, axis);
-    if (st != status_t::success) {
-      return st;
-    }
-    sp.src_dt       = test_src_dt;
-    sp.dst_dt       = test_dst_dt;
-    sp.log_softmax  = log_softmax;
-    sp.softmin      = softmin;
-    sp.num_threads  = num_threads;
-    return st;
-  }
 
-  int ndims;
-  std::vector<uint64_t> shape;
-  int axis;
-  bool log_softmax;
-  bool softmin;
-  int32_t num_threads;
-  uint64_t total_elements;
+    int ndims;
+    std::vector<uint64_t> shape;
+    int axis;
+    bool log_softmax;
+    bool softmin;
+    int32_t num_threads;
+    uint64_t total_elements;
 
-  tensor_factory_t tensor_factory{};
+    tensor_factory_t tensor_factory {};
 };
 
 /** @fn TEST_P
@@ -90,43 +85,41 @@ class TestSoftmax : public ::testing::TestWithParam<SoftmaxType> {
  */
 TEST_P(TestSoftmax, F32_F32) {
 #if !ZENDNNL_DEPENDS_ONEDNN
-  GTEST_SKIP() << "OneDNN backend not compiled in; softmax_direct would "
-               "fall back to the reference kernel, making this test "
-               "reference-vs-reference.";
+    GTEST_SKIP() << "OneDNN backend not compiled in; softmax_direct would "
+                    "fall back to the reference kernel, making this test "
+                    "reference-vs-reference.";
 #endif
-  data_type_t dt = data_type_t::f32;
+    data_type_t dt = data_type_t::f32;
 
-  auto input_tensor      = tensor_factory.uniform_dist_tensor(shape, dt, 2.0f);
-  auto output_tensor     = tensor_factory.zero_tensor(shape, dt);
-  auto output_tensor_ref = tensor_factory.zero_tensor(shape, dt);
+    auto input_tensor = tensor_factory.uniform_dist_tensor(shape, dt, 2.0f);
+    auto output_tensor = tensor_factory.zero_tensor(shape, dt);
+    auto output_tensor_ref = tensor_factory.zero_tensor(shape, dt);
 
-  softmax_params sp{};
-  softmax_params ref_sp{};
-  ASSERT_EQ(build_params(dt, dt, sp),     status_t::success);
-  ASSERT_EQ(build_params(dt, dt, ref_sp), status_t::success);
+    softmax_params sp {};
+    softmax_params ref_sp {};
+    ASSERT_EQ(build_params(dt, dt, sp), status_t::success);
+    ASSERT_EQ(build_params(dt, dt, ref_sp), status_t::success);
 
-  status_t status = softmax_kernel_test(
-                      input_tensor.get_raw_handle_unsafe(),
-                      output_tensor.get_raw_handle_unsafe(), sp);
-  log_info("F32_F32 OneDNN kernel status: ",
-           (status == status_t::success) ? "success" : "failure");
+    status_t status = softmax_kernel_test(input_tensor.get_raw_handle_unsafe(),
+            output_tensor.get_raw_handle_unsafe(), sp);
+    log_info("F32_F32 OneDNN kernel status: ",
+            (status == status_t::success) ? "success" : "failure");
 
-  status_t ref_status = softmax_forced_ref_kernel_test(
-                          input_tensor.get_raw_handle_unsafe(),
-                          output_tensor_ref.get_raw_handle_unsafe(), ref_sp);
-  log_info("F32_F32 reference kernel status: ",
-           (ref_status == status_t::success) ? "success" : "failure");
+    status_t ref_status = softmax_forced_ref_kernel_test(
+            input_tensor.get_raw_handle_unsafe(),
+            output_tensor_ref.get_raw_handle_unsafe(), ref_sp);
+    log_info("F32_F32 reference kernel status: ",
+            (ref_status == status_t::success) ? "success" : "failure");
 
-  bool is_test_successful =
-    (status == status_t::success && ref_status == status_t::success);
+    bool is_test_successful
+            = (status == status_t::success && ref_status == status_t::success);
 
-  if (is_test_successful) {
-    compare_softmax_tensors(output_tensor, output_tensor_ref,
-                            shape, total_elements,
-                            SOFTMAX_F32_TOL, is_test_successful);
-  }
+    if (is_test_successful) {
+        compare_softmax_tensors(output_tensor, output_tensor_ref, shape,
+                total_elements, SOFTMAX_F32_TOL, is_test_successful);
+    }
 
-  EXPECT_TRUE(is_test_successful);
+    EXPECT_TRUE(is_test_successful);
 }
 
 /** @fn TEST_P
@@ -136,43 +129,41 @@ TEST_P(TestSoftmax, F32_F32) {
  */
 TEST_P(TestSoftmax, BF16_BF16) {
 #if !ZENDNNL_DEPENDS_ONEDNN
-  GTEST_SKIP() << "OneDNN backend not compiled in; softmax_direct would "
-               "fall back to the reference kernel, making this test "
-               "reference-vs-reference.";
+    GTEST_SKIP() << "OneDNN backend not compiled in; softmax_direct would "
+                    "fall back to the reference kernel, making this test "
+                    "reference-vs-reference.";
 #endif
-  data_type_t dt = data_type_t::bf16;
+    data_type_t dt = data_type_t::bf16;
 
-  auto input_tensor      = tensor_factory.uniform_dist_tensor(shape, dt, 2.0f);
-  auto output_tensor     = tensor_factory.zero_tensor(shape, dt);
-  auto output_tensor_ref = tensor_factory.zero_tensor(shape, dt);
+    auto input_tensor = tensor_factory.uniform_dist_tensor(shape, dt, 2.0f);
+    auto output_tensor = tensor_factory.zero_tensor(shape, dt);
+    auto output_tensor_ref = tensor_factory.zero_tensor(shape, dt);
 
-  softmax_params sp{};
-  softmax_params ref_sp{};
-  ASSERT_EQ(build_params(dt, dt, sp),     status_t::success);
-  ASSERT_EQ(build_params(dt, dt, ref_sp), status_t::success);
+    softmax_params sp {};
+    softmax_params ref_sp {};
+    ASSERT_EQ(build_params(dt, dt, sp), status_t::success);
+    ASSERT_EQ(build_params(dt, dt, ref_sp), status_t::success);
 
-  status_t status = softmax_kernel_test(
-                      input_tensor.get_raw_handle_unsafe(),
-                      output_tensor.get_raw_handle_unsafe(), sp);
-  log_info("BF16_BF16 OneDNN kernel status: ",
-           (status == status_t::success) ? "success" : "failure");
+    status_t status = softmax_kernel_test(input_tensor.get_raw_handle_unsafe(),
+            output_tensor.get_raw_handle_unsafe(), sp);
+    log_info("BF16_BF16 OneDNN kernel status: ",
+            (status == status_t::success) ? "success" : "failure");
 
-  status_t ref_status = softmax_forced_ref_kernel_test(
-                          input_tensor.get_raw_handle_unsafe(),
-                          output_tensor_ref.get_raw_handle_unsafe(), ref_sp);
-  log_info("BF16_BF16 reference kernel status: ",
-           (ref_status == status_t::success) ? "success" : "failure");
+    status_t ref_status = softmax_forced_ref_kernel_test(
+            input_tensor.get_raw_handle_unsafe(),
+            output_tensor_ref.get_raw_handle_unsafe(), ref_sp);
+    log_info("BF16_BF16 reference kernel status: ",
+            (ref_status == status_t::success) ? "success" : "failure");
 
-  bool is_test_successful =
-    (status == status_t::success && ref_status == status_t::success);
+    bool is_test_successful
+            = (status == status_t::success && ref_status == status_t::success);
 
-  if (is_test_successful) {
-    compare_softmax_tensors(output_tensor, output_tensor_ref,
-                            shape, total_elements,
-                            SOFTMAX_BF16_TOL, is_test_successful);
-  }
+    if (is_test_successful) {
+        compare_softmax_tensors(output_tensor, output_tensor_ref, shape,
+                total_elements, SOFTMAX_BF16_TOL, is_test_successful);
+    }
 
-  EXPECT_TRUE(is_test_successful);
+    EXPECT_TRUE(is_test_successful);
 }
 
 /** @fn TEST_P
@@ -182,50 +173,48 @@ TEST_P(TestSoftmax, BF16_BF16) {
  */
 TEST_P(TestSoftmax, F16_F16) {
 #if !ZENDNNL_DEPENDS_ONEDNN
-  GTEST_SKIP() << "OneDNN backend not compiled in; softmax_direct would "
-               "fall back to the reference kernel, making this test "
-               "reference-vs-reference.";
+    GTEST_SKIP() << "OneDNN backend not compiled in; softmax_direct would "
+                    "fall back to the reference kernel, making this test "
+                    "reference-vs-reference.";
 #endif
-  if (!zendnnl_platform_info().get_avx512_f16_status()) {
-    GTEST_SKIP() << "AVX512-FP16 ISA not available on this platform.";
-  }
-  data_type_t dt = data_type_t::f16;
+    if (!zendnnl_platform_info().get_avx512_f16_status()) {
+        GTEST_SKIP() << "AVX512-FP16 ISA not available on this platform.";
+    }
+    data_type_t dt = data_type_t::f16;
 
-  auto input_tensor      = tensor_factory.uniform_dist_tensor(shape, dt, 2.0f);
-  auto output_tensor     = tensor_factory.zero_tensor(shape, dt);
-  auto output_tensor_ref = tensor_factory.zero_tensor(shape, dt);
+    auto input_tensor = tensor_factory.uniform_dist_tensor(shape, dt, 2.0f);
+    auto output_tensor = tensor_factory.zero_tensor(shape, dt);
+    auto output_tensor_ref = tensor_factory.zero_tensor(shape, dt);
 
-  softmax_params sp{};
-  softmax_params ref_sp{};
-  ASSERT_EQ(build_params(dt, dt, sp),     status_t::success);
-  ASSERT_EQ(build_params(dt, dt, ref_sp), status_t::success);
+    softmax_params sp {};
+    softmax_params ref_sp {};
+    ASSERT_EQ(build_params(dt, dt, sp), status_t::success);
+    ASSERT_EQ(build_params(dt, dt, ref_sp), status_t::success);
 
-  status_t status = softmax_kernel_test(
-                      input_tensor.get_raw_handle_unsafe(),
-                      output_tensor.get_raw_handle_unsafe(), sp);
-  log_info("F16_F16 OneDNN kernel status: ",
-           (status == status_t::success) ? "success" : "failure");
+    status_t status = softmax_kernel_test(input_tensor.get_raw_handle_unsafe(),
+            output_tensor.get_raw_handle_unsafe(), sp);
+    log_info("F16_F16 OneDNN kernel status: ",
+            (status == status_t::success) ? "success" : "failure");
 
-  status_t ref_status = softmax_forced_ref_kernel_test(
-                          input_tensor.get_raw_handle_unsafe(),
-                          output_tensor_ref.get_raw_handle_unsafe(), ref_sp);
-  log_info("F16_F16 reference kernel status: ",
-           (ref_status == status_t::success) ? "success" : "failure");
+    status_t ref_status = softmax_forced_ref_kernel_test(
+            input_tensor.get_raw_handle_unsafe(),
+            output_tensor_ref.get_raw_handle_unsafe(), ref_sp);
+    log_info("F16_F16 reference kernel status: ",
+            (ref_status == status_t::success) ? "success" : "failure");
 
-  bool is_test_successful =
-    (status == status_t::success && ref_status == status_t::success);
+    bool is_test_successful
+            = (status == status_t::success && ref_status == status_t::success);
 
-  if (is_test_successful) {
-    compare_softmax_tensors(output_tensor, output_tensor_ref,
-                            shape, total_elements,
-                            SOFTMAX_F16_TOL, is_test_successful);
-  }
+    if (is_test_successful) {
+        compare_softmax_tensors(output_tensor, output_tensor_ref, shape,
+                total_elements, SOFTMAX_F16_TOL, is_test_successful);
+    }
 
-  EXPECT_TRUE(is_test_successful);
+    EXPECT_TRUE(is_test_successful);
 }
 
 /** @fn INSTANTIATE_TEST_SUITE_P
  *  @brief Triggers Softmax parameterized test suite
  */
-INSTANTIATE_TEST_SUITE_P(Softmax, TestSoftmax,
-                         ::testing::ValuesIn(softmax_test));
+INSTANTIATE_TEST_SUITE_P(
+        Softmax, TestSoftmax, ::testing::ValuesIn(softmax_test));

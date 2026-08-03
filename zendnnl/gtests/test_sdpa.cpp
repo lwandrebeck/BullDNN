@@ -14,7 +14,6 @@
 # * limitations under the License.
 # *******************************************************************************/
 
-#include <gtest/gtest.h>
 #include <algorithm>
 #include <cmath>
 #include <cstring>
@@ -23,6 +22,7 @@
 #include <string>
 #include <vector>
 #include "gtest_utils.hpp"
+#include <gtest/gtest.h>
 
 namespace {
 
@@ -56,22 +56,20 @@ constexpr const char *kBshdOrder = "acbd";
  */
 template <typename FillFn>
 tensor_t make_4d_tensor_with_order(const std::vector<uint64_t> &sizes,
-                                   data_type_t dtype,
-                                   const std::string &order,
-                                   FillFn fill) {
-  tensor_t t = tensor_t()
-               .set_name("sdpa test tensor")
-               .set_size(sizes)
-               .set_data_type(dtype)
-               .set_order(order);
-  t.set_storage();
-  t.create();
-  if (!t.check()) {
-    log_warning("Failed to create test tensor with order '", order, "'");
+        data_type_t dtype, const std::string &order, FillFn fill) {
+    tensor_t t = tensor_t()
+                         .set_name("sdpa test tensor")
+                         .set_size(sizes)
+                         .set_data_type(dtype)
+                         .set_order(order);
+    t.set_storage();
+    t.create();
+    if (!t.check()) {
+        log_warning("Failed to create test tensor with order '", order, "'");
+        return t;
+    }
+    fill(t);
     return t;
-  }
-  fill(t);
-  return t;
 }
 
 /**
@@ -86,51 +84,39 @@ tensor_t make_4d_tensor_with_order(const std::vector<uint64_t> &sizes,
  * reads per-tensor strides via get_stride() so any of these layouts work).
  */
 tensor_t make_uniform_tensor(tensor_factory_t &tf,
-                             const std::vector<uint64_t> &sizes,
-                             data_type_t dtype, float val,
-                             const std::string &order) {
-  if (order == kBhsdOrder) {
-    return tf.uniform_dist_tensor(sizes, dtype, val);
-  }
-  return make_4d_tensor_with_order(sizes, dtype, order, [=](tensor_t &t) {
-    std::mt19937 gen(seed);
-    std::uniform_real_distribution<float> dist(-1.0 * val, 1.0 * val);
-    auto buf_nelem = t.get_nelem();
-    void *raw      = t.get_raw_handle_unsafe();
-    if (dtype == data_type_t::f32) {
-      float *p = static_cast<float *>(raw);
-      std::generate(p, p + buf_nelem, [&]() {
-        return dist(gen);
-      });
+        const std::vector<uint64_t> &sizes, data_type_t dtype, float val,
+        const std::string &order) {
+    if (order == kBhsdOrder) {
+        return tf.uniform_dist_tensor(sizes, dtype, val);
     }
-    else if (dtype == data_type_t::bf16) {
-      bfloat16_t *p = static_cast<bfloat16_t *>(raw);
-      std::generate(p, p + buf_nelem,
-      [&]() {
-        return bfloat16_t(dist(gen));
-      });
-    }
-    else if (dtype == data_type_t::f16) {
-      float16_t *p = static_cast<float16_t *>(raw);
-      std::generate(p, p + buf_nelem,
-      [&]() {
-        return float16_t(dist(gen));
-      });
-    }
-  });
+    return make_4d_tensor_with_order(sizes, dtype, order, [=](tensor_t &t) {
+        std::mt19937 gen(seed);
+        std::uniform_real_distribution<float> dist(-1.0 * val, 1.0 * val);
+        auto buf_nelem = t.get_nelem();
+        void *raw = t.get_raw_handle_unsafe();
+        if (dtype == data_type_t::f32) {
+            float *p = static_cast<float *>(raw);
+            std::generate(p, p + buf_nelem, [&]() { return dist(gen); });
+        } else if (dtype == data_type_t::bf16) {
+            bfloat16_t *p = static_cast<bfloat16_t *>(raw);
+            std::generate(
+                    p, p + buf_nelem, [&]() { return bfloat16_t(dist(gen)); });
+        } else if (dtype == data_type_t::f16) {
+            float16_t *p = static_cast<float16_t *>(raw);
+            std::generate(
+                    p, p + buf_nelem, [&]() { return float16_t(dist(gen)); });
+        }
+    });
 }
 
 /** @brief Zeroed 4D tensor with the requested physical layout. */
 tensor_t make_zero_tensor(tensor_factory_t &tf,
-                          const std::vector<uint64_t> &sizes,
-                          data_type_t dtype,
-                          const std::string &order) {
-  if (order == kBhsdOrder) {
-    return tf.zero_tensor(sizes, dtype);
-  }
-  return make_4d_tensor_with_order(sizes, dtype, order, [](tensor_t &t) {
-    std::memset(t.get_raw_handle_unsafe(), 0, t.get_buffer_sz_bytes());
-  });
+        const std::vector<uint64_t> &sizes, data_type_t dtype,
+        const std::string &order) {
+    if (order == kBhsdOrder) { return tf.zero_tensor(sizes, dtype); }
+    return make_4d_tensor_with_order(sizes, dtype, order, [](tensor_t &t) {
+        std::memset(t.get_raw_handle_unsafe(), 0, t.get_buffer_sz_bytes());
+    });
 }
 
 /**
@@ -146,29 +132,26 @@ tensor_t make_zero_tensor(tensor_factory_t &tf,
  * coverage across the parameterised sweep.
  */
 enum class mask_shape_kind_t {
-  full_4d,      /*!< [B, H, S_q, S_kv]   per-(b, h) mask              */
-  head_bcast,   /*!< [B, 1, S_q, S_kv]   broadcast across heads       */
-  batch_bcast,  /*!< [1, H, S_q, S_kv]   broadcast across batch       */
-  two_d         /*!< [S_q, S_kv]         broadcast across batch+heads */
+    full_4d, /*!< [B, H, S_q, S_kv]   per-(b, h) mask              */
+    head_bcast, /*!< [B, 1, S_q, S_kv]   broadcast across heads       */
+    batch_bcast, /*!< [1, H, S_q, S_kv]   broadcast across batch       */
+    two_d /*!< [S_q, S_kv]         broadcast across batch+heads */
 };
 
 /** @brief Materialise a @c mask_shape_kind_t into the corresponding
  *         tensor shape vector for the given Q/K/V dims. */
-std::vector<uint64_t> resolve_mask_shape(mask_shape_kind_t kind,
-    uint64_t batch, uint64_t num_heads,
-    uint64_t seq_len_q,
-    uint64_t seq_len_kv) {
-  switch (kind) {
-  case mask_shape_kind_t::full_4d:
-    return {batch, num_heads, seq_len_q, seq_len_kv};
-  case mask_shape_kind_t::head_bcast:
-    return {batch,      1UL,  seq_len_q, seq_len_kv};
-  case mask_shape_kind_t::batch_bcast:
-    return {1UL,   num_heads, seq_len_q, seq_len_kv};
-  case mask_shape_kind_t::two_d:
-    return {seq_len_q, seq_len_kv};
-  }
-  return {};  // unreachable; silences -Wreturn-type on some compilers
+std::vector<uint64_t> resolve_mask_shape(mask_shape_kind_t kind, uint64_t batch,
+        uint64_t num_heads, uint64_t seq_len_q, uint64_t seq_len_kv) {
+    switch (kind) {
+        case mask_shape_kind_t::full_4d:
+            return {batch, num_heads, seq_len_q, seq_len_kv};
+        case mask_shape_kind_t::head_bcast:
+            return {batch, 1UL, seq_len_q, seq_len_kv};
+        case mask_shape_kind_t::batch_bcast:
+            return {1UL, num_heads, seq_len_q, seq_len_kv};
+        case mask_shape_kind_t::two_d: return {seq_len_q, seq_len_kv};
+    }
+    return {}; // unreachable; silences -Wreturn-type on some compilers
 }
 
 /**
@@ -203,59 +186,50 @@ std::vector<uint64_t> resolve_mask_shape(mask_shape_kind_t kind,
  *                       @c mask_dt member to exercise both supported
  *                       QKV-bf16 mask paths.
  */
-void run_sdpa_mask_layout_test(tensor_factory_t &tensor_factory,
-                               uint64_t batch, uint64_t num_heads,
-                               uint64_t seq_len_q, uint64_t seq_len_kv,
-                               uint64_t head_dim,
-                               float scale, bool is_causal,
-                               data_type_t qkv_dtype,
-                               const std::vector<uint64_t> &mask_shape,
-                               const std::string &qkv_order,
-                               float rtol, float epsilon,
-                               data_type_t mask_dtype = data_type_t::f32) {
-  auto query_tensor       = make_uniform_tensor(tensor_factory,
-  {batch, num_heads, seq_len_q, head_dim},
-  qkv_dtype, 1.0, qkv_order);
-  auto key_tensor         = make_uniform_tensor(tensor_factory,
-  {batch, num_heads, seq_len_kv, head_dim},
-  qkv_dtype, 1.0, qkv_order);
-  auto value_tensor       = make_uniform_tensor(tensor_factory,
-  {batch, num_heads, seq_len_kv, head_dim},
-  qkv_dtype, 1.0, qkv_order);
-  // The mask validator only accepts canonical row-major contiguous strides
-  // (BHSD-style for 4D, [S_q, S_kv] row-major for 2D); the mask dtype
-  // itself comes from the caller (FP32 for f32-QKV tests, the fixture's
-  // randomised mask_dt for bf16-QKV tests).
-  log_info("SDPA mask-layout test: qkv_dtype=", static_cast<int>(qkv_dtype),
-           " mask_dtype=", static_cast<int>(mask_dtype));
-  auto mask_tensor        = tensor_factory.uniform_dist_tensor(
-                              mask_shape, mask_dtype, 0.5);
+void run_sdpa_mask_layout_test(tensor_factory_t &tensor_factory, uint64_t batch,
+        uint64_t num_heads, uint64_t seq_len_q, uint64_t seq_len_kv,
+        uint64_t head_dim, float scale, bool is_causal, data_type_t qkv_dtype,
+        const std::vector<uint64_t> &mask_shape, const std::string &qkv_order,
+        float rtol, float epsilon, data_type_t mask_dtype = data_type_t::f32) {
+    auto query_tensor = make_uniform_tensor(tensor_factory,
+            {batch, num_heads, seq_len_q, head_dim}, qkv_dtype, 1.0, qkv_order);
+    auto key_tensor = make_uniform_tensor(tensor_factory,
+            {batch, num_heads, seq_len_kv, head_dim}, qkv_dtype, 1.0,
+            qkv_order);
+    auto value_tensor = make_uniform_tensor(tensor_factory,
+            {batch, num_heads, seq_len_kv, head_dim}, qkv_dtype, 1.0,
+            qkv_order);
+    // The mask validator only accepts canonical row-major contiguous strides
+    // (BHSD-style for 4D, [S_q, S_kv] row-major for 2D); the mask dtype
+    // itself comes from the caller (FP32 for f32-QKV tests, the fixture's
+    // randomised mask_dt for bf16-QKV tests).
+    log_info("SDPA mask-layout test: qkv_dtype=", static_cast<int>(qkv_dtype),
+            " mask_dtype=", static_cast<int>(mask_dtype));
+    auto mask_tensor
+            = tensor_factory.uniform_dist_tensor(mask_shape, mask_dtype, 0.5);
 
-  auto output_tensor      = make_zero_tensor(tensor_factory,
-  {batch, num_heads, seq_len_q, head_dim},
-  qkv_dtype, qkv_order);
-  auto output_tensor_ref  = make_zero_tensor(tensor_factory,
-  {batch, num_heads, seq_len_q, head_dim},
-  qkv_dtype, qkv_order);
+    auto output_tensor = make_zero_tensor(tensor_factory,
+            {batch, num_heads, seq_len_q, head_dim}, qkv_dtype, qkv_order);
+    auto output_tensor_ref = make_zero_tensor(tensor_factory,
+            {batch, num_heads, seq_len_q, head_dim}, qkv_dtype, qkv_order);
 
-  status_t status         = sdpa_kernel_test(query_tensor, key_tensor,
-                            value_tensor, mask_tensor, output_tensor,
-                            scale, is_causal, /*has_mask=*/true, sdpa_kernel_t::flash);
-  status_t ref_status     = sdpa_kernel_test(query_tensor,
-                            key_tensor, value_tensor, mask_tensor,
-                            output_tensor_ref, scale, is_causal,
-                            /*has_mask=*/true, sdpa_kernel_t::reference);
+    status_t status = sdpa_kernel_test(query_tensor, key_tensor, value_tensor,
+            mask_tensor, output_tensor, scale, is_causal, /*has_mask=*/true,
+            sdpa_kernel_t::flash);
+    status_t ref_status = sdpa_kernel_test(query_tensor, key_tensor,
+            value_tensor, mask_tensor, output_tensor_ref, scale, is_causal,
+            /*has_mask=*/true, sdpa_kernel_t::reference);
 
-  bool is_test_successful =
-    (status == status_t::success && ref_status == status_t::success);
+    bool is_test_successful
+            = (status == status_t::success && ref_status == status_t::success);
 
-  if (is_test_successful) {
-    compare_tensor_4D_sdpa(output_tensor, output_tensor_ref,
-                           batch, num_heads, seq_len_q, seq_len_kv,
-                           head_dim, rtol, epsilon, is_test_successful);
-  }
+    if (is_test_successful) {
+        compare_tensor_4D_sdpa(output_tensor, output_tensor_ref, batch,
+                num_heads, seq_len_q, seq_len_kv, head_dim, rtol, epsilon,
+                is_test_successful);
+    }
 
-  EXPECT_TRUE(is_test_successful);
+    EXPECT_TRUE(is_test_successful);
 }
 
 // NOTE: A previous helper run_sdpa_qkv_layout_test() was used to dispatch
@@ -294,104 +268,95 @@ void run_sdpa_mask_layout_test(tensor_factory_t &tensor_factory,
  * @param qkv_order      Physical-layout order string for Q/K/V/output
  *                       (kBhsdOrder or kBshdOrder).
  */
-void run_sdpa_f16_test(tensor_factory_t &tensor_factory,
-                       uint64_t batch, uint64_t num_heads,
-                       uint64_t seq_len_q, uint64_t seq_len_kv,
-                       uint64_t head_dim,
-                       float scale, bool is_causal, bool has_mask,
-                       const std::vector<uint64_t> &mask_shape,
-                       const std::string &qkv_order) {
-  // Single F16 input stream feeds both kernels. FP32 mask is supported by
-  // both the F16 LOWOHA flash backend and the F16 reference kernel; F16 mask
-  // coverage lives in
-  // the BF16-style randomised mask_dt path which does not extend to F16
-  // here yet.
-  auto query_tensor       = make_uniform_tensor(tensor_factory,
-  {batch, num_heads, seq_len_q, head_dim},
-  data_type_t::f16, 1.0, qkv_order);
-  auto key_tensor         = make_uniform_tensor(tensor_factory,
-  {batch, num_heads, seq_len_kv, head_dim},
-  data_type_t::f16, 1.0, qkv_order);
-  auto value_tensor       = make_uniform_tensor(tensor_factory,
-  {batch, num_heads, seq_len_kv, head_dim},
-  data_type_t::f16, 1.0, qkv_order);
-  auto mask_tensor        = has_mask ?
-                            tensor_factory.uniform_dist_tensor(mask_shape,
-                                data_type_t::f32, 0.5)
-                            : tensor_t();
-  auto output_tensor      = make_zero_tensor(tensor_factory,
-  {batch, num_heads, seq_len_q, head_dim},
-  data_type_t::f16, qkv_order);
-  auto output_tensor_ref  = make_zero_tensor(tensor_factory,
-  {batch, num_heads, seq_len_q, head_dim},
-  data_type_t::f16, qkv_order);
+void run_sdpa_f16_test(tensor_factory_t &tensor_factory, uint64_t batch,
+        uint64_t num_heads, uint64_t seq_len_q, uint64_t seq_len_kv,
+        uint64_t head_dim, float scale, bool is_causal, bool has_mask,
+        const std::vector<uint64_t> &mask_shape, const std::string &qkv_order) {
+    // Single F16 input stream feeds both kernels. FP32 mask is supported by
+    // both the F16 LOWOHA flash backend and the F16 reference kernel; F16 mask
+    // coverage lives in
+    // the BF16-style randomised mask_dt path which does not extend to F16
+    // here yet.
+    auto query_tensor = make_uniform_tensor(tensor_factory,
+            {batch, num_heads, seq_len_q, head_dim}, data_type_t::f16, 1.0,
+            qkv_order);
+    auto key_tensor = make_uniform_tensor(tensor_factory,
+            {batch, num_heads, seq_len_kv, head_dim}, data_type_t::f16, 1.0,
+            qkv_order);
+    auto value_tensor = make_uniform_tensor(tensor_factory,
+            {batch, num_heads, seq_len_kv, head_dim}, data_type_t::f16, 1.0,
+            qkv_order);
+    auto mask_tensor = has_mask ? tensor_factory.uniform_dist_tensor(
+                                          mask_shape, data_type_t::f32, 0.5)
+                                : tensor_t();
+    auto output_tensor = make_zero_tensor(tensor_factory,
+            {batch, num_heads, seq_len_q, head_dim}, data_type_t::f16,
+            qkv_order);
+    auto output_tensor_ref = make_zero_tensor(tensor_factory,
+            {batch, num_heads, seq_len_q, head_dim}, data_type_t::f16,
+            qkv_order);
 
-  status_t status         = sdpa_kernel_test(query_tensor, key_tensor,
-                            value_tensor, mask_tensor, output_tensor,
-                            scale, is_causal, has_mask, sdpa_kernel_t::flash);
-  // Portable skip on F16-incapable systems (matches the matmul F16 tests).
-  // The reference kernel itself doesn't need an F16 ISA, but skipping
-  // both keeps the test set coherent: there's nothing meaningful to
-  // assert about the LOWOHA backend on a CPU where it can't run.
-  if (status == status_t::isa_unsupported) {
-    GTEST_SKIP() << "F16 SDPA not supported: requires F16-capable ISA "
-                 "(AVX512-FP16 or AVX-NE-CONVERT)";
-  }
-  status_t ref_status     = sdpa_kernel_test(query_tensor,
-                            key_tensor, value_tensor, mask_tensor,
-                            output_tensor_ref, scale, is_causal, has_mask, sdpa_kernel_t::reference);
-
-  bool is_test_successful =
-    (status == status_t::success && ref_status == status_t::success);
-
-  if (is_test_successful) {
-    // BF16-level tolerance: F16 has 10 mantissa bits vs BF16's 7, so the
-    // BF16 bound is conservative but the SDPA reduction-length term in
-    // compare_tensor_4D_sdpa dominates either way.
-    compare_tensor_4D_sdpa(output_tensor, output_tensor_ref,
-                           batch, num_heads, seq_len_q, seq_len_kv,
-                           head_dim, rtol_bf16, epsilon_bf16,
-                           is_test_successful);
-  }
-
-  EXPECT_TRUE(is_test_successful);
-}
-
-void expand_gqa_kv_tensor(tensor_t &compact_tensor,
-                          tensor_t &expanded_tensor,
-                          uint64_t batch, uint64_t num_heads,
-                          uint64_t kv_num_heads,
-                          uint64_t seq_len_kv,
-                          uint64_t head_dim) {
-  ASSERT_GT(kv_num_heads, 0UL);
-  ASSERT_EQ(num_heads % kv_num_heads, 0UL);
-  const uint64_t repeat_factor = num_heads / kv_num_heads;
-  float *expanded = static_cast<float *>(expanded_tensor.get_raw_handle_unsafe());
-  auto expanded_stride = expanded_tensor.get_stride();
-
-  for (uint64_t b = 0; b < batch; ++b) {
-    for (uint64_t h = 0; h < num_heads; ++h) {
-      const uint64_t kv_h = h / repeat_factor;
-      for (uint64_t s = 0; s < seq_len_kv; ++s) {
-        for (uint64_t d = 0; d < head_dim; ++d) {
-          const size_t offset =
-            static_cast<size_t>(b * expanded_stride[0] +
-                                h * expanded_stride[1] +
-                                s * expanded_stride[2] +
-                                d * expanded_stride[3]);
-          expanded[offset] = compact_tensor.at({b, kv_h, s, d});
-        }
-      }
+    status_t status = sdpa_kernel_test(query_tensor, key_tensor, value_tensor,
+            mask_tensor, output_tensor, scale, is_causal, has_mask,
+            sdpa_kernel_t::flash);
+    // Portable skip on F16-incapable systems (matches the matmul F16 tests).
+    // The reference kernel itself doesn't need an F16 ISA, but skipping
+    // both keeps the test set coherent: there's nothing meaningful to
+    // assert about the LOWOHA backend on a CPU where it can't run.
+    if (status == status_t::isa_unsupported) {
+        GTEST_SKIP() << "F16 SDPA not supported: requires F16-capable ISA "
+                        "(AVX512-FP16 or AVX-NE-CONVERT)";
     }
-  }
+    status_t ref_status = sdpa_kernel_test(query_tensor, key_tensor,
+            value_tensor, mask_tensor, output_tensor_ref, scale, is_causal,
+            has_mask, sdpa_kernel_t::reference);
+
+    bool is_test_successful
+            = (status == status_t::success && ref_status == status_t::success);
+
+    if (is_test_successful) {
+        // BF16-level tolerance: F16 has 10 mantissa bits vs BF16's 7, so the
+        // BF16 bound is conservative but the SDPA reduction-length term in
+        // compare_tensor_4D_sdpa dominates either way.
+        compare_tensor_4D_sdpa(output_tensor, output_tensor_ref, batch,
+                num_heads, seq_len_q, seq_len_kv, head_dim, rtol_bf16,
+                epsilon_bf16, is_test_successful);
+    }
+
+    EXPECT_TRUE(is_test_successful);
 }
 
-}  // namespace
+void expand_gqa_kv_tensor(tensor_t &compact_tensor, tensor_t &expanded_tensor,
+        uint64_t batch, uint64_t num_heads, uint64_t kv_num_heads,
+        uint64_t seq_len_kv, uint64_t head_dim) {
+    ASSERT_GT(kv_num_heads, 0UL);
+    ASSERT_EQ(num_heads % kv_num_heads, 0UL);
+    const uint64_t repeat_factor = num_heads / kv_num_heads;
+    float *expanded
+            = static_cast<float *>(expanded_tensor.get_raw_handle_unsafe());
+    auto expanded_stride = expanded_tensor.get_stride();
+
+    for (uint64_t b = 0; b < batch; ++b) {
+        for (uint64_t h = 0; h < num_heads; ++h) {
+            const uint64_t kv_h = h / repeat_factor;
+            for (uint64_t s = 0; s < seq_len_kv; ++s) {
+                for (uint64_t d = 0; d < head_dim; ++d) {
+                    const size_t offset = static_cast<size_t>(
+                            b * expanded_stride[0] + h * expanded_stride[1]
+                            + s * expanded_stride[2] + d * expanded_stride[3]);
+                    expanded[offset] = compact_tensor.at({b, kv_h, s, d});
+                }
+            }
+        }
+    }
+}
+
+} // namespace
 
 /** @brief TestSdpa is a test class to handle SDPA parameters */
 class TestSdpa : public ::testing::TestWithParam<SdpaType> {
- protected:
-  /** @brief SetUp initializes test parameters from the parameterized fixture
+protected:
+    /** @brief SetUp initializes test parameters from the parameterized fixture
    *
    *  Standard googletest fixture entry point: pulls a SdpaType from the
    *  parameter generator, seeds the RNG so per-test data generation is
@@ -422,83 +387,81 @@ class TestSdpa : public ::testing::TestWithParam<SdpaType> {
    *  dtype, even though both LOWOHA F16 backends accept f32 or f16 mask
    *  with f16 QKV).
    */
-  virtual void SetUp() {
-    SdpaType params = GetParam();
-    srand(static_cast<unsigned int>(seed));
-    batch       = params.batch;
-    num_heads   = params.num_heads;
-    seq_len     = params.seq_len;
-    kv_seq_len  = params.kv_seq_len;
-    head_dim    = params.head_dim;
-    scale       = params.scale;
-    is_causal   = params.is_causal;
-    has_mask    = params.has_mask;
-    num_threads = params.num_threads;
-    omp_set_num_threads(num_threads);
+    virtual void SetUp() {
+        SdpaType params = GetParam();
+        srand(static_cast<unsigned int>(seed));
+        batch = params.batch;
+        num_heads = params.num_heads;
+        seq_len = params.seq_len;
+        kv_seq_len = params.kv_seq_len;
+        head_dim = params.head_dim;
+        scale = params.scale;
+        is_causal = params.is_causal;
+        has_mask = params.has_mask;
+        num_threads = params.num_threads;
+        omp_set_num_threads(num_threads);
 
-    // Per-instance variant seed (FNV-1a-style mixing of the SdpaType
-    // fields). Combined with the global test seed and per-axis offsets
-    // below to give independent, reproducible random selections.
-    uint64_t variant = 1469598103934665603ULL;  // FNV-1a basis
-    auto mix = [&variant](uint64_t v) {
-      variant ^= v;
-      variant *= 1099511628211ULL;
-    };
-    mix(batch);
-    mix(num_heads);
-    mix(seq_len);
-    mix(kv_seq_len);
-    mix(head_dim);
-    mix(is_causal ? 1ULL : 0ULL);
-    mix(has_mask  ? 1ULL : 0ULL);
-    const uint64_t base_seed = static_cast<uint64_t>(seed) ^ variant;
+        // Per-instance variant seed (FNV-1a-style mixing of the SdpaType
+        // fields). Combined with the global test seed and per-axis offsets
+        // below to give independent, reproducible random selections.
+        uint64_t variant = 1469598103934665603ULL; // FNV-1a basis
+        auto mix = [&variant](uint64_t v) {
+            variant ^= v;
+            variant *= 1099511628211ULL;
+        };
+        mix(batch);
+        mix(num_heads);
+        mix(seq_len);
+        mix(kv_seq_len);
+        mix(head_dim);
+        mix(is_causal ? 1ULL : 0ULL);
+        mix(has_mask ? 1ULL : 0ULL);
+        const uint64_t base_seed = static_cast<uint64_t>(seed) ^ variant;
 
-    // Per-axis offsets keep the three random selections statistically
-    // independent (otherwise a single mt19937_64 stream would correlate
-    // them via shared state).
-    std::mt19937_64 mask_rng(base_seed ^ 0xA5A5A5A5A5A5A5A5ULL);
-    std::mt19937_64 order_rng(base_seed ^ 0x5A5A5A5A5A5A5A5AULL);
-    std::mt19937_64 shape_rng(base_seed ^ 0xC3C3C3C3C3C3C3C3ULL);
+        // Per-axis offsets keep the three random selections statistically
+        // independent (otherwise a single mt19937_64 stream would correlate
+        // them via shared state).
+        std::mt19937_64 mask_rng(base_seed ^ 0xA5A5A5A5A5A5A5A5ULL);
+        std::mt19937_64 order_rng(base_seed ^ 0x5A5A5A5A5A5A5A5AULL);
+        std::mt19937_64 shape_rng(base_seed ^ 0xC3C3C3C3C3C3C3C3ULL);
 
-    mask_dt   = (mask_rng()  & 1ULL) ? data_type_t::bf16
-                : data_type_t::f32;
-    qkv_order = (order_rng() & 1ULL) ? kBshdOrder : kBhsdOrder;
-    mask_shape_kind = static_cast<mask_shape_kind_t>(shape_rng() % 4ULL);
+        mask_dt = (mask_rng() & 1ULL) ? data_type_t::bf16 : data_type_t::f32;
+        qkv_order = (order_rng() & 1ULL) ? kBshdOrder : kBhsdOrder;
+        mask_shape_kind = static_cast<mask_shape_kind_t>(shape_rng() % 4ULL);
 
-    log_info("batch: ", batch, " num_heads: ", num_heads,
-             " seq_len: ", seq_len, " kv_seq_len: ", kv_seq_len,
-             " head_dim: ", head_dim,
-             " scale: ", scale,
-             " is_causal: ", is_causal, " has_mask: ", has_mask,
-             " num_threads: ", num_threads,
-             " mask_dt: ", static_cast<int>(mask_dt),
-             " qkv_order: ", qkv_order,
-             " mask_shape_kind: ", static_cast<int>(mask_shape_kind));
-  }
+        log_info("batch: ", batch, " num_heads: ", num_heads,
+                " seq_len: ", seq_len, " kv_seq_len: ", kv_seq_len,
+                " head_dim: ", head_dim, " scale: ", scale,
+                " is_causal: ", is_causal, " has_mask: ", has_mask,
+                " num_threads: ", num_threads,
+                " mask_dt: ", static_cast<int>(mask_dt),
+                " qkv_order: ", qkv_order,
+                " mask_shape_kind: ", static_cast<int>(mask_shape_kind));
+    }
 
-  /** @brief TearDown is used to free resources used in test */
-  virtual void TearDown() {}
+    /** @brief TearDown is used to free resources used in test */
+    virtual void TearDown() {}
 
-  uint64_t batch, num_heads, seq_len, kv_seq_len, head_dim;
-  float scale;
-  bool is_causal, has_mask;
-  int32_t num_threads;
-  /**
+    uint64_t batch, num_heads, seq_len, kv_seq_len, head_dim;
+    float scale;
+    bool is_causal, has_mask;
+    int32_t num_threads;
+    /**
    * @brief Mask data type for BF16 SDPA tests (f32 or bf16, randomised
    *        in @c SetUp). F32 tests use @c data_type_t::f32 directly.
    */
-  data_type_t mask_dt;
-  /**
+    data_type_t mask_dt;
+    /**
    * @brief Q/K/V/output physical layout order string (@c kBhsdOrder or
    *        @c kBshdOrder), randomised in @c SetUp.
    */
-  std::string qkv_order;
-  /**
+    std::string qkv_order;
+    /**
    * @brief Mask shape variant (full 4D, head/batch broadcast, or 2D),
    *        randomised in @c SetUp. Used by the *_MASK_LAYOUT tests.
    */
-  mask_shape_kind_t mask_shape_kind;
-  tensor_factory_t tensor_factory{};
+    mask_shape_kind_t mask_shape_kind;
+    tensor_factory_t tensor_factory {};
 };
 
 /** @fn TEST_P
@@ -516,55 +479,52 @@ class TestSdpa : public ::testing::TestWithParam<SdpaType> {
  *  element-wise within an SDPA-specific error bound.
  */
 TEST_P(TestSdpa, F32_F32) {
-  auto query_tensor       = make_uniform_tensor(tensor_factory,
-  {batch, num_heads, seq_len, head_dim},
-  data_type_t::f32, 1.0, qkv_order);
-  auto key_tensor         = make_uniform_tensor(tensor_factory,
-  {batch, num_heads, kv_seq_len, head_dim},
-  data_type_t::f32, 1.0, qkv_order);
-  auto value_tensor       = make_uniform_tensor(tensor_factory,
-  {batch, num_heads, kv_seq_len, head_dim},
-  data_type_t::f32, 1.0, qkv_order);
+    auto query_tensor = make_uniform_tensor(tensor_factory,
+            {batch, num_heads, seq_len, head_dim}, data_type_t::f32, 1.0,
+            qkv_order);
+    auto key_tensor = make_uniform_tensor(tensor_factory,
+            {batch, num_heads, kv_seq_len, head_dim}, data_type_t::f32, 1.0,
+            qkv_order);
+    auto value_tensor = make_uniform_tensor(tensor_factory,
+            {batch, num_heads, kv_seq_len, head_dim}, data_type_t::f32, 1.0,
+            qkv_order);
 
-  // Mask is additive: 0 means "attend", -inf means "ignore". We populate with
-  // small magnitudes so both attend / partially-attend behaviour is exercised
-  // without producing NaNs from a fully-masked row.
-  //
-  // Shape is [1, 1, S_q, S_kv] (broadcast across batch/heads): both LOWOHA
-  // flash and reference backends agree on this layout regardless of
-  // whether self-attention (S_q == S_kv) or cross-attention (S_q != S_kv) is
-  // exercised. The full set of supported mask shapes is covered by the
-  // F32_F32_MASK_LAYOUT / BF16_BF16_MASK_LAYOUT tests.
-  auto mask_tensor        = has_mask ?
-                            tensor_factory.uniform_dist_tensor(
-  {1UL, 1UL, seq_len, kv_seq_len},
-  data_type_t::f32, 0.5)
-    : tensor_t();
+    // Mask is additive: 0 means "attend", -inf means "ignore". We populate with
+    // small magnitudes so both attend / partially-attend behaviour is exercised
+    // without producing NaNs from a fully-masked row.
+    //
+    // Shape is [1, 1, S_q, S_kv] (broadcast across batch/heads): both LOWOHA
+    // flash and reference backends agree on this layout regardless of
+    // whether self-attention (S_q == S_kv) or cross-attention (S_q != S_kv) is
+    // exercised. The full set of supported mask shapes is covered by the
+    // F32_F32_MASK_LAYOUT / BF16_BF16_MASK_LAYOUT tests.
+    auto mask_tensor = has_mask
+            ? tensor_factory.uniform_dist_tensor(
+                      {1UL, 1UL, seq_len, kv_seq_len}, data_type_t::f32, 0.5)
+            : tensor_t();
 
-  auto output_tensor      = make_zero_tensor(tensor_factory,
-  {batch, num_heads, seq_len, head_dim},
-  data_type_t::f32, qkv_order);
-  auto output_tensor_ref  = make_zero_tensor(tensor_factory,
-  {batch, num_heads, seq_len, head_dim},
-  data_type_t::f32, qkv_order);
+    auto output_tensor = make_zero_tensor(tensor_factory,
+            {batch, num_heads, seq_len, head_dim}, data_type_t::f32, qkv_order);
+    auto output_tensor_ref = make_zero_tensor(tensor_factory,
+            {batch, num_heads, seq_len, head_dim}, data_type_t::f32, qkv_order);
 
-  status_t status         = sdpa_kernel_test(query_tensor, key_tensor,
-                            value_tensor, mask_tensor, output_tensor,
-                            scale, is_causal, has_mask, sdpa_kernel_t::flash);
-  status_t ref_status     = sdpa_kernel_test(query_tensor, key_tensor,
-                            value_tensor, mask_tensor, output_tensor_ref,
-                            scale, is_causal, has_mask, sdpa_kernel_t::reference);
+    status_t status = sdpa_kernel_test(query_tensor, key_tensor, value_tensor,
+            mask_tensor, output_tensor, scale, is_causal, has_mask,
+            sdpa_kernel_t::flash);
+    status_t ref_status = sdpa_kernel_test(query_tensor, key_tensor,
+            value_tensor, mask_tensor, output_tensor_ref, scale, is_causal,
+            has_mask, sdpa_kernel_t::reference);
 
-  bool is_test_successful =
-    (status == status_t::success && ref_status == status_t::success);
+    bool is_test_successful
+            = (status == status_t::success && ref_status == status_t::success);
 
-  if (is_test_successful) {
-    compare_tensor_4D_sdpa(output_tensor, output_tensor_ref,
-                           batch, num_heads, seq_len, kv_seq_len, head_dim,
-                           rtol_f32, epsilon_f32, is_test_successful);
-  }
+    if (is_test_successful) {
+        compare_tensor_4D_sdpa(output_tensor, output_tensor_ref, batch,
+                num_heads, seq_len, kv_seq_len, head_dim, rtol_f32, epsilon_f32,
+                is_test_successful);
+    }
 
-  EXPECT_TRUE(is_test_successful);
+    EXPECT_TRUE(is_test_successful);
 }
 
 /** @fn TEST_P
@@ -576,42 +536,39 @@ TEST_P(TestSdpa, F32_F32) {
  *         per instance via the fixture's @c qkv_order.
  */
 TEST_P(TestSdpa, F32_F32_NO_MASK) {
-  auto query_tensor       = make_uniform_tensor(tensor_factory,
-  {batch, num_heads, seq_len, head_dim},
-  data_type_t::f32, 1.0, qkv_order);
-  auto key_tensor         = make_uniform_tensor(tensor_factory,
-  {batch, num_heads, kv_seq_len, head_dim},
-  data_type_t::f32, 1.0, qkv_order);
-  auto value_tensor       = make_uniform_tensor(tensor_factory,
-  {batch, num_heads, kv_seq_len, head_dim},
-  data_type_t::f32, 1.0, qkv_order);
-  tensor_t mask_tensor;  // empty: has_mask=false
+    auto query_tensor = make_uniform_tensor(tensor_factory,
+            {batch, num_heads, seq_len, head_dim}, data_type_t::f32, 1.0,
+            qkv_order);
+    auto key_tensor = make_uniform_tensor(tensor_factory,
+            {batch, num_heads, kv_seq_len, head_dim}, data_type_t::f32, 1.0,
+            qkv_order);
+    auto value_tensor = make_uniform_tensor(tensor_factory,
+            {batch, num_heads, kv_seq_len, head_dim}, data_type_t::f32, 1.0,
+            qkv_order);
+    tensor_t mask_tensor; // empty: has_mask=false
 
-  auto output_tensor      = make_zero_tensor(tensor_factory,
-  {batch, num_heads, seq_len, head_dim},
-  data_type_t::f32, qkv_order);
-  auto output_tensor_ref  = make_zero_tensor(tensor_factory,
-  {batch, num_heads, seq_len, head_dim},
-  data_type_t::f32, qkv_order);
+    auto output_tensor = make_zero_tensor(tensor_factory,
+            {batch, num_heads, seq_len, head_dim}, data_type_t::f32, qkv_order);
+    auto output_tensor_ref = make_zero_tensor(tensor_factory,
+            {batch, num_heads, seq_len, head_dim}, data_type_t::f32, qkv_order);
 
-  status_t status         = sdpa_kernel_test(query_tensor, key_tensor,
-                            value_tensor, mask_tensor, output_tensor,
-                            scale, /*is_causal=*/false, /*has_mask=*/false, sdpa_kernel_t::flash);
-  status_t ref_status     = sdpa_kernel_test(query_tensor,
-                            key_tensor, value_tensor, mask_tensor,
-                            output_tensor_ref, scale,
-                            /*is_causal=*/false, /*has_mask=*/false, sdpa_kernel_t::reference);
+    status_t status = sdpa_kernel_test(query_tensor, key_tensor, value_tensor,
+            mask_tensor, output_tensor, scale, /*is_causal=*/false,
+            /*has_mask=*/false, sdpa_kernel_t::flash);
+    status_t ref_status = sdpa_kernel_test(query_tensor, key_tensor,
+            value_tensor, mask_tensor, output_tensor_ref, scale,
+            /*is_causal=*/false, /*has_mask=*/false, sdpa_kernel_t::reference);
 
-  bool is_test_successful =
-    (status == status_t::success && ref_status == status_t::success);
+    bool is_test_successful
+            = (status == status_t::success && ref_status == status_t::success);
 
-  if (is_test_successful) {
-    compare_tensor_4D_sdpa(output_tensor, output_tensor_ref,
-                           batch, num_heads, seq_len, kv_seq_len, head_dim,
-                           rtol_f32, epsilon_f32, is_test_successful);
-  }
+    if (is_test_successful) {
+        compare_tensor_4D_sdpa(output_tensor, output_tensor_ref, batch,
+                num_heads, seq_len, kv_seq_len, head_dim, rtol_f32, epsilon_f32,
+                is_test_successful);
+    }
 
-  EXPECT_TRUE(is_test_successful);
+    EXPECT_TRUE(is_test_successful);
 }
 
 /** @fn TEST_P
@@ -623,42 +580,39 @@ TEST_P(TestSdpa, F32_F32_NO_MASK) {
  *         per instance via the fixture's @c qkv_order.
  */
 TEST_P(TestSdpa, F32_F32_CAUSAL) {
-  auto query_tensor       = make_uniform_tensor(tensor_factory,
-  {batch, num_heads, seq_len, head_dim},
-  data_type_t::f32, 1.0, qkv_order);
-  auto key_tensor         = make_uniform_tensor(tensor_factory,
-  {batch, num_heads, kv_seq_len, head_dim},
-  data_type_t::f32, 1.0, qkv_order);
-  auto value_tensor       = make_uniform_tensor(tensor_factory,
-  {batch, num_heads, kv_seq_len, head_dim},
-  data_type_t::f32, 1.0, qkv_order);
-  tensor_t mask_tensor;
+    auto query_tensor = make_uniform_tensor(tensor_factory,
+            {batch, num_heads, seq_len, head_dim}, data_type_t::f32, 1.0,
+            qkv_order);
+    auto key_tensor = make_uniform_tensor(tensor_factory,
+            {batch, num_heads, kv_seq_len, head_dim}, data_type_t::f32, 1.0,
+            qkv_order);
+    auto value_tensor = make_uniform_tensor(tensor_factory,
+            {batch, num_heads, kv_seq_len, head_dim}, data_type_t::f32, 1.0,
+            qkv_order);
+    tensor_t mask_tensor;
 
-  auto output_tensor      = make_zero_tensor(tensor_factory,
-  {batch, num_heads, seq_len, head_dim},
-  data_type_t::f32, qkv_order);
-  auto output_tensor_ref  = make_zero_tensor(tensor_factory,
-  {batch, num_heads, seq_len, head_dim},
-  data_type_t::f32, qkv_order);
+    auto output_tensor = make_zero_tensor(tensor_factory,
+            {batch, num_heads, seq_len, head_dim}, data_type_t::f32, qkv_order);
+    auto output_tensor_ref = make_zero_tensor(tensor_factory,
+            {batch, num_heads, seq_len, head_dim}, data_type_t::f32, qkv_order);
 
-  status_t status         = sdpa_kernel_test(query_tensor, key_tensor,
-                            value_tensor, mask_tensor, output_tensor,
-                            scale, /*is_causal=*/true, /*has_mask=*/false, sdpa_kernel_t::flash);
-  status_t ref_status     = sdpa_kernel_test(query_tensor,
-                            key_tensor, value_tensor, mask_tensor,
-                            output_tensor_ref, scale,
-                            /*is_causal=*/true, /*has_mask=*/false, sdpa_kernel_t::reference);
+    status_t status = sdpa_kernel_test(query_tensor, key_tensor, value_tensor,
+            mask_tensor, output_tensor, scale, /*is_causal=*/true,
+            /*has_mask=*/false, sdpa_kernel_t::flash);
+    status_t ref_status = sdpa_kernel_test(query_tensor, key_tensor,
+            value_tensor, mask_tensor, output_tensor_ref, scale,
+            /*is_causal=*/true, /*has_mask=*/false, sdpa_kernel_t::reference);
 
-  bool is_test_successful =
-    (status == status_t::success && ref_status == status_t::success);
+    bool is_test_successful
+            = (status == status_t::success && ref_status == status_t::success);
 
-  if (is_test_successful) {
-    compare_tensor_4D_sdpa(output_tensor, output_tensor_ref,
-                           batch, num_heads, seq_len, kv_seq_len, head_dim,
-                           rtol_f32, epsilon_f32, is_test_successful);
-  }
+    if (is_test_successful) {
+        compare_tensor_4D_sdpa(output_tensor, output_tensor_ref, batch,
+                num_heads, seq_len, kv_seq_len, head_dim, rtol_f32, epsilon_f32,
+                is_test_successful);
+    }
 
-  EXPECT_TRUE(is_test_successful);
+    EXPECT_TRUE(is_test_successful);
 }
 
 /** @fn TEST_P
@@ -670,110 +624,101 @@ TEST_P(TestSdpa, F32_F32_CAUSAL) {
  *         per instance via the fixture's @c qkv_order.
  */
 TEST_P(TestSdpa, F32_F32_MASK) {
-  auto query_tensor       = make_uniform_tensor(tensor_factory,
-  {batch, num_heads, seq_len, head_dim},
-  data_type_t::f32, 1.0, qkv_order);
-  auto key_tensor         = make_uniform_tensor(tensor_factory,
-  {batch, num_heads, kv_seq_len, head_dim},
-  data_type_t::f32, 1.0, qkv_order);
-  auto value_tensor       = make_uniform_tensor(tensor_factory,
-  {batch, num_heads, kv_seq_len, head_dim},
-  data_type_t::f32, 1.0, qkv_order);
-  // Mask: small additive values (typically 0 or small negatives).
-  // Avoid -inf in randomized test to prevent fully-masked rows -> NaN softmax.
-  // Use [1, 1, S_q, S_kv] broadcast layout — see F32_F32 test for rationale.
-  auto mask_tensor        = tensor_factory.uniform_dist_tensor(
-  {1UL, 1UL, seq_len, kv_seq_len},
-  data_type_t::f32, 0.5);
+    auto query_tensor = make_uniform_tensor(tensor_factory,
+            {batch, num_heads, seq_len, head_dim}, data_type_t::f32, 1.0,
+            qkv_order);
+    auto key_tensor = make_uniform_tensor(tensor_factory,
+            {batch, num_heads, kv_seq_len, head_dim}, data_type_t::f32, 1.0,
+            qkv_order);
+    auto value_tensor = make_uniform_tensor(tensor_factory,
+            {batch, num_heads, kv_seq_len, head_dim}, data_type_t::f32, 1.0,
+            qkv_order);
+    // Mask: small additive values (typically 0 or small negatives).
+    // Avoid -inf in randomized test to prevent fully-masked rows -> NaN softmax.
+    // Use [1, 1, S_q, S_kv] broadcast layout — see F32_F32 test for rationale.
+    auto mask_tensor = tensor_factory.uniform_dist_tensor(
+            {1UL, 1UL, seq_len, kv_seq_len}, data_type_t::f32, 0.5);
 
-  auto output_tensor      = make_zero_tensor(tensor_factory,
-  {batch, num_heads, seq_len, head_dim},
-  data_type_t::f32, qkv_order);
-  auto output_tensor_ref  = make_zero_tensor(tensor_factory,
-  {batch, num_heads, seq_len, head_dim},
-  data_type_t::f32, qkv_order);
+    auto output_tensor = make_zero_tensor(tensor_factory,
+            {batch, num_heads, seq_len, head_dim}, data_type_t::f32, qkv_order);
+    auto output_tensor_ref = make_zero_tensor(tensor_factory,
+            {batch, num_heads, seq_len, head_dim}, data_type_t::f32, qkv_order);
 
-  status_t status         = sdpa_kernel_test(query_tensor, key_tensor,
-                            value_tensor, mask_tensor, output_tensor,
-                            scale, /*is_causal=*/false, /*has_mask=*/true, sdpa_kernel_t::flash);
-  status_t ref_status     = sdpa_kernel_test(query_tensor,
-                            key_tensor, value_tensor, mask_tensor,
-                            output_tensor_ref, scale,
-                            /*is_causal=*/false, /*has_mask=*/true, sdpa_kernel_t::reference);
+    status_t status = sdpa_kernel_test(query_tensor, key_tensor, value_tensor,
+            mask_tensor, output_tensor, scale, /*is_causal=*/false,
+            /*has_mask=*/true, sdpa_kernel_t::flash);
+    status_t ref_status = sdpa_kernel_test(query_tensor, key_tensor,
+            value_tensor, mask_tensor, output_tensor_ref, scale,
+            /*is_causal=*/false, /*has_mask=*/true, sdpa_kernel_t::reference);
 
-  bool is_test_successful =
-    (status == status_t::success && ref_status == status_t::success);
+    bool is_test_successful
+            = (status == status_t::success && ref_status == status_t::success);
 
-  if (is_test_successful) {
-    compare_tensor_4D_sdpa(output_tensor, output_tensor_ref,
-                           batch, num_heads, seq_len, kv_seq_len, head_dim,
-                           rtol_f32, epsilon_f32, is_test_successful);
-  }
+    if (is_test_successful) {
+        compare_tensor_4D_sdpa(output_tensor, output_tensor_ref, batch,
+                num_heads, seq_len, kv_seq_len, head_dim, rtol_f32, epsilon_f32,
+                is_test_successful);
+    }
 
-  EXPECT_TRUE(is_test_successful);
+    EXPECT_TRUE(is_test_successful);
 }
 
 TEST(SdpaGqaTest, F32_GQA_MASK_MATCHES_EXPANDED_KV) {
-  tensor_factory_t tensor_factory;
-  constexpr uint64_t batch = 2;
-  constexpr uint64_t num_heads = 8;
-  constexpr uint64_t kv_num_heads = 2;
-  constexpr uint64_t seq_len_q = 5;
-  constexpr uint64_t seq_len_kv = 7;
-  constexpr uint64_t head_dim = 16;
+    tensor_factory_t tensor_factory;
+    constexpr uint64_t batch = 2;
+    constexpr uint64_t num_heads = 8;
+    constexpr uint64_t kv_num_heads = 2;
+    constexpr uint64_t seq_len_q = 5;
+    constexpr uint64_t seq_len_kv = 7;
+    constexpr uint64_t head_dim = 16;
 
-  auto query_tensor = make_uniform_tensor(tensor_factory,
-  {batch, num_heads, seq_len_q, head_dim},
-  data_type_t::f32, 1.0, kBhsdOrder);
-  auto key_tensor = make_uniform_tensor(tensor_factory,
-  {batch, kv_num_heads, seq_len_kv, head_dim},
-  data_type_t::f32, 1.0, kBhsdOrder);
-  auto value_tensor = make_uniform_tensor(tensor_factory,
-  {batch, kv_num_heads, seq_len_kv, head_dim},
-  data_type_t::f32, 1.0, kBhsdOrder);
+    auto query_tensor = make_uniform_tensor(tensor_factory,
+            {batch, num_heads, seq_len_q, head_dim}, data_type_t::f32, 1.0,
+            kBhsdOrder);
+    auto key_tensor = make_uniform_tensor(tensor_factory,
+            {batch, kv_num_heads, seq_len_kv, head_dim}, data_type_t::f32, 1.0,
+            kBhsdOrder);
+    auto value_tensor = make_uniform_tensor(tensor_factory,
+            {batch, kv_num_heads, seq_len_kv, head_dim}, data_type_t::f32, 1.0,
+            kBhsdOrder);
 
-  auto key_tensor_expanded = make_zero_tensor(tensor_factory,
-  {batch, num_heads, seq_len_kv, head_dim},
-  data_type_t::f32, kBhsdOrder);
-  auto value_tensor_expanded = make_zero_tensor(tensor_factory,
-  {batch, num_heads, seq_len_kv, head_dim},
-  data_type_t::f32, kBhsdOrder);
-  expand_gqa_kv_tensor(key_tensor, key_tensor_expanded,
-                       batch, num_heads, kv_num_heads,
-                       seq_len_kv, head_dim);
-  expand_gqa_kv_tensor(value_tensor, value_tensor_expanded,
-                       batch, num_heads, kv_num_heads,
-                       seq_len_kv, head_dim);
+    auto key_tensor_expanded = make_zero_tensor(tensor_factory,
+            {batch, num_heads, seq_len_kv, head_dim}, data_type_t::f32,
+            kBhsdOrder);
+    auto value_tensor_expanded = make_zero_tensor(tensor_factory,
+            {batch, num_heads, seq_len_kv, head_dim}, data_type_t::f32,
+            kBhsdOrder);
+    expand_gqa_kv_tensor(key_tensor, key_tensor_expanded, batch, num_heads,
+            kv_num_heads, seq_len_kv, head_dim);
+    expand_gqa_kv_tensor(value_tensor, value_tensor_expanded, batch, num_heads,
+            kv_num_heads, seq_len_kv, head_dim);
 
-  auto mask_tensor = tensor_factory.uniform_dist_tensor(
-  {batch, num_heads, seq_len_q, seq_len_kv},
-  data_type_t::f32, 0.5);
-  auto output_tensor = make_zero_tensor(tensor_factory,
-  {batch, num_heads, seq_len_q, head_dim},
-  data_type_t::f32, kBhsdOrder);
-  auto output_tensor_ref = make_zero_tensor(tensor_factory,
-  {batch, num_heads, seq_len_q, head_dim},
-  data_type_t::f32, kBhsdOrder);
+    auto mask_tensor = tensor_factory.uniform_dist_tensor(
+            {batch, num_heads, seq_len_q, seq_len_kv}, data_type_t::f32, 0.5);
+    auto output_tensor = make_zero_tensor(tensor_factory,
+            {batch, num_heads, seq_len_q, head_dim}, data_type_t::f32,
+            kBhsdOrder);
+    auto output_tensor_ref = make_zero_tensor(tensor_factory,
+            {batch, num_heads, seq_len_q, head_dim}, data_type_t::f32,
+            kBhsdOrder);
 
-  status_t status = sdpa_kernel_test(query_tensor, key_tensor,
-                                     value_tensor, mask_tensor,
-                                     output_tensor, /*scale=*/0.0f,
-                                     /*is_causal=*/false,
-                                     /*has_mask=*/true, sdpa_kernel_t::flash);
-  status_t ref_status = sdpa_kernel_test(query_tensor, key_tensor,
-                                         value_tensor, mask_tensor,
-                                         output_tensor_ref, /*scale=*/0.0f,
-                                         /*is_causal=*/false,
-                                         /*has_mask=*/true, sdpa_kernel_t::reference);
+    status_t status = sdpa_kernel_test(query_tensor, key_tensor, value_tensor,
+            mask_tensor, output_tensor, /*scale=*/0.0f,
+            /*is_causal=*/false,
+            /*has_mask=*/true, sdpa_kernel_t::flash);
+    status_t ref_status = sdpa_kernel_test(query_tensor, key_tensor,
+            value_tensor, mask_tensor, output_tensor_ref, /*scale=*/0.0f,
+            /*is_causal=*/false,
+            /*has_mask=*/true, sdpa_kernel_t::reference);
 
-  ASSERT_EQ(status, status_t::success);
-  ASSERT_EQ(ref_status, status_t::success);
+    ASSERT_EQ(status, status_t::success);
+    ASSERT_EQ(ref_status, status_t::success);
 
-  bool is_test_successful = true;
-  compare_tensor_4D_sdpa(output_tensor, output_tensor_ref,
-                         batch, num_heads, seq_len_q, seq_len_kv, head_dim,
-                         rtol_f32, epsilon_f32, is_test_successful);
-  EXPECT_TRUE(is_test_successful);
+    bool is_test_successful = true;
+    compare_tensor_4D_sdpa(output_tensor, output_tensor_ref, batch, num_heads,
+            seq_len_q, seq_len_kv, head_dim, rtol_f32, epsilon_f32,
+            is_test_successful);
+    EXPECT_TRUE(is_test_successful);
 }
 
 /** @fn TEST_P
@@ -784,53 +729,52 @@ TEST(SdpaGqaTest, F32_GQA_MASK_MATCHES_EXPANDED_KV) {
  *         storage; arithmetic in both kernels accumulates in FP32 internally.
  */
 TEST_P(TestSdpa, BF16_BF16) {
-  auto query_tensor       = make_uniform_tensor(tensor_factory,
-  {batch, num_heads, seq_len, head_dim},
-  data_type_t::bf16, 1.0, qkv_order);
-  auto key_tensor         = make_uniform_tensor(tensor_factory,
-  {batch, num_heads, kv_seq_len, head_dim},
-  data_type_t::bf16, 1.0, qkv_order);
-  auto value_tensor       = make_uniform_tensor(tensor_factory,
-  {batch, num_heads, kv_seq_len, head_dim},
-  data_type_t::bf16, 1.0, qkv_order);
+    auto query_tensor = make_uniform_tensor(tensor_factory,
+            {batch, num_heads, seq_len, head_dim}, data_type_t::bf16, 1.0,
+            qkv_order);
+    auto key_tensor = make_uniform_tensor(tensor_factory,
+            {batch, num_heads, kv_seq_len, head_dim}, data_type_t::bf16, 1.0,
+            qkv_order);
+    auto value_tensor = make_uniform_tensor(tensor_factory,
+            {batch, num_heads, kv_seq_len, head_dim}, data_type_t::bf16, 1.0,
+            qkv_order);
 
-  // For BF16 QKV both FP32 and BF16 additive masks are supported by the
-  // LOWOHA reference and flash backends; the fixture's mask_dt
-  // (randomised in SetUp) selects one per (seed, params) instance so both
-  // code paths get exercised across parameterisations. The mask is applied
-  // to the FP32 score buffer either way (the BF16 path converts each
-  // element to float at add time). Use [1, 1, S_q, S_kv] broadcast so the
-  // reference's per-(b, h) mask advance and LOWOHA's broadcast agree.
-  auto mask_tensor        = has_mask ?
-                            tensor_factory.uniform_dist_tensor(
-  {1UL, 1UL, seq_len, kv_seq_len},
-  mask_dt, 0.5)
-    : tensor_t();
+    // For BF16 QKV both FP32 and BF16 additive masks are supported by the
+    // LOWOHA reference and flash backends; the fixture's mask_dt
+    // (randomised in SetUp) selects one per (seed, params) instance so both
+    // code paths get exercised across parameterisations. The mask is applied
+    // to the FP32 score buffer either way (the BF16 path converts each
+    // element to float at add time). Use [1, 1, S_q, S_kv] broadcast so the
+    // reference's per-(b, h) mask advance and LOWOHA's broadcast agree.
+    auto mask_tensor = has_mask
+            ? tensor_factory.uniform_dist_tensor(
+                      {1UL, 1UL, seq_len, kv_seq_len}, mask_dt, 0.5)
+            : tensor_t();
 
-  auto output_tensor      = make_zero_tensor(tensor_factory,
-  {batch, num_heads, seq_len, head_dim},
-  data_type_t::bf16, qkv_order);
-  auto output_tensor_ref  = make_zero_tensor(tensor_factory,
-  {batch, num_heads, seq_len, head_dim},
-  data_type_t::bf16, qkv_order);
+    auto output_tensor = make_zero_tensor(tensor_factory,
+            {batch, num_heads, seq_len, head_dim}, data_type_t::bf16,
+            qkv_order);
+    auto output_tensor_ref = make_zero_tensor(tensor_factory,
+            {batch, num_heads, seq_len, head_dim}, data_type_t::bf16,
+            qkv_order);
 
-  status_t status         = sdpa_kernel_test(query_tensor, key_tensor,
-                            value_tensor, mask_tensor, output_tensor,
-                            scale, is_causal, has_mask, sdpa_kernel_t::flash);
-  status_t ref_status     = sdpa_kernel_test(query_tensor,
-                            key_tensor, value_tensor, mask_tensor,
-                            output_tensor_ref, scale, is_causal, has_mask, sdpa_kernel_t::reference);
+    status_t status = sdpa_kernel_test(query_tensor, key_tensor, value_tensor,
+            mask_tensor, output_tensor, scale, is_causal, has_mask,
+            sdpa_kernel_t::flash);
+    status_t ref_status = sdpa_kernel_test(query_tensor, key_tensor,
+            value_tensor, mask_tensor, output_tensor_ref, scale, is_causal,
+            has_mask, sdpa_kernel_t::reference);
 
-  bool is_test_successful =
-    (status == status_t::success && ref_status == status_t::success);
+    bool is_test_successful
+            = (status == status_t::success && ref_status == status_t::success);
 
-  if (is_test_successful) {
-    compare_tensor_4D_sdpa(output_tensor, output_tensor_ref,
-                           batch, num_heads, seq_len, kv_seq_len, head_dim,
-                           rtol_bf16, epsilon_bf16, is_test_successful);
-  }
+    if (is_test_successful) {
+        compare_tensor_4D_sdpa(output_tensor, output_tensor_ref, batch,
+                num_heads, seq_len, kv_seq_len, head_dim, rtol_bf16,
+                epsilon_bf16, is_test_successful);
+    }
 
-  EXPECT_TRUE(is_test_successful);
+    EXPECT_TRUE(is_test_successful);
 }
 
 /** @fn TEST_P
@@ -841,42 +785,41 @@ TEST_P(TestSdpa, BF16_BF16) {
  *         BSHD) is randomised per instance via the fixture's @c qkv_order.
  */
 TEST_P(TestSdpa, BF16_BF16_NO_MASK) {
-  auto query_tensor       = make_uniform_tensor(tensor_factory,
-  {batch, num_heads, seq_len, head_dim},
-  data_type_t::bf16, 1.0, qkv_order);
-  auto key_tensor         = make_uniform_tensor(tensor_factory,
-  {batch, num_heads, kv_seq_len, head_dim},
-  data_type_t::bf16, 1.0, qkv_order);
-  auto value_tensor       = make_uniform_tensor(tensor_factory,
-  {batch, num_heads, kv_seq_len, head_dim},
-  data_type_t::bf16, 1.0, qkv_order);
-  tensor_t mask_tensor;  // empty: has_mask=false
+    auto query_tensor = make_uniform_tensor(tensor_factory,
+            {batch, num_heads, seq_len, head_dim}, data_type_t::bf16, 1.0,
+            qkv_order);
+    auto key_tensor = make_uniform_tensor(tensor_factory,
+            {batch, num_heads, kv_seq_len, head_dim}, data_type_t::bf16, 1.0,
+            qkv_order);
+    auto value_tensor = make_uniform_tensor(tensor_factory,
+            {batch, num_heads, kv_seq_len, head_dim}, data_type_t::bf16, 1.0,
+            qkv_order);
+    tensor_t mask_tensor; // empty: has_mask=false
 
-  auto output_tensor      = make_zero_tensor(tensor_factory,
-  {batch, num_heads, seq_len, head_dim},
-  data_type_t::bf16, qkv_order);
-  auto output_tensor_ref  = make_zero_tensor(tensor_factory,
-  {batch, num_heads, seq_len, head_dim},
-  data_type_t::bf16, qkv_order);
+    auto output_tensor = make_zero_tensor(tensor_factory,
+            {batch, num_heads, seq_len, head_dim}, data_type_t::bf16,
+            qkv_order);
+    auto output_tensor_ref = make_zero_tensor(tensor_factory,
+            {batch, num_heads, seq_len, head_dim}, data_type_t::bf16,
+            qkv_order);
 
-  status_t status         = sdpa_kernel_test(query_tensor, key_tensor,
-                            value_tensor, mask_tensor, output_tensor,
-                            scale, /*is_causal=*/false, /*has_mask=*/false, sdpa_kernel_t::flash);
-  status_t ref_status     = sdpa_kernel_test(query_tensor,
-                            key_tensor, value_tensor, mask_tensor,
-                            output_tensor_ref, scale,
-                            /*is_causal=*/false, /*has_mask=*/false, sdpa_kernel_t::reference);
+    status_t status = sdpa_kernel_test(query_tensor, key_tensor, value_tensor,
+            mask_tensor, output_tensor, scale, /*is_causal=*/false,
+            /*has_mask=*/false, sdpa_kernel_t::flash);
+    status_t ref_status = sdpa_kernel_test(query_tensor, key_tensor,
+            value_tensor, mask_tensor, output_tensor_ref, scale,
+            /*is_causal=*/false, /*has_mask=*/false, sdpa_kernel_t::reference);
 
-  bool is_test_successful =
-    (status == status_t::success && ref_status == status_t::success);
+    bool is_test_successful
+            = (status == status_t::success && ref_status == status_t::success);
 
-  if (is_test_successful) {
-    compare_tensor_4D_sdpa(output_tensor, output_tensor_ref,
-                           batch, num_heads, seq_len, kv_seq_len, head_dim,
-                           rtol_bf16, epsilon_bf16, is_test_successful);
-  }
+    if (is_test_successful) {
+        compare_tensor_4D_sdpa(output_tensor, output_tensor_ref, batch,
+                num_heads, seq_len, kv_seq_len, head_dim, rtol_bf16,
+                epsilon_bf16, is_test_successful);
+    }
 
-  EXPECT_TRUE(is_test_successful);
+    EXPECT_TRUE(is_test_successful);
 }
 
 /** @fn TEST_P
@@ -887,42 +830,41 @@ TEST_P(TestSdpa, BF16_BF16_NO_MASK) {
  *         BSHD) is randomised per instance via the fixture's @c qkv_order.
  */
 TEST_P(TestSdpa, BF16_BF16_CAUSAL) {
-  auto query_tensor       = make_uniform_tensor(tensor_factory,
-  {batch, num_heads, seq_len, head_dim},
-  data_type_t::bf16, 1.0, qkv_order);
-  auto key_tensor         = make_uniform_tensor(tensor_factory,
-  {batch, num_heads, kv_seq_len, head_dim},
-  data_type_t::bf16, 1.0, qkv_order);
-  auto value_tensor       = make_uniform_tensor(tensor_factory,
-  {batch, num_heads, kv_seq_len, head_dim},
-  data_type_t::bf16, 1.0, qkv_order);
-  tensor_t mask_tensor;
+    auto query_tensor = make_uniform_tensor(tensor_factory,
+            {batch, num_heads, seq_len, head_dim}, data_type_t::bf16, 1.0,
+            qkv_order);
+    auto key_tensor = make_uniform_tensor(tensor_factory,
+            {batch, num_heads, kv_seq_len, head_dim}, data_type_t::bf16, 1.0,
+            qkv_order);
+    auto value_tensor = make_uniform_tensor(tensor_factory,
+            {batch, num_heads, kv_seq_len, head_dim}, data_type_t::bf16, 1.0,
+            qkv_order);
+    tensor_t mask_tensor;
 
-  auto output_tensor      = make_zero_tensor(tensor_factory,
-  {batch, num_heads, seq_len, head_dim},
-  data_type_t::bf16, qkv_order);
-  auto output_tensor_ref  = make_zero_tensor(tensor_factory,
-  {batch, num_heads, seq_len, head_dim},
-  data_type_t::bf16, qkv_order);
+    auto output_tensor = make_zero_tensor(tensor_factory,
+            {batch, num_heads, seq_len, head_dim}, data_type_t::bf16,
+            qkv_order);
+    auto output_tensor_ref = make_zero_tensor(tensor_factory,
+            {batch, num_heads, seq_len, head_dim}, data_type_t::bf16,
+            qkv_order);
 
-  status_t status         = sdpa_kernel_test(query_tensor, key_tensor,
-                            value_tensor, mask_tensor, output_tensor,
-                            scale, /*is_causal=*/true, /*has_mask=*/false, sdpa_kernel_t::flash);
-  status_t ref_status     = sdpa_kernel_test(query_tensor,
-                            key_tensor, value_tensor, mask_tensor,
-                            output_tensor_ref, scale,
-                            /*is_causal=*/true, /*has_mask=*/false, sdpa_kernel_t::reference);
+    status_t status = sdpa_kernel_test(query_tensor, key_tensor, value_tensor,
+            mask_tensor, output_tensor, scale, /*is_causal=*/true,
+            /*has_mask=*/false, sdpa_kernel_t::flash);
+    status_t ref_status = sdpa_kernel_test(query_tensor, key_tensor,
+            value_tensor, mask_tensor, output_tensor_ref, scale,
+            /*is_causal=*/true, /*has_mask=*/false, sdpa_kernel_t::reference);
 
-  bool is_test_successful =
-    (status == status_t::success && ref_status == status_t::success);
+    bool is_test_successful
+            = (status == status_t::success && ref_status == status_t::success);
 
-  if (is_test_successful) {
-    compare_tensor_4D_sdpa(output_tensor, output_tensor_ref,
-                           batch, num_heads, seq_len, kv_seq_len, head_dim,
-                           rtol_bf16, epsilon_bf16, is_test_successful);
-  }
+    if (is_test_successful) {
+        compare_tensor_4D_sdpa(output_tensor, output_tensor_ref, batch,
+                num_heads, seq_len, kv_seq_len, head_dim, rtol_bf16,
+                epsilon_bf16, is_test_successful);
+    }
 
-  EXPECT_TRUE(is_test_successful);
+    EXPECT_TRUE(is_test_successful);
 }
 
 /** @fn TEST_P
@@ -937,46 +879,44 @@ TEST_P(TestSdpa, BF16_BF16_CAUSAL) {
  *         fixture's @c qkv_order.
  */
 TEST_P(TestSdpa, BF16_BF16_MASK) {
-  auto query_tensor       = make_uniform_tensor(tensor_factory,
-  {batch, num_heads, seq_len, head_dim},
-  data_type_t::bf16, 1.0, qkv_order);
-  auto key_tensor         = make_uniform_tensor(tensor_factory,
-  {batch, num_heads, kv_seq_len, head_dim},
-  data_type_t::bf16, 1.0, qkv_order);
-  auto value_tensor       = make_uniform_tensor(tensor_factory,
-  {batch, num_heads, kv_seq_len, head_dim},
-  data_type_t::bf16, 1.0, qkv_order);
-  // Mask dtype is mask_dt (f32 or bf16; see SetUp), [1, 1, S_q, S_kv]
-  // broadcast — see BF16_BF16 for the broadcast-shape rationale.
-  auto mask_tensor        = tensor_factory.uniform_dist_tensor(
-  {1UL, 1UL, seq_len, kv_seq_len},
-  mask_dt, 0.5);
+    auto query_tensor = make_uniform_tensor(tensor_factory,
+            {batch, num_heads, seq_len, head_dim}, data_type_t::bf16, 1.0,
+            qkv_order);
+    auto key_tensor = make_uniform_tensor(tensor_factory,
+            {batch, num_heads, kv_seq_len, head_dim}, data_type_t::bf16, 1.0,
+            qkv_order);
+    auto value_tensor = make_uniform_tensor(tensor_factory,
+            {batch, num_heads, kv_seq_len, head_dim}, data_type_t::bf16, 1.0,
+            qkv_order);
+    // Mask dtype is mask_dt (f32 or bf16; see SetUp), [1, 1, S_q, S_kv]
+    // broadcast — see BF16_BF16 for the broadcast-shape rationale.
+    auto mask_tensor = tensor_factory.uniform_dist_tensor(
+            {1UL, 1UL, seq_len, kv_seq_len}, mask_dt, 0.5);
 
-  auto output_tensor      = make_zero_tensor(tensor_factory,
-  {batch, num_heads, seq_len, head_dim},
-  data_type_t::bf16, qkv_order);
-  auto output_tensor_ref  = make_zero_tensor(tensor_factory,
-  {batch, num_heads, seq_len, head_dim},
-  data_type_t::bf16, qkv_order);
+    auto output_tensor = make_zero_tensor(tensor_factory,
+            {batch, num_heads, seq_len, head_dim}, data_type_t::bf16,
+            qkv_order);
+    auto output_tensor_ref = make_zero_tensor(tensor_factory,
+            {batch, num_heads, seq_len, head_dim}, data_type_t::bf16,
+            qkv_order);
 
-  status_t status         = sdpa_kernel_test(query_tensor, key_tensor,
-                            value_tensor, mask_tensor, output_tensor,
-                            scale, /*is_causal=*/false, /*has_mask=*/true, sdpa_kernel_t::flash);
-  status_t ref_status     = sdpa_kernel_test(query_tensor,
-                            key_tensor, value_tensor, mask_tensor,
-                            output_tensor_ref, scale,
-                            /*is_causal=*/false, /*has_mask=*/true, sdpa_kernel_t::reference);
+    status_t status = sdpa_kernel_test(query_tensor, key_tensor, value_tensor,
+            mask_tensor, output_tensor, scale, /*is_causal=*/false,
+            /*has_mask=*/true, sdpa_kernel_t::flash);
+    status_t ref_status = sdpa_kernel_test(query_tensor, key_tensor,
+            value_tensor, mask_tensor, output_tensor_ref, scale,
+            /*is_causal=*/false, /*has_mask=*/true, sdpa_kernel_t::reference);
 
-  bool is_test_successful =
-    (status == status_t::success && ref_status == status_t::success);
+    bool is_test_successful
+            = (status == status_t::success && ref_status == status_t::success);
 
-  if (is_test_successful) {
-    compare_tensor_4D_sdpa(output_tensor, output_tensor_ref,
-                           batch, num_heads, seq_len, kv_seq_len, head_dim,
-                           rtol_bf16, epsilon_bf16, is_test_successful);
-  }
+    if (is_test_successful) {
+        compare_tensor_4D_sdpa(output_tensor, output_tensor_ref, batch,
+                num_heads, seq_len, kv_seq_len, head_dim, rtol_bf16,
+                epsilon_bf16, is_test_successful);
+    }
 
-  EXPECT_TRUE(is_test_successful);
+    EXPECT_TRUE(is_test_successful);
 }
 
 /** @fn TEST_P
@@ -993,11 +933,9 @@ TEST_P(TestSdpa, BF16_BF16_MASK) {
  *  AVX-NE-CONVERT.
  */
 TEST_P(TestSdpa, F16_F16) {
-  run_sdpa_f16_test(tensor_factory, batch, num_heads,
-                    seq_len, kv_seq_len, head_dim,
-                    scale, is_causal, has_mask,
-                    /*mask_shape=*/{1UL, 1UL, seq_len, kv_seq_len},
-                    qkv_order);
+    run_sdpa_f16_test(tensor_factory, batch, num_heads, seq_len, kv_seq_len,
+            head_dim, scale, is_causal, has_mask,
+            /*mask_shape=*/ {1UL, 1UL, seq_len, kv_seq_len}, qkv_order);
 }
 
 /** @fn TEST_P
@@ -1008,11 +946,9 @@ TEST_P(TestSdpa, F16_F16) {
  *         storage; skipped on systems without an F16-capable ISA.
  */
 TEST_P(TestSdpa, F16_F16_NO_MASK) {
-  run_sdpa_f16_test(tensor_factory, batch, num_heads,
-                    seq_len, kv_seq_len, head_dim,
-                    scale, /*is_causal=*/false, /*has_mask=*/false,
-                    /*mask_shape=*/{},
-                    qkv_order);
+    run_sdpa_f16_test(tensor_factory, batch, num_heads, seq_len, kv_seq_len,
+            head_dim, scale, /*is_causal=*/false, /*has_mask=*/false,
+            /*mask_shape=*/ {}, qkv_order);
 }
 
 /** @fn TEST_P
@@ -1023,11 +959,9 @@ TEST_P(TestSdpa, F16_F16_NO_MASK) {
  *         storage; skipped on systems without an F16-capable ISA.
  */
 TEST_P(TestSdpa, F16_F16_CAUSAL) {
-  run_sdpa_f16_test(tensor_factory, batch, num_heads,
-                    seq_len, kv_seq_len, head_dim,
-                    scale, /*is_causal=*/true, /*has_mask=*/false,
-                    /*mask_shape=*/{},
-                    qkv_order);
+    run_sdpa_f16_test(tensor_factory, batch, num_heads, seq_len, kv_seq_len,
+            head_dim, scale, /*is_causal=*/true, /*has_mask=*/false,
+            /*mask_shape=*/ {}, qkv_order);
 }
 
 /** @fn TEST_P
@@ -1040,11 +974,9 @@ TEST_P(TestSdpa, F16_F16_CAUSAL) {
  *         without an F16-capable ISA.
  */
 TEST_P(TestSdpa, F16_F16_MASK) {
-  run_sdpa_f16_test(tensor_factory, batch, num_heads,
-                    seq_len, kv_seq_len, head_dim,
-                    scale, /*is_causal=*/false, /*has_mask=*/true,
-                    /*mask_shape=*/{1UL, 1UL, seq_len, kv_seq_len},
-                    qkv_order);
+    run_sdpa_f16_test(tensor_factory, batch, num_heads, seq_len, kv_seq_len,
+            head_dim, scale, /*is_causal=*/false, /*has_mask=*/true,
+            /*mask_shape=*/ {1UL, 1UL, seq_len, kv_seq_len}, qkv_order);
 }
 
 // ---------------------------------------------------------------------------
@@ -1060,26 +992,22 @@ TEST_P(TestSdpa, F16_F16_MASK) {
 /** @brief F32 SDPA mask-layout coverage with random mask shape and random
  *         BHSD/BSHD Q/K/V/output layout. */
 TEST_P(TestSdpa, F32_F32_MASK_LAYOUT) {
-  run_sdpa_mask_layout_test(tensor_factory, batch, num_heads,
-                            seq_len, kv_seq_len, head_dim,
-                            scale, /*is_causal=*/false,
-                            data_type_t::f32,
-                            resolve_mask_shape(mask_shape_kind, batch,
-                                num_heads, seq_len, kv_seq_len),
-                            qkv_order, rtol_f32, epsilon_f32);
+    run_sdpa_mask_layout_test(tensor_factory, batch, num_heads, seq_len,
+            kv_seq_len, head_dim, scale, /*is_causal=*/false, data_type_t::f32,
+            resolve_mask_shape(
+                    mask_shape_kind, batch, num_heads, seq_len, kv_seq_len),
+            qkv_order, rtol_f32, epsilon_f32);
 }
 
 /** @brief BF16 SDPA mask-layout coverage with random mask shape, random
  *         mask dtype (FP32 or BF16), and random BHSD/BSHD Q/K/V/output
  *         layout. */
 TEST_P(TestSdpa, BF16_BF16_MASK_LAYOUT) {
-  run_sdpa_mask_layout_test(tensor_factory, batch, num_heads,
-                            seq_len, kv_seq_len, head_dim,
-                            scale, /*is_causal=*/false,
-                            data_type_t::bf16,
-                            resolve_mask_shape(mask_shape_kind, batch,
-                                num_heads, seq_len, kv_seq_len),
-                            qkv_order, rtol_bf16, epsilon_bf16, mask_dt);
+    run_sdpa_mask_layout_test(tensor_factory, batch, num_heads, seq_len,
+            kv_seq_len, head_dim, scale, /*is_causal=*/false, data_type_t::bf16,
+            resolve_mask_shape(
+                    mask_shape_kind, batch, num_heads, seq_len, kv_seq_len),
+            qkv_order, rtol_bf16, epsilon_bf16, mask_dt);
 }
 
 /** @brief F16 SDPA mask-layout coverage with random mask shape and random
@@ -1087,16 +1015,14 @@ TEST_P(TestSdpa, BF16_BF16_MASK_LAYOUT) {
  *         reference backends accept the FP32 mask used here.
  *         Skipped on systems without an F16-capable ISA. */
 TEST_P(TestSdpa, F16_F16_MASK_LAYOUT) {
-  run_sdpa_f16_test(tensor_factory, batch, num_heads,
-                    seq_len, kv_seq_len, head_dim,
-                    scale, /*is_causal=*/false, /*has_mask=*/true,
-                    resolve_mask_shape(mask_shape_kind, batch,
-                                       num_heads, seq_len, kv_seq_len),
-                    qkv_order);
+    run_sdpa_f16_test(tensor_factory, batch, num_heads, seq_len, kv_seq_len,
+            head_dim, scale, /*is_causal=*/false, /*has_mask=*/true,
+            resolve_mask_shape(
+                    mask_shape_kind, batch, num_heads, seq_len, kv_seq_len),
+            qkv_order);
 }
 
 /** @fn INSTANTIATE_TEST_SUITE_P
  *  @brief Triggers SDPA parameterized test suite
  */
-INSTANTIATE_TEST_SUITE_P(Sdpa, TestSdpa,
-                         ::testing::ValuesIn(sdpa_test));
+INSTANTIATE_TEST_SUITE_P(Sdpa, TestSdpa, ::testing::ValuesIn(sdpa_test));

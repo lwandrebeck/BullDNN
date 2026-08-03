@@ -1,5 +1,5 @@
 /********************************************************************************
-# * Copyright (c) 2023-2024 Advanced Micro Devices, Inc. All rights reserved.
+# * Copyright (c) 2023-2026 Advanced Micro Devices, Inc. All rights reserved.
 # *
 # * Licensed under the Apache License, Version 2.0 (the "License");
 # * you may not use this file except in compliance with the License.
@@ -16,7 +16,7 @@
 #ifndef _SAMPLE_KERNEL_LIST_HPP_
 #define _SAMPLE_KERNEL_LIST_HPP_
 
-#include "sample_fp32_avx512_kernel.hpp"
 #include "sample_bf16_avx512_kernel.hpp"
+#include "sample_fp32_avx512_kernel.hpp"
 
 #endif

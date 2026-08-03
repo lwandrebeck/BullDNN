@@ -1,5 +1,5 @@
 /********************************************************************************
-# * Copyright (c) 2023-2025 Advanced Micro Devices, Inc. All rights reserved.
+# * Copyright (c) 2023-2026 Advanced Micro Devices, Inc. All rights reserved.
 # *
 # * Licensed under the Apache License, Version 2.0 (the "License");
 # * you may not use this file except in compliance with the License.
@@ -21,69 +21,59 @@ namespace ops {
 
 status_t sample_impl_t::validate() {
 
-  if (parent_type::validate() != status_t::success) {
-    return status_t::failure;
-  }
+    if (parent_type::validate() != status_t::success) {
+        return status_t::failure;
+    }
 
-  if (!get_input("sample_input") || !get_output("sample_output")) {
-    return status_t::failure;
-  }
+    if (!get_input("sample_input") || !get_output("sample_output")) {
+        return status_t::failure;
+    }
 
-  return status_t::success;
+    return status_t::success;
 }
 
 std::string sample_impl_t::op_create_info() {
-  std::stringstream ss;
+    std::stringstream ss;
 
-  ss << "Sample operator create - ";
-  if (!(get_name().empty())) {
-    ss << get_name();
-  }
+    ss << "Sample operator create - ";
+    if (!(get_name().empty())) { ss << get_name(); }
 
-  return ss.str();
+    return ss.str();
 }
 
 std::string sample_impl_t::op_execute_info() {
-  std::stringstream ss;
+    std::stringstream ss;
 
-  ss << "Sample operator execute - ";
-  if (!(get_name().empty())) {
-    ss << get_name() << ",";
-  }
+    ss << "Sample operator execute - ";
+    if (!(get_name().empty())) { ss << get_name() << ","; }
 
-  auto input  = get_input("sample_input");
-  auto output = get_output("sample_output");
+    auto input = get_input("sample_input");
+    auto output = get_output("sample_output");
 
-  ss << input.value().tensor_info() << ","
-     << output.value().tensor_info();
+    ss << input.value().tensor_info() << "," << output.value().tensor_info();
 
-  return ss.str();
+    return ss.str();
 }
 
 status_t sample_impl_t::kernel_factory() {
 
-  auto input_dtype = get_input("sample_input")->get_data_type();
+    auto input_dtype = get_input("sample_input")->get_data_type();
 
-  if (input_dtype == data_type_t::f32) {
-    kernel = std::shared_ptr<sample_f32_avx512_kernel_t>
-             (get_sample_f32_avx512_kernel());
-  }
-  else if (input_dtype == data_type_t::bf16) {
-    kernel = std::shared_ptr<sample_bf16_avx512_kernel_t>
-             (get_sample_bf16_avx512_kernel());
-  }
-  else {
-    return status_t::unimplemented;
-  }
+    if (input_dtype == data_type_t::f32) {
+        kernel = std::shared_ptr<sample_f32_avx512_kernel_t>(
+                get_sample_f32_avx512_kernel());
+    } else if (input_dtype == data_type_t::bf16) {
+        kernel = std::shared_ptr<sample_bf16_avx512_kernel_t>(
+                get_sample_bf16_avx512_kernel());
+    } else {
+        return status_t::unimplemented;
+    }
 
-  kernel->create();
-  if (! kernel->check()) {
-    return status_t::failure;
-  }
+    kernel->create();
+    if (!kernel->check()) { return status_t::failure; }
 
-  return status_t::success;
+    return status_t::success;
 }
 
 } //namespace ops
 } //namespace zendnnl
-

@@ -79,28 +79,28 @@ enum class qkv_layout_t : int;
  * @var modelName    Model name (only populated in MODEL input mode).
  */
 struct SdpaConfig {
-  int64_t batch;
-  int64_t num_heads;
-  int64_t seq_len;
-  int64_t kv_seq_len;
-  int64_t head_dim;
-  zendnnl::common::data_type_t qkv_dt;
-  zendnnl::common::data_type_t out_dt;
-  int mask_ndims;
-  zendnnl::common::data_type_t mask_dt;
-  bool is_causal;
-  double scale;
-  double dropout_p;
-  int32_t num_threads;
-  // No default initializer here: that would name an enumerator and therefore
-  // require `qkv_layout_t` to be a complete type at this point, which it
-  // isn't (only forward-declared above to break the include cycle). All three
-  // parsers explicitly assign `qkv_layout` when constructing an SdpaConfig,
-  // so a default is unnecessary.
-  qkv_layout_t qkv_layout;
-  int iters;
-  int warmup_iters;
-  std::string modelName;
+    int64_t batch;
+    int64_t num_heads;
+    int64_t seq_len;
+    int64_t kv_seq_len;
+    int64_t head_dim;
+    zendnnl::common::data_type_t qkv_dt;
+    zendnnl::common::data_type_t out_dt;
+    int mask_ndims;
+    zendnnl::common::data_type_t mask_dt;
+    bool is_causal;
+    double scale;
+    double dropout_p;
+    int32_t num_threads;
+    // No default initializer here: that would name an enumerator and therefore
+    // require `qkv_layout_t` to be a complete type at this point, which it
+    // isn't (only forward-declared above to break the include cycle). All three
+    // parsers explicitly assign `qkv_layout` when constructing an SdpaConfig,
+    // so a default is unnecessary.
+    qkv_layout_t qkv_layout;
+    int iters;
+    int warmup_iters;
+    std::string modelName;
 };
 
 /**
@@ -155,8 +155,8 @@ void inputFileParser(std::ifstream &infile, std::vector<SdpaConfig> &configs);
 /**
  * @brief Builds a single SdpaConfig from CLI-provided global_options.
  */
-void inputCommandLineParser(std::vector<SdpaConfig> &configs,
-                            const global_options &options);
+void inputCommandLineParser(
+        std::vector<SdpaConfig> &configs, const global_options &options);
 
 /**
  * @brief Parses a model-shapes file into SdpaConfig list using global_options
@@ -166,8 +166,7 @@ void inputCommandLineParser(std::vector<SdpaConfig> &configs,
  *   ModelName, batch, num_heads, seq_len, kv_seq_len, head_dim
  */
 void inputModelFileParser(std::ifstream &infile,
-                          std::vector<SdpaConfig> &configs,
-                          const global_options &options);
+        std::vector<SdpaConfig> &configs, const global_options &options);
 
 /**
  * @brief Logs a detailed error message for a failed benchmark configuration.
@@ -177,14 +176,15 @@ void log_benchmark_failure(const SdpaConfig &cfg);
 /**
  * @brief Prints SDPA benchmark results in a formatted table to outfile.
  */
-void print_results(std::vector<std::pair<SdpaConfig, TimingStats>>
-                   &sdpa_results, std::ostream &outfile, const InputMode inputMode);
+void print_results(
+        std::vector<std::pair<SdpaConfig, TimingStats>> &sdpa_results,
+        std::ostream &outfile, const InputMode inputMode);
 
 /**
  * @brief Logs SDPA benchmark results in CSV format to outfile.
  */
-void log_results(std::vector<std::pair<SdpaConfig, TimingStats>>
-                 &sdpa_results, std::ostream &outfile, const InputMode inputMode);
+void log_results(std::vector<std::pair<SdpaConfig, TimingStats>> &sdpa_results,
+        std::ostream &outfile, const InputMode inputMode);
 
 } // namespace sdpa
 } // namespace benchdnn

@@ -38,10 +38,7 @@ namespace softmax {
  * @return status_t::success or status_t::failure
  */
 status_t softmax_direct(
-    const void *input,
-    void *output,
-    softmax_params &params
-);
+        const void *input, void *output, softmax_params &params);
 
 /**
  * @brief Kernel dispatcher - selects appropriate backend
@@ -53,10 +50,7 @@ status_t softmax_direct(
  * @return status_t::success on success, or the backend failure status.
  */
 status_t softmax_kernel_wrapper(
-    const void *input,
-    void *output,
-    softmax_params &params
-);
+        const void *input, void *output, softmax_params &params);
 
 } // namespace softmax
 } // namespace lowoha

@@ -75,54 +75,53 @@ namespace mt = moe_test_utils;
 // (N=64/128/192 → 64; N=32/96/100 → 0 because 64 doesn't divide).
 // ──────────────────────────────────────────────────────────────────
 struct PlanPackNrCase {
-  int K, N;
-  int expected;
-  std::string label;
+    int K, N;
+    int expected;
+    std::string label;
 };
 
-class CkPlanPackNrTest
-    : public ::testing::TestWithParam<PlanPackNrCase> {
- protected:
-  // Pin the NR knob to "auto / unset" for the duration of every
-  // parameterised test instance so the default truth-table
-  // assertions don't depend on the process's env state or cached
-  // env snapshot.  Restored on test exit (RAII).
-  mt::CustomKernelNROverride nr_guard{0};
+class CkPlanPackNrTest : public ::testing::TestWithParam<PlanPackNrCase> {
+protected:
+    // Pin the NR knob to "auto / unset" for the duration of every
+    // parameterised test instance so the default truth-table
+    // assertions don't depend on the process's env state or cached
+    // env snapshot.  Restored on test exit (RAII).
+    mt::CustomKernelNROverride nr_guard {0};
 };
 
 TEST_P(CkPlanPackNrTest, MatchesContract) {
-  const auto &c = GetParam();
-  EXPECT_EQ(ck::plan_pack_nr(c.K, c.N), c.expected) << c.label;
+    const auto &c = GetParam();
+    EXPECT_EQ(ck::plan_pack_nr(c.K, c.N), c.expected) << c.label;
 }
 
-INSTANTIATE_TEST_SUITE_P(
-    Defaults, CkPlanPackNrTest,
-    ::testing::Values(
-        // Standard production shapes.
-        PlanPackNrCase{64,    256, 32, "K64_N256"},
-        PlanPackNrCase{2880, 5760, 32, "K2880_N5760"},
-        PlanPackNrCase{2048, 1536, 32, "K2048_N1536"},
-        PlanPackNrCase{4096, 14336, 32, "K4096_N14336_wide_N"},
-        PlanPackNrCase{14336, 4096, 32, "K14336_N4096_tall_N"},
-        // Smallest valid N.
-        PlanPackNrCase{64,    32,  32, "smallest_N32"},
-        PlanPackNrCase{1,     32,  32, "K1_N32"},  // K=1 still valid
-        // N divisible by 32 — preferred.
-        PlanPackNrCase{64,    96,  32, "N96"},
-        PlanPackNrCase{64,    64,  32, "N64_div32"},  // div32 wins over div64
-        PlanPackNrCase{64,   128,  32, "N128"},
-        PlanPackNrCase{64,   160,  32, "N160_5x32"},
-        // N indivisible by both 32 and 64 — refuse.
-        PlanPackNrCase{64,    20,   0, "N20_neither"},
-        PlanPackNrCase{64,    40,   0, "N40_8x5"},
-        PlanPackNrCase{64,   100,   0, "N100"},
-        PlanPackNrCase{64,   200,   0, "N200"},
-        // Degenerate: N <= 0.
-        PlanPackNrCase{64,     0,   0, "N0_degenerate"},
-        PlanPackNrCase{64,    -1,   0, "N_negative"}),
-    [](const ::testing::TestParamInfo<PlanPackNrCase> &info) {
-      return info.param.label;
-    });
+INSTANTIATE_TEST_SUITE_P(Defaults, CkPlanPackNrTest,
+        ::testing::Values(
+                // Standard production shapes.
+                PlanPackNrCase {64, 256, 32, "K64_N256"},
+                PlanPackNrCase {2880, 5760, 32, "K2880_N5760"},
+                PlanPackNrCase {2048, 1536, 32, "K2048_N1536"},
+                PlanPackNrCase {4096, 14336, 32, "K4096_N14336_wide_N"},
+                PlanPackNrCase {14336, 4096, 32, "K14336_N4096_tall_N"},
+                // Smallest valid N.
+                PlanPackNrCase {64, 32, 32, "smallest_N32"},
+                PlanPackNrCase {1, 32, 32, "K1_N32"}, // K=1 still valid
+                // N divisible by 32 — preferred.
+                PlanPackNrCase {64, 96, 32, "N96"},
+                PlanPackNrCase {
+                        64, 64, 32, "N64_div32"}, // div32 wins over div64
+                PlanPackNrCase {64, 128, 32, "N128"},
+                PlanPackNrCase {64, 160, 32, "N160_5x32"},
+                // N indivisible by both 32 and 64 — refuse.
+                PlanPackNrCase {64, 20, 0, "N20_neither"},
+                PlanPackNrCase {64, 40, 0, "N40_8x5"},
+                PlanPackNrCase {64, 100, 0, "N100"},
+                PlanPackNrCase {64, 200, 0, "N200"},
+                // Degenerate: N <= 0.
+                PlanPackNrCase {64, 0, 0, "N0_degenerate"},
+                PlanPackNrCase {64, -1, 0, "N_negative"}),
+        [](const ::testing::TestParamInfo<PlanPackNrCase> &info) {
+            return info.param.label;
+        });
 
 // ──────────────────────────────────────────────────────────────────
 // Override path: `CustomKernelNROverride(64)` pins the env-cached
@@ -135,66 +134,66 @@ INSTANTIATE_TEST_SUITE_P(
 // ──────────────────────────────────────────────────────────────────
 class CkPlanPackNrOverride64Test
     : public ::testing::TestWithParam<PlanPackNrCase> {
- protected:
-  mt::CustomKernelNROverride nr_guard{64};
+protected:
+    mt::CustomKernelNROverride nr_guard {64};
 };
 
 TEST_P(CkPlanPackNrOverride64Test, MatchesOverrideContract) {
-  const auto &c = GetParam();
-  EXPECT_EQ(ck::plan_pack_nr(c.K, c.N), c.expected) << c.label;
+    const auto &c = GetParam();
+    EXPECT_EQ(ck::plan_pack_nr(c.K, c.N), c.expected) << c.label;
 }
 
-INSTANTIATE_TEST_SUITE_P(
-    Override64, CkPlanPackNrOverride64Test,
-    ::testing::Values(
-        // N % 64 == 0 — override returns 64.
-        PlanPackNrCase{64,    64,  64, "ovr64_N64"},
-        PlanPackNrCase{64,   128,  64, "ovr64_N128"},
-        PlanPackNrCase{64,   192,  64, "ovr64_N192"},
-        PlanPackNrCase{2048, 1536, 64, "ovr64_K2048_N1536"},  // Qwen narrow-N
-        PlanPackNrCase{2880, 5760, 64, "ovr64_K2880_N5760"},
-        PlanPackNrCase{4096, 14336, 64, "ovr64_K4096_N14336"},
-        // N % 64 != 0 — override returns 0 (refused), even when
-        // N % 32 == 0.  Demonstrates the override suppresses the
-        // default's NR=32 fallback (i.e., the override is "force NR=64
-        // or refuse"; it does NOT silently fall back to NR=32 for
-        // shapes that don't divide).
-        PlanPackNrCase{64,    32,   0, "ovr64_N32_indivisible_by_64"},
-        PlanPackNrCase{64,    96,   0, "ovr64_N96_indivisible_by_64"},
-        PlanPackNrCase{64,   160,   0, "ovr64_N160_indivisible_by_64"},
-        // Indivisible by either — refused regardless of override.
-        PlanPackNrCase{64,    20,   0, "ovr64_N20_neither"},
-        PlanPackNrCase{64,   100,   0, "ovr64_N100"},
-        // Degenerate.
-        PlanPackNrCase{64,     0,   0, "ovr64_N0_degenerate"},
-        PlanPackNrCase{64,    -1,   0, "ovr64_N_negative"}),
-    [](const ::testing::TestParamInfo<PlanPackNrCase> &info) {
-      return info.param.label;
-    });
+INSTANTIATE_TEST_SUITE_P(Override64, CkPlanPackNrOverride64Test,
+        ::testing::Values(
+                // N % 64 == 0 — override returns 64.
+                PlanPackNrCase {64, 64, 64, "ovr64_N64"},
+                PlanPackNrCase {64, 128, 64, "ovr64_N128"},
+                PlanPackNrCase {64, 192, 64, "ovr64_N192"},
+                PlanPackNrCase {
+                        2048, 1536, 64, "ovr64_K2048_N1536"}, // Qwen narrow-N
+                PlanPackNrCase {2880, 5760, 64, "ovr64_K2880_N5760"},
+                PlanPackNrCase {4096, 14336, 64, "ovr64_K4096_N14336"},
+                // N % 64 != 0 — override returns 0 (refused), even when
+                // N % 32 == 0.  Demonstrates the override suppresses the
+                // default's NR=32 fallback (i.e., the override is "force NR=64
+                // or refuse"; it does NOT silently fall back to NR=32 for
+                // shapes that don't divide).
+                PlanPackNrCase {64, 32, 0, "ovr64_N32_indivisible_by_64"},
+                PlanPackNrCase {64, 96, 0, "ovr64_N96_indivisible_by_64"},
+                PlanPackNrCase {64, 160, 0, "ovr64_N160_indivisible_by_64"},
+                // Indivisible by either — refused regardless of override.
+                PlanPackNrCase {64, 20, 0, "ovr64_N20_neither"},
+                PlanPackNrCase {64, 100, 0, "ovr64_N100"},
+                // Degenerate.
+                PlanPackNrCase {64, 0, 0, "ovr64_N0_degenerate"},
+                PlanPackNrCase {64, -1, 0, "ovr64_N_negative"}),
+        [](const ::testing::TestParamInfo<PlanPackNrCase> &info) {
+            return info.param.label;
+        });
 
 // ──────────────────────────────────────────────────────────────────
 // `prepare_for_call`-side: post-prepare `kctx.pack_nr` matches what
 // `plan_pack_nr` reports for the same (K, N).
 // ──────────────────────────────────────────────────────────────────
 TEST(CkPackBf16, PrepareReportsPlanPackNr) {
-  CK_SKIP_IF_NO_BF16_ISA();
-  // Pin NR to "auto / unset" for the same reason as the parameterised
-  // suite above: the assertion is "kctx.pack_nr matches plan_pack_nr",
-  // which holds for any NR setting, but pinning makes the test
-  // self-contained and immune to externally cached env state.
-  mt::CustomKernelNROverride nr_guard(0);
-  for (int N : {32, 64, 96, 128, 256, 512, 1024, 1536, 2880, 5760}) {
-    ck_test::PrepCallCase c{};
-    c.N = N;
-    c.label = std::string("ppnr_N") + std::to_string(N);
-    ck_test::PrepCallStorage storage;
-    ck::CallContext kctx;
-    const auto status = ck_test::run_prepare(c, storage, kctx);
-    ASSERT_EQ(status, zendnnl::error_handling::status_t::success)
-        << "case=" << c.label;
-    EXPECT_EQ(kctx.pack_nr, ck::plan_pack_nr(c.K, c.N))
-        << "kctx.pack_nr deviates from plan_pack_nr — case=" << c.label;
-  }
+    CK_SKIP_IF_NO_BF16_ISA();
+    // Pin NR to "auto / unset" for the same reason as the parameterised
+    // suite above: the assertion is "kctx.pack_nr matches plan_pack_nr",
+    // which holds for any NR setting, but pinning makes the test
+    // self-contained and immune to externally cached env state.
+    mt::CustomKernelNROverride nr_guard(0);
+    for (int N : {32, 64, 96, 128, 256, 512, 1024, 1536, 2880, 5760}) {
+        ck_test::PrepCallCase c {};
+        c.N = N;
+        c.label = std::string("ppnr_N") + std::to_string(N);
+        ck_test::PrepCallStorage storage;
+        ck::CallContext kctx;
+        const auto status = ck_test::run_prepare(c, storage, kctx);
+        ASSERT_EQ(status, zendnnl::error_handling::status_t::success)
+                << "case=" << c.label;
+        EXPECT_EQ(kctx.pack_nr, ck::plan_pack_nr(c.K, c.N))
+                << "kctx.pack_nr deviates from plan_pack_nr — case=" << c.label;
+    }
 }
 
 // ──────────────────────────────────────────────────────────────────
@@ -205,37 +204,37 @@ TEST(CkPackBf16, PrepareReportsPlanPackNr) {
 // `kctx.packed_ptrs` to nullptr on the second call.
 // ──────────────────────────────────────────────────────────────────
 TEST(CkPackBf16, SecondPrepareHitsCacheSamePackedPtr) {
-  CK_SKIP_IF_NO_BF16_ISA();
-  // Reset the process-wide pack cache before this test runs — the
-  // assertion below ("same weight pointer + shape → same packed
-  // pointer across two prepare calls") only holds when the cache
-  // starts empty.  Without the reset, an earlier test in the same
-  // process can leak a packed entry whose key happens to collide
-  // with the local `PrepCallStorage`'s weight pointer (the
-  // allocator routinely reuses heap addresses when stack-local
-  // storage of the same size goes out of scope), yielding a
-  // first-prepare cache HIT against a STALE entry that does not
-  // correspond to the current weight bytes — the second prepare
-  // would then either match (false pass) or differ (false fail)
-  // for reasons unrelated to the LRU contract this test pins.
-  ::reset_grp_matmul_caches();
+    CK_SKIP_IF_NO_BF16_ISA();
+    // Reset the process-wide pack cache before this test runs — the
+    // assertion below ("same weight pointer + shape → same packed
+    // pointer across two prepare calls") only holds when the cache
+    // starts empty.  Without the reset, an earlier test in the same
+    // process can leak a packed entry whose key happens to collide
+    // with the local `PrepCallStorage`'s weight pointer (the
+    // allocator routinely reuses heap addresses when stack-local
+    // storage of the same size goes out of scope), yielding a
+    // first-prepare cache HIT against a STALE entry that does not
+    // correspond to the current weight bytes — the second prepare
+    // would then either match (false pass) or differ (false fail)
+    // for reasons unrelated to the LRU contract this test pins.
+    ::reset_grp_matmul_caches();
 
-  ck_test::PrepCallCase c{};
-  c.label = "cache_warm_symmetry";
+    ck_test::PrepCallCase c {};
+    c.label = "cache_warm_symmetry";
 
-  ck_test::PrepCallStorage storage;
-  ck::CallContext kctx_a, kctx_b;
-  ASSERT_EQ(ck_test::run_prepare(c, storage, kctx_a),
+    ck_test::PrepCallStorage storage;
+    ck::CallContext kctx_a, kctx_b;
+    ASSERT_EQ(ck_test::run_prepare(c, storage, kctx_a),
             zendnnl::error_handling::status_t::success);
-  ASSERT_EQ(ck_test::run_prepare(c, storage, kctx_b),
+    ASSERT_EQ(ck_test::run_prepare(c, storage, kctx_b),
             zendnnl::error_handling::status_t::success);
 
-  // Same weight buffer + same shape = same packed pointer in the LRU.
-  EXPECT_NE(kctx_a.packed_ptrs[0], nullptr);
-  EXPECT_EQ(kctx_a.packed_ptrs[0], kctx_b.packed_ptrs[0])
-      << "cache-warm symmetry broken: same (weight ptr, K, N, ldb) "
-         "produced different packed pointers across calls — the LRU "
-         "pack cache likely has a key inconsistency";
+    // Same weight buffer + same shape = same packed pointer in the LRU.
+    EXPECT_NE(kctx_a.packed_ptrs[0], nullptr);
+    EXPECT_EQ(kctx_a.packed_ptrs[0], kctx_b.packed_ptrs[0])
+            << "cache-warm symmetry broken: same (weight ptr, K, N, ldb) "
+               "produced different packed pointers across calls — the LRU "
+               "pack cache likely has a key inconsistency";
 }
 
 // ──────────────────────────────────────────────────────────────────
@@ -244,22 +243,22 @@ TEST(CkPackBf16, SecondPrepareHitsCacheSamePackedPtr) {
 // because in production each expert has its own weight buffer.
 // ──────────────────────────────────────────────────────────────────
 TEST(CkPackBf16, DistinctWeightPointersProduceDistinctPacks) {
-  CK_SKIP_IF_NO_BF16_ISA();
-  ck_test::PrepCallCase c{};
+    CK_SKIP_IF_NO_BF16_ISA();
+    ck_test::PrepCallCase c {};
 
-  // Run two prepares with disjoint weight buffers.
-  ck_test::PrepCallStorage s1, s2;
-  ck::CallContext kctx1, kctx2;
-  ASSERT_EQ(ck_test::run_prepare(c, s1, kctx1),
+    // Run two prepares with disjoint weight buffers.
+    ck_test::PrepCallStorage s1, s2;
+    ck::CallContext kctx1, kctx2;
+    ASSERT_EQ(ck_test::run_prepare(c, s1, kctx1),
             zendnnl::error_handling::status_t::success);
-  ASSERT_EQ(ck_test::run_prepare(c, s2, kctx2),
+    ASSERT_EQ(ck_test::run_prepare(c, s2, kctx2),
             zendnnl::error_handling::status_t::success);
 
-  EXPECT_NE(kctx1.packed_ptrs[0], nullptr);
-  EXPECT_NE(kctx2.packed_ptrs[0], nullptr);
-  EXPECT_NE(kctx1.packed_ptrs[0], kctx2.packed_ptrs[0])
-      << "two distinct weight buffers produced the same packed "
-         "pointer — LRU is not keyed on weight pointer";
+    EXPECT_NE(kctx1.packed_ptrs[0], nullptr);
+    EXPECT_NE(kctx2.packed_ptrs[0], nullptr);
+    EXPECT_NE(kctx1.packed_ptrs[0], kctx2.packed_ptrs[0])
+            << "two distinct weight buffers produced the same packed "
+               "pointer — LRU is not keyed on weight pointer";
 }
 
 // ──────────────────────────────────────────────────────────────────
@@ -299,130 +298,124 @@ TEST(CkPackBf16, DistinctWeightPointersProduceDistinctPacks) {
 // we use distinct weight buffers for silu vs gelu.
 // ──────────────────────────────────────────────────────────────────
 TEST(CkPackBf16, SiluGeluInterleavedPackMatchesSwigluBytes) {
-  CK_SKIP_IF_NO_BF16_ISA();
-  ::reset_grp_matmul_caches();
+    CK_SKIP_IF_NO_BF16_ISA();
+    ::reset_grp_matmul_caches();
 
-  constexpr int kK = 64;
-  constexpr int kN = 256;
-  constexpr int kI = kN / 2;
+    constexpr int kK = 64;
+    constexpr int kN = 256;
+    constexpr int kI = kN / 2;
 
-  // Deterministic source data — same value generator across all
-  // three logical weight buffers so the only physical difference is
-  // row order.
-  auto val_gate = [](int k, int j) {
-    return static_cast<float>(k * 31 + j) * 1.0e-3f;
-  };
-  auto val_up = [](int k, int j) {
-    return static_cast<float>(k * 31 + j + kI) * 1.0e-3f;
-  };
+    // Deterministic source data — same value generator across all
+    // three logical weight buffers so the only physical difference is
+    // row order.
+    auto val_gate = [](int k, int j) {
+        return static_cast<float>(k * 31 + j) * 1.0e-3f;
+    };
+    auto val_up = [](int k, int j) {
+        return static_cast<float>(k * 31 + j + kI) * 1.0e-3f;
+    };
 
-  std::vector<bfloat16_t> w_interleaved(
-      static_cast<size_t>(kK) * kN, bfloat16_t(0.0f));
-  // Two distinct split-halves buffers — same logical content.
-  // Distinct pointers force distinct LRU keys so the second pack
-  // (gelu) actually runs the prepack path instead of HITting the
-  // entry the first pack (silu) populated.
-  std::vector<bfloat16_t> w_split_silu(
-      static_cast<size_t>(kK) * kN, bfloat16_t(0.0f));
-  std::vector<bfloat16_t> w_split_gelu(
-      static_cast<size_t>(kK) * kN, bfloat16_t(0.0f));
-  for (int k = 0; k < kK; ++k) {
-    for (int j = 0; j < kI; ++j) {
-      w_interleaved[k * kN + 2 * j + 0] = bfloat16_t(val_gate(k, j));
-      w_interleaved[k * kN + 2 * j + 1] = bfloat16_t(val_up  (k, j));
-      w_split_silu [k * kN + j]         = bfloat16_t(val_gate(k, j));
-      w_split_silu [k * kN + kI + j]    = bfloat16_t(val_up  (k, j));
-      w_split_gelu [k * kN + j]         = bfloat16_t(val_gate(k, j));
-      w_split_gelu [k * kN + kI + j]    = bfloat16_t(val_up  (k, j));
+    std::vector<bfloat16_t> w_interleaved(
+            static_cast<size_t>(kK) * kN, bfloat16_t(0.0f));
+    // Two distinct split-halves buffers — same logical content.
+    // Distinct pointers force distinct LRU keys so the second pack
+    // (gelu) actually runs the prepack path instead of HITting the
+    // entry the first pack (silu) populated.
+    std::vector<bfloat16_t> w_split_silu(
+            static_cast<size_t>(kK) * kN, bfloat16_t(0.0f));
+    std::vector<bfloat16_t> w_split_gelu(
+            static_cast<size_t>(kK) * kN, bfloat16_t(0.0f));
+    for (int k = 0; k < kK; ++k) {
+        for (int j = 0; j < kI; ++j) {
+            w_interleaved[k * kN + 2 * j + 0] = bfloat16_t(val_gate(k, j));
+            w_interleaved[k * kN + 2 * j + 1] = bfloat16_t(val_up(k, j));
+            w_split_silu[k * kN + j] = bfloat16_t(val_gate(k, j));
+            w_split_silu[k * kN + kI + j] = bfloat16_t(val_up(k, j));
+            w_split_gelu[k * kN + j] = bfloat16_t(val_gate(k, j));
+            w_split_gelu[k * kN + kI + j] = bfloat16_t(val_up(k, j));
+        }
     }
-  }
 
-  // Pack all three layouts via prepare_for_call.
-  std::vector<bool>  transA_v{false};
-  std::vector<bool>  transB_v{false};
-  std::vector<int>   M_v{16};
-  std::vector<int>   N_v{kN};
-  std::vector<int>   K_v{kK};
-  std::vector<int>   ldb_v{kN};
-  std::vector<float> alpha_v{1.0f};
-  std::vector<float> beta_v{0.0f};
-  std::vector<bool>  is_wc_v{true};
+    // Pack all three layouts via prepare_for_call.
+    std::vector<bool> transA_v {false};
+    std::vector<bool> transB_v {false};
+    std::vector<int> M_v {16};
+    std::vector<int> N_v {kN};
+    std::vector<int> K_v {kK};
+    std::vector<int> ldb_v {kN};
+    std::vector<float> alpha_v {1.0f};
+    std::vector<float> beta_v {0.0f};
+    std::vector<bool> is_wc_v {true};
 
-  std::vector<const void *> wi_v{w_interleaved.data()};
-  std::vector<const void *> ws_silu_v{w_split_silu.data()};
-  std::vector<const void *> ws_gelu_v{w_split_gelu.data()};
+    std::vector<const void *> wi_v {w_interleaved.data()};
+    std::vector<const void *> ws_silu_v {w_split_silu.data()};
+    std::vector<const void *> ws_gelu_v {w_split_gelu.data()};
 
-  ck::CallContext kctx_swiglu, kctx_silu, kctx_gelu;
-  ASSERT_EQ(ck::prepare_for_call(grp_matmul_gated_act_t::swiglu_oai_mul,
-                                  data_type_t::bf16, data_type_t::bf16,
-                                  data_type_t::bf16, data_type_t::bf16,
-                                  data_type_t::none,
-                                  transA_v, transB_v, M_v, N_v, K_v, ldb_v,
-                                  alpha_v, beta_v, wi_v, is_wc_v,
-                                  kctx_swiglu),
+    ck::CallContext kctx_swiglu, kctx_silu, kctx_gelu;
+    ASSERT_EQ(ck::prepare_for_call(grp_matmul_gated_act_t::swiglu_oai_mul,
+                      data_type_t::bf16, data_type_t::bf16, data_type_t::bf16,
+                      data_type_t::bf16, data_type_t::none, transA_v, transB_v,
+                      M_v, N_v, K_v, ldb_v, alpha_v, beta_v, wi_v, is_wc_v,
+                      kctx_swiglu),
             zendnnl::error_handling::status_t::success);
-  ASSERT_TRUE(kctx_swiglu.enabled);
+    ASSERT_TRUE(kctx_swiglu.enabled);
 
-  ASSERT_EQ(ck::prepare_for_call(grp_matmul_gated_act_t::silu_and_mul,
-                                  data_type_t::bf16, data_type_t::bf16,
-                                  data_type_t::bf16, data_type_t::bf16,
-                                  data_type_t::none,
-                                  transA_v, transB_v, M_v, N_v, K_v, ldb_v,
-                                  alpha_v, beta_v, ws_silu_v, is_wc_v,
-                                  kctx_silu),
+    ASSERT_EQ(ck::prepare_for_call(grp_matmul_gated_act_t::silu_and_mul,
+                      data_type_t::bf16, data_type_t::bf16, data_type_t::bf16,
+                      data_type_t::bf16, data_type_t::none, transA_v, transB_v,
+                      M_v, N_v, K_v, ldb_v, alpha_v, beta_v, ws_silu_v, is_wc_v,
+                      kctx_silu),
             zendnnl::error_handling::status_t::success);
-  ASSERT_TRUE(kctx_silu.enabled);
+    ASSERT_TRUE(kctx_silu.enabled);
 
-  ASSERT_EQ(ck::prepare_for_call(grp_matmul_gated_act_t::gelu_and_mul,
-                                  data_type_t::bf16, data_type_t::bf16,
-                                  data_type_t::bf16, data_type_t::bf16,
-                                  data_type_t::none,
-                                  transA_v, transB_v, M_v, N_v, K_v, ldb_v,
-                                  alpha_v, beta_v, ws_gelu_v, is_wc_v,
-                                  kctx_gelu),
+    ASSERT_EQ(ck::prepare_for_call(grp_matmul_gated_act_t::gelu_and_mul,
+                      data_type_t::bf16, data_type_t::bf16, data_type_t::bf16,
+                      data_type_t::bf16, data_type_t::none, transA_v, transB_v,
+                      M_v, N_v, K_v, ldb_v, alpha_v, beta_v, ws_gelu_v, is_wc_v,
+                      kctx_gelu),
             zendnnl::error_handling::status_t::success);
-  ASSERT_TRUE(kctx_gelu.enabled);
+    ASSERT_TRUE(kctx_gelu.enabled);
 
-  // Same `pack_nr` chosen by all three paths (planner is a pure
-  // function of (K, N)).
-  ASSERT_EQ(kctx_swiglu.pack_nr, kctx_silu.pack_nr);
-  ASSERT_EQ(kctx_swiglu.pack_nr, kctx_gelu.pack_nr);
+    // Same `pack_nr` chosen by all three paths (planner is a pure
+    // function of (K, N)).
+    ASSERT_EQ(kctx_swiglu.pack_nr, kctx_silu.pack_nr);
+    ASSERT_EQ(kctx_swiglu.pack_nr, kctx_gelu.pack_nr);
 
-  const int pack_nr = kctx_swiglu.pack_nr;
-  const int K_pair = (kK + 1) / 2;
-  const size_t pack_bytes = static_cast<size_t>(kN / pack_nr)
-      * K_pair * pack_nr * 2 /*VNNI pair*/ * sizeof(bfloat16_t);
+    const int pack_nr = kctx_swiglu.pack_nr;
+    const int K_pair = (kK + 1) / 2;
+    const size_t pack_bytes = static_cast<size_t>(kN / pack_nr) * K_pair
+            * pack_nr * 2 /*VNNI pair*/ * sizeof(bfloat16_t);
 
-  const auto *p_swiglu = static_cast<const bfloat16_t *>(
-      kctx_swiglu.packed_ptrs[0]);
-  const auto *p_silu = static_cast<const bfloat16_t *>(
-      kctx_silu.packed_ptrs[0]);
-  const auto *p_gelu = static_cast<const bfloat16_t *>(
-      kctx_gelu.packed_ptrs[0]);
-  ASSERT_NE(p_swiglu, nullptr);
-  ASSERT_NE(p_silu, nullptr);
-  ASSERT_NE(p_gelu, nullptr);
+    const auto *p_swiglu
+            = static_cast<const bfloat16_t *>(kctx_swiglu.packed_ptrs[0]);
+    const auto *p_silu
+            = static_cast<const bfloat16_t *>(kctx_silu.packed_ptrs[0]);
+    const auto *p_gelu
+            = static_cast<const bfloat16_t *>(kctx_gelu.packed_ptrs[0]);
+    ASSERT_NE(p_swiglu, nullptr);
+    ASSERT_NE(p_silu, nullptr);
+    ASSERT_NE(p_gelu, nullptr);
 
-  // Bit-equality — the silu/gelu prepack column permutation must be
-  // the exact inverse of the caller's split-halves layout, so the
-  // packed arena lands at the same physical bytes the swiglu path
-  // produces from a pre-interleaved input.
-  EXPECT_EQ(0, std::memcmp(p_swiglu, p_silu, pack_bytes))
-      << "silu_and_mul pack bytes do not match swiglu_oai_mul pack "
-         "bytes — the silu in-register fused epilogue would "
-         "deinterleave (g, u) from the wrong columns and produce "
-         "silent-wrong activations.";
-  EXPECT_EQ(0, std::memcmp(p_swiglu, p_gelu, pack_bytes))
-      << "gelu_and_mul pack bytes do not match swiglu_oai_mul pack "
-         "bytes — the gelu in-register fused epilogue would "
-         "deinterleave (g, u) from the wrong columns and produce "
-         "silent-wrong activations.  silu and gelu MUST share the "
-         "same prepack permutation (only the kernel-side activation "
-         "math differs).";
-  EXPECT_EQ(0, std::memcmp(p_silu, p_gelu, pack_bytes))
-      << "silu_and_mul and gelu_and_mul packs differ — they should "
-         "be byte-identical for the same logical weight, since the "
-         "prepack interleave is activation-agnostic.";
+    // Bit-equality — the silu/gelu prepack column permutation must be
+    // the exact inverse of the caller's split-halves layout, so the
+    // packed arena lands at the same physical bytes the swiglu path
+    // produces from a pre-interleaved input.
+    EXPECT_EQ(0, std::memcmp(p_swiglu, p_silu, pack_bytes))
+            << "silu_and_mul pack bytes do not match swiglu_oai_mul pack "
+               "bytes — the silu in-register fused epilogue would "
+               "deinterleave (g, u) from the wrong columns and produce "
+               "silent-wrong activations.";
+    EXPECT_EQ(0, std::memcmp(p_swiglu, p_gelu, pack_bytes))
+            << "gelu_and_mul pack bytes do not match swiglu_oai_mul pack "
+               "bytes — the gelu in-register fused epilogue would "
+               "deinterleave (g, u) from the wrong columns and produce "
+               "silent-wrong activations.  silu and gelu MUST share the "
+               "same prepack permutation (only the kernel-side activation "
+               "math differs).";
+    EXPECT_EQ(0, std::memcmp(p_silu, p_gelu, pack_bytes))
+            << "silu_and_mul and gelu_and_mul packs differ — they should "
+               "be byte-identical for the same logical weight, since the "
+               "prepack interleave is activation-agnostic.";
 }
 
 // ──────────────────────────────────────────────────────────────────
@@ -453,117 +446,116 @@ TEST(CkPackBf16, SiluGeluInterleavedPackMatchesSwigluBytes) {
 // vs slower variants of the same caching policy.
 // ──────────────────────────────────────────────────────────────────
 TEST(CkPackBf16NoCache, CkEngagesAndAllocatesCallerOwnedPacks) {
-  CK_SKIP_IF_NO_BF16_ISA();
-  ::reset_grp_matmul_caches();
-  WeightCacheGuard wc_off(0);
+    CK_SKIP_IF_NO_BF16_ISA();
+    ::reset_grp_matmul_caches();
+    WeightCacheGuard wc_off(0);
 
-  ck_test::PrepCallCase c{};
-  c.label = "ck_engages_under_weight_cache_zero";
+    ck_test::PrepCallCase c {};
+    c.label = "ck_engages_under_weight_cache_zero";
 
-  ck_test::PrepCallStorage storage;
-  ck::CallContext kctx;
-  ASSERT_EQ(ck_test::run_prepare(c, storage, kctx),
+    ck_test::PrepCallStorage storage;
+    ck::CallContext kctx;
+    ASSERT_EQ(ck_test::run_prepare(c, storage, kctx),
             zendnnl::error_handling::status_t::success)
-      << "prepare_for_call must succeed under WEIGHT_CACHE=0 — the "
-         "no-cache mode is supposed to switch the per-expert pack "
-         "to caller-owned buffers, NOT refuse CK entirely.";
-  EXPECT_TRUE(kctx.enabled)
-      << "kctx.enabled must remain true under WEIGHT_CACHE=0 "
-         "(no CK refusal — the runtime keeps packing, just without "
-         "the LRU singleton)";
-  EXPECT_NE(kctx.packed_ptrs[0], nullptr);
-  EXPECT_NE(kctx.owned_packed_ptrs[0], nullptr)
-      << "owned_packed_ptrs[0] must be populated under "
-         "WEIGHT_CACHE=0 so the CallContext destructor knows to "
-         "free the caller-owned buffer.";
-  EXPECT_EQ(static_cast<const void *>(kctx.packed_ptrs[0]),
+            << "prepare_for_call must succeed under WEIGHT_CACHE=0 — the "
+               "no-cache mode is supposed to switch the per-expert pack "
+               "to caller-owned buffers, NOT refuse CK entirely.";
+    EXPECT_TRUE(kctx.enabled)
+            << "kctx.enabled must remain true under WEIGHT_CACHE=0 "
+               "(no CK refusal — the runtime keeps packing, just without "
+               "the LRU singleton)";
+    EXPECT_NE(kctx.packed_ptrs[0], nullptr);
+    EXPECT_NE(kctx.owned_packed_ptrs[0], nullptr)
+            << "owned_packed_ptrs[0] must be populated under "
+               "WEIGHT_CACHE=0 so the CallContext destructor knows to "
+               "free the caller-owned buffer.";
+    EXPECT_EQ(static_cast<const void *>(kctx.packed_ptrs[0]),
             static_cast<const void *>(kctx.owned_packed_ptrs[0]))
-      << "packed_ptrs[0] must alias owned_packed_ptrs[0] in no-cache "
-         "mode — dispatch_tile reads packed_ptrs and the destructor "
-         "frees owned_packed_ptrs; an alias mismatch would either "
-         "leak (destructor frees nothing) or use-after-free "
-         "(dispatch_tile reads a freed pointer).";
+            << "packed_ptrs[0] must alias owned_packed_ptrs[0] in no-cache "
+               "mode — dispatch_tile reads packed_ptrs and the destructor "
+               "frees owned_packed_ptrs; an alias mismatch would either "
+               "leak (destructor frees nothing) or use-after-free "
+               "(dispatch_tile reads a freed pointer).";
 }
 
 TEST(CkPackBf16NoCache, NoLruInsertSecondPrepareDoesNotHitCache) {
-  CK_SKIP_IF_NO_BF16_ISA();
-  ::reset_grp_matmul_caches();
-  WeightCacheGuard wc_off(0);
+    CK_SKIP_IF_NO_BF16_ISA();
+    ::reset_grp_matmul_caches();
+    WeightCacheGuard wc_off(0);
 
-  ck_test::PrepCallCase c{};
-  c.label = "no_lru_insert_distinct_packs";
+    ck_test::PrepCallCase c {};
+    c.label = "no_lru_insert_distinct_packs";
 
-  // Same shape + same caller-owned weight storage across both
-  // prepares.  Under WEIGHT_CACHE=1 these would HIT the LRU on the
-  // second call (covered by `SecondPrepareHitsCacheSamePackedPtr`
-  // above); under WEIGHT_CACHE=0 the first call never inserts so the
-  // second MUST allocate a fresh buffer.
-  ck_test::PrepCallStorage storage;
-  ck::CallContext kctx_a, kctx_b;
-  ASSERT_EQ(ck_test::run_prepare(c, storage, kctx_a),
+    // Same shape + same caller-owned weight storage across both
+    // prepares.  Under WEIGHT_CACHE=1 these would HIT the LRU on the
+    // second call (covered by `SecondPrepareHitsCacheSamePackedPtr`
+    // above); under WEIGHT_CACHE=0 the first call never inserts so the
+    // second MUST allocate a fresh buffer.
+    ck_test::PrepCallStorage storage;
+    ck::CallContext kctx_a, kctx_b;
+    ASSERT_EQ(ck_test::run_prepare(c, storage, kctx_a),
             zendnnl::error_handling::status_t::success);
-  ASSERT_EQ(ck_test::run_prepare(c, storage, kctx_b),
+    ASSERT_EQ(ck_test::run_prepare(c, storage, kctx_b),
             zendnnl::error_handling::status_t::success);
 
-  ASSERT_NE(kctx_a.packed_ptrs[0], nullptr);
-  ASSERT_NE(kctx_b.packed_ptrs[0], nullptr);
-  EXPECT_NE(kctx_a.packed_ptrs[0], kctx_b.packed_ptrs[0])
-      << "two prepares with the same (weight ptr, K, N, ldb, transB) "
-         "produced the same packed pointer under WEIGHT_CACHE=0 — the "
-         "LRU singleton is being consulted when it should be bypassed.";
-  EXPECT_NE(kctx_a.owned_packed_ptrs[0],
-            kctx_b.owned_packed_ptrs[0])
-      << "owned_packed_ptrs must also be distinct — each prepare "
-         "owns its own freshly-allocated arena.";
+    ASSERT_NE(kctx_a.packed_ptrs[0], nullptr);
+    ASSERT_NE(kctx_b.packed_ptrs[0], nullptr);
+    EXPECT_NE(kctx_a.packed_ptrs[0], kctx_b.packed_ptrs[0])
+            << "two prepares with the same (weight ptr, K, N, ldb, transB) "
+               "produced the same packed pointer under WEIGHT_CACHE=0 — the "
+               "LRU singleton is being consulted when it should be bypassed.";
+    EXPECT_NE(kctx_a.owned_packed_ptrs[0], kctx_b.owned_packed_ptrs[0])
+            << "owned_packed_ptrs must also be distinct — each prepare "
+               "owns its own freshly-allocated arena.";
 }
 
 TEST(CkPackBf16NoCache, ResetReassignsPackedAliasAfterRepack) {
-  CK_SKIP_IF_NO_BF16_ISA();
-  ::reset_grp_matmul_caches();
-  WeightCacheGuard wc_off(0);
+    CK_SKIP_IF_NO_BF16_ISA();
+    ::reset_grp_matmul_caches();
+    WeightCacheGuard wc_off(0);
 
-  // Reuse a single `CallContext` across two prepares.  The second
-  // prepare's implicit `reset()` frees the first prepare's owned
-  // buffer (the contract that lets long-running pipelines reuse
-  // one context per worker thread), then the per-expert pack loop
-  // populates BOTH `packed_ptrs[i]` AND `owned_packed_ptrs[i]`
-  // with the fresh alloc.
-  //
-  // Memory-recycling caveat:
-  //   `release_owned_buffers()` calls `std::free` on the first
-  //   call's buffer.  The libc allocator routinely returns the
-  //   same address on a subsequent `std::aligned_alloc` of the
-  //   same size+alignment from the same arena, so a pointer-NE
-  //   assertion across the two calls would be flaky depending on
-  //   surrounding test ordering and allocator state.  The real
-  //   invariant this test pins is the post-reset alias: after the
-  //   second prepare, `packed_ptrs[0]` must STILL equal
-  //   `owned_packed_ptrs[0]` (and both must be non-null).  A bug
-  //   that fails to re-assign `packed_ptrs[i]` in the pack loop
-  //   would leave it pointing at the freed (or recycled) first-
-  //   call buffer with NO owning slot — `dispatch_tile` would
-  //   then read freed memory and the destructor would silently
-  //   leak the second call's owning buffer.
-  ck_test::PrepCallCase c{};
-  c.label = "reset_realiases_packed_after_repack";
+    // Reuse a single `CallContext` across two prepares.  The second
+    // prepare's implicit `reset()` frees the first prepare's owned
+    // buffer (the contract that lets long-running pipelines reuse
+    // one context per worker thread), then the per-expert pack loop
+    // populates BOTH `packed_ptrs[i]` AND `owned_packed_ptrs[i]`
+    // with the fresh alloc.
+    //
+    // Memory-recycling caveat:
+    //   `release_owned_buffers()` calls `std::free` on the first
+    //   call's buffer.  The libc allocator routinely returns the
+    //   same address on a subsequent `std::aligned_alloc` of the
+    //   same size+alignment from the same arena, so a pointer-NE
+    //   assertion across the two calls would be flaky depending on
+    //   surrounding test ordering and allocator state.  The real
+    //   invariant this test pins is the post-reset alias: after the
+    //   second prepare, `packed_ptrs[0]` must STILL equal
+    //   `owned_packed_ptrs[0]` (and both must be non-null).  A bug
+    //   that fails to re-assign `packed_ptrs[i]` in the pack loop
+    //   would leave it pointing at the freed (or recycled) first-
+    //   call buffer with NO owning slot — `dispatch_tile` would
+    //   then read freed memory and the destructor would silently
+    //   leak the second call's owning buffer.
+    ck_test::PrepCallCase c {};
+    c.label = "reset_realiases_packed_after_repack";
 
-  ck_test::PrepCallStorage s1, s2;
-  ck::CallContext kctx;
-  ASSERT_EQ(ck_test::run_prepare(c, s1, kctx),
+    ck_test::PrepCallStorage s1, s2;
+    ck::CallContext kctx;
+    ASSERT_EQ(ck_test::run_prepare(c, s1, kctx),
             zendnnl::error_handling::status_t::success);
-  ASSERT_NE(kctx.owned_packed_ptrs[0], nullptr);
+    ASSERT_NE(kctx.owned_packed_ptrs[0], nullptr);
 
-  ASSERT_EQ(ck_test::run_prepare(c, s2, kctx),
+    ASSERT_EQ(ck_test::run_prepare(c, s2, kctx),
             zendnnl::error_handling::status_t::success);
-  ASSERT_NE(kctx.owned_packed_ptrs[0], nullptr);
-  EXPECT_EQ(static_cast<const void *>(kctx.packed_ptrs[0]),
+    ASSERT_NE(kctx.owned_packed_ptrs[0], nullptr);
+    EXPECT_EQ(static_cast<const void *>(kctx.packed_ptrs[0]),
             static_cast<const void *>(kctx.owned_packed_ptrs[0]))
-      << "packed_ptrs[0] must alias owned_packed_ptrs[0] after the "
-         "second prepare on a reused CallContext — a mismatch "
-         "indicates the dispatcher's per-expert pack loop wrote to "
-         "packed_ptrs without updating owned_packed_ptrs (or "
-         "vice-versa), and dispatch_tile would read a stale or "
-         "freed pointer.";
+            << "packed_ptrs[0] must alias owned_packed_ptrs[0] after the "
+               "second prepare on a reused CallContext — a mismatch "
+               "indicates the dispatcher's per-expert pack loop wrote to "
+               "packed_ptrs without updating owned_packed_ptrs (or "
+               "vice-versa), and dispatch_tile would read a stale or "
+               "freed pointer.";
 }
 
-}  // namespace
+} // namespace

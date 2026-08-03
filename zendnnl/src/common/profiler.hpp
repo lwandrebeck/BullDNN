@@ -29,11 +29,7 @@ using namespace zendnnl::error_handling;
  * @enum time_res_t
  * @brief Supported time resolution.
  */
-enum class time_res_t : uint32_t {
-  milliseconds,
-  microseconds,
-  seconds
-};
+enum class time_res_t : uint32_t { milliseconds, microseconds, seconds };
 
 /** @class profiler_t
  *  @brief A utility class for profiling and measuring time.
@@ -42,9 +38,8 @@ enum class time_res_t : uint32_t {
  * using std::chrono. The time resolution can be configured by the user.
  */
 class profiler_t {
- public:
-
-  /** @brief default constructor
+public:
+    /** @brief default constructor
   * Initializes a profiler_t object with the default
   * time resolution set to MILLISECONDS.
   *
@@ -53,59 +48,64 @@ class profiler_t {
   * the constructor cost to zero cycles on the production path.
   * TODO: Create single instance of profiler_t and use it throughout the application.
   */
-  profiler_t()
-      : start_time{}, stop_time{}, elapsed_time{0.0},
-        res_str{"ms"}, resolution{time_res_t::milliseconds},
-        timer_started{false} {}
+    profiler_t()
+        : start_time {}
+        , stop_time {}
+        , elapsed_time {0.0}
+        , res_str {"ms"}
+        , resolution {time_res_t::milliseconds}
+        , timer_started {false} {}
 
-  /** @brief Set the time resolution
+    /** @brief Set the time resolution
    * Configures the time unit in which elapsed time will be measured.
    *
    * @param res The time resolution to use.
   */
-  void tbp_set_default_res(time_res_t res);
+    void tbp_set_default_res(time_res_t res);
 
-  /** @brief Start the timer
+    /** @brief Start the timer
    * Records the start time using std::chrono::steady_clock.
   */
-  status_t tbp_start();
+    status_t tbp_start();
 
-  /** @brief Stop the timer
+    /** @brief Stop the timer
    * Records the stop time using std::chrono::steady_clock and
    * calculates the elapsed time.
   */
-  status_t tbp_stop();
+    status_t tbp_stop();
 
-  /** @brief Get the elapsed time
+    /** @brief Get the elapsed time
    * Returns the elapsed time measured between the last calls to
    * tbp_start() and tbp_stop().
    *
    * @return The elapsed time in the currently configured time unit.
   */
-  double tbp_elapsedtime() const;
+    double tbp_elapsedtime() const;
 
-  /** @brief Get resolution string
+    /** @brief Get resolution string
    *
    * @return Resolution string
   */
-  const char *get_res_str() const;
+    const char *get_res_str() const;
 
- private:
-  /** @brief Calculate elapsed time based on the selected unit
+private:
+    /** @brief Calculate elapsed time based on the selected unit
    * Computes the elapsed time from the recorded start and stop times and
    * updates the elapsed_time variable.
   */
-  void calculate_elapsed();
+    void calculate_elapsed();
 
-  std::chrono::high_resolution_clock::time_point start_time; /*!< Time point when tbp_start() was called */
-  std::chrono::high_resolution_clock::time_point stop_time;  /*!< Time point when tbp_stop() was called */
-  double elapsed_time;                                       /*!< Computed elapsed time */
-  const char *res_str;                                       /*!< Resolution string literal */
-  time_res_t resolution;                                     /*!< Time resolution */
-  bool timer_started;                                        /*!< Set to true after tbp_start()*/
+    std::chrono::high_resolution_clock::time_point
+            start_time; /*!< Time point when tbp_start() was called */
+    std::chrono::high_resolution_clock::time_point
+            stop_time; /*!< Time point when tbp_stop() was called */
+    double elapsed_time; /*!< Computed elapsed time */
+    const char *res_str; /*!< Resolution string literal */
+    time_res_t resolution; /*!< Time resolution */
+    bool timer_started; /*!< Set to true after tbp_start()*/
 };
 
-} // profile
-} // zendnnl
+} // namespace profile
+} // namespace zendnnl
 
 #endif

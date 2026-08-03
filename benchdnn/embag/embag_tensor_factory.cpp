@@ -20,63 +20,62 @@ namespace zendnnl {
 namespace benchdnn {
 namespace embag {
 
-int create_table_tensor(tensor_factory_t &tensor_factory, EmbagConfig cfg,
-                        tensor_t &table) {
-  if (cfg.dt[0] == data_type_t::f32 ||
-      cfg.dt[0] == data_type_t::bf16 ||
-      cfg.dt[0] == data_type_t::f16) {
-    table = tensor_factory.uniform_dist_tensor({cfg.num_embeddings, cfg.embedding_dims},cfg.dt[0],
-            2.0f, "table_tensor");
-  }
-  else {
-    table = tensor_factory.quantized_embedding_tensor_random({cfg.num_embeddings, cfg.embedding_dims},
-            cfg.dt[0], "table_tensor", cfg.fp16_scale_bias);
-  }
+int create_table_tensor(
+        tensor_factory_t &tensor_factory, EmbagConfig cfg, tensor_t &table) {
+    if (cfg.dt[0] == data_type_t::f32 || cfg.dt[0] == data_type_t::bf16
+            || cfg.dt[0] == data_type_t::f16) {
+        table = tensor_factory.uniform_dist_tensor(
+                {cfg.num_embeddings, cfg.embedding_dims}, cfg.dt[0], 2.0f,
+                "table_tensor");
+    } else {
+        table = tensor_factory.quantized_embedding_tensor_random(
+                {cfg.num_embeddings, cfg.embedding_dims}, cfg.dt[0],
+                "table_tensor", cfg.fp16_scale_bias);
+    }
 
-  return OK;
+    return OK;
 }
 
-int create_indices_tensor(tensor_factory_t &tensor_factory, EmbagConfig cfg,
-                          tensor_t &indices) {
+int create_indices_tensor(
+        tensor_factory_t &tensor_factory, EmbagConfig cfg, tensor_t &indices) {
 
-  indices = tensor_factory.random_indices_tensor({cfg.num_indices},
-            cfg.num_embeddings);
+    indices = tensor_factory.random_indices_tensor(
+            {cfg.num_indices}, cfg.num_embeddings);
 
-  return OK;
+    return OK;
 }
 
-int create_offsets_tensor(tensor_factory_t &tensor_factory, EmbagConfig cfg,
-                          tensor_t &offsets) {
+int create_offsets_tensor(
+        tensor_factory_t &tensor_factory, EmbagConfig cfg, tensor_t &offsets) {
 
-  uint64_t offsets_size = cfg.include_last_offset ? cfg.num_bags + 1 :
-                          cfg.num_bags;
-  offsets = tensor_factory.random_offsets_tensor({offsets_size}, cfg.num_indices,
-            cfg.include_last_offset);
+    uint64_t offsets_size
+            = cfg.include_last_offset ? cfg.num_bags + 1 : cfg.num_bags;
+    offsets = tensor_factory.random_offsets_tensor(
+            {offsets_size}, cfg.num_indices, cfg.include_last_offset);
 
-  return OK;
+    return OK;
 }
 
-int create_weights_tensor(tensor_factory_t &tensor_factory, EmbagConfig cfg,
-                          tensor_t &weights) {
+int create_weights_tensor(
+        tensor_factory_t &tensor_factory, EmbagConfig cfg, tensor_t &weights) {
 
-  if (cfg.is_weights) {
-    weights = tensor_factory.uniform_dist_tensor({cfg.num_indices},
-              data_type_t::f32, 2.0f, "weights_tensor");
-  }
-  else {
-    weights = tensor_t();
-  }
+    if (cfg.is_weights) {
+        weights = tensor_factory.uniform_dist_tensor(
+                {cfg.num_indices}, data_type_t::f32, 2.0f, "weights_tensor");
+    } else {
+        weights = tensor_t();
+    }
 
-  return OK;
+    return OK;
 }
 
-int create_output_tensor(tensor_factory_t &tensor_factory, EmbagConfig cfg,
-                         tensor_t &output) {
+int create_output_tensor(
+        tensor_factory_t &tensor_factory, EmbagConfig cfg, tensor_t &output) {
 
-  output = tensor_factory.zero_tensor({cfg.num_bags, cfg.embedding_dims},
-                                      cfg.dt[1], "output_tensor");
+    output = tensor_factory.zero_tensor(
+            {cfg.num_bags, cfg.embedding_dims}, cfg.dt[1], "output_tensor");
 
-  return OK;
+    return OK;
 }
 
 } // namespace embag

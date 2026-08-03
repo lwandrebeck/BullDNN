@@ -77,102 +77,104 @@ using mt::status_t;
 // to compare against forced ALGO=1.
 // ──────────────────────────────────────────────────────────────────
 TEST(CkDispatchRouting, NonConstWeightsFallsBackToDlp) {
-  CK_SKIP_IF_NO_BF16_ISA();
-  ::reset_grp_matmul_caches();
+    CK_SKIP_IF_NO_BF16_ISA();
+    ::reset_grp_matmul_caches();
 
-  constexpr int kNumOps = 4;
-  constexpr int M = 16, K = 256, N = 512;
+    constexpr int kNumOps = 4;
+    constexpr int M = 16, K = 256, N = 512;
 
-  // Per-expert BF16 src / weight buffers (uniform shape).
-  std::vector<std::vector<bfloat16_t>> src_bufs(kNumOps);
-  std::vector<std::vector<bfloat16_t>> wei_bufs(kNumOps);
-  for (int e = 0; e < kNumOps; ++e) {
-    src_bufs[e].assign(static_cast<size_t>(M) * K, bfloat16_t(0.0f));
-    wei_bufs[e].assign(static_cast<size_t>(K) * N, bfloat16_t(0.0f));
-    mt::fill_src(src_bufs[e],  /*e=*/e);
-    mt::fill_wei1(wei_bufs[e], /*e=*/e);
-  }
-  // Per-expert dst buffers, two passes (CK-fallback vs forced ALGO 1).
-  std::vector<std::vector<bfloat16_t>> dst_ck(kNumOps);
-  std::vector<std::vector<bfloat16_t>> dst_dlp(kNumOps);
-  for (int e = 0; e < kNumOps; ++e) {
-    dst_ck[e].assign(static_cast<size_t>(M) * N, bfloat16_t(0.0f));
-    dst_dlp[e].assign(static_cast<size_t>(M) * N, bfloat16_t(0.0f));
-  }
-
-  std::vector<char>          layout(kNumOps, 'r');
-  std::vector<bool>          transA(kNumOps, false), transB(kNumOps, false);
-  std::vector<int>           Ms(kNumOps, M), Ns(kNumOps, N), Ks(kNumOps, K);
-  std::vector<float>         alpha(kNumOps, 1.0f), beta(kNumOps, 0.0f);
-  std::vector<int>           lda(kNumOps, K), ldb(kNumOps, N), ldc(kNumOps, N);
-  std::vector<const void *>  src_ptrs(kNumOps), wei_ptrs(kNumOps);
-  std::vector<const void *>  bias_ptrs(kNumOps, nullptr);
-  for (int e = 0; e < kNumOps; ++e) {
-    src_ptrs[e] = src_bufs[e].data();
-    wei_ptrs[e] = wei_bufs[e].data();
-  }
-  std::vector<bool>          is_wc_false(kNumOps, false);
-
-  std::vector<matmul_params> params(kNumOps);
-  for (auto &p : params) {
-    p.dtypes.src  = data_type_t::bf16;
-    p.dtypes.wei  = data_type_t::bf16;
-    p.dtypes.dst  = data_type_t::bf16;
-    p.dtypes.bias = data_type_t::none;
-    // Pin the dispatcher's per-call thread team to `kNumOps` so
-    // `num_ops == num_threads` → auto-select Rule 1 fires in the
-    // planner's auto-mirror gate, ntile is picked (instead of
-    // Sequential under the Rule 2 / Rule 3-prompt arrows), and
-    // the CK gate is actually consulted on the call — letting
-    // `is_weights_const = false` exercise the refusal-then-DLP
-    // path this test is named for.  See the function-level
-    // doc-block above for the full rationale.
-    p.num_threads = kNumOps;
-  }
-
-  // Run 1: ALGO=3 forced + custom-kernel gate ON via the test-only
-  // atomic override (deterministic regardless of any cached state in
-  // `get_grp_matmul_custom_kernel()`) + is_weights_const=false → CK
-  // refused, DLP runs.
-  {
-    mt::AlgoEnvGuard            algo_guard(3);
-    mt::CustomKernelOverride    ck_guard(true);
-    std::vector<void *> dst_ptrs(kNumOps);
-    for (int e = 0; e < kNumOps; ++e) dst_ptrs[e] = dst_ck[e].data();
-    ASSERT_EQ(group_matmul_direct(layout, transA, transB, Ms, Ns, Ks,
-                                  alpha, src_ptrs, lda, wei_ptrs, ldb,
-                                  bias_ptrs, beta, dst_ptrs, ldc,
-                                  is_wc_false, params,
-                                  /*moe_postop=*/nullptr,
-                                  /*gated_act=*/nullptr),
-              status_t::success);
-  }
-
-  ::reset_grp_matmul_caches();
-  // Run 2: ALGO=1 forced (always DLP) — reference for the comparison.
-  {
-    mt::AlgoEnvGuard algo_guard(1);
-    std::vector<void *> dst_ptrs(kNumOps);
-    for (int e = 0; e < kNumOps; ++e) dst_ptrs[e] = dst_dlp[e].data();
-    ASSERT_EQ(group_matmul_direct(layout, transA, transB, Ms, Ns, Ks,
-                                  alpha, src_ptrs, lda, wei_ptrs, ldb,
-                                  bias_ptrs, beta, dst_ptrs, ldc,
-                                  is_wc_false, params,
-                                  /*moe_postop=*/nullptr,
-                                  /*gated_act=*/nullptr),
-              status_t::success);
-  }
-
-  // Outputs must be bit-identical for every expert (both ran the
-  // same DLP path).
-  for (int e = 0; e < kNumOps; ++e) {
-    for (int i = 0; i < M * N; ++i) {
-      ASSERT_EQ(static_cast<float>(dst_ck[e][i]),
-                static_cast<float>(dst_dlp[e][i]))
-          << "CK-refused (fallback) output deviates from forced-ALGO-1 "
-             "DLP output at expert=" << e << " i=" << i;
+    // Per-expert BF16 src / weight buffers (uniform shape).
+    std::vector<std::vector<bfloat16_t>> src_bufs(kNumOps);
+    std::vector<std::vector<bfloat16_t>> wei_bufs(kNumOps);
+    for (int e = 0; e < kNumOps; ++e) {
+        src_bufs[e].assign(static_cast<size_t>(M) * K, bfloat16_t(0.0f));
+        wei_bufs[e].assign(static_cast<size_t>(K) * N, bfloat16_t(0.0f));
+        mt::fill_src(src_bufs[e], /*e=*/e);
+        mt::fill_wei1(wei_bufs[e], /*e=*/e);
     }
-  }
+    // Per-expert dst buffers, two passes (CK-fallback vs forced ALGO 1).
+    std::vector<std::vector<bfloat16_t>> dst_ck(kNumOps);
+    std::vector<std::vector<bfloat16_t>> dst_dlp(kNumOps);
+    for (int e = 0; e < kNumOps; ++e) {
+        dst_ck[e].assign(static_cast<size_t>(M) * N, bfloat16_t(0.0f));
+        dst_dlp[e].assign(static_cast<size_t>(M) * N, bfloat16_t(0.0f));
+    }
+
+    std::vector<char> layout(kNumOps, 'r');
+    std::vector<bool> transA(kNumOps, false), transB(kNumOps, false);
+    std::vector<int> Ms(kNumOps, M), Ns(kNumOps, N), Ks(kNumOps, K);
+    std::vector<float> alpha(kNumOps, 1.0f), beta(kNumOps, 0.0f);
+    std::vector<int> lda(kNumOps, K), ldb(kNumOps, N), ldc(kNumOps, N);
+    std::vector<const void *> src_ptrs(kNumOps), wei_ptrs(kNumOps);
+    std::vector<const void *> bias_ptrs(kNumOps, nullptr);
+    for (int e = 0; e < kNumOps; ++e) {
+        src_ptrs[e] = src_bufs[e].data();
+        wei_ptrs[e] = wei_bufs[e].data();
+    }
+    std::vector<bool> is_wc_false(kNumOps, false);
+
+    std::vector<matmul_params> params(kNumOps);
+    for (auto &p : params) {
+        p.dtypes.src = data_type_t::bf16;
+        p.dtypes.wei = data_type_t::bf16;
+        p.dtypes.dst = data_type_t::bf16;
+        p.dtypes.bias = data_type_t::none;
+        // Pin the dispatcher's per-call thread team to `kNumOps` so
+        // `num_ops == num_threads` → auto-select Rule 1 fires in the
+        // planner's auto-mirror gate, ntile is picked (instead of
+        // Sequential under the Rule 2 / Rule 3-prompt arrows), and
+        // the CK gate is actually consulted on the call — letting
+        // `is_weights_const = false` exercise the refusal-then-DLP
+        // path this test is named for.  See the function-level
+        // doc-block above for the full rationale.
+        p.num_threads = kNumOps;
+    }
+
+    // Run 1: ALGO=3 forced + custom-kernel gate ON via the test-only
+    // atomic override (deterministic regardless of any cached state in
+    // `get_grp_matmul_custom_kernel()`) + is_weights_const=false → CK
+    // refused, DLP runs.
+    {
+        mt::AlgoEnvGuard algo_guard(3);
+        mt::CustomKernelOverride ck_guard(true);
+        std::vector<void *> dst_ptrs(kNumOps);
+        for (int e = 0; e < kNumOps; ++e)
+            dst_ptrs[e] = dst_ck[e].data();
+        ASSERT_EQ(group_matmul_direct(layout, transA, transB, Ms, Ns, Ks, alpha,
+                          src_ptrs, lda, wei_ptrs, ldb, bias_ptrs, beta,
+                          dst_ptrs, ldc, is_wc_false, params,
+                          /*moe_postop=*/nullptr,
+                          /*gated_act=*/nullptr),
+                status_t::success);
+    }
+
+    ::reset_grp_matmul_caches();
+    // Run 2: ALGO=1 forced (always DLP) — reference for the comparison.
+    {
+        mt::AlgoEnvGuard algo_guard(1);
+        std::vector<void *> dst_ptrs(kNumOps);
+        for (int e = 0; e < kNumOps; ++e)
+            dst_ptrs[e] = dst_dlp[e].data();
+        ASSERT_EQ(group_matmul_direct(layout, transA, transB, Ms, Ns, Ks, alpha,
+                          src_ptrs, lda, wei_ptrs, ldb, bias_ptrs, beta,
+                          dst_ptrs, ldc, is_wc_false, params,
+                          /*moe_postop=*/nullptr,
+                          /*gated_act=*/nullptr),
+                status_t::success);
+    }
+
+    // Outputs must be bit-identical for every expert (both ran the
+    // same DLP path).
+    for (int e = 0; e < kNumOps; ++e) {
+        for (int i = 0; i < M * N; ++i) {
+            ASSERT_EQ(static_cast<float>(dst_ck[e][i]),
+                    static_cast<float>(dst_dlp[e][i]))
+                    << "CK-refused (fallback) output deviates from "
+                       "forced-ALGO-1 "
+                       "DLP output at expert="
+                    << e << " i=" << i;
+        }
+    }
 }
 
 // ──────────────────────────────────────────────────────────────────
@@ -186,24 +188,22 @@ TEST(CkDispatchRouting, NonConstWeightsFallsBackToDlp) {
 // the is_weights_const test above).
 // ──────────────────────────────────────────────────────────────────
 TEST(CkDispatchRouting, F16DstRefusedAtCkLayer) {
-  // resolve_variant must reject f16 dst.
-  EXPECT_EQ(
-      ck::resolve_variant(data_type_t::bf16, data_type_t::bf16,
-                           data_type_t::f16),
-      ck::KernelVariant::kUnsupported);
+    // resolve_variant must reject f16 dst.
+    EXPECT_EQ(ck::resolve_variant(
+                      data_type_t::bf16, data_type_t::bf16, data_type_t::f16),
+            ck::KernelVariant::kUnsupported);
 
-  // prepare_for_call must also refuse on f16 dst, regardless of host ISA.
-  if (ck::dispatch_supported()) {
-    ck_test::PrepCallCase c{};
-    c.dst_dt = data_type_t::f16;
-    c.label = "f16_dst_refusal";
-    ck_test::PrepCallStorage storage;
-    ck::CallContext kctx;
-    EXPECT_EQ(ck_test::run_prepare(c, storage, kctx),
-              status_t::failure);
-    EXPECT_FALSE(kctx.enabled);
-    EXPECT_EQ(kctx.variant, ck::KernelVariant::kUnsupported);
-  }
+    // prepare_for_call must also refuse on f16 dst, regardless of host ISA.
+    if (ck::dispatch_supported()) {
+        ck_test::PrepCallCase c {};
+        c.dst_dt = data_type_t::f16;
+        c.label = "f16_dst_refusal";
+        ck_test::PrepCallStorage storage;
+        ck::CallContext kctx;
+        EXPECT_EQ(ck_test::run_prepare(c, storage, kctx), status_t::failure);
+        EXPECT_FALSE(kctx.enabled);
+        EXPECT_EQ(kctx.variant, ck::KernelVariant::kUnsupported);
+    }
 }
 
 // ──────────────────────────────────────────────────────────────────
@@ -221,34 +221,35 @@ TEST(CkDispatchRouting, F16DstRefusedAtCkLayer) {
 // both layers together.
 // ──────────────────────────────────────────────────────────────────
 TEST(CkDispatchRouting, ResolveAndPrepareAgreeOnRejectedTuples) {
-  if (!ck::dispatch_supported()) {
-    GTEST_SKIP() << "ISA gate would refuse anyway";
-  }
-  struct Row { data_type_t src, wei, dst; };
-  for (auto r : {Row{data_type_t::bf16, data_type_t::s8,  data_type_t::bf16},
-                 Row{data_type_t::bf16, data_type_t::s8,  data_type_t::f32 },
-                 Row{data_type_t::s8 ,  data_type_t::s8,  data_type_t::bf16},
-                 Row{data_type_t::s8 ,  data_type_t::s8,  data_type_t::f32 }}) {
-    // resolve_variant rejects.
-    EXPECT_EQ(ck::resolve_variant(r.src, r.wei, r.dst),
-              ck::KernelVariant::kUnsupported)
-        << "src="  << ck_test::dt_name(r.src)
-        << " wei=" << ck_test::dt_name(r.wei)
-        << " dst=" << ck_test::dt_name(r.dst)
-        << " — if this row now resolves to a real variant, move it "
-           "to test_resolve_variant.cpp's positive table.";
-    // prepare_for_call rejects too.
-    ck_test::PrepCallCase c{};
-    c.src_dt = r.src;
-    c.wei_dt = r.wei;
-    c.dst_dt = r.dst;
-    c.label = "rejected_dtype_tuple";
-    ck_test::PrepCallStorage storage;
-    ck::CallContext kctx;
-    EXPECT_EQ(ck_test::run_prepare(c, storage, kctx),
-              status_t::failure);
-    EXPECT_FALSE(kctx.enabled);
-  }
+    if (!ck::dispatch_supported()) {
+        GTEST_SKIP() << "ISA gate would refuse anyway";
+    }
+    struct Row {
+        data_type_t src, wei, dst;
+    };
+    for (auto r : {Row {data_type_t::bf16, data_type_t::s8, data_type_t::bf16},
+                 Row {data_type_t::bf16, data_type_t::s8, data_type_t::f32},
+                 Row {data_type_t::s8, data_type_t::s8, data_type_t::bf16},
+                 Row {data_type_t::s8, data_type_t::s8, data_type_t::f32}}) {
+        // resolve_variant rejects.
+        EXPECT_EQ(ck::resolve_variant(r.src, r.wei, r.dst),
+                ck::KernelVariant::kUnsupported)
+                << "src=" << ck_test::dt_name(r.src)
+                << " wei=" << ck_test::dt_name(r.wei)
+                << " dst=" << ck_test::dt_name(r.dst)
+                << " — if this row now resolves to a real variant, move it "
+                   "to test_resolve_variant.cpp's positive table.";
+        // prepare_for_call rejects too.
+        ck_test::PrepCallCase c {};
+        c.src_dt = r.src;
+        c.wei_dt = r.wei;
+        c.dst_dt = r.dst;
+        c.label = "rejected_dtype_tuple";
+        ck_test::PrepCallStorage storage;
+        ck::CallContext kctx;
+        EXPECT_EQ(ck_test::run_prepare(c, storage, kctx), status_t::failure);
+        EXPECT_FALSE(kctx.enabled);
+    }
 }
 
 // ──────────────────────────────────────────────────────────────────
@@ -267,54 +268,54 @@ TEST(CkDispatchRouting, ResolveAndPrepareAgreeOnRejectedTuples) {
 //      time (rules out one-shot state in the dispatcher).
 // ──────────────────────────────────────────────────────────────────
 TEST(CkDispatchRouting, CallContextReusableAcrossFamilies) {
-  CK_SKIP_IF_NO_INT8_ISA();
+    CK_SKIP_IF_NO_INT8_ISA();
 
-  ck::CallContext kctx;
-  ck_test::PrepCallStorage storage;
+    ck::CallContext kctx;
+    ck_test::PrepCallStorage storage;
 
-  // (1) bf16 call.
-  {
-    ck_test::PrepCallCase c{};
-    c.label  = "reuse_bf16_first";
-    c.src_dt = data_type_t::bf16;
-    c.wei_dt = data_type_t::bf16;
-    c.dst_dt = data_type_t::bf16;
-    ASSERT_EQ(ck_test::run_prepare(c, storage, kctx), status_t::success);
-    EXPECT_TRUE(kctx.enabled);
-    EXPECT_FALSE(ck::is_int8_variant(kctx.variant))
-        << "bf16 call must yield a bf16 variant";
-  }
+    // (1) bf16 call.
+    {
+        ck_test::PrepCallCase c {};
+        c.label = "reuse_bf16_first";
+        c.src_dt = data_type_t::bf16;
+        c.wei_dt = data_type_t::bf16;
+        c.dst_dt = data_type_t::bf16;
+        ASSERT_EQ(ck_test::run_prepare(c, storage, kctx), status_t::success);
+        EXPECT_TRUE(kctx.enabled);
+        EXPECT_FALSE(ck::is_int8_variant(kctx.variant))
+                << "bf16 call must yield a bf16 variant";
+    }
 
-  // (2) int8 call on the SAME kctx.
-  {
-    ck_test::PrepCallCase c{};
-    c.label         = "reuse_int8_after_bf16";
-    c.src_dt        = data_type_t::bf16;
-    c.wei_dt        = data_type_t::s8;
-    c.dst_dt        = data_type_t::bf16;
-    c.dynamic_quant = true;
-    c.compute_dt    = data_type_t::s8;
-    ASSERT_EQ(ck_test::run_prepare(c, storage, kctx), status_t::success);
-    EXPECT_TRUE(kctx.enabled);
-    EXPECT_TRUE(ck::is_int8_variant(kctx.variant))
-        << "int8 call on a previously-bf16-used kctx must yield an "
-           "int8 variant (state must be fully reset on every entry)";
-    EXPECT_EQ(kctx.variant, ck::KernelVariant::kS8_S8_BF16_SYM);
-  }
+    // (2) int8 call on the SAME kctx.
+    {
+        ck_test::PrepCallCase c {};
+        c.label = "reuse_int8_after_bf16";
+        c.src_dt = data_type_t::bf16;
+        c.wei_dt = data_type_t::s8;
+        c.dst_dt = data_type_t::bf16;
+        c.dynamic_quant = true;
+        c.compute_dt = data_type_t::s8;
+        ASSERT_EQ(ck_test::run_prepare(c, storage, kctx), status_t::success);
+        EXPECT_TRUE(kctx.enabled);
+        EXPECT_TRUE(ck::is_int8_variant(kctx.variant))
+                << "int8 call on a previously-bf16-used kctx must yield an "
+                   "int8 variant (state must be fully reset on every entry)";
+        EXPECT_EQ(kctx.variant, ck::KernelVariant::kS8_S8_BF16_SYM);
+    }
 
-  // (3) bf16 call again.
-  {
-    ck_test::PrepCallCase c{};
-    c.label  = "reuse_bf16_after_int8";
-    c.src_dt = data_type_t::bf16;
-    c.wei_dt = data_type_t::bf16;
-    c.dst_dt = data_type_t::bf16;
-    ASSERT_EQ(ck_test::run_prepare(c, storage, kctx), status_t::success);
-    EXPECT_TRUE(kctx.enabled);
-    EXPECT_FALSE(ck::is_int8_variant(kctx.variant))
-        << "third call must return cleanly to bf16; reuse must not "
-           "be one-shot";
-  }
+    // (3) bf16 call again.
+    {
+        ck_test::PrepCallCase c {};
+        c.label = "reuse_bf16_after_int8";
+        c.src_dt = data_type_t::bf16;
+        c.wei_dt = data_type_t::bf16;
+        c.dst_dt = data_type_t::bf16;
+        ASSERT_EQ(ck_test::run_prepare(c, storage, kctx), status_t::success);
+        EXPECT_TRUE(kctx.enabled);
+        EXPECT_FALSE(ck::is_int8_variant(kctx.variant))
+                << "third call must return cleanly to bf16; reuse must not "
+                   "be one-shot";
+    }
 }
 
 // ──────────────────────────────────────────────────────────────────
@@ -330,24 +331,24 @@ TEST(CkDispatchRouting, CallContextReusableAcrossFamilies) {
 // (the dispatcher catches the inconsistency before any hoist runs).
 // ──────────────────────────────────────────────────────────────────
 TEST(CkDispatchRouting, DynamicQuantWithBf16WeiRefused) {
-  CK_SKIP_IF_NO_INT8_ISA();
-  ck_test::PrepCallCase c{};
-  c.label         = "dq_with_bf16_wei_refused";
-  c.src_dt        = data_type_t::bf16;
-  c.wei_dt        = data_type_t::bf16;     // wrong for dynamic_quant=true
-  c.dst_dt        = data_type_t::bf16;
-  c.dynamic_quant = true;
-  c.compute_dt    = data_type_t::s8;
-  ck_test::PrepCallStorage storage;
-  ck::CallContext kctx;
-  EXPECT_EQ(ck_test::run_prepare(c, storage, kctx), status_t::failure)
-      << "prepare_for_call must refuse dynamic_quant=true with a "
-         "non-s8 weight; otherwise the int8 ukernel would consume "
-         "the bf16 byte stream as if it were s8 and silently corrupt "
-         "every accumulator (B.1 hardening defends a related case "
-         "at the do_tile level for completeness, but the structural "
-         "refusal at the gate is the primary defence).";
-  EXPECT_FALSE(kctx.enabled);
+    CK_SKIP_IF_NO_INT8_ISA();
+    ck_test::PrepCallCase c {};
+    c.label = "dq_with_bf16_wei_refused";
+    c.src_dt = data_type_t::bf16;
+    c.wei_dt = data_type_t::bf16; // wrong for dynamic_quant=true
+    c.dst_dt = data_type_t::bf16;
+    c.dynamic_quant = true;
+    c.compute_dt = data_type_t::s8;
+    ck_test::PrepCallStorage storage;
+    ck::CallContext kctx;
+    EXPECT_EQ(ck_test::run_prepare(c, storage, kctx), status_t::failure)
+            << "prepare_for_call must refuse dynamic_quant=true with a "
+               "non-s8 weight; otherwise the int8 ukernel would consume "
+               "the bf16 byte stream as if it were s8 and silently corrupt "
+               "every accumulator (B.1 hardening defends a related case "
+               "at the do_tile level for completeness, but the structural "
+               "refusal at the gate is the primary defence).";
+    EXPECT_FALSE(kctx.enabled);
 }
 
-}  // namespace
+} // namespace

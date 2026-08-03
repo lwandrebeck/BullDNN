@@ -14,12 +14,12 @@
  * limitations under the License.
  ******************************************************************************/
 
-#include "lowoha_operators/reorder/reorder_data_type/static_quant_dequant_impl/static_kernels.hpp"
 #include "lowoha_operators/reorder/lowoha_reorder_utils.hpp"
+#include "lowoha_operators/reorder/reorder_data_type/static_quant_dequant_impl/static_kernels.hpp"
 
-#include <immintrin.h>
-#include <cstring>
 #include <cmath>
+#include <cstring>
+#include <immintrin.h>
 
 namespace zendnnl {
 namespace lowoha {
@@ -35,9 +35,9 @@ namespace reorder {
  * Uses VCVTPH2PS to widen 16 packed f16 values from a 256-bit register
  * into 16 float32 values in a 512-bit register.
  */
-__attribute__((target("avx512f")))
-static inline __m512 f16_to_float_vec(__m256i f16) {
-  return _mm512_cvtph_ps(f16);
+__attribute__((target("avx512f"))) static inline __m512 f16_to_float_vec(
+        __m256i f16) {
+    return _mm512_cvtph_ps(f16);
 }
 
 /**
@@ -47,34 +47,34 @@ static inline __m512 f16_to_float_vec(__m256i f16) {
  * float32 values from a 512-bit register into 16 packed f16 values in a
  * 256-bit register.
  */
-__attribute__((target("avx512f")))
-static inline __m256i float_to_f16_vec(__m512 val) {
-  return _mm512_cvtps_ph(val, _MM_FROUND_TO_NEAREST_INT | _MM_FROUND_NO_EXC);
+__attribute__((target("avx512f"))) static inline __m256i float_to_f16_vec(
+        __m512 val) {
+    return _mm512_cvtps_ph(val, _MM_FROUND_TO_NEAREST_INT | _MM_FROUND_NO_EXC);
 }
 
 /**
  * @brief Convert 16 BF16 values to 16 float32 values using AVX512.
  *
  */
-__attribute__((target("avx512f,avx512bw")))
-static inline __m512 bf16_to_float_vec(__m256i bf16) {
-  __m512i extended = _mm512_cvtepu16_epi32(bf16);
-  __m512i shifted = _mm512_slli_epi32(extended, 16);
-  return _mm512_castsi512_ps(shifted);
+__attribute__((target("avx512f,avx512bw"))) static inline __m512
+bf16_to_float_vec(__m256i bf16) {
+    __m512i extended = _mm512_cvtepu16_epi32(bf16);
+    __m512i shifted = _mm512_slli_epi32(extended, 16);
+    return _mm512_castsi512_ps(shifted);
 }
 
 /**
  * @brief Convert 16 float32 values to 16 BF16 values using round-to-nearest-even.
  */
-__attribute__((target("avx512f")))
-static inline __m256i float_to_bf16_vec(__m512 val) {
-  __m512i int_val = _mm512_castps_si512(val);
-  __m512i lsb = _mm512_and_si512(_mm512_srli_epi32(int_val, 16),
-                                 _mm512_set1_epi32(1));
-  __m512i rounding_bias = _mm512_add_epi32(_mm512_set1_epi32(0x7FFF), lsb);
-  __m512i rounded = _mm512_add_epi32(int_val, rounding_bias);
-  __m512i bf16 = _mm512_srli_epi32(rounded, 16);
-  return _mm512_cvtepi32_epi16(bf16);
+__attribute__((target("avx512f"))) static inline __m256i float_to_bf16_vec(
+        __m512 val) {
+    __m512i int_val = _mm512_castps_si512(val);
+    __m512i lsb = _mm512_and_si512(
+            _mm512_srli_epi32(int_val, 16), _mm512_set1_epi32(1));
+    __m512i rounding_bias = _mm512_add_epi32(_mm512_set1_epi32(0x7FFF), lsb);
+    __m512i rounded = _mm512_add_epi32(int_val, rounding_bias);
+    __m512i bf16 = _mm512_srli_epi32(rounded, 16);
+    return _mm512_cvtepi32_epi16(bf16);
 }
 
 //==============================================================================
@@ -98,39 +98,40 @@ static inline __m256i float_to_bf16_vec(__m512 val) {
  *                   + 1 YMM (f16_packed) = 5 vector registers total
  *   - No-scaling path: 1 ZMM (f32_vals) + 1 YMM (f16_packed) = 2 vector registers
  */
-__attribute__((target("avx512f")))
-void convert_f32_to_f16_avx512(const float *input, uint16_t *output,
-                               size_t nelems, float scale, int zero_point) {
-  const bool apply_scaling = (scale != 1.0f || zero_point != 0);
+__attribute__((target("avx512f"))) void convert_f32_to_f16_avx512(
+        const float *input, uint16_t *output, size_t nelems, float scale,
+        int zero_point) {
+    const bool apply_scaling = (scale != 1.0f || zero_point != 0);
 
-  size_t i = 0;
-  if (apply_scaling) {
-    __m512 inv_scale_vec = _mm512_set1_ps(1.0f / scale);
-    __m512 zp_vec        = _mm512_set1_ps(static_cast<float>(zero_point));
-
-    for (; i + 15 < nelems; i += 16) {
-      __m512 f32_vals = _mm512_loadu_ps(input + i);
-      __m512 scaled_vals =
-        _mm512_add_ps(_mm512_mul_ps(f32_vals, inv_scale_vec), zp_vec);
-      __m256i f16_packed = float_to_f16_vec(scaled_vals);
-      _mm256_storeu_si256(reinterpret_cast<__m256i *>(output + i), f16_packed);
-    }
-  }
-  else {
-    for (; i + 15 < nelems; i += 16) {
-      __m512 f32_vals = _mm512_loadu_ps(input + i);
-      __m256i f16_packed = float_to_f16_vec(f32_vals);
-      _mm256_storeu_si256(reinterpret_cast<__m256i *>(output + i), f16_packed);
-    }
-  }
-
-  for (; i < nelems; ++i) {
-    float val = input[i];
+    size_t i = 0;
     if (apply_scaling) {
-      val = val / scale + static_cast<float>(zero_point);
+        __m512 inv_scale_vec = _mm512_set1_ps(1.0f / scale);
+        __m512 zp_vec = _mm512_set1_ps(static_cast<float>(zero_point));
+
+        for (; i + 15 < nelems; i += 16) {
+            __m512 f32_vals = _mm512_loadu_ps(input + i);
+            __m512 scaled_vals = _mm512_add_ps(
+                    _mm512_mul_ps(f32_vals, inv_scale_vec), zp_vec);
+            __m256i f16_packed = float_to_f16_vec(scaled_vals);
+            _mm256_storeu_si256(
+                    reinterpret_cast<__m256i *>(output + i), f16_packed);
+        }
+    } else {
+        for (; i + 15 < nelems; i += 16) {
+            __m512 f32_vals = _mm512_loadu_ps(input + i);
+            __m256i f16_packed = float_to_f16_vec(f32_vals);
+            _mm256_storeu_si256(
+                    reinterpret_cast<__m256i *>(output + i), f16_packed);
+        }
     }
-    output[i] = float_to_f16(val);
-  }
+
+    for (; i < nelems; ++i) {
+        float val = input[i];
+        if (apply_scaling) {
+            val = val / scale + static_cast<float>(zero_point);
+        }
+        output[i] = float_to_f16(val);
+    }
 }
 
 /**
@@ -150,41 +151,40 @@ void convert_f32_to_f16_avx512(const float *input, uint16_t *output,
  *                   + 1 YMM (f16_vals) = 5 vector registers total
  *   - No-scaling path: 1 ZMM (f32_vals) + 1 YMM (f16_vals) = 2 vector registers
  */
-__attribute__((target("avx512f")))
-void convert_f16_to_f32_avx512(const uint16_t *input, float *output,
-                               size_t nelems, float scale, int zero_point) {
-  const bool apply_scaling = (scale != 1.0f || zero_point != 0);
+__attribute__((target("avx512f"))) void convert_f16_to_f32_avx512(
+        const uint16_t *input, float *output, size_t nelems, float scale,
+        int zero_point) {
+    const bool apply_scaling = (scale != 1.0f || zero_point != 0);
 
-  size_t i = 0;
-  if (apply_scaling) {
-    __m512 scale_vec = _mm512_set1_ps(scale);
-    __m512 zp_vec    = _mm512_set1_ps(static_cast<float>(zero_point));
-
-    for (; i + 15 < nelems; i += 16) {
-      __m256i f16_vals =
-        _mm256_loadu_si256(reinterpret_cast<const __m256i *>(input + i));
-      __m512 f32_vals = f16_to_float_vec(f16_vals);
-      __m512 scaled_vals =
-        _mm512_mul_ps(_mm512_sub_ps(f32_vals, zp_vec), scale_vec);
-      _mm512_storeu_ps(output + i, scaled_vals);
-    }
-  }
-  else {
-    for (; i + 15 < nelems; i += 16) {
-      __m256i f16_vals =
-        _mm256_loadu_si256(reinterpret_cast<const __m256i *>(input + i));
-      __m512 f32_vals = f16_to_float_vec(f16_vals);
-      _mm512_storeu_ps(output + i, f32_vals);
-    }
-  }
-
-  for (; i < nelems; ++i) {
-    float val = f16_to_float(input[i]);
+    size_t i = 0;
     if (apply_scaling) {
-      val = (val - static_cast<float>(zero_point)) * scale;
+        __m512 scale_vec = _mm512_set1_ps(scale);
+        __m512 zp_vec = _mm512_set1_ps(static_cast<float>(zero_point));
+
+        for (; i + 15 < nelems; i += 16) {
+            __m256i f16_vals = _mm256_loadu_si256(
+                    reinterpret_cast<const __m256i *>(input + i));
+            __m512 f32_vals = f16_to_float_vec(f16_vals);
+            __m512 scaled_vals
+                    = _mm512_mul_ps(_mm512_sub_ps(f32_vals, zp_vec), scale_vec);
+            _mm512_storeu_ps(output + i, scaled_vals);
+        }
+    } else {
+        for (; i + 15 < nelems; i += 16) {
+            __m256i f16_vals = _mm256_loadu_si256(
+                    reinterpret_cast<const __m256i *>(input + i));
+            __m512 f32_vals = f16_to_float_vec(f16_vals);
+            _mm512_storeu_ps(output + i, f32_vals);
+        }
     }
-    output[i] = val;
-  }
+
+    for (; i < nelems; ++i) {
+        float val = f16_to_float(input[i]);
+        if (apply_scaling) {
+            val = (val - static_cast<float>(zero_point)) * scale;
+        }
+        output[i] = val;
+    }
 }
 
 //==============================================================================
@@ -217,43 +217,44 @@ void convert_f16_to_f32_avx512(const uint16_t *input, float *output,
  *   - No-scaling path: 3 ZMM (f32_vals, extended, shifted)
  *                   + 2 YMM (bf16_vals, f16_packed) = 5 vector registers
  */
-__attribute__((target("avx512f,avx512bw")))
-void convert_bf16_to_f16_avx512(const uint16_t *input, uint16_t *output,
-                                size_t nelems, float scale, int zero_point) {
-  const bool apply_scaling = (scale != 1.0f || zero_point != 0);
+__attribute__((target("avx512f,avx512bw"))) void convert_bf16_to_f16_avx512(
+        const uint16_t *input, uint16_t *output, size_t nelems, float scale,
+        int zero_point) {
+    const bool apply_scaling = (scale != 1.0f || zero_point != 0);
 
-  size_t i = 0;
-  if (apply_scaling) {
-    __m512 inv_scale_vec = _mm512_set1_ps(1.0f / scale);
-    __m512 zp_vec        = _mm512_set1_ps(static_cast<float>(zero_point));
-
-    for (; i + 15 < nelems; i += 16) {
-      __m256i bf16_vals =
-        _mm256_loadu_si256(reinterpret_cast<const __m256i *>(input + i));
-      __m512 f32_vals = bf16_to_float_vec(bf16_vals);
-      __m512 scaled_vals =
-        _mm512_add_ps(_mm512_mul_ps(f32_vals, inv_scale_vec), zp_vec);
-      __m256i f16_packed = float_to_f16_vec(scaled_vals);
-      _mm256_storeu_si256(reinterpret_cast<__m256i *>(output + i), f16_packed);
-    }
-  }
-  else {
-    for (; i + 15 < nelems; i += 16) {
-      __m256i bf16_vals =
-        _mm256_loadu_si256(reinterpret_cast<const __m256i *>(input + i));
-      __m512 f32_vals = bf16_to_float_vec(bf16_vals);
-      __m256i f16_packed = float_to_f16_vec(f32_vals);
-      _mm256_storeu_si256(reinterpret_cast<__m256i *>(output + i), f16_packed);
-    }
-  }
-
-  for (; i < nelems; ++i) {
-    float val = bf16_to_float(input[i]);
+    size_t i = 0;
     if (apply_scaling) {
-      val = val / scale + static_cast<float>(zero_point);
+        __m512 inv_scale_vec = _mm512_set1_ps(1.0f / scale);
+        __m512 zp_vec = _mm512_set1_ps(static_cast<float>(zero_point));
+
+        for (; i + 15 < nelems; i += 16) {
+            __m256i bf16_vals = _mm256_loadu_si256(
+                    reinterpret_cast<const __m256i *>(input + i));
+            __m512 f32_vals = bf16_to_float_vec(bf16_vals);
+            __m512 scaled_vals = _mm512_add_ps(
+                    _mm512_mul_ps(f32_vals, inv_scale_vec), zp_vec);
+            __m256i f16_packed = float_to_f16_vec(scaled_vals);
+            _mm256_storeu_si256(
+                    reinterpret_cast<__m256i *>(output + i), f16_packed);
+        }
+    } else {
+        for (; i + 15 < nelems; i += 16) {
+            __m256i bf16_vals = _mm256_loadu_si256(
+                    reinterpret_cast<const __m256i *>(input + i));
+            __m512 f32_vals = bf16_to_float_vec(bf16_vals);
+            __m256i f16_packed = float_to_f16_vec(f32_vals);
+            _mm256_storeu_si256(
+                    reinterpret_cast<__m256i *>(output + i), f16_packed);
+        }
     }
-    output[i] = float_to_f16(val);
-  }
+
+    for (; i < nelems; ++i) {
+        float val = bf16_to_float(input[i]);
+        if (apply_scaling) {
+            val = val / scale + static_cast<float>(zero_point);
+        }
+        output[i] = float_to_f16(val);
+    }
 }
 
 /**
@@ -277,43 +278,44 @@ void convert_bf16_to_f16_avx512(const uint16_t *input, uint16_t *output,
  *   - No-scaling path: ~7 ZMM (f32_vals + 6 from float_to_bf16_vec)
  *                   + 2 YMM (f16_vals, bf16_packed) = ~9 vector registers
  */
-__attribute__((target("avx512f")))
-void convert_f16_to_bf16_avx512(const uint16_t *input, uint16_t *output,
-                                size_t nelems, float scale, int zero_point) {
-  const bool apply_scaling = (scale != 1.0f || zero_point != 0);
+__attribute__((target("avx512f"))) void convert_f16_to_bf16_avx512(
+        const uint16_t *input, uint16_t *output, size_t nelems, float scale,
+        int zero_point) {
+    const bool apply_scaling = (scale != 1.0f || zero_point != 0);
 
-  size_t i = 0;
-  if (apply_scaling) {
-    __m512 scale_vec = _mm512_set1_ps(scale);
-    __m512 zp_vec    = _mm512_set1_ps(static_cast<float>(zero_point));
-
-    for (; i + 15 < nelems; i += 16) {
-      __m256i f16_vals =
-        _mm256_loadu_si256(reinterpret_cast<const __m256i *>(input + i));
-      __m512 f32_vals = f16_to_float_vec(f16_vals);
-      __m512 scaled_vals =
-        _mm512_mul_ps(_mm512_sub_ps(f32_vals, zp_vec), scale_vec);
-      __m256i bf16_packed = float_to_bf16_vec(scaled_vals);
-      _mm256_storeu_si256(reinterpret_cast<__m256i *>(output + i), bf16_packed);
-    }
-  }
-  else {
-    for (; i + 15 < nelems; i += 16) {
-      __m256i f16_vals =
-        _mm256_loadu_si256(reinterpret_cast<const __m256i *>(input + i));
-      __m512 f32_vals = f16_to_float_vec(f16_vals);
-      __m256i bf16_packed = float_to_bf16_vec(f32_vals);
-      _mm256_storeu_si256(reinterpret_cast<__m256i *>(output + i), bf16_packed);
-    }
-  }
-
-  for (; i < nelems; ++i) {
-    float val = f16_to_float(input[i]);
+    size_t i = 0;
     if (apply_scaling) {
-      val = (val - static_cast<float>(zero_point)) * scale;
+        __m512 scale_vec = _mm512_set1_ps(scale);
+        __m512 zp_vec = _mm512_set1_ps(static_cast<float>(zero_point));
+
+        for (; i + 15 < nelems; i += 16) {
+            __m256i f16_vals = _mm256_loadu_si256(
+                    reinterpret_cast<const __m256i *>(input + i));
+            __m512 f32_vals = f16_to_float_vec(f16_vals);
+            __m512 scaled_vals
+                    = _mm512_mul_ps(_mm512_sub_ps(f32_vals, zp_vec), scale_vec);
+            __m256i bf16_packed = float_to_bf16_vec(scaled_vals);
+            _mm256_storeu_si256(
+                    reinterpret_cast<__m256i *>(output + i), bf16_packed);
+        }
+    } else {
+        for (; i + 15 < nelems; i += 16) {
+            __m256i f16_vals = _mm256_loadu_si256(
+                    reinterpret_cast<const __m256i *>(input + i));
+            __m512 f32_vals = f16_to_float_vec(f16_vals);
+            __m256i bf16_packed = float_to_bf16_vec(f32_vals);
+            _mm256_storeu_si256(
+                    reinterpret_cast<__m256i *>(output + i), bf16_packed);
+        }
     }
-    output[i] = float_to_bf16(val);
-  }
+
+    for (; i < nelems; ++i) {
+        float val = f16_to_float(input[i]);
+        if (apply_scaling) {
+            val = (val - static_cast<float>(zero_point)) * scale;
+        }
+        output[i] = float_to_bf16(val);
+    }
 }
 
 } // namespace reorder

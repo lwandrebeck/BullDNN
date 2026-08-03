@@ -16,11 +16,11 @@
 #ifndef _NORMALIZATION_BENCHDNN_HPP_
 #define _NORMALIZATION_BENCHDNN_HPP_
 
-#include "example_utils.hpp"
 #include "benchdnn.hpp"
-#include "normalization_utils.hpp"
-#include "normalization_tensor_factory.hpp"
+#include "example_utils.hpp"
 #include "normalization_lowoha.hpp"
+#include "normalization_tensor_factory.hpp"
+#include "normalization_utils.hpp"
 
 namespace zendnnl {
 namespace benchdnn {
@@ -47,7 +47,7 @@ using namespace zendnnl::examples;
  * @return int Returns OK (0) on success, NOT_OK (1) on failure.
  */
 int bench(const std::string &in_filename, const std::string &out_filename,
-          const global_options &options, const bool isLOWOHA, size_t cache_size);
+        const global_options &options, const bool isLOWOHA, size_t cache_size);
 
 } // namespace normalization
 } // namespace benchdnn

@@ -83,9 +83,9 @@
 #ifndef ZENDNNL_GROUP_MATMUL_CUSTOM_KERNEL_UKERNEL_F16_MICROKERNEL_HPP
 #define ZENDNNL_GROUP_MATMUL_CUSTOM_KERNEL_UKERNEL_F16_MICROKERNEL_HPP
 
-#include "common/float16.hpp"
 #include "../pack.hpp"
-#include "bf16_microkernel.hpp"  // ActKind, BiasKind, DstDt, kMaxMR, max_mr_for_nv
+#include "bf16_microkernel.hpp" // ActKind, BiasKind, DstDt, kMaxMR, max_mr_for_nv
+#include "common/float16.hpp"
 
 namespace zendnnl {
 namespace lowoha {
@@ -121,13 +121,9 @@ bool avx512f16_available();
 /// caller-owned buffer cast to `void *`; the kernel reinterprets it
 /// as `DstT *` internally.  `ldc` / `ldc_tight` stay in element units
 /// (not bytes) — the kernel knows the element width via `DstT`.
-using f16_ukernel_fn_t = void (*)(
-    const float16_t *A, int lda,
-    const float16_t *Bpacked,
-    const void      *bias, BiasKind bias_kind,
-    void      *Cout, int ldc,
-    void      *Cout_tight, int ldc_tight,
-    int K);
+using f16_ukernel_fn_t = void (*)(const float16_t *A, int lda,
+        const float16_t *Bpacked, const void *bias, BiasKind bias_kind,
+        void *Cout, int ldc, void *Cout_tight, int ldc_tight, int K);
 
 /// Runtime selector — returns the function pointer for the requested
 /// (MR ∈ 1..max_mr_for_nv(NV), NV ∈ {2, 4}, Act, DstDt) tuple, or

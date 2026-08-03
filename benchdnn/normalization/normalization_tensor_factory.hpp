@@ -36,7 +36,7 @@ struct NormalizationConfig;
  * @return int OK (0) on success, NOT_OK (1) on failure.
  */
 int create_input_tensor(tensor_factory_t &tensor_factory,
-                        const NormalizationConfig &cfg, tensor_t &input);
+        const NormalizationConfig &cfg, tensor_t &input);
 
 /**
  * @brief Creates the output tensor for normalization benchmark.
@@ -49,7 +49,7 @@ int create_input_tensor(tensor_factory_t &tensor_factory,
  * @return int OK (0) on success, NOT_OK (1) on failure.
  */
 int create_output_tensor(tensor_factory_t &tensor_factory,
-                         const NormalizationConfig &cfg, tensor_t &output);
+        const NormalizationConfig &cfg, tensor_t &output);
 
 /**
  * @brief Creates the gamma (scale) parameter tensor.
@@ -65,7 +65,7 @@ int create_output_tensor(tensor_factory_t &tensor_factory,
  * @return int OK (0) on success, NOT_OK (1) on failure.
  */
 int create_gamma_tensor(tensor_factory_t &tensor_factory,
-                        const NormalizationConfig &cfg, tensor_t &gamma);
+        const NormalizationConfig &cfg, tensor_t &gamma);
 
 /**
  * @brief Creates the beta (shift) parameter tensor.
@@ -82,7 +82,7 @@ int create_gamma_tensor(tensor_factory_t &tensor_factory,
  * @return int OK (0) on success, NOT_OK (1) on failure.
  */
 int create_beta_tensor(tensor_factory_t &tensor_factory,
-                       const NormalizationConfig &cfg, tensor_t &beta);
+        const NormalizationConfig &cfg, tensor_t &beta);
 
 /**
  * @brief Creates the running mean tensor (BatchNorm only).
@@ -96,8 +96,7 @@ int create_beta_tensor(tensor_factory_t &tensor_factory,
  * @return int OK (0) on success, NOT_OK (1) on failure.
  */
 int create_running_mean_tensor(tensor_factory_t &tensor_factory,
-                               const NormalizationConfig &cfg,
-                               tensor_t &running_mean);
+        const NormalizationConfig &cfg, tensor_t &running_mean);
 
 /**
  * @brief Creates the running variance tensor (BatchNorm only).
@@ -111,8 +110,7 @@ int create_running_mean_tensor(tensor_factory_t &tensor_factory,
  * @return int OK (0) on success, NOT_OK (1) on failure.
  */
 int create_running_var_tensor(tensor_factory_t &tensor_factory,
-                              const NormalizationConfig &cfg,
-                              tensor_t &running_var);
+        const NormalizationConfig &cfg, tensor_t &running_var);
 
 /**
  * @brief Creates the residual tensor (FusedAddRMSNorm only).
@@ -126,8 +124,7 @@ int create_running_var_tensor(tensor_factory_t &tensor_factory,
  * @return int OK (0) on success, NOT_OK (1) on failure.
  */
 int create_residual_tensor(tensor_factory_t &tensor_factory,
-                           const NormalizationConfig &cfg,
-                           tensor_t &residual);
+        const NormalizationConfig &cfg, tensor_t &residual);
 
 } // namespace normalization
 } // namespace benchdnn

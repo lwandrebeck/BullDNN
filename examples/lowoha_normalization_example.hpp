@@ -17,12 +17,12 @@
 #ifndef _LOWOHA_NORMALIZATION_EXAMPLE_HPP_
 #define _LOWOHA_NORMALIZATION_EXAMPLE_HPP_
 
-#include "zendnnl.hpp"
 #include <iostream>
 #include <vector>
+#include "zendnnl.hpp"
 
-#define  OK          (0)
-#define  NOT_OK      (1)
+#define OK (0)
+#define NOT_OK (1)
 
 namespace zendnnl {
 namespace examples {
@@ -111,8 +111,7 @@ int run_lowoha_rms_norm_fp32_example();
  */
 int run_lowoha_fused_add_rms_norm_fp32_example();
 
-} // examples
-} // zendnnl
+} // namespace examples
+} // namespace zendnnl
 
 #endif
-

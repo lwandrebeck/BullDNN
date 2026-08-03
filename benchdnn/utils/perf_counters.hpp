@@ -27,21 +27,21 @@ namespace benchdnn {
 // Supported AMD Zen microarchitectures
 enum class ZenArch : int {
     UNKNOWN = 0,
-    ZEN4    = 4,   // Family 19h (EPYC 9004 Genoa / 97x4 Bergamo)
-    ZEN5    = 5,   // Family 1Ah (EPYC 9005 Turin)
+    ZEN4 = 4, // Family 19h (EPYC 9004 Genoa / 97x4 Bergamo)
+    ZEN5 = 5, // Family 1Ah (EPYC 9005 Turin)
 };
 
 // Per-architecture constants for derived metric calculations
 struct ArchConstants {
     ZenArch arch;
     const char *name;
-    int    family;            // CPUID family (0x19 = Zen4, 0x1A = Zen5)
-    int    l1d_bytes;         // L1 data cache size per core
-    int    l2_bytes;          // L2 cache size per core
-    int    l3_bytes_per_ccd;  // L3 size per CCD
-    int    l2_bw_bytes_per_cycle;  // L2 fill bandwidth (bytes/cycle)
-    double cpu_freq_ghz;      // nominal boost frequency
-    int    dispatch_width;    // dispatch slots per cycle
+    int family; // CPUID family (0x19 = Zen4, 0x1A = Zen5)
+    int l1d_bytes; // L1 data cache size per core
+    int l2_bytes; // L2 cache size per core
+    int l3_bytes_per_ccd; // L3 size per CCD
+    int l2_bw_bytes_per_cycle; // L2 fill bandwidth (bytes/cycle)
+    double cpu_freq_ghz; // nominal boost frequency
+    int dispatch_width; // dispatch slots per cycle
 };
 
 // Detect the running CPU's Zen generation via CPUID
@@ -53,9 +53,9 @@ const ArchConstants &get_arch_constants(ZenArch arch = ZenArch::UNKNOWN);
 // Counter profiles: each collects a different set of events
 // optimized for specific analysis (within the 6-PMC hardware limit).
 enum class PerfProfile : int {
-    CACHE  = 0,   // L1/L2 hit-miss + L2 prefetcher (current default)
-    TLB    = 1,   // DTLB misses + IPC (retired insn / cycles)
-    STALLS = 2,   // Backend dispatch stalls + IPC
+    CACHE = 0, // L1/L2 hit-miss + L2 prefetcher (current default)
+    TLB = 1, // DTLB misses + IPC (retired insn / cycles)
+    STALLS = 2, // Backend dispatch stalls + IPC
 };
 
 PerfProfile parse_perf_profile(const char *str);
@@ -81,15 +81,15 @@ struct PerfCounterDerived {
     double l2_bw_meas_pct;
 
     // ── tlb profile ──
-    double dtlb_l2_hit_pct;   // L1 DTLB miss → L2 DTLB hit %
-    double dtlb_l2_miss_pct;  // L1+L2 DTLB miss → page walk %
-    double ipc;               // retired instructions / unhalted cycles
+    double dtlb_l2_hit_pct; // L1 DTLB miss → L2 DTLB hit %
+    double dtlb_l2_miss_pct; // L1+L2 DTLB miss → page walk %
+    double ipc; // retired instructions / unhalted cycles
 
     // ── stalls profile ──
-    double fp_reg_stall_pct;  // FP register file full stall cycles %
-    double fp_sched_stall_pct;// FP scheduler full stall cycles %
-    double lq_stall_pct;      // load queue full stall cycles %
-    double retire_stall_pct;  // retire token stall cycles %
+    double fp_reg_stall_pct; // FP register file full stall cycles %
+    double fp_sched_stall_pct; // FP scheduler full stall cycles %
+    double lq_stall_pct; // load queue full stall cycles %
+    double retire_stall_pct; // retire token stall cycles %
 };
 
 class PerfCounterGroup {
@@ -115,7 +115,8 @@ public:
     PerfCounterDerived derive(double elapsed_sec, int num_threads = 1) const;
 
     void print_header(bool tab_separated = false) const;
-    void print_values(const PerfCounterDerived &d, bool tab_separated = false) const;
+    void print_values(
+            const PerfCounterDerived &d, bool tab_separated = false) const;
     void print_raw_counters() const;
 
 private:

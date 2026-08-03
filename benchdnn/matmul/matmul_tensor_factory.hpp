@@ -39,8 +39,8 @@ struct MatmulConfig;
  * @return int OK (0) on success, NOT_OK (1) on failure.
  */
 int create_weights_tensor(tensor_factory_t &tensor_factory, MatmulConfig cfg,
-                          std::vector<tensor_t> &weights, const global_options &options,
-                          bool isLOWOHA = false);
+        std::vector<tensor_t> &weights, const global_options &options,
+        bool isLOWOHA = false);
 
 /**
  * @brief Creates bias tensors for each layer if bias is enabled.
@@ -54,7 +54,7 @@ int create_weights_tensor(tensor_factory_t &tensor_factory, MatmulConfig cfg,
  * @return int OK (0) on success, NOT_OK (1) on failure.
  */
 int create_bias_tensor(tensor_factory_t tensor_factory, const MatmulConfig &cfg,
-                       std::vector<tensor_t> &bias, const global_options &options);
+        std::vector<tensor_t> &bias, const global_options &options);
 
 /**
  * @brief Creates the input tensor for the matmul benchmark.
@@ -72,9 +72,8 @@ int create_bias_tensor(tensor_factory_t tensor_factory, const MatmulConfig &cfg,
  *                 Dynamic source quantization is gated on this flag.
  * @return int OK (0) on success, NOT_OK (1) on failure.
  */
-int create_input_tensor(tensor_factory_t &tensor_factory,
-                        MatmulConfig &cfg, tensor_t &input, const global_options &options,
-                        bool isLOWOHA = false);
+int create_input_tensor(tensor_factory_t &tensor_factory, MatmulConfig &cfg,
+        tensor_t &input, const global_options &options, bool isLOWOHA = false);
 
 /**
  * @brief Creates output tensors for each layer in the matmul benchmark.
@@ -88,8 +87,8 @@ int create_input_tensor(tensor_factory_t &tensor_factory,
  * @return int OK (0) on success, NOT_OK (1) on failure.
  */
 int create_output_tensor(tensor_factory_t &tensor_factory,
-                         const MatmulConfig &cfg, std::vector<tensor_t> &output,
-                         const global_options &options);
+        const MatmulConfig &cfg, std::vector<tensor_t> &output,
+        const global_options &options);
 
 /**
  * @brief Creates tensors for binary post-operations for each layer.
@@ -102,11 +101,11 @@ int create_output_tensor(tensor_factory_t &tensor_factory,
  * @return int OK (0) on success, NOT_OK (1) on failure.
  */
 int create_binary_post_ops_tensors(tensor_factory_t &tensor_factory,
-                                   const MatmulConfig &cfg,
-                                   std::vector<std::vector<tensor_t>> &binary_post_ops_tensors);
+        const MatmulConfig &cfg,
+        std::vector<std::vector<tensor_t>> &binary_post_ops_tensors);
 
-}
-}
-}
+} // namespace matmul
+} // namespace benchdnn
+} // namespace zendnnl
 
 #endif

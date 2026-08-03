@@ -14,9 +14,9 @@
  * limitations under the License.
  ******************************************************************************/
 
+#include <algorithm>
 #include <cstdint>
 #include <cstring>
-#include <algorithm>
 
 #include <immintrin.h>
 #include "lowoha_operators/matmul/matmul_native/brgemm/kernel/int8/int8_gemv_bkc.hpp"
@@ -37,17 +37,18 @@ namespace native {
 // Layout: packed[block_offset + kq * blk_stride + n_local * 4 + i]
 // Simultaneously computes col_sum[n] = sum_k(B[k][n]) for zero-point
 // compensation.
-__attribute__((target("avx512f,avx512bw,avx512vl")))
-void pack_b_int8_bkc(
-    const int8_t *B, int ldb, int K, int N, bool transB,
-    int8_t *packed, int32_t *col_sum) {
+__attribute__((target("avx512f,avx512bw,avx512vl"))) void pack_b_int8_bkc(
+        const int8_t *B, int ldb, int K, int N, bool transB, int8_t *packed,
+        int32_t *col_sum) {
 
     const int blk_n = choose_blk_n(N);
     const int K_padded = (K + 3) & ~3;
-    const int k_quads  = K_padded / 4;
+    const int k_quads = K_padded / 4;
 
     std::memset(col_sum, 0,
-        static_cast<size_t>(((N + BKC_NR_PAD - 1) / BKC_NR_PAD) * BKC_NR_PAD) * sizeof(int32_t));
+            static_cast<size_t>(
+                    ((N + BKC_NR_PAD - 1) / BKC_NR_PAD) * BKC_NR_PAD)
+                    * sizeof(int32_t));
 
     size_t dst_offset = 0;
 
@@ -95,17 +96,10 @@ void pack_b_int8_bkc(
 }
 
 // ── Precompute dequantization vectors ──────────────────────────────────
-__attribute__((target("avx512f")))
-static void precompute_int8_dequant_impl(
-    const int32_t *col_sum,
-    const float *bias,
-    float src_scale,
-    int32_t src_zp,
-    const float *wei_scale,
-    int wei_scale_count,
-    int N, int N_padded,
-    float *combined_scale,
-    float *effective_bias) {
+__attribute__((target("avx512f"))) static void precompute_int8_dequant_impl(
+        const int32_t *col_sum, const float *bias, float src_scale,
+        int32_t src_zp, const float *wei_scale, int wei_scale_count, int N,
+        int N_padded, float *combined_scale, float *effective_bias) {
 
     const __m512 v_src_scale = _mm512_set1_ps(src_scale);
     const __m512 v_zp = _mm512_set1_ps(static_cast<float>(src_zp));
@@ -115,11 +109,12 @@ static void precompute_int8_dequant_impl(
     int n = 0;
     for (; n + 15 < N_padded; n += 16) {
         const bool full = (n + 16 <= N);
-        __mmask16 mask = full ? __mmask16(0xFFFF)
-                              : static_cast<__mmask16>((1u << std::max(0, N - n)) - 1);
+        __mmask16 mask = full
+                ? __mmask16(0xFFFF)
+                : static_cast<__mmask16>((1u << std::max(0, N - n)) - 1);
         __m512 ws = per_channel
-            ? _mm512_maskz_loadu_ps(mask, wei_scale + std::min(n, N - 1))
-            : _mm512_set1_ps(wei_scale[0]);
+                ? _mm512_maskz_loadu_ps(mask, wei_scale + std::min(n, N - 1))
+                : _mm512_set1_ps(wei_scale[0]);
         __m512 cs = _mm512_mul_ps(v_src_scale, ws);
         _mm512_storeu_ps(combined_scale + n, cs);
 
@@ -140,19 +135,17 @@ static void precompute_int8_dequant_impl(
 }
 
 // ── INT8 BKC GEMV core kernel (templated by panel count) ──────────────
-template<int NP>
-__attribute__((noinline, target("avx512f,avx512bf16,avx512bw,avx512vl,avx512vnni,fma")))
-static void int8_gemv_bkc_nr64_core(
-    const uint8_t *__restrict__ A,
-    const int8_t  *__restrict__ B_bkc,
-    const float   *__restrict__ combined_scale,
-    const float   *__restrict__ effective_bias,
-    uint16_t *__restrict__ C_bf16,
-    float    *__restrict__ C_fp32,
-    fused_postop_t fused_op,
-    float alpha, float beta,
-    bool dst_is_bf16,
-    int k_quads, int n_stride, int K, int N, int jc, int b_col_off) {
+template <int NP>
+__attribute__((noinline,
+        target("avx512f,avx512bf16,avx512bw,avx512vl,avx512vnni,"
+               "fma"))) static void
+int8_gemv_bkc_nr64_core(const uint8_t *__restrict__ A,
+        const int8_t *__restrict__ B_bkc,
+        const float *__restrict__ combined_scale,
+        const float *__restrict__ effective_bias, uint16_t *__restrict__ C_bf16,
+        float *__restrict__ C_fp32, fused_postop_t fused_op, float alpha,
+        float beta, bool dst_is_bf16, int k_quads, int n_stride, int K, int N,
+        int jc, int b_col_off) {
 
     constexpr int NV = 4;
     constexpr int NR = 64;
@@ -195,36 +188,37 @@ static void int8_gemv_bkc_nr64_core(
         const int n_off = jc + i * 16;
         if (n_off >= N) break;
         const int elems = std::min(16, N - n_off);
-        const __mmask16 mask = (elems == 16) ? __mmask16(0xFFFF)
-            : static_cast<__mmask16>((1u << elems) - 1);
+        const __mmask16 mask = (elems == 16)
+                ? __mmask16(0xFFFF)
+                : static_cast<__mmask16>((1u << elems) - 1);
 
         // val = acc * combined_scale + effective_bias (dequantize)
         __m512 val = _mm512_cvtepi32_ps(acc[i]);
         __m512 cs = (elems == 16)
-            ? _mm512_loadu_ps(combined_scale + n_off)
-            : _mm512_maskz_loadu_ps(mask, combined_scale + n_off);
+                ? _mm512_loadu_ps(combined_scale + n_off)
+                : _mm512_maskz_loadu_ps(mask, combined_scale + n_off);
         __m512 eb = (elems == 16)
-            ? _mm512_loadu_ps(effective_bias + n_off)
-            : _mm512_maskz_loadu_ps(mask, effective_bias + n_off);
+                ? _mm512_loadu_ps(effective_bias + n_off)
+                : _mm512_maskz_loadu_ps(mask, effective_bias + n_off);
         val = _mm512_fmadd_ps(val, cs, eb);
 
         // val = α · val
-        if (alpha != 1.0f)
-            val = _mm512_mul_ps(val, _mm512_set1_ps(alpha));
+        if (alpha != 1.0f) val = _mm512_mul_ps(val, _mm512_set1_ps(alpha));
 
         // val += β · C_old
         if (beta != 0.0f) {
             __m512 c_old;
             if (dst_is_bf16 && C_bf16) {
                 __m256i raw = (elems == 16)
-                    ? _mm256_loadu_si256(reinterpret_cast<const __m256i *>(C_bf16 + n_off))
-                    : _mm256_maskz_loadu_epi16(mask, C_bf16 + n_off);
-                c_old = _mm512_castsi512_ps(_mm512_slli_epi32(
-                    _mm512_cvtepu16_epi32(raw), 16));
+                        ? _mm256_loadu_si256(reinterpret_cast<const __m256i *>(
+                                  C_bf16 + n_off))
+                        : _mm256_maskz_loadu_epi16(mask, C_bf16 + n_off);
+                c_old = _mm512_castsi512_ps(
+                        _mm512_slli_epi32(_mm512_cvtepu16_epi32(raw), 16));
             } else if (C_fp32) {
                 c_old = (elems == 16)
-                    ? _mm512_loadu_ps(C_fp32 + n_off)
-                    : _mm512_maskz_loadu_ps(mask, C_fp32 + n_off);
+                        ? _mm512_loadu_ps(C_fp32 + n_off)
+                        : _mm512_maskz_loadu_ps(mask, C_fp32 + n_off);
             } else {
                 c_old = _mm512_setzero_ps();
             }
@@ -237,8 +231,8 @@ static void int8_gemv_bkc_nr64_core(
         if (dst_is_bf16) {
             __m256bh bf = _mm512_cvtneps_pbh(val);
             if (elems == 16)
-                _mm256_storeu_si256(
-                    reinterpret_cast<__m256i *>(C_bf16 + n_off), (__m256i)bf);
+                _mm256_storeu_si256(reinterpret_cast<__m256i *>(C_bf16 + n_off),
+                        (__m256i)bf);
             else
                 _mm256_mask_storeu_epi16(C_bf16 + n_off, mask, (__m256i)bf);
         } else {
@@ -251,48 +245,46 @@ static void int8_gemv_bkc_nr64_core(
 }
 
 // ── Flat INT8 GEMV epilogue: dequant + alpha/beta/postop/store ─────────
-__attribute__((always_inline, target("avx512f,avx512bf16,avx512bw,avx512vl,fma")))
-static inline void int8_gemv_flat_epilogue(
-    const int32_t *__restrict__ acc_i32, int nvt,
-    const float *__restrict__ combined_scale,
-    const float *__restrict__ effective_bias,
-    uint16_t *__restrict__ C_bf16,
-    float *__restrict__ C_fp32,
-    fused_postop_t fused_op,
-    float alpha, float beta,
-    bool dst_is_bf16, int N) {
+__attribute__((always_inline,
+        target("avx512f,avx512bf16,avx512bw,avx512vl,fma"))) static inline void
+int8_gemv_flat_epilogue(const int32_t *__restrict__ acc_i32, int nvt,
+        const float *__restrict__ combined_scale,
+        const float *__restrict__ effective_bias, uint16_t *__restrict__ C_bf16,
+        float *__restrict__ C_fp32, fused_postop_t fused_op, float alpha,
+        float beta, bool dst_is_bf16, int N) {
 
     for (int v = 0; v < nvt; ++v) {
         const int n_off = v * 16;
         if (n_off >= N) break;
         const int elems = std::min(16, N - n_off);
-        const __mmask16 mask = (elems == 16) ? __mmask16(0xFFFF)
-            : static_cast<__mmask16>((1u << elems) - 1);
+        const __mmask16 mask = (elems == 16)
+                ? __mmask16(0xFFFF)
+                : static_cast<__mmask16>((1u << elems) - 1);
 
         __m512 val = _mm512_cvtepi32_ps(_mm512_load_si512(acc_i32 + v * 16));
         __m512 cs = (elems == 16)
-            ? _mm512_loadu_ps(combined_scale + n_off)
-            : _mm512_maskz_loadu_ps(mask, combined_scale + n_off);
+                ? _mm512_loadu_ps(combined_scale + n_off)
+                : _mm512_maskz_loadu_ps(mask, combined_scale + n_off);
         __m512 eb = (elems == 16)
-            ? _mm512_loadu_ps(effective_bias + n_off)
-            : _mm512_maskz_loadu_ps(mask, effective_bias + n_off);
+                ? _mm512_loadu_ps(effective_bias + n_off)
+                : _mm512_maskz_loadu_ps(mask, effective_bias + n_off);
         val = _mm512_fmadd_ps(val, cs, eb);
 
-        if (alpha != 1.0f)
-            val = _mm512_mul_ps(val, _mm512_set1_ps(alpha));
+        if (alpha != 1.0f) val = _mm512_mul_ps(val, _mm512_set1_ps(alpha));
 
         if (beta != 0.0f) {
             __m512 c_old;
             if (dst_is_bf16 && C_bf16) {
                 __m256i raw = (elems == 16)
-                    ? _mm256_loadu_si256(
-                          reinterpret_cast<const __m256i *>(C_bf16 + n_off))
-                    : _mm256_maskz_loadu_epi16(mask, C_bf16 + n_off);
+                        ? _mm256_loadu_si256(reinterpret_cast<const __m256i *>(
+                                  C_bf16 + n_off))
+                        : _mm256_maskz_loadu_epi16(mask, C_bf16 + n_off);
                 c_old = _mm512_castsi512_ps(
-                    _mm512_slli_epi32(_mm512_cvtepu16_epi32(raw), 16));
+                        _mm512_slli_epi32(_mm512_cvtepu16_epi32(raw), 16));
             } else if (C_fp32) {
-                c_old = (elems == 16) ? _mm512_loadu_ps(C_fp32 + n_off)
-                                      : _mm512_maskz_loadu_ps(mask, C_fp32 + n_off);
+                c_old = (elems == 16)
+                        ? _mm512_loadu_ps(C_fp32 + n_off)
+                        : _mm512_maskz_loadu_ps(mask, C_fp32 + n_off);
             } else {
                 c_old = _mm512_setzero_ps();
             }
@@ -305,8 +297,8 @@ static inline void int8_gemv_flat_epilogue(
         if (dst_is_bf16 && C_bf16) {
             __m256bh bf = _mm512_cvtneps_pbh(val);
             if (elems == 16)
-                _mm256_storeu_si256(
-                    reinterpret_cast<__m256i *>(C_bf16 + n_off), (__m256i)bf);
+                _mm256_storeu_si256(reinterpret_cast<__m256i *>(C_bf16 + n_off),
+                        (__m256i)bf);
             else
                 _mm256_mask_storeu_epi16(C_bf16 + n_off, mask, (__m256i)bf);
         } else {
@@ -320,13 +312,12 @@ static inline void int8_gemv_flat_epilogue(
 
 // ── INT8 intrinsics flat K-loop: compile-time unrolled, single K-loop ─
 // NVT i32 accumulators live in ZMM registers for the entire K dimension.
-template<int NVT>
-__attribute__((noinline, target("avx512f,avx512bw,avx512vl,avx512vnni")))
-static void int8_gemv_flat_kloop_intrinsic(
-    const uint8_t *__restrict__ A,
-    const int8_t  *__restrict__ B_bkc,
-    int32_t *__restrict__ acc,
-    int K, int n_stride) {
+template <int NVT>
+__attribute__((
+        noinline, target("avx512f,avx512bw,avx512vl,avx512vnni"))) static void
+int8_gemv_flat_kloop_intrinsic(const uint8_t *__restrict__ A,
+        const int8_t *__restrict__ B_bkc, int32_t *__restrict__ acc, int K,
+        int n_stride) {
 
     __m512i a[NVT];
     for (int v = 0; v < NVT; ++v)
@@ -340,8 +331,8 @@ static void int8_gemv_flat_kloop_intrinsic(
         std::memcpy(&aq, &A[4 * kq], sizeof(aq));
         __m512i av = _mm512_set1_epi32(aq);
         for (int v = 0; v < NVT; ++v)
-            a[v] = _mm512_dpbusd_epi32(a[v], av,
-                _mm512_loadu_si512(bp + v * 16 * INT8_VNNI_GRP));
+            a[v] = _mm512_dpbusd_epi32(
+                    a[v], av, _mm512_loadu_si512(bp + v * 16 * INT8_VNNI_GRP));
         bp += n_stride;
     }
     if (K & 3) {
@@ -349,45 +340,54 @@ static void int8_gemv_flat_kloop_intrinsic(
         std::memcpy(&aq, &A[4 * k_quads_full], K - 4 * k_quads_full);
         __m512i av = _mm512_set1_epi32(aq);
         for (int v = 0; v < NVT; ++v)
-            a[v] = _mm512_dpbusd_epi32(a[v], av,
-                _mm512_loadu_si512(bp + v * 16 * INT8_VNNI_GRP));
+            a[v] = _mm512_dpbusd_epi32(
+                    a[v], av, _mm512_loadu_si512(bp + v * 16 * INT8_VNNI_GRP));
     }
 
     for (int v = 0; v < NVT; ++v)
         _mm512_store_si512(acc + v * 16, a[v]);
 }
 
-__attribute__((target("avx512f,avx512bw,avx512vl,avx512vnni")))
-static bool int8_gemv_flat_intrinsic_dispatch(
-    const uint8_t *A, const int8_t *B_bkc,
-    int32_t *acc, int K, int n_stride, int nvt) {
+__attribute__((target("avx512f,avx512bw,avx512vl,avx512vnni"))) static bool
+int8_gemv_flat_intrinsic_dispatch(const uint8_t *A, const int8_t *B_bkc,
+        int32_t *acc, int K, int n_stride, int nvt) {
 
-    #define CASE_INT8_NVT(N) case N: int8_gemv_flat_kloop_intrinsic<N>( \
-        A, B_bkc, acc, K, n_stride); return true
+#define CASE_INT8_NVT(N) \
+    case N: \
+        int8_gemv_flat_kloop_intrinsic<N>(A, B_bkc, acc, K, n_stride); \
+        return true
 
     switch (nvt) {
-    CASE_INT8_NVT(1);  CASE_INT8_NVT(2);  CASE_INT8_NVT(3);  CASE_INT8_NVT(4);
-    CASE_INT8_NVT(5);  CASE_INT8_NVT(6);  CASE_INT8_NVT(7);  CASE_INT8_NVT(8);
-    CASE_INT8_NVT(9);  CASE_INT8_NVT(10); CASE_INT8_NVT(11); CASE_INT8_NVT(12);
-    CASE_INT8_NVT(13); CASE_INT8_NVT(14); CASE_INT8_NVT(15); CASE_INT8_NVT(16);
-    default: return false;
+        CASE_INT8_NVT(1);
+        CASE_INT8_NVT(2);
+        CASE_INT8_NVT(3);
+        CASE_INT8_NVT(4);
+        CASE_INT8_NVT(5);
+        CASE_INT8_NVT(6);
+        CASE_INT8_NVT(7);
+        CASE_INT8_NVT(8);
+        CASE_INT8_NVT(9);
+        CASE_INT8_NVT(10);
+        CASE_INT8_NVT(11);
+        CASE_INT8_NVT(12);
+        CASE_INT8_NVT(13);
+        CASE_INT8_NVT(14);
+        CASE_INT8_NVT(15);
+        CASE_INT8_NVT(16);
+        default: return false;
     }
-    #undef CASE_INT8_NVT
+#undef CASE_INT8_NVT
 }
 
 // ── Flat INT8 GEMV entry: single K-loop + dequant epilogue ────────────
-__attribute__((noinline, target("avx512f,avx512bf16,avx512bw,avx512vl,avx512vnni,fma")))
-static bool int8_gemv_flat(
-    const uint8_t *__restrict__ A,
-    const int8_t  *__restrict__ B_bkc,
-    const float   *__restrict__ combined_scale,
-    const float   *__restrict__ effective_bias,
-    uint16_t *__restrict__ C_bf16,
-    float *__restrict__ C_fp32,
-    fused_postop_t fused_op,
-    float alpha, float beta,
-    bool dst_is_bf16,
-    int K, int N) {
+__attribute__((noinline,
+        target("avx512f,avx512bf16,avx512bw,avx512vl,avx512vnni,"
+               "fma"))) static bool
+int8_gemv_flat(const uint8_t *__restrict__ A, const int8_t *__restrict__ B_bkc,
+        const float *__restrict__ combined_scale,
+        const float *__restrict__ effective_bias, uint16_t *__restrict__ C_bf16,
+        float *__restrict__ C_fp32, fused_postop_t fused_op, float alpha,
+        float beta, bool dst_is_bf16, int K, int N) {
 
     const int N_padded = ((N + BKC_NR_PAD - 1) / BKC_NR_PAD) * BKC_NR_PAD;
     const int nvt = N_padded / 16;
@@ -399,76 +399,65 @@ static bool int8_gemv_flat(
     if (!int8_gemv_flat_intrinsic_dispatch(A, B_bkc, acc, K, n_stride, nvt))
         return false;
 
-    int8_gemv_flat_epilogue(acc, nvt, combined_scale, effective_bias,
-                            C_bf16, C_fp32, fused_op, alpha, beta,
-                            dst_is_bf16, N);
+    int8_gemv_flat_epilogue(acc, nvt, combined_scale, effective_bias, C_bf16,
+            C_fp32, fused_op, alpha, beta, dst_is_bf16, N);
     return true;
 }
 
 // ── Block dispatch: full panels + tail ─────────────────────────────────
-static inline void int8_dispatch_block(
-    const uint8_t *A, const int8_t *B_bkc,
-    const float *combined_scale, const float *effective_bias,
-    uint16_t *C_bf16, float *C_fp32,
-    fused_postop_t fused_op, float alpha, float beta, bool dst_is_bf16,
-    int k_quads, int n_stride, int K, int N,
-    int jc, int nb, int b_col_off) {
+static inline void int8_dispatch_block(const uint8_t *A, const int8_t *B_bkc,
+        const float *combined_scale, const float *effective_bias,
+        uint16_t *C_bf16, float *C_fp32, fused_postop_t fused_op, float alpha,
+        float beta, bool dst_is_bf16, int k_quads, int n_stride, int K, int N,
+        int jc, int nb, int b_col_off) {
 
     constexpr int NR = 64;
     const int np = nb / NR;
 
-    #define DISPATCH_INT8_BKC(NP) int8_gemv_bkc_nr64_core<NP>( \
-        A, B_bkc, combined_scale, effective_bias, \
-        C_bf16, C_fp32, fused_op, alpha, beta, dst_is_bf16, \
-        k_quads, n_stride, K, N, jc, b_col_off)
+#define DISPATCH_INT8_BKC(NP) \
+    int8_gemv_bkc_nr64_core<NP>(A, B_bkc, combined_scale, effective_bias, \
+            C_bf16, C_fp32, fused_op, alpha, beta, dst_is_bf16, k_quads, \
+            n_stride, K, N, jc, b_col_off)
 
     switch (np) {
-    case 4: DISPATCH_INT8_BKC(4); break;
-    case 3: DISPATCH_INT8_BKC(3); break;
-    case 2: DISPATCH_INT8_BKC(2); break;
-    case 1: DISPATCH_INT8_BKC(1); break;
-    default: break;
+        case 4: DISPATCH_INT8_BKC(4); break;
+        case 3: DISPATCH_INT8_BKC(3); break;
+        case 2: DISPATCH_INT8_BKC(2); break;
+        case 1: DISPATCH_INT8_BKC(1); break;
+        default: break;
     }
-    #undef DISPATCH_INT8_BKC
+#undef DISPATCH_INT8_BKC
 
     const int tail_local = np * NR;
     const int tail_global = jc + tail_local;
     if (tail_global < N && tail_local < nb) {
-        int8_gemv_bkc_nr64_core<1>(
-            A, B_bkc, combined_scale, effective_bias,
-            C_bf16, C_fp32, fused_op, alpha, beta, dst_is_bf16,
-            k_quads, n_stride, K, N, tail_global,
-            b_col_off + tail_local * INT8_VNNI_GRP);
+        int8_gemv_bkc_nr64_core<1>(A, B_bkc, combined_scale, effective_bias,
+                C_bf16, C_fp32, fused_op, alpha, beta, dst_is_bf16, k_quads,
+                n_stride, K, N, tail_global,
+                b_col_off + tail_local * INT8_VNNI_GRP);
     }
 }
 
 // ── Public API ─────────────────────────────────────────────────────────
 
-__attribute__((noinline))
-void int8_gemv_bkc(
-    const uint8_t *__restrict__ A,
-    const int8_t  *__restrict__ B_bkc,
-    const float   *__restrict__ combined_scale,
-    const float   *__restrict__ effective_bias,
-    uint16_t *__restrict__ C_bf16,
-    float    *__restrict__ C_fp32,
-    fused_postop_t fused_op,
-    float alpha, float beta,
-    bool dst_is_bf16,
-    int K, int N) {
+__attribute__((noinline)) void int8_gemv_bkc(const uint8_t *__restrict__ A,
+        const int8_t *__restrict__ B_bkc,
+        const float *__restrict__ combined_scale,
+        const float *__restrict__ effective_bias, uint16_t *__restrict__ C_bf16,
+        float *__restrict__ C_fp32, fused_postop_t fused_op, float alpha,
+        float beta, bool dst_is_bf16, int K, int N) {
 
     // Flat path: single K-loop for the entire N when the block dispatch would
     // produce both a main panel AND a tail (N > 64, N not 64-aligned).
     if (N > 64 && (N & 63) != 0 && N <= choose_blk_n(N)) {
-        if (int8_gemv_flat(A, B_bkc, combined_scale, effective_bias,
-                           C_bf16, C_fp32, fused_op, alpha, beta,
-                           dst_is_bf16, K, N))
+        if (int8_gemv_flat(A, B_bkc, combined_scale, effective_bias, C_bf16,
+                    C_fp32, fused_op, alpha, beta, dst_is_bf16, K, N))
             return;
     }
 
     const int blk_n = choose_blk_n(N);
     const int K_padded = (K + 3) & ~3;
-    const int k_quads  = K_padded / 4;
+    const int k_quads = K_padded / 4;
 
     size_t b_offset = 0;
 
@@ -480,34 +469,24 @@ void int8_gemv_bkc(
         const int8_t *B_blk = B_bkc + b_offset;
 
         if (nb > 256)
-            int8_gemv_bkc_wide_dispatch(
-                A, B_blk, combined_scale, effective_bias,
-                C_bf16, C_fp32, fused_op, alpha, beta, dst_is_bf16,
-                k_quads, blk_n_stride, K, N, jc, nb);
+            int8_gemv_bkc_wide_dispatch(A, B_blk, combined_scale,
+                    effective_bias, C_bf16, C_fp32, fused_op, alpha, beta,
+                    dst_is_bf16, k_quads, blk_n_stride, K, N, jc, nb);
         else
             int8_dispatch_block(A, B_blk, combined_scale, effective_bias,
-                                C_bf16, C_fp32, fused_op, alpha, beta, dst_is_bf16,
-                                k_quads, blk_n_stride, K, N,
-                                jc, nb, /*b_col_off=*/0);
+                    C_bf16, C_fp32, fused_op, alpha, beta, dst_is_bf16, k_quads,
+                    blk_n_stride, K, N, jc, nb, /*b_col_off=*/0);
 
         b_offset += static_cast<size_t>(k_quads) * blk_n_stride;
     }
 }
 
-void precompute_int8_dequant(
-    const int32_t *col_sum,
-    const float *bias,
-    float src_scale,
-    int32_t src_zp,
-    const float *wei_scale,
-    int wei_scale_count,
-    int N, int N_padded,
-    float *combined_scale,
-    float *effective_bias) {
-    precompute_int8_dequant_impl(
-        col_sum, bias, src_scale, src_zp,
-        wei_scale, wei_scale_count, N, N_padded,
-        combined_scale, effective_bias);
+void precompute_int8_dequant(const int32_t *col_sum, const float *bias,
+        float src_scale, int32_t src_zp, const float *wei_scale,
+        int wei_scale_count, int N, int N_padded, float *combined_scale,
+        float *effective_bias) {
+    precompute_int8_dequant_impl(col_sum, bias, src_scale, src_zp, wei_scale,
+            wei_scale_count, N, N_padded, combined_scale, effective_bias);
 }
 
 } // namespace native

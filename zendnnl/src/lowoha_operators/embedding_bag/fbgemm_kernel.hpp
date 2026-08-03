@@ -17,12 +17,12 @@
 #ifndef _FBGEMM_KERNEL_HPP
 #define _FBGEMM_KERNEL_HPP
 
-#include <vector>
 #include <cstdint>
-#include "lowoha_embag_common.hpp"
+#include <vector>
 #include "../matmul/lowoha_matmul_utils.hpp"
+#include "lowoha_embag_common.hpp"
 #if ZENDNNL_DEPENDS_FBGEMM
-  #include "fbgemm/FbgemmEmbedding.h"
+#include "fbgemm/FbgemmEmbedding.h"
 #endif
 
 namespace zendnnl {
@@ -57,124 +57,98 @@ constexpr int SCALE_BIAS_SIZE = 8;
  * @param is_bf16_in Whether input is bf16 (for non-quantized types)
  * @param is_bf16_out Whether output is bf16
  */
-template <
-  bool IsQuantized,
-  typename InType,
-  typename IndexType,
-  typename OffsetType,
-  typename OutType>
-static void invoke_fbgemm_kernel(
-  const void *table,
-  const void *indices,
-  const void *offsets,
-  const float *weights,
-  void *dst,
-  const embag_params_t &params,
-  int bit_rate,
-  bool is_bf16_in,
-  bool is_bf16_out) {
+template <bool IsQuantized, typename InType, typename IndexType,
+        typename OffsetType, typename OutType>
+static void invoke_fbgemm_kernel(const void *table, const void *indices,
+        const void *offsets, const float *weights, void *dst,
+        const embag_params_t &params, int bit_rate, bool is_bf16_in,
+        bool is_bf16_out) {
 
-  const int64_t embedding_dim = static_cast<int64_t>(params.embedding_dim);
-  const int64_t num_rows = static_cast<int64_t>(params.num_embeddings);
-  const int64_t indices_size = static_cast<int64_t>(params.num_indices);
-  const int64_t batch_size = static_cast<int64_t>(params.num_bags);
-  const int64_t output_stride = static_cast<int64_t>(params.dst_stride);
-  const bool use_weight = params.is_weights;
-  const bool normalize_by_lengths = false;
-  const bool scale_bias_last = true;
-  constexpr bool prefetch = true;
-  constexpr bool is_wt_positional = false;
-  constexpr bool use_offsets = true;
+    const int64_t embedding_dim = static_cast<int64_t>(params.embedding_dim);
+    const int64_t num_rows = static_cast<int64_t>(params.num_embeddings);
+    const int64_t indices_size = static_cast<int64_t>(params.num_indices);
+    const int64_t batch_size = static_cast<int64_t>(params.num_bags);
+    const int64_t output_stride = static_cast<int64_t>(params.dst_stride);
+    const bool use_weight = params.is_weights;
+    const bool normalize_by_lengths = false;
+    const bool scale_bias_last = true;
+    constexpr bool prefetch = true;
+    constexpr bool is_wt_positional = false;
+    constexpr bool use_offsets = true;
 
-  // Prepare offsets - FBGEMM requires last offset to be included
-  OffsetType *fbgemm_offsets = nullptr;
+    // Prepare offsets - FBGEMM requires last offset to be included
+    OffsetType *fbgemm_offsets = nullptr;
 
-  if (params.include_last_offset==0) {
-    fbgemm_offsets = new OffsetType[batch_size+1];
-    memcpy(fbgemm_offsets, static_cast<const OffsetType *>(offsets),
-           batch_size * sizeof(OffsetType));
-    fbgemm_offsets[batch_size]=indices_size;
-  }
-  else {
-    fbgemm_offsets = const_cast<OffsetType *>(static_cast<const OffsetType *>
-                     (offsets));
-  }
+    if (params.include_last_offset == 0) {
+        fbgemm_offsets = new OffsetType[batch_size + 1];
+        memcpy(fbgemm_offsets, static_cast<const OffsetType *>(offsets),
+                batch_size * sizeof(OffsetType));
+        fbgemm_offsets[batch_size] = indices_size;
+    } else {
+        fbgemm_offsets = const_cast<OffsetType *>(
+                static_cast<const OffsetType *>(offsets));
+    }
 
-  const IndexType *indices_ptr = static_cast<const IndexType *>(indices);
-  OutType *dst_ptr = static_cast<OutType *>(dst);
+    const IndexType *indices_ptr = static_cast<const IndexType *>(indices);
+    OutType *dst_ptr = static_cast<OutType *>(dst);
 
-  if constexpr(IsQuantized) {
-    // Generate FBGEMM NBit kernel for quantized types (int4/int8)
-    auto kernel =
-      fbgemm::GenerateEmbeddingSpMDMNBitWithStrides<IndexType, OffsetType, OutType>(
-        bit_rate,
-        embedding_dim,
-        use_weight,
-        normalize_by_lengths,
-        prefetch ? 16 : 0,
-        is_wt_positional,
-        use_offsets,
-        output_stride,
-        -1, /* input_stride - use default */
-        scale_bias_last,
-        is_bf16_out);
+    if constexpr (IsQuantized) {
+        // Generate FBGEMM NBit kernel for quantized types (int4/int8)
+        auto kernel = fbgemm::GenerateEmbeddingSpMDMNBitWithStrides<IndexType,
+                OffsetType, OutType>(bit_rate, embedding_dim, use_weight,
+                normalize_by_lengths, prefetch ? 16 : 0, is_wt_positional,
+                use_offsets, output_stride, -1, /* input_stride - use default */
+                scale_bias_last, is_bf16_out);
 
-    const uint8_t *table_ptr = static_cast<const uint8_t *>(table);
-    zendnnl_parallel_for(0, batch_size, 1, [&](int start_idx, int end_idx) {
-      kernel(
-        /*output_size=*/end_idx - start_idx,
-        /*index_size=*/indices_size,
-        /*data_size=*/num_rows,
-        /*input=*/table_ptr,
-        /*indices=*/&indices_ptr[fbgemm_offsets[start_idx]],
-        /*offsets=*/&fbgemm_offsets[start_idx],
-        /*weights=*/weights ? &weights[fbgemm_offsets[start_idx]] : nullptr,
-        /*out=*/&dst_ptr[start_idx * output_stride]);
-    });
-  }
-  else {
-    // Generate FBGEMM kernel for non-quantized types (fp32/bf16)
-    auto kernel =
-      fbgemm::GenerateEmbeddingSpMDMWithStrides<InType, IndexType, OffsetType, OutType>
-      (
-        embedding_dim,
-        use_weight,
-        normalize_by_lengths,
-        prefetch ? 16 : 0,
-        is_wt_positional,
-        use_offsets,
-        output_stride,
-        -1,    /* input_stride - use default */
-        true,  /* scale_bias_last */
-        false, /* no_bag */
-        is_bf16_out,
-        is_bf16_in);
+        const uint8_t *table_ptr = static_cast<const uint8_t *>(table);
+        zendnnl_parallel_for(0, batch_size, 1, [&](int start_idx, int end_idx) {
+            kernel(
+                    /*output_size=*/end_idx - start_idx,
+                    /*index_size=*/indices_size,
+                    /*data_size=*/num_rows,
+                    /*input=*/table_ptr,
+                    /*indices=*/&indices_ptr[fbgemm_offsets[start_idx]],
+                    /*offsets=*/&fbgemm_offsets[start_idx],
+                    /*weights=*/
+                            weights ? &weights[fbgemm_offsets[start_idx]]
+                                    : nullptr,
+                    /*out=*/&dst_ptr[start_idx * output_stride]);
+        });
+    } else {
+        // Generate FBGEMM kernel for non-quantized types (fp32/bf16)
+        auto kernel = fbgemm::GenerateEmbeddingSpMDMWithStrides<InType,
+                IndexType, OffsetType, OutType>(embedding_dim, use_weight,
+                normalize_by_lengths, prefetch ? 16 : 0, is_wt_positional,
+                use_offsets, output_stride, -1, /* input_stride - use default */
+                true, /* scale_bias_last */
+                false, /* no_bag */
+                is_bf16_out, is_bf16_in);
 
-    const InType *table_ptr = static_cast<const InType *>(table);
-    zendnnl_parallel_for(0, batch_size, 1, [&](int start_idx, int end_idx) {
-      kernel(
-        /*output_size=*/end_idx - start_idx,
-        /*index_size=*/indices_size,
-        /*data_size=*/num_rows,
-        /*input=*/table_ptr,
-        /*indices=*/&indices_ptr[fbgemm_offsets[start_idx]],
-        /*offsets=*/&fbgemm_offsets[start_idx],
-        /*weights=*/weights ? &weights[fbgemm_offsets[start_idx]] : nullptr,
-        /*out=*/&dst_ptr[start_idx * output_stride]);
-    });
-  }
+        const InType *table_ptr = static_cast<const InType *>(table);
+        zendnnl_parallel_for(0, batch_size, 1, [&](int start_idx, int end_idx) {
+            kernel(
+                    /*output_size=*/end_idx - start_idx,
+                    /*index_size=*/indices_size,
+                    /*data_size=*/num_rows,
+                    /*input=*/table_ptr,
+                    /*indices=*/&indices_ptr[fbgemm_offsets[start_idx]],
+                    /*offsets=*/&fbgemm_offsets[start_idx],
+                    /*weights=*/
+                            weights ? &weights[fbgemm_offsets[start_idx]]
+                                    : nullptr,
+                    /*out=*/&dst_ptr[start_idx * output_stride]);
+        });
+    }
 
-  if (params.include_last_offset==0) {
-    delete[] fbgemm_offsets;
-  }
+    if (params.include_last_offset == 0) { delete[] fbgemm_offsets; }
 }
 
 static inline bool can_use_fbgemm(const embag_params_t &params) {
-  // TODO: Explore the feasibility of using FBGEMM for other algorithms and data types.
-  return (params.algo == embag_algo_t::sum &&
-          params.dtypes.table != data_type_t::s8 &&
-          params.dtypes.table != data_type_t::s4 &&
-          params.fp16_scale_bias == true);
+    // TODO: Explore the feasibility of using FBGEMM for other algorithms and data types.
+    return (params.algo == embag_algo_t::sum
+            && params.dtypes.table != data_type_t::s8
+            && params.dtypes.table != data_type_t::s4
+            && params.fp16_scale_bias == true);
 }
 #endif
 } // namespace embag
@@ -182,4 +156,3 @@ static inline bool can_use_fbgemm(const embag_params_t &params) {
 } // namespace zendnnl
 
 #endif // _LOWOHA_EMBAG_FBGEMM_KERNELS_HPP
-

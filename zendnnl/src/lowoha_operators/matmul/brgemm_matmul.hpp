@@ -26,59 +26,53 @@ namespace matmul {
 using namespace zendnnl::ops;
 
 // Reference BRGEMM kernel
-void brgemm_ref_kernel(bool transA, bool transB,
-                       int M, int N, const int *K_blocks,
-                       const void **A_batch, const void **B_batch,
-                       size_t batch_size,
-                       float alpha, float beta,
-                       void *C_tile, int ldc,
-                       int lda, int ldb,
-                       matmul_data_types &dtypes,
-                       const void *bias) {
+void brgemm_ref_kernel(bool transA, bool transB, int M, int N,
+        const int *K_blocks, const void **A_batch, const void **B_batch,
+        size_t batch_size, float alpha, float beta, void *C_tile, int ldc,
+        int lda, int ldb, matmul_data_types &dtypes, const void *bias) {
 
-  if (dtypes.src == data_type_t::f32 && dtypes.dst == data_type_t::f32) {
-    float *C = static_cast<float *>(C_tile);
+    if (dtypes.src == data_type_t::f32 && dtypes.dst == data_type_t::f32) {
+        float *C = static_cast<float *>(C_tile);
 
-    // Scale C by beta
-    if (beta != 1.0f) {
-      for (int i = 0; i < M; ++i)
-        for (int j = 0; j < N; ++j) {
-          C[i * ldc + j] *= beta;
+        // Scale C by beta
+        if (beta != 1.0f) {
+            for (int i = 0; i < M; ++i)
+                for (int j = 0; j < N; ++j) {
+                    C[i * ldc + j] *= beta;
+                }
         }
-    }
 
-    // Accumulate across all K blocks
-    for (size_t b = 0; b < batch_size; ++b) {
-      const float *A = static_cast<const float *>(A_batch[b]);
-      const float *B = static_cast<const float *>(B_batch[b]);
-      int K_block = K_blocks[b];
+        // Accumulate across all K blocks
+        for (size_t b = 0; b < batch_size; ++b) {
+            const float *A = static_cast<const float *>(A_batch[b]);
+            const float *B = static_cast<const float *>(B_batch[b]);
+            int K_block = K_blocks[b];
 
-      for (int i = 0; i < M; ++i) {
-        for (int j = 0; j < N; ++j) {
-          double sum = 0.0;
-          for (int k = 0; k < K_block; ++k) {
-            int a_idx = transA ? (k * lda + i) : (i * lda + k);
-            int b_idx = transB ? (j * ldb + k) : (k * ldb + j);
-            sum += A[a_idx] * B[b_idx];
-          }
-          C[i * ldc + j] += alpha * static_cast<float>(sum);
+            for (int i = 0; i < M; ++i) {
+                for (int j = 0; j < N; ++j) {
+                    double sum = 0.0;
+                    for (int k = 0; k < K_block; ++k) {
+                        int a_idx = transA ? (k * lda + i) : (i * lda + k);
+                        int b_idx = transB ? (j * ldb + k) : (k * ldb + j);
+                        sum += A[a_idx] * B[b_idx];
+                    }
+                    C[i * ldc + j] += alpha * static_cast<float>(sum);
+                }
+            }
         }
-      }
-    }
 
-    // Add bias
-    if (bias != nullptr) {
-      const float *bias_ptr = static_cast<const float *>(bias);
-      for (int i = 0; i < M; ++i)
-        for (int j = 0; j < N; ++j) {
-          C[i * ldc + j] += bias_ptr[j];
+        // Add bias
+        if (bias != nullptr) {
+            const float *bias_ptr = static_cast<const float *>(bias);
+            for (int i = 0; i < M; ++i)
+                for (int j = 0; j < N; ++j) {
+                    C[i * ldc + j] += bias_ptr[j];
+                }
         }
+    } else {
+        apilog_error("Unsupported data type for brgemm ref kernel");
     }
-  }
-  else {
-    apilog_error("Unsupported data type for brgemm ref kernel");
-  }
-  apilog_info("Executing matmul LOWOHA with brgemm ref kernel");
+    apilog_info("Executing matmul LOWOHA with brgemm ref kernel");
 }
 
 } // namespace matmul

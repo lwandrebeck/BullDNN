@@ -41,14 +41,10 @@ namespace pooling {
  * @return status_t::success on successful execution, status_t::failure otherwise
  */
 status_t pooling_onednn_wrapper(
-    const void *input,
-    void *output,
-    pool_params &params
-);
+        const void *input, void *output, pool_params &params);
 
 } // namespace pooling
 } // namespace lowoha
 } // namespace zendnnl
 
 #endif // _LOWOHA_POOLING_ONEDNN_KERNEL_HPP
-
