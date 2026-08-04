@@ -1,0 +1,77 @@
+# ******************************************************************************
+# Copyright (c) 2026 Advanced Micro Devices, Inc.
+# All rights reserved.
+# ******************************************************************************
+name: Clang-Format Verification
+
+on:
+  workflow_call:
+    outputs:
+      result:
+        description: "Result of the clang-format check"
+        value: ${{ jobs.check-clang-format.outputs.result }}
+
+permissions:
+  contents: read
+
+jobs:
+  check-clang-format:
+    name: Verify Code Formatting in Changed Files
+    runs-on: header_check_runner
+    outputs:
+      result: ${{ steps.format-check.outputs.result }}
+
+    steps:
+    - name: Checkout repository
+      uses: actions/checkout@v6
+      with:
+        fetch-depth: 0  # Fetch full history so PR base/head diffs are available
+
+    - name: Install clang-format 18.1.8
+      run: |
+        echo "Installing clang-format 18.1.8 via pip..."
+        python3 -m pip install --user --upgrade "clang-format==18.1.8"
+        echo "$HOME/.local/bin" >> "$GITHUB_PATH"
+      shell: bash
+
+    - name: Verify clang-format version
+      run: |
+        export PATH="$HOME/.local/bin:$PATH"
+        clang-format --version
+      shell: bash
+
+    - name: Run clang-format check on changed files
+      id: format-check
+      run: |
+        export PATH="$HOME/.local/bin:$PATH"
+        # The maintained scripts/check_format.sh handles source-file filtering
+        # (*.c, *.cpp, *.h, *.hpp, *.cc, *.hxx, *.cu) and honors .clang-format-ignore.
+        # We only need to point it at the pip-installed binary and give it the
+        # commit range to diff.
+        export CLANG_FORMAT="clang-format"
+
+        # Determine the range of changed files.
+        if [ "${{ github.event_name }}" == "pull_request" ]; then
+          BASE_SHA="${{ github.event.pull_request.base.sha }}"
+          HEAD_SHA="${{ github.event.pull_request.head.sha }}"
+          echo "Pull request detected. Diffing $BASE_SHA..$HEAD_SHA"
+        else
+          # Push (or other) event: compare against the previous commit.
+          BASE_SHA="$(git rev-parse HEAD~1 2>/dev/null || git rev-parse HEAD)"
+          HEAD_SHA="$(git rev-parse HEAD)"
+          echo "Push event detected. Diffing $BASE_SHA..$HEAD_SHA"
+        fi
+
+        export BASE_SHA HEAD_SHA
+
+        if bash scripts/check_format.sh --check; then
+          echo "✅ All changed source files are correctly formatted!"
+          echo "result=success" >> "$GITHUB_OUTPUT"
+        else
+          echo "❌ clang-format check failed!"
+          echo "Run 'scripts/check_format.sh --fix' locally to auto-format your changes,"
+          echo "then commit and push the result."
+          echo "result=failure" >> "$GITHUB_OUTPUT"
+          exit 1
+        fi
+      shell: bash
