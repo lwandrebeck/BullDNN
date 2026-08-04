@@ -27,6 +27,8 @@ namespace zendnnl {
 namespace benchdnn {
 namespace matmul {
 
+struct MatmulConfig;
+
 /**
  * @brief Benchmarks Low Overhead API matrix multiplication (matmul).
  *

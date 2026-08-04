@@ -17,6 +17,7 @@
 #define _EMBAG_TENSOR_FACTORY_HPP_
 
 #include "benchdnn.hpp"
+#include "example_utils.hpp"
 
 namespace zendnnl {
 namespace benchdnn {
