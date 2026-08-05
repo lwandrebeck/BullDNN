@@ -229,7 +229,7 @@ status_t warm_pack_all_aocl_dlp_experts(const std::vector<const void *> &weight,
 // (aocl_kernel.cpp:621-674):
 //   * `is_s8_sym_quant_scales` per-token shape => `src_grp == K`,
 //     so `extra_input_hash = std::hash<int64_t>(K[i])` and
-//     `DLP_SYMM_STAT_QUANT::group_size = K[i]`.
+//     `b_quant_op->group_size = K[i]`.
 //   * reorder via `aocl_reorder_s8s8s32os32_sym_quant`.
 //
 // The packed s8 sym-quant layout does not depend on compute_dtype
@@ -293,7 +293,7 @@ status_t warm_pack_all_aocl_dlp_experts_sym_quant(
         // The sym-quant reorder keys on the SOURCE quant-group span `src_grp`:
         //   * per-token  (group_size == 0): src_grp = K[i];
         //   * per-group  (group_size  > 0): src_grp = group_size (= K/G).
-        // `extra_input_hash = hash(src_grp)` and `DLP_SYMM_STAT_QUANT.group_size
+        // `extra_input_hash = hash(src_grp)` and `b_quant_op->group_size
         // = src_grp` — byte-identical to the runtime key, so the warmed slot is
         // the one the runtime per-group / per-token call reads.
         const int64_t src_grp = (group_size > 0)
@@ -304,8 +304,13 @@ status_t warm_pack_all_aocl_dlp_experts_sym_quant(
                 static_cast<uint32_t>(matmul_algo_t::aocl_dlp_blocked),
                 cache_extra_hash);
 
-        DLP_SYMM_STAT_QUANT symq_meta;
-        symq_meta.group_size = static_cast<int>(src_grp);
+        // B-side group size now travels inside dlp_metadata_t->b_quant_op
+        // (new AOCL DLP reorder API); DLP_SYMM_STAT_QUANT was removed.
+        dlp_metadata_t symq_meta = {};
+        dlp_quant_op_t symq_b_quant_op = {};
+        symq_b_quant_op.quant_op_kind = DLP_QUANT_OP_QUANTIZE;
+        symq_b_quant_op.group_size = static_cast<int>(src_grp);
+        symq_meta.b_quant_op = &symq_b_quant_op;
 
         void *reordered_unused = nullptr;
         // `reorderAndCacheWeightsSymQuant` returns `true` when the entry was
@@ -548,7 +553,7 @@ status_t warm_pack_all_aocl_dlp_experts_n_tile(
 //     for the per-tile pointer slice arithmetic;
 //   * reorder: `reorderAndCacheWeightsSymQuant<int8_t>` with the
 //     `s8s8s32os32_sym_quant` buf-size / reorder fns + a
-//     `DLP_SYMM_STAT_QUANT{group_size=K[i]}`;
+//     `dlp_metadata_t{b_quant_op->group_size=K[i]}`;
 //   * cache key: `extra_input_hash = hash(K[i])` (matching the runtime
 //     per-token symmetric shape `src_grp == K`), vs 0 for bf16.
 // The (K, n_tile, ldb, w_tile, transB) portion of the key is identical
@@ -650,8 +655,13 @@ status_t warm_pack_all_aocl_dlp_experts_n_tile_sym_quant(
                     static_cast<uint32_t>(matmul_algo_t::aocl_dlp_blocked),
                     cache_extra_hash);
 
-            DLP_SYMM_STAT_QUANT symq_meta;
-            symq_meta.group_size = static_cast<int>(src_grp);
+            // B-side group size now travels inside dlp_metadata_t->b_quant_op
+            // (new AOCL DLP reorder API); DLP_SYMM_STAT_QUANT was removed.
+            dlp_metadata_t symq_meta = {};
+            dlp_quant_op_t symq_b_quant_op = {};
+            symq_b_quant_op.quant_op_kind = DLP_QUANT_OP_QUANTIZE;
+            symq_b_quant_op.group_size = static_cast<int>(src_grp);
+            symq_meta.b_quant_op = &symq_b_quant_op;
 
             void *reordered_unused = nullptr;
             // See the full-weight sym-quant warmer above: `false` is only
@@ -880,8 +890,13 @@ status_t warm_pack_all_aocl_dlp_experts_n_tile_w4a8(
                     static_cast<uint32_t>(matmul_algo_t::aocl_dlp_blocked),
                     std::hash<int64_t> {}(src_grp));
 
-            DLP_SYMM_STAT_QUANT symq_meta;
-            symq_meta.group_size = group_size;
+            // B-side group size now travels inside dlp_metadata_t's b_quant_op
+            // (new AOCL DLP reorder API); DLP_SYMM_STAT_QUANT was removed.
+            dlp_metadata_t symq_meta = {};
+            dlp_quant_op_t symq_b_quant_op = {};
+            symq_b_quant_op.quant_op_kind = DLP_QUANT_OP_QUANTIZE;
+            symq_b_quant_op.group_size = static_cast<int>(src_grp);
+            symq_meta.b_quant_op = &symq_b_quant_op;
 
             apilog_verbose("[W4A8.prepack.blocked] expert=", i, " tid=", tid,
                     " col_start=", col_start, " n_tile=", n_tile, " K=", k,

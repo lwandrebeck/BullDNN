@@ -92,22 +92,25 @@ bool reorderAndCacheWeights(Key_matmul key, const void *weights,
         reorder_func_ptr<T> reorder_func, int weight_cache_type);
 
 #if ZENDNNL_DEPENDS_AOCLDLP
+// The new AOCL DLP reorder API dropped the dedicated DLP_SYMM_STAT_QUANT
+// argument; the B-side quantization group size now travels inside the
+// dlp_metadata_t (via b_quant_op->group_size), which is the sole trailing
+// metadata parameter.
 using get_reorder_buf_size_sym_quant_func_ptr
         = long unsigned int (*)(const char, const char, const char, const md_t,
-                const md_t, DLP_SYMM_STAT_QUANT *, dlp_metadata_t *);
+                const md_t, dlp_metadata_t *);
 
 template <typename T>
 using reorder_sym_quant_func_ptr = void (*)(const char, const char, const char,
-        const T *, T *, const md_t, const md_t, const md_t,
-        DLP_SYMM_STAT_QUANT *, dlp_metadata_t *);
+        const T *, T *, const md_t, const md_t, const md_t, dlp_metadata_t *);
 
 template <typename T>
 bool reorderAndCacheWeightsSymQuant(Key_matmul key, const void *weights,
         void *&reorder_weights, const int k, const int n, const int ldb,
         const char order, const char trans, char mem_format_b,
         get_reorder_buf_size_sym_quant_func_ptr get_reorder_buf_size,
-        reorder_sym_quant_func_ptr<T> reorder_func,
-        DLP_SYMM_STAT_QUANT *symq_meta, int weight_cache_type);
+        reorder_sym_quant_func_ptr<T> reorder_func, dlp_metadata_t *symq_meta,
+        int weight_cache_type);
 #endif
 
 /**

@@ -178,7 +178,7 @@ status_t warm_pack_all_aocl_dlp_experts_n_tile(
 ///     `src_grp == K[i]` for per-token scales (`run_src_scale_nelems
 ///     == M`), the only DQ-INT8 shape the N-tile path accepts.
 ///   * the reorder runs through `aocl_reorder_s8s8s32os32_sym_quant`
-///     with `DLP_SYMM_STAT_QUANT::group_size = K[i]`.
+///     with `b_quant_op->group_size = K[i]`.
 ///
 /// `compute_dtype` (s8 / u8) is NOT a key input on the AOCL sym-quant
 /// reorder — the packed s8 layout is identical for sym and asym — so
@@ -191,7 +191,7 @@ status_t warm_pack_all_aocl_dlp_experts_n_tile(
 /// the runtime `run_dlp(...)` key derivation
 /// (`src_grp = K / (src_scale_nelems / M)`):
 ///   * `0` (default) — PER-TOKEN: `src_grp = K[i]`, so
-///     `extra_input_hash = hash(K[i])` and `DLP_SYMM_STAT_QUANT.group_size
+///     `extra_input_hash = hash(K[i])` and `b_quant_op->group_size
 ///     = K[i]`.  Byte-identical to the original per-token warmer; every
 ///     existing caller keeps the default.
 ///   * `> 0`         — PER-GROUP: `src_grp = group_size` (= K/G), so

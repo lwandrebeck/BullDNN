@@ -84,7 +84,8 @@ struct reorder_params_t;
  *   AOCL (s8 sym-quant variant):
  *     - @c sym_group_size > 0 selects the s8 sym-quant variant
  *       (s8s8s32os32_sym_quant). The value populates
- *       @c DLP_SYMM_STAT_QUANT::group_size; the caller should compute it
+ *       @c dlp_quant_op_t::group_size on the metadata's @c b_quant_op;
+ *       the caller should compute it
  *       the same way matmul does (group_size = K when scale_nelems == M,
  *       else K / (scale_nelems / M)).
  */

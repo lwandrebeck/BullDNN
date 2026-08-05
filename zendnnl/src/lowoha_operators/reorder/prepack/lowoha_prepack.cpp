@@ -202,10 +202,15 @@ size_t aocl_compute_size(const prepack_params_t &params) {
         if (params.sym_group_size > 0
                 && (params.src_dtype == data_type_t::bf16
                         || params.src_dtype == data_type_t::s8)) {
-            DLP_SYMM_STAT_QUANT symq_meta;
-            symq_meta.group_size = params.sym_group_size;
+            // B-side group size now travels inside dlp_metadata_t->b_quant_op
+            // (new AOCL DLP reorder API); DLP_SYMM_STAT_QUANT was removed.
+            dlp_metadata_t symq_meta = {};
+            dlp_quant_op_t symq_b_quant_op = {};
+            symq_b_quant_op.quant_op_kind = DLP_QUANT_OP_QUANTIZE;
+            symq_b_quant_op.group_size = params.sym_group_size;
+            symq_meta.b_quant_op = &symq_b_quant_op;
             const size_t req = aocl_get_reorder_buf_size_s8s8s32os32_sym_quant(
-                    order, trans, 'B', k, n, &symq_meta, nullptr);
+                    order, trans, 'B', k, n, &symq_meta);
             return round_up_align(req, kPrepackAlign);
         }
 
@@ -279,11 +284,16 @@ status_t aocl_prepack(
         if (params.sym_group_size > 0
                 && (params.src_dtype == data_type_t::bf16
                         || params.src_dtype == data_type_t::s8)) {
-            DLP_SYMM_STAT_QUANT symq_meta;
-            symq_meta.group_size = params.sym_group_size;
+            // B-side group size now travels inside dlp_metadata_t->b_quant_op
+            // (new AOCL DLP reorder API); DLP_SYMM_STAT_QUANT was removed.
+            dlp_metadata_t symq_meta = {};
+            dlp_quant_op_t symq_b_quant_op = {};
+            symq_b_quant_op.quant_op_kind = DLP_QUANT_OP_QUANTIZE;
+            symq_b_quant_op.group_size = params.sym_group_size;
+            symq_meta.b_quant_op = &symq_b_quant_op;
             aocl_reorder_s8s8s32os32_sym_quant(order, trans, 'B',
                     static_cast<const int8_t *>(weights),
-                    static_cast<int8_t *>(dst), k, n, ldb, &symq_meta, nullptr);
+                    static_cast<int8_t *>(dst), k, n, ldb, &symq_meta);
             return status_t::success;
         }
 

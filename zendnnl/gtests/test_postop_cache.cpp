@@ -115,6 +115,7 @@
 
 #include <cstdlib> // setenv / unsetenv for the env-flag tests
 #include <string>
+#include <utility>
 
 namespace {
 
@@ -764,12 +765,12 @@ TEST_P(TestPostopCache, LifecycleClear) {
 // output dtype.
 // =============================================================================
 
-/** @brief Mutable-field regression for post_op_grp->a_scl in INT8
+/** @brief Mutable-field regression for a_quant_op in INT8
  *         symmetric per-token quantization. Same s8 weight (so same
  *         cache key), two distinct s8 sources quantized independently:
  *         each call produces a fresh per-token src_scale buffer at a
  *         new address with new values. On hit, patch_mutable_fields
- *         must refresh post_op_grp->a_scl->scale_factor (and its
+ *         must refresh a_quant_op->dequant_scale_factors->data (and its
  *         length) to call 2's buffer. */
 TEST_P(TestPostopCache, SymQuantPerTokenScaleRefreshOnHit) {
     // INT8-only test body. Skip on FP instantiations (those rows are covered
@@ -1155,6 +1156,86 @@ TEST_F(TestPostopCacheZpCompNegative, NullAccDistinctFromRealAccKey) {
     ASSERT_NE(md_real_2d->matrix_add, nullptr);
     EXPECT_EQ(md_real_2d->matrix_add[0].matrix, zp_comp_storage)
             << "Real-pair 2D zp_comp must point at the caller-supplied buffer";
+}
+
+// Quant scale granularity is part of the cached metadata topology. Calls with
+// the same weight key but per-token/per-channel scales must not reuse holders
+// built for per-group scales, because a_quant_op/b_quant_op outer_dim is not a
+// per-call pointer or length and therefore cannot safely remain stale.
+class TestPostopCacheQuantGranularity : public ::testing::Test {
+protected:
+    void SetUp() override {
+        if (!zendnnl::common::is_postop_cache_enabled()) {
+            GTEST_SKIP() << "AOCL DLP post-op metadata cache is disabled";
+        }
+        clear_aocl_postop_metadata_cache();
+    }
+    void TearDown() override { clear_aocl_postop_metadata_cache(); }
+};
+
+TEST_F(TestPostopCacheQuantGranularity, ScaleLayoutsUseDistinctKeys) {
+    constexpr int M = 4;
+    constexpr int K = 16;
+    constexpr int N = 8;
+    constexpr int G = 2;
+
+    alignas(int32_t) uint8_t weight_storage[64] = {0};
+    float src_scales[M * G] = {};
+    float wei_scales[G * N] = {};
+
+    auto make_params = [&](std::vector<int64_t> src_dims,
+                               std::vector<int64_t> wei_dims) {
+        matmul_params p {};
+        p.dtypes.src = data_type_t::s8;
+        p.dtypes.wei = data_type_t::s8;
+        p.dtypes.dst = data_type_t::bf16;
+        p.quant_params.src_scale.buff = src_scales;
+        p.quant_params.src_scale.dt = data_type_t::f32;
+        p.quant_params.src_scale.dims = std::move(src_dims);
+        p.quant_params.wei_scale.buff = wei_scales;
+        p.quant_params.wei_scale.dt = data_type_t::f32;
+        p.quant_params.wei_scale.dims = std::move(wei_dims);
+        return p;
+    };
+
+    const auto per_token_channel = make_params({M, 1}, {1, N});
+    const auto per_group_a = make_params({M, G}, {1, N});
+    const auto per_group_b = make_params({M, 1}, {G, N});
+    const matmul_data_types dtypes = per_token_channel.dtypes;
+    const auto algo = matmul_algo_t::aocl_dlp;
+
+    auto create = [&](const matmul_params &params) {
+        return create_dlp_post_op(params, /*bias=*/nullptr, dtypes, N, K, M,
+                /*zp_comp_acc=*/nullptr, /*zp_comp_ndim=*/0, algo,
+                static_cast<const void *>(weight_storage));
+    };
+
+    dlp_metadata_t *md_token_channel = create(per_token_channel);
+    dlp_metadata_t *md_group_a = create(per_group_a);
+    dlp_metadata_t *md_group_b = create(per_group_b);
+
+    ASSERT_NE(md_token_channel, nullptr);
+    ASSERT_NE(md_group_a, nullptr);
+    ASSERT_NE(md_group_b, nullptr);
+    EXPECT_NE(md_token_channel, md_group_a);
+    EXPECT_NE(md_token_channel, md_group_b);
+
+    ASSERT_NE(md_token_channel->a_quant_op, nullptr);
+    ASSERT_NE(md_token_channel->b_quant_op, nullptr);
+    EXPECT_EQ(md_token_channel->a_quant_op->dequant_scale_factors->outer_dim,
+            DLP_PARAM_DIM_PER_TOKEN);
+    EXPECT_EQ(md_token_channel->b_quant_op->dequant_scale_factors->outer_dim,
+            DLP_PARAM_DIM_PER_CHANNEL);
+
+    ASSERT_NE(md_group_a->a_quant_op, nullptr);
+    EXPECT_EQ(md_group_a->a_quant_op->dequant_scale_factors->outer_dim,
+            DLP_PARAM_DIM_PER_GROUP);
+    ASSERT_NE(md_group_b->b_quant_op, nullptr);
+    EXPECT_EQ(md_group_b->b_quant_op->dequant_scale_factors->outer_dim,
+            DLP_PARAM_DIM_PER_GROUP);
+
+    // Repeating the original granularity should still be a cache hit.
+    EXPECT_EQ(create(per_token_channel), md_token_channel);
 }
 
 // =============================================================================

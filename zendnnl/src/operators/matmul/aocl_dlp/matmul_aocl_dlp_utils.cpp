@@ -59,6 +59,7 @@ DLP_TYPE get_aocl_store_type(data_type_t dt) {
         case data_type_t::s8: return DLP_TYPE::DLP_S8; break;
         case data_type_t::u8: return DLP_TYPE::DLP_U8; break;
         case data_type_t::s4: return DLP_TYPE::DLP_S4; break;
+        case data_type_t::u4: return DLP_TYPE::DLP_U4; break;
         default: break;
     };
     return DLP_TYPE::DLP_INVALID;
@@ -751,7 +752,8 @@ status_t aocl_dlp_utils_t::alloc_post_op(
         aocl_dlp_po_ptr->scale = NULL;
         aocl_dlp_po_ptr->matrix_add = NULL;
         aocl_dlp_po_ptr->matrix_mul = NULL;
-        aocl_dlp_po_ptr->pre_ops = NULL;
+        aocl_dlp_po_ptr->a_quant_op = NULL;
+        aocl_dlp_po_ptr->b_quant_op = NULL;
 
         if (is_woq) {
             auto weight_size = weight_tensor.get_size();
@@ -780,34 +782,57 @@ status_t aocl_dlp_utils_t::alloc_post_op(
                 group_size = static_cast<int>(weight_size[0])
                         / (scale_nelems / static_cast<int>(weight_size[1]));
             }
-            aocl_dlp_po_ptr->pre_ops = (dlp_pre_op *)malloc(sizeof(dlp_pre_op));
-            (aocl_dlp_po_ptr->pre_ops)->b_scl
-                    = (dlp_sf_t *)malloc(sizeof(dlp_sf_t));
-            // Setup zero point for WOQ (asymmetric quantization)
+            // WOQ now flows through the unified b_quant_op (new AOCL DLP API):
+            // the low-precision weight is dequantized up to the BF16 compute
+            // domain via dequant_scale_factors (+ zero_point for asymmetric u4).
+            // Replaces the old dlp_pre_op path.
+            aocl_dlp_po_ptr->b_quant_op
+                    = (dlp_quant_op_t *)malloc(sizeof(dlp_quant_op_t));
+            dlp_quant_op_t *b_qop = aocl_dlp_po_ptr->b_quant_op;
+            // DEQUANTIZE: the low-bit weight is expanded to bf16 before
+            // accumulation, which is the only kind DLP's pre-op translator accepts.
+            b_qop->quant_op_kind = DLP_QUANT_OP_DEQUANTIZE;
+            b_qop->src_type = get_aocl_store_type(weight_dtype);
+            b_qop->dst_type = DLP_TYPE::DLP_BF16;
+            b_qop->group_size = group_size;
+            // WOQ never forward-quantizes B; only the dequant direction is used.
+            b_qop->quant_scale_factors = NULL;
+
+            // Granularity of the weight scale/zp, derived from the scale layout.
+            DLP_PARAM_DIM_TYPE outer_dim;
+            if (static_cast<size_t>(scale_nelems) == weight_size[1]) {
+                outer_dim = DLP_PARAM_DIM_TYPE::DLP_PARAM_DIM_PER_CHANNEL;
+            } else if (scale_nelems == 1) {
+                outer_dim = DLP_PARAM_DIM_TYPE::DLP_PARAM_DIM_PER_TENSOR;
+            } else {
+                outer_dim = DLP_PARAM_DIM_TYPE::DLP_PARAM_DIM_PER_GROUP;
+            }
+
+            // Weight dequant scale.
+            b_qop->dequant_scale_factors
+                    = (dlp_qparam_t *)malloc(sizeof(dlp_qparam_t));
+            (b_qop->dequant_scale_factors)->data = (void *)scale_ptr;
+            (b_qop->dequant_scale_factors)->len = scale_nelems;
+            (b_qop->dequant_scale_factors)->stor_type
+                    = get_aocl_store_type(scale_dt);
+            (b_qop->dequant_scale_factors)->outer_dim = outer_dim;
+
+            // Weight zero point for WOQ (asymmetric u4 only).
             if (is_zero_point && weight_dtype == data_type_t::u4) {
-                (aocl_dlp_po_ptr->pre_ops)->b_zp
-                        = (dlp_zp_t *)malloc(sizeof(dlp_zp_t));
+                b_qop->zero_point
+                        = (dlp_qparam_t *)malloc(sizeof(dlp_qparam_t));
                 const void *zp_ptr
                         = weight_tensor.get_quant_zero_raw_handle_const();
                 auto zp_size = weight_tensor.get_quant_zero_size();
                 auto zp_nelems = compute_product(zp_size);
-                ((aocl_dlp_po_ptr->pre_ops)->b_zp)->zero_point
-                        = const_cast<void *>(zp_ptr);
-                ((aocl_dlp_po_ptr->pre_ops)->b_zp)->zero_point_len = zp_nelems;
-                ((aocl_dlp_po_ptr->pre_ops)->b_zp)->zero_point_type
-                        = get_aocl_store_type(
-                                weight_tensor.get_quant_zero_data_type());
+                (b_qop->zero_point)->data = const_cast<void *>(zp_ptr);
+                (b_qop->zero_point)->len = zp_nelems;
+                (b_qop->zero_point)->stor_type = get_aocl_store_type(
+                        weight_tensor.get_quant_zero_data_type());
+                (b_qop->zero_point)->outer_dim = outer_dim;
             } else {
-                (aocl_dlp_po_ptr->pre_ops)->b_zp = NULL;
+                b_qop->zero_point = NULL;
             }
-            ((aocl_dlp_po_ptr->pre_ops)->b_scl)->scale_factor
-                    = (float *)scale_ptr;
-            ((aocl_dlp_po_ptr->pre_ops)->b_scl)->scale_factor_len
-                    = scale_nelems;
-            ((aocl_dlp_po_ptr->pre_ops)->b_scl)->scale_factor_type
-                    = get_aocl_store_type(scale_dt);
-            (aocl_dlp_po_ptr->pre_ops)->seq_length = 1;
-            (aocl_dlp_po_ptr->pre_ops)->group_size = group_size;
         }
 
         if (total_po > 0) {
@@ -954,14 +979,14 @@ void aocl_dlp_utils_t::free_post_op() {
     LOG_DEBUG_INFO("Freeing aocl post-ops from aocl_dlp_utils_t");
     if (aocl_dlp_po_ptr == nullptr) { return; }
 
-    if (aocl_dlp_po_ptr->pre_ops) {
-        if (aocl_dlp_po_ptr->pre_ops->b_scl) {
-            free(aocl_dlp_po_ptr->pre_ops->b_scl);
+    if (aocl_dlp_po_ptr->b_quant_op) {
+        if (aocl_dlp_po_ptr->b_quant_op->dequant_scale_factors) {
+            free(aocl_dlp_po_ptr->b_quant_op->dequant_scale_factors);
         }
-        if (aocl_dlp_po_ptr->pre_ops->b_zp) {
-            free(aocl_dlp_po_ptr->pre_ops->b_zp);
+        if (aocl_dlp_po_ptr->b_quant_op->zero_point) {
+            free(aocl_dlp_po_ptr->b_quant_op->zero_point);
         }
-        free(aocl_dlp_po_ptr->pre_ops);
+        free(aocl_dlp_po_ptr->b_quant_op);
     }
 
     if (aocl_dlp_po_ptr->bias) { free(aocl_dlp_po_ptr->bias); }

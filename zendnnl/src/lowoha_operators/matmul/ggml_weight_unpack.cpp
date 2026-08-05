@@ -135,10 +135,15 @@ size_t ggml_scale_bytes(int64_t N, int64_t K, bool use_bf16_scales) {
 
 status_t ggml_reorder_size(int N, int K, char trans, size_t &reorder_size) {
 #if ZENDNNL_DEPENDS_AOCLDLP
-    DLP_SYMM_STAT_QUANT symq_meta;
-    symq_meta.group_size = kGgmlGroupSize;
+    // B-side group size now travels inside dlp_metadata_t->b_quant_op
+    // (new AOCL DLP reorder API); DLP_SYMM_STAT_QUANT was removed.
+    dlp_metadata_t symq_meta = {};
+    dlp_quant_op_t symq_b_quant_op = {};
+    symq_b_quant_op.quant_op_kind = DLP_QUANT_OP_QUANTIZE;
+    symq_b_quant_op.group_size = kGgmlGroupSize;
+    symq_meta.b_quant_op = &symq_b_quant_op;
     size_t raw_size = aocl_get_reorder_buf_size_s8s8s32os32_sym_quant(
-            'r', trans, 'B', K, N, &symq_meta, nullptr);
+            'r', trans, 'B', K, N, &symq_meta);
     reorder_size = align_up(raw_size);
     return status_t::success;
 #else
@@ -150,10 +155,15 @@ status_t ggml_reorder_size(int N, int K, char trans, size_t &reorder_size) {
 status_t ggml_reorder_unpacked_weights(int N, int K, int ldb, char trans,
         const int8_t *unpacked_weights, int8_t *reordered_weights) {
 #if ZENDNNL_DEPENDS_AOCLDLP
-    DLP_SYMM_STAT_QUANT symq_meta;
-    symq_meta.group_size = kGgmlGroupSize;
+    // B-side group size now travels inside dlp_metadata_t->b_quant_op
+    // (new AOCL DLP reorder API); DLP_SYMM_STAT_QUANT was removed.
+    dlp_metadata_t symq_meta = {};
+    dlp_quant_op_t symq_b_quant_op = {};
+    symq_b_quant_op.quant_op_kind = DLP_QUANT_OP_QUANTIZE;
+    symq_b_quant_op.group_size = kGgmlGroupSize;
+    symq_meta.b_quant_op = &symq_b_quant_op;
     aocl_reorder_s8s8s32os32_sym_quant('r', trans, 'B', unpacked_weights,
-            reordered_weights, K, N, ldb, &symq_meta, nullptr);
+            reordered_weights, K, N, ldb, &symq_meta);
     return status_t::success;
 #else
     log_error("GGML packed weights require AOCL DLP sym-quant reorder");

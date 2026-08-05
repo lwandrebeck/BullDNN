@@ -87,26 +87,36 @@ struct dlp_postop_metadata_holder_t {
     dlp_sf_t scale_sf[kMaxScale];
     dlp_zp_t scale_zp[kMaxScale];
 
-    dlp_pre_op pre_ops;
-    dlp_sf_t pre_op_b_scl;
-    dlp_zp_t pre_op_b_zp;
-
-    dlp_group_post_op post_op_grp;
-    dlp_sf_t post_op_grp_a_scl;
-    dlp_sf_t post_op_grp_b_scl;
-
-    dlp_quant_op a_pre_quant;
-    dlp_sf_t a_pre_quant_scl;
-    dlp_zp_t a_pre_quant_zp;
-    float a_pre_quant_inv_scale;
+    // Unified A-matrix quant op (new AOCL DLP API). Serves two mutually-
+    // exclusive paths:
+    //   - bf16/f32 -> s8 on-the-fly quant: quant_scale_factors carries the
+    //     forward inverse-scale, dequant_scale_factors the src (post) scale,
+    //     zero_point the src zp (NULL == symmetric). Replaces the old
+    //     a_pre_quant + a_post_quant pair.
+    //   - s8 x s8 symmetric quant: only dequant_scale_factors (the a-scale)
+    //     is wired; quant_scale_factors / zero_point stay NULL. Replaces the
+    //     a_scl half of the old post_op_grp.
+    dlp_quant_op_t a_quant_op;
+    dlp_qparam_t a_quant_scl; // quant_scale_factors (fwd inverse-scale)
+    dlp_qparam_t a_dequant_scl; // dequant_scale_factors (src / a scale)
+    dlp_qparam_t a_quant_zp; // zero_point (asymmetric src)
+    float a_quant_inv_scale; // scalar backing store for a_quant_scl.data
     // Heap-owned inverse-scale buffer for the BF16/INT8 per-token-symmetric
     // path (length = M floats, M = src_scale_nelems for that path). nullptr
     // for every other path. Owned by cleanup_dlp_post_op() — see is_per_call
     // below and the function comment in this file.
-    float *a_pre_quant_inv_scales_dyn;
+    float *a_quant_inv_scales_dyn;
 
-    dlp_quant_op a_post_quant;
-    dlp_sf_t a_post_quant_scl;
+    // Unified B-matrix quant op (new AOCL DLP API). Serves two mutually-
+    // exclusive paths:
+    //   - WOQ (bf16 x s4/u4): dequant_scale_factors carries the weight scale,
+    //     zero_point the weight zp (u4 only; NULL for s4). Replaces the old
+    //     pre_ops.
+    //   - s8 x s8 symmetric quant: dequant_scale_factors carries the weight
+    //     scale. Replaces the b_scl half of the old post_op_grp.
+    dlp_quant_op_t b_quant_op;
+    dlp_qparam_t b_dequant_scl; // dequant_scale_factors (weight scale)
+    dlp_qparam_t b_quant_zp; // zero_point (WOQ asymmetric u4)
 
     // Set true by the build path when the layer has no post-op metadata
     // (plain matmul with no chain). Cache hits read this and short-circuit
@@ -138,16 +148,18 @@ void init_metadata_holder(dlp_postop_metadata_holder_t *h) {
         h->scale[i].sf = &h->scale_sf[i];
         h->scale[i].zp = &h->scale_zp[i];
     }
-    h->pre_ops.b_scl = &h->pre_op_b_scl;
-    h->pre_ops.b_zp = &h->pre_op_b_zp;
-    h->post_op_grp.a_scl = &h->post_op_grp_a_scl;
-    h->post_op_grp.b_scl = &h->post_op_grp_b_scl;
-    h->a_pre_quant.scl = &h->a_pre_quant_scl;
-    h->a_pre_quant.zp = &h->a_pre_quant_zp;
-    h->a_pre_quant_scl.scale_factor = &h->a_pre_quant_inv_scale;
-    h->a_pre_quant_scl.scale_factor_type = DLP_F32;
-    h->a_post_quant.scl = &h->a_post_quant_scl;
-    h->a_post_quant_scl.scale_factor_type = DLP_F32;
+    // Pin the unified quant-op sub-pointers to the holder's embedded qparam
+    // slots. quant_scale_factors / dequant_scale_factors always point at
+    // their slots; zero_point is (re)pointed per build — set to the embedded
+    // slot for asymmetric paths and NULL for symmetric ones. The scalar
+    // forward inverse-scale backing store is pinned into a_quant_scl.data.
+    h->a_quant_op.quant_scale_factors = &h->a_quant_scl;
+    h->a_quant_op.dequant_scale_factors = &h->a_dequant_scl;
+    h->a_quant_op.zero_point = &h->a_quant_zp;
+    h->a_quant_scl.data = &h->a_quant_inv_scale;
+    h->a_quant_scl.stor_type = DLP_F32;
+    h->b_quant_op.dequant_scale_factors = &h->b_dequant_scl;
+    h->b_quant_op.zero_point = &h->b_quant_zp;
 }
 
 // Map zendnnl data_type_t to DLP_TYPE. File-scope so both the cold-path
@@ -162,6 +174,10 @@ auto to_dlp_type = [](data_type_t dt) -> DLP_TYPE {
         case data_type_t::f16: return DLP_F16;
         case data_type_t::s8: return DLP_S8;
         case data_type_t::u8: return DLP_U8;
+        // WOQ weight types: b_quant_op->src_type must carry the true 4-bit
+        // width or DLP reads the packed nibbles as a wider type.
+        case data_type_t::s4: return DLP_S4;
+        case data_type_t::u4: return DLP_U4;
         default: return DLP_F32;
     }
 };
@@ -218,7 +234,7 @@ void cleanup_dlp_post_op(dlp_metadata_t *metadata) {
     if (!metadata) { return; }
     auto *h = reinterpret_cast<dlp_postop_metadata_holder_t *>(metadata);
     if (!h->is_per_call) { return; }
-    std::free(h->a_pre_quant_inv_scales_dyn);
+    std::free(h->a_quant_inv_scales_dyn);
     std::free(h);
 }
 
@@ -263,23 +279,20 @@ get_postop_metadata_cache() {
 //     collisions on these between weight-tied layers would silently produce
 //     wrong results or segfaults because the patch path only refreshes
 //     mutable pointers into the slot type chosen at build time.
-//   - per-tensor vs per-token/per-channel src_scale shape
-//     (src_scale_nelems > 1): drives the is_sym_quant build-path branch,
-//     which gates whether post_op_grp is wired at all. Mixing the two on
-//     the same key (e.g. prefill with M>1 then decode with M=1 against
-//     the same weights) would otherwise reuse a post_op_grp entry built
-//     for the wrong mode.
+//   - source and weight scale granularity. Per-tensor, per-token/channel,
+//     and per-group scales produce different quant-op topology/outer_dim
+//     values that patch_mutable_fields does not refresh.
 //
 // Intentionally NOT in the signature:
 //   - po.alpha/po.beta (CLIP bounds): patched per-call via holder-owned
 //     eltwise_alpha/eltwise_beta floats.
 //   - po.buff (binary operand pointer): patched per-call.
 //   - M: dynamic batch sizes must not invalidate per-layer cache hits.
-//   - src_scale_nelems exact value (only the per-tensor bit is folded;
-//     the per-call length is refreshed by patch_mutable_fields onto
-//     post_op_grp->a_scl->scale_factor_len for the per-token case).
+//   - scale element counts within the same granularity (the per-call lengths
+//     and group_size are refreshed by patch_mutable_fields).
 std::size_t compute_postop_signature(const matmul_params &lowoha_param,
-        const matmul_data_types &dtypes, int zp_comp_ndim, const void *bias) {
+        const matmul_data_types &dtypes, int zp_comp_ndim, const void *bias,
+        bool is_w4a8, int M, int N) {
     std::size_t sig = 0;
     for (const auto &po : lowoha_param.postop_) {
         sig = sig * 31u + static_cast<std::size_t>(po.po_type);
@@ -307,14 +320,32 @@ std::size_t compute_postop_signature(const matmul_params &lowoha_param,
     sig = sig * 31u + (lowoha_param.quant_params.dst_zp.buff ? 1u : 0u);
     sig = sig * 31u + static_cast<std::size_t>(zp_comp_ndim);
     sig = sig * 31u + (bias ? 1u : 0u);
-    // Per-tensor (nelems == 1) vs per-token/per-channel (nelems > 1)
-    // src_scale shape: drives is_sym_quant, which gates post_op_grp wiring
-    // in the cold path. M is excluded from the key, so without this bit a
-    // layer first cached in one mode would silently serve the other.
+    // Quant scale granularity is structural metadata. In particular,
+    // per-token {M,1} and per-group {M,G} source scales both have more than
+    // one element, but require different a_quant_op outer_dim values. The
+    // same applies to per-channel {1,N} vs per-group {G,N} weight scales.
+    // Hash the category rather than the exact element count so dynamic M and
+    // group-size changes can still hit and use the mutable-field refresh path.
+    const auto scale_layout = [](size_t nelems, int outer_dim) {
+        if (nelems <= 1) return 0u; // per-tensor
+        if (nelems == static_cast<size_t>(outer_dim)) {
+            return 1u; // per-token (A) / per-channel (B)
+        }
+        return 2u; // per-group
+    };
     sig = sig * 31u
-            + ((get_num_elements(lowoha_param.quant_params.src_scale.dims) > 1)
-                            ? 1u
-                            : 0u);
+            + scale_layout(
+                    get_num_elements(lowoha_param.quant_params.src_scale.dims),
+                    M);
+    sig = sig * 31u
+            + scale_layout(
+                    get_num_elements(lowoha_param.quant_params.wei_scale.dims),
+                    N);
+    // W4A8 forces the sym-quant wiring even at a collapsed (1-element)
+    // source scale; a genuine s8s8 layer with the same collapsed scale on
+    // the same key wires the non-sym path, so the two must not share a
+    // holder.
+    sig = sig * 31u + (is_w4a8 ? 1u : 0u);
     return sig;
 }
 
@@ -456,56 +487,46 @@ static void setup_dlp_postops(dlp_metadata_t *md,
     }
 }
 
-// Helper function to setup pre-ops for WOQ (Weight-Only Quantization).
-// pre_ops.b_scl / b_zp are pre-wired by init_metadata_holder() at the
-// holder's embedded buffers; this function fills them in.
+// Helper function to set up WOQ (Weight-Only Quantization) metadata.
+// b_quant_op->dequant_scale_factors / zero_point are pre-wired by
+// init_metadata_holder() at the holder's embedded buffers; this function
+// fills them in.
 static void setup_woq_pre_ops(dlp_metadata_t *dlp_metadata,
         dlp_postop_metadata_holder_t *h, const matmul_params &lowoha_param,
         int64_t K, int64_t N, data_type_t wei_dt) {
-    dlp_metadata->pre_ops = &h->pre_ops;
+    // WOQ (bf16 x s4/u4) now flows through the unified b_quant_op: the low-
+    // precision weight is dequantized up to the BF16 compute domain using
+    // dequant_scale_factors (+ zero_point for asymmetric u4). Replaces the
+    // old dlp_metadata->pre_ops path.
+    dlp_metadata->b_quant_op = &h->b_quant_op;
 
     const auto &wei_scale = lowoha_param.quant_params.wei_scale;
     const auto &wei_zp = lowoha_param.quant_params.wei_zp;
 
-    // Setup weight scale factor (b_scl pre-wired by init_metadata_holder).
-    size_t scale_len = get_num_elements(wei_scale.dims);
-    dlp_metadata->pre_ops->b_scl->scale_factor
-            = const_cast<void *>(wei_scale.buff);
-    dlp_metadata->pre_ops->b_scl->scale_factor_len = scale_len;
-    dlp_metadata->pre_ops->b_scl->scale_factor_type
-            = (wei_scale.dt == data_type_t::bf16) ? DLP_BF16 : DLP_F32;
+    // DEQUANTIZE: B is expanded from s4/u4 up to bf16 before accumulation, so
+    // DLP routes this metadata through the pre-op list. The pre-op translator
+    // rejects any other kind (dlp_gemm_translate_to_pre_ops_list).
+    dlp_metadata->b_quant_op->quant_op_kind = DLP_QUANT_OP_DEQUANTIZE;
+    dlp_metadata->b_quant_op->src_type = to_dlp_type(wei_dt);
+    dlp_metadata->b_quant_op->dst_type = DLP_BF16;
+    // WOQ never forward-quantizes B; only the dequant direction is used.
+    dlp_metadata->b_quant_op->quant_scale_factors = nullptr;
 
-    // Setup weight zero-point. b_zp is pre-wired by init_metadata_holder
-    // at the holder's embedded buffer; the explicit re-assignment below
-    // documents which holder field b_zp targets in the u4 path. The else
-    // branch nulls b_zp for non-u4 weights.
-    if (wei_dt == data_type_t::u4) {
-        dlp_metadata->pre_ops->b_zp = &h->pre_op_b_zp;
-        size_t zp_elements = get_num_elements(wei_zp.dims);
-        dlp_metadata->pre_ops->b_zp->zero_point_len = zp_elements;
-        dlp_metadata->pre_ops->b_zp->zero_point
-                = const_cast<void *>(wei_zp.buff);
-        dlp_metadata->pre_ops->b_zp->zero_point_type
-                = wei_zp.dt == data_type_t::s8 ? DLP_S8 : DLP_BF16;
-    } else {
-        dlp_metadata->pre_ops->b_zp = nullptr;
-    }
-
-    dlp_metadata->pre_ops->seq_length = 1;
-
-    // Determine group_size from scale dimensions
-    // wei_scale.dims determines granularity:
-    //   - Per-tensor:  dims = {} or {1}     → group_size = K
-    //   - Per-channel: dims = {1, N}        → group_size = K
-    //   - Per-group:   dims = {G, N}        → group_size = K / G
-    int64_t group_size = K; // Default per-tensor
+    // Determine group_size and granularity from wei_scale.dims:
+    //   - Per-tensor:  dims = {} or {1}     → group_size = K, PER_TENSOR
+    //   - Per-channel: dims = {N} or {1, N} → group_size = K, PER_CHANNEL
+    //   - Per-group:   dims = {G, N}        → group_size = K / G, PER_GROUP
+    int64_t group_size = K; // Default per-tensor / per-channel (single K group)
+    DLP_PARAM_DIM_TYPE outer_dim = DLP_PARAM_DIM_PER_TENSOR;
     const auto &dims = wei_scale.dims;
+    const size_t scale_len = get_num_elements(wei_scale.dims);
     if (!dims.empty() && !(dims.size() == 1 && dims[0] == 1)) {
-        // Not per-tensor, check for per-group
         if (dims.size() == 2 && dims[1] == N && dims[0] > 1) {
             group_size = K / dims[0]; // Per-group: dims = {G, N}
+            outer_dim = DLP_PARAM_DIM_PER_GROUP;
+        } else {
+            outer_dim = DLP_PARAM_DIM_PER_CHANNEL; // dims = {N} or {1, N}
         }
-        // Per-channel (dims={N} or {1,N}) keeps group_size = K
     }
 
     // Validation: group_size must divide K evenly
@@ -513,12 +534,36 @@ static void setup_woq_pre_ops(dlp_metadata_t *dlp_metadata,
         log_error("WOQ: group_size (", group_size, ") must divide K (", K,
                 ") evenly");
         group_size = K; // Fallback to per-tensor
+        outer_dim = DLP_PARAM_DIM_PER_TENSOR;
+    }
+    dlp_metadata->b_quant_op->group_size = static_cast<int>(group_size);
+
+    // Weight dequant scale (dequant_scale_factors slot pre-wired by
+    // init_metadata_holder).
+    dlp_metadata->b_quant_op->dequant_scale_factors->data
+            = const_cast<void *>(wei_scale.buff);
+    dlp_metadata->b_quant_op->dequant_scale_factors->len = scale_len;
+    dlp_metadata->b_quant_op->dequant_scale_factors->stor_type
+            = (wei_scale.dt == data_type_t::bf16) ? DLP_BF16 : DLP_F32;
+    dlp_metadata->b_quant_op->dequant_scale_factors->outer_dim = outer_dim;
+
+    // Weight zero-point (asymmetric u4 only). zero_point slot is pre-wired by
+    // init_metadata_holder; the explicit re-assignment documents the u4 path
+    // and the else branch nulls it for symmetric (s4) weights.
+    if (wei_dt == data_type_t::u4) {
+        dlp_metadata->b_quant_op->zero_point = &h->b_quant_zp;
+        dlp_metadata->b_quant_op->zero_point->data
+                = const_cast<void *>(wei_zp.buff);
+        dlp_metadata->b_quant_op->zero_point->len
+                = get_num_elements(wei_zp.dims);
+        dlp_metadata->b_quant_op->zero_point->stor_type
+                = (wei_zp.dt == data_type_t::s8) ? DLP_S8 : DLP_BF16;
+        dlp_metadata->b_quant_op->zero_point->outer_dim = outer_dim;
+    } else {
+        dlp_metadata->b_quant_op->zero_point = nullptr;
     }
 
-    dlp_metadata->pre_ops->group_size = static_cast<int>(group_size);
-
-    apilog_info("WOQ: scale_len=", get_num_elements(wei_scale.dims),
-            ", group_size=", group_size);
+    apilog_info("WOQ: scale_len=", scale_len, ", group_size=", group_size);
 }
 
 // Patch the per-call mutable fields onto a previously-built cached metadata.
@@ -538,42 +583,27 @@ static void setup_woq_pre_ops(dlp_metadata_t *dlp_metadata,
 //                                             /beta pointers were wired to
 //                                             those holder floats at build
 //                                             time and remain stable)
-//   - a_pre_quant->scl->scale_factor (val)  : 1/src_scale[0] for dyn-quant
-//   - a_post_quant->scl->scale_factor (ptr) : per-call src_scale buffer
-//   - a_pre_quant->zp->zero_point (ptr)     : per-call src_zp buffer for
+//   - a_quant_op->quant_scale_factors->data : 1/src_scale[0] for dyn-quant
+//   - a_quant_op->dequant_scale_factors->{data, len, stor_type}
+//                                           : per-call src_scale buffer
+//   - a_quant_op->zero_point->{data, len, stor_type}
+//                                           : per-call src_zp buffer for
 //                                             dyn-quant asymmetric path
 //                                             (reorder_quant_buffers_t owns
 //                                             this and frees it at scope
 //                                             exit, so the cold-path-cached
-//                                             pointer is dangling on hits;
-//                                             a_post_quant->zp aliases this
-//                                             struct in the cold path, so
-//                                             a single patch covers both)
-//   - post_op_grp->group_size               : M-dependent for sym_quant
-//   - post_op_grp->a_scl->{scale_factor,
-//                          scale_factor_len,
-//                          scale_factor_type}: per-call src_scale buffer
-//                                              for sym_quant; len is
-//                                              M-dependent for per-token
-//                                              quant
-//   - post_op_grp->b_scl->{scale_factor,
-//                          scale_factor_len,
-//                          scale_factor_type}: per-call wei_scale buffer
-//                                              for sym_quant (defensive
-//                                              parity with a_scl)
-//   - pre_ops->b_scl->{scale_factor,
-//                      scale_factor_len,
-//                      scale_factor_type}    : per-call wei_scale buffer for
-//                                              WOQ (Weight-Only Quant);
-//                                              setup_woq_pre_ops wires this
-//                                              from a per-call user tensor
-//                                              that integrators re-allocate
-//                                              every forward
-//   - pre_ops->b_zp->{zero_point,
-//                     zero_point_len,
-//                     zero_point_type}       : per-call wei_zp buffer for
-//                                              WOQ-asymmetric (u4 only);
-//                                              same lifecycle as b_scl above
+//                                             pointer is dangling on hits)
+//   - a_quant_op->{group_size, dequant_scale_factors->{data, len, stor_type}}
+//                                           : M-dependent sym-quant source
+//                                             metadata
+//   - b_quant_op->{group_size, dequant_scale_factors->{data, len, stor_type}}
+//                                           : per-call sym-quant weight
+//                                             metadata
+//   - b_quant_op->dequant_scale_factors->{data, len, stor_type}
+//                                           : per-call WOQ weight-scale buffer
+//   - b_quant_op->zero_point->{data, len, stor_type}
+//                                           : per-call WOQ-asymmetric (u4)
+//                                             weight-zp buffer
 //   - scale[i].sf->{scale_factor,
 //                   scale_factor_len,
 //                   scale_factor_type}       : per-call src/wei/dst_scale
@@ -601,7 +631,7 @@ static void setup_woq_pre_ops(dlp_metadata_t *dlp_metadata,
 static void patch_mutable_fields(dlp_metadata_t *md,
         dlp_postop_metadata_holder_t *h, const matmul_params &lowoha_param,
         const void *bias, const matmul_data_types &dtypes, int M, int N, int K,
-        int32_t *zp_comp_acc, int zp_comp_ndim) {
+        int32_t *zp_comp_acc, int zp_comp_ndim, bool is_w4a8) {
     // NOTE: keep these flag definitions in lockstep with the build path in
     // create_dlp_post_op(). The hit path mirrors the build path's per-call
     // mutable-field updates, so any divergence in classification (especially
@@ -621,7 +651,8 @@ static void patch_mutable_fields(dlp_metadata_t *md,
                                          || dtypes.src == data_type_t::f32)
             && is_int8 && !is_bf16_f32_per_token_sym;
     bool is_sym_quant = is_int8 && dtypes.src == data_type_t::s8
-            && !lowoha_param.quant_params.src_zp.buff && src_scale_nelems > 1
+            && !lowoha_param.quant_params.src_zp.buff
+            && (src_scale_nelems > 1 || is_w4a8)
             && (dtypes.dst == data_type_t::f32
                     || dtypes.dst == data_type_t::bf16);
 
@@ -716,18 +747,20 @@ static void patch_mutable_fields(dlp_metadata_t *md,
     }
 
     // Dynamic source quantization (BF16/F32 → INT8): the inverse src_scale
-    // value (stored in the holder's embedded float) and the post-quant scale
-    // factor pointer are recomputed/repointed per call.
+    // value (stored in the holder's embedded float) and the dequant scale
+    // factor pointer are recomputed/repointed per call. Now flows through the
+    // unified a_quant_op: quant_scale_factors is the forward inverse-scale,
+    // dequant_scale_factors the src (post) scale, zero_point the src zp.
     //
-    // a_post_quant->scl->{scale_factor_len,scale_factor_type} must be refreshed
-    // alongside scale_factor: compute_postop_signature folds dtypes.src/wei/dst
-    // and the quant-buffer presence booleans, but NOT the quant buffers' own
-    // dtypes (src_scale.dt, etc.). Two calls with identical matmul-level dtypes
-    // but different src_scale.dt (e.g. f32 vs bf16 src_scale) share a cache key
-    // and would otherwise reuse the first call's stale scale_factor_type, making
+    // dequant_scale_factors->{len,stor_type} must be refreshed alongside
+    // data: compute_postop_signature folds dtypes.src/wei/dst and the quant-
+    // buffer presence booleans, but NOT the quant buffers' own dtypes
+    // (src_scale.dt, etc.). Two calls with identical matmul-level dtypes but
+    // different src_scale.dt (e.g. f32 vs bf16 src_scale) share a cache key
+    // and would otherwise reuse the first call's stale stor_type, making
     // AOCL reinterpret the live buffer with the wrong storage type.
     //
-    // The pre-quant inverse scale must also be read through read_and_cast<float>
+    // The forward inverse scale must also be read through read_and_cast<float>
     // with the same 1e-20f clamp the cold path uses, otherwise a bf16 src_scale
     // on a hit would be misread as a single f32 (corrupted inverse) — main #382
     // added that numerical-safety contract and the hit path must mirror it.
@@ -737,88 +770,93 @@ static void patch_mutable_fields(dlp_metadata_t *md,
                 src_scale_dt,
                 /*index=*/0);
         if (s < 1e-20f) { s = 1e-20f; }
-        *static_cast<float *>(md->a_pre_quant->scl->scale_factor) = 1.0f / s;
-        md->a_post_quant->scl->scale_factor
+        *static_cast<float *>(md->a_quant_op->quant_scale_factors->data)
+                = 1.0f / s;
+        md->a_quant_op->dequant_scale_factors->data
                 = const_cast<void *>(lowoha_param.quant_params.src_scale.buff);
-        md->a_post_quant->scl->scale_factor_len = 1;
-        md->a_post_quant->scl->scale_factor_type = to_dlp_type(src_scale_dt);
+        md->a_quant_op->dequant_scale_factors->len = 1;
+        md->a_quant_op->dequant_scale_factors->stor_type
+                = to_dlp_type(src_scale_dt);
 
         // Asymmetric dyn-quant: src_zp.buff is freshly allocated per call by
         // reorder_quant_buffers_t (RAII, freed at the matmul wrapper's scope
         // exit). The cold-path-cached zero_point pointer therefore dangles on
-        // every hit — repoint it from the live src_zp buffer. The cold path
-        // aliases a_post_quant->zp = a_pre_quant->zp, so patching the shared
-        // struct once covers both. zero_point_len/type are stable for the
-        // dyn-quant path but cheap to refresh defensively.
-        if (lowoha_param.quant_params.src_zp.buff && md->a_pre_quant->zp) {
-            md->a_pre_quant->zp->zero_point
+        // every hit — repoint it from the live src_zp buffer. len/stor_type are
+        // stable for the dyn-quant path but cheap to refresh defensively.
+        if (lowoha_param.quant_params.src_zp.buff
+                && md->a_quant_op->zero_point) {
+            md->a_quant_op->zero_point->data
                     = const_cast<void *>(lowoha_param.quant_params.src_zp.buff);
-            md->a_pre_quant->zp->zero_point_len = 1;
-            md->a_pre_quant->zp->zero_point_type
+            md->a_quant_op->zero_point->len = 1;
+            md->a_quant_op->zero_point->stor_type
                     = to_dlp_type(lowoha_param.quant_params.src_zp.dt);
         }
     }
 
-    // Symmetric INT8 quant: post_op_grp->group_size depends on M, which is
-    // intentionally excluded from the cache key. Recompute on every hit.
-    // post_op_grp->a_scl / b_scl point at per-call user buffers and (for
-    // per-token a_scl) carry an M-dependent length; the cold-path-cached
-    // values dangle on hits with a different M or a fresh src_scale buffer.
-    // The per-tensor vs per-token distinction itself is folded into the
-    // signature, so on hit we know is_sym_quant matches the cold-path mode
-    // (post_op_grp is non-null iff the cold path wired it).
-    if (is_sym_quant && md->post_op_grp) {
+    // Symmetric INT8 quant: group_size depends on M, which is intentionally
+    // excluded from the cache key. Recompute on every hit. a_quant_op /
+    // b_quant_op dequant_scale_factors point at per-call user buffers and
+    // (for per-token a-scale) carry an M-dependent length; the cold-path-
+    // cached values dangle on hits with a different M or a fresh src_scale
+    // buffer. The per-tensor vs per-token distinction itself is folded into
+    // the signature, so on hit we know is_sym_quant matches the cold-path mode
+    // (a_quant_op is non-null iff the cold path wired it).
+    if (is_sym_quant && md->a_quant_op) {
         int64_t src_group_size = (src_scale_nelems == static_cast<size_t>(M))
                 ? K
                 : K / (static_cast<int64_t>(src_scale_nelems) / M);
-        md->post_op_grp->group_size = static_cast<int>(src_group_size);
+        md->a_quant_op->group_size = static_cast<int>(src_group_size);
 
-        if (md->post_op_grp->a_scl) {
-            md->post_op_grp->a_scl->scale_factor = const_cast<void *>(
+        if (md->a_quant_op->dequant_scale_factors) {
+            md->a_quant_op->dequant_scale_factors->data = const_cast<void *>(
                     lowoha_param.quant_params.src_scale.buff);
-            md->post_op_grp->a_scl->scale_factor_len = src_scale_nelems;
-            md->post_op_grp->a_scl->scale_factor_type
+            md->a_quant_op->dequant_scale_factors->len = src_scale_nelems;
+            md->a_quant_op->dequant_scale_factors->stor_type
                     = to_dlp_type(lowoha_param.quant_params.src_scale.dt);
         }
 
-        if (md->post_op_grp->b_scl) {
+        if (md->b_quant_op && md->b_quant_op->dequant_scale_factors) {
             size_t wei_scale_nelems = get_num_elements(
                     lowoha_param.quant_params.wei_scale.dims);
-            md->post_op_grp->b_scl->scale_factor = const_cast<void *>(
+            md->b_quant_op->group_size = static_cast<int>(src_group_size);
+            md->b_quant_op->dequant_scale_factors->data = const_cast<void *>(
                     lowoha_param.quant_params.wei_scale.buff);
-            md->post_op_grp->b_scl->scale_factor_len = wei_scale_nelems;
-            md->post_op_grp->b_scl->scale_factor_type
+            md->b_quant_op->dequant_scale_factors->len = wei_scale_nelems;
+            md->b_quant_op->dequant_scale_factors->stor_type
                     = to_dlp_type(lowoha_param.quant_params.wei_scale.dt);
         }
     }
 
-    // WOQ (Weight-Only Quantization) pre-ops refresh on cache hit.
-    // setup_woq_pre_ops on the cold path wires pre_ops->b_scl->scale_factor
-    // from wei_scale.buff (and pre_ops->b_zp->zero_point from wei_zp.buff
-    // for u4 weights). Both are per-call buffers in integrator paths like
-    // zentorch — every forward allocates fresh quant tensors — so the
-    // cold-path-cached pointers dangle on every subsequent hit and the
-    // kernel reads stale (or freed) memory. Repoint from the live params.
+    // WOQ (Weight-Only Quantization) b_quant_op refresh on cache hit.
+    // setup_woq_pre_ops on the cold path wires b_quant_op->
+    // dequant_scale_factors->data from wei_scale.buff (and zero_point->data
+    // from wei_zp.buff for u4 weights). Both are per-call buffers in
+    // integrator paths like zentorch — every forward allocates fresh quant
+    // tensors — so the cold-path-cached pointers dangle on every subsequent
+    // hit and the kernel reads stale (or freed) memory. Repoint from the live
+    // params.
     //
-    // pre_ops->b_scl / b_zp are pre-wired by init_metadata_holder to the
-    // holder's embedded dlp_sf_t / dlp_zp_t slots, so we patch into those
-    // stable sub-structs rather than swap the slot pointers. The presence
-    // check on the slot pointer guards both "no WOQ" (md->pre_ops is null)
-    // and the u4-vs-s4 b_zp distinction (b_zp is null for s4).
-    if (md->pre_ops && md->pre_ops->b_scl
+    // dequant_scale_factors / zero_point are pre-wired by init_metadata_holder
+    // to the holder's embedded dlp_qparam_t slots, so we patch into those
+    // stable sub-structs rather than swap the slot pointers. The sym-quant
+    // path also uses b_quant_op and is refreshed above, so the !is_sym_quant
+    // guard keeps it from being double-written here.
+    if (md->b_quant_op && !is_sym_quant && md->b_quant_op->dequant_scale_factors
             && lowoha_param.quant_params.wei_scale.buff) {
         const auto &wei_scale = lowoha_param.quant_params.wei_scale;
-        md->pre_ops->b_scl->scale_factor = const_cast<void *>(wei_scale.buff);
-        md->pre_ops->b_scl->scale_factor_len = get_num_elements(wei_scale.dims);
-        md->pre_ops->b_scl->scale_factor_type
+        md->b_quant_op->dequant_scale_factors->data
+                = const_cast<void *>(wei_scale.buff);
+        md->b_quant_op->dequant_scale_factors->len
+                = get_num_elements(wei_scale.dims);
+        md->b_quant_op->dequant_scale_factors->stor_type
                 = (wei_scale.dt == data_type_t::bf16) ? DLP_BF16 : DLP_F32;
     }
-    if (md->pre_ops && md->pre_ops->b_zp
+    if (md->b_quant_op && !is_sym_quant && md->b_quant_op->zero_point
             && lowoha_param.quant_params.wei_zp.buff) {
         const auto &wei_zp = lowoha_param.quant_params.wei_zp;
-        md->pre_ops->b_zp->zero_point = const_cast<void *>(wei_zp.buff);
-        md->pre_ops->b_zp->zero_point_len = get_num_elements(wei_zp.dims);
-        md->pre_ops->b_zp->zero_point_type
+        md->b_quant_op->zero_point->data = const_cast<void *>(wei_zp.buff);
+        md->b_quant_op->zero_point->len = get_num_elements(wei_zp.dims);
+        md->b_quant_op->zero_point->stor_type
                 = (wei_zp.dt == data_type_t::s8) ? DLP_S8 : DLP_BF16;
     }
 
@@ -910,7 +948,8 @@ static void patch_mutable_fields(dlp_metadata_t *md,
 dlp_metadata_t *create_dlp_post_op(const matmul_params &lowoha_param,
         const void *bias, const matmul_data_types &dtypes, int N, int K, int M,
         int32_t *zp_comp_acc, int zp_comp_ndim,
-        zendnnl::ops::matmul_algo_t kernel, const void *weight_ptr) {
+        zendnnl::ops::matmul_algo_t kernel, const void *weight_ptr,
+        bool is_w4a8) {
     // Normalize zp_comp presence at the API boundary: a zp_comp slot is
     // present iff BOTH the dimensionality and the buffer are non-null.
     // Downstream sites disagree on what "present" means today — the
@@ -943,7 +982,7 @@ dlp_metadata_t *create_dlp_post_op(const matmul_params &lowoha_param,
 
     // Build the cache key.
     const std::size_t sig = compute_postop_signature(
-            lowoha_param, dtypes, zp_comp_ndim, bias);
+            lowoha_param, dtypes, zp_comp_ndim, bias, is_w4a8, M, N);
     const Key_matmul key(/*TransB=*/false, static_cast<unsigned int>(K),
             static_cast<unsigned int>(N),
             /*ldb=*/0, weight_ptr, static_cast<uint32_t>(kernel), sig);
@@ -954,7 +993,8 @@ dlp_metadata_t *create_dlp_post_op(const matmul_params &lowoha_param,
     if (cache.try_get(key, cached_holder)) {
         if (cached_holder->no_metadata) { return nullptr; }
         patch_mutable_fields(&cached_holder->metadata, cached_holder,
-                lowoha_param, bias, dtypes, M, N, K, zp_comp_acc, zp_comp_ndim);
+                lowoha_param, bias, dtypes, M, N, K, zp_comp_acc, zp_comp_ndim,
+                is_w4a8);
         return &cached_holder->metadata;
     }
 
@@ -976,8 +1016,8 @@ dlp_metadata_t *create_dlp_post_op(const matmul_params &lowoha_param,
 
     size_t src_scale_nelems
             = get_num_elements(lowoha_param.quant_params.src_scale.dims);
-    // bf16/f32 + s8 with per-token symmetric scales: per-row a_pre_quant /
-    // a_post_quant carry the src scales, while the weight scale remains a SCALE op.
+    // bf16/f32 + s8 with per-token symmetric scales: a_quant_op carries the
+    // per-row src scales, while the weight scale remains a SCALE post-op.
     const bool is_bf16_f32_per_token_sym = is_int8
             && (dtypes.src == data_type_t::bf16
                     || dtypes.src == data_type_t::f32)
@@ -990,15 +1030,22 @@ dlp_metadata_t *create_dlp_post_op(const matmul_params &lowoha_param,
                                          || dtypes.src == data_type_t::f32)
             && is_int8 && !is_bf16_f32_per_token_sym;
 
-    // post_op_grp is consumed by s8s8 *_sym_quant GEMMs; bf16s8/f32s8 paths use
-    // a_pre_quant/a_post_quant and regular SCALE post-ops instead.
+    // s8s8 *_sym_quant GEMMs consume a_quant_op / b_quant_op; bf16s8/f32s8
+    // paths use a_quant_op and regular SCALE post-ops instead.
+    // W4A8 (is_w4a8) always dispatches the s8s8 *_sym_quant GEMM, which
+    // mandates a_quant_op/b_quant_op group metadata even when the broadcast
+    // source scale collapses to a single element (M==1 with a single weight
+    // group). Force the sym-quant wiring in that case; the generic
+    // src_scale_nelems>1 gate would otherwise route it through the SCALE
+    // post-op path and leave the GEMM without its required quant metadata.
     const bool is_sym_quant = is_int8 && dtypes.src == data_type_t::s8
-            && !lowoha_param.quant_params.src_zp.buff && src_scale_nelems > 1
+            && !lowoha_param.quant_params.src_zp.buff
+            && (src_scale_nelems > 1 || is_w4a8)
             && (dtypes.dst == data_type_t::f32
                     || dtypes.dst == data_type_t::bf16);
 
-    // Count INT8 scale post-ops (s8 sym_quant scales go via post_op_grp; bf16/f32
-    // per-token source scales go via a_pre_quant/a_post_quant).
+    // Count INT8 scale post-ops (s8 sym-quant scales go via quant metadata;
+    // bf16/f32 per-token source scales go via a_quant_op).
     int int8_scale_count = 0;
     if (is_int8) {
         if (lowoha_param.quant_params.src_scale.buff && !is_non_quant_src_int8
@@ -1115,7 +1162,7 @@ dlp_metadata_t *create_dlp_post_op(const matmul_params &lowoha_param,
     //
     // Two flavors share this block:
     //   - Scalar (is_non_quant_src_int8): single inverse-scale float fits in
-    //     the holder's pre-wired a_pre_quant_inv_scale slot; the holder is
+    //     the holder's pre-wired a_quant_inv_scale slot; the holder is
     //     cached and reused like every other path.
     //   - Per-token-sym (is_bf16_f32_per_token_sym, from main #382): inverse
     //     scales are an M-element array whose length is only known at call
@@ -1127,27 +1174,39 @@ dlp_metadata_t *create_dlp_post_op(const matmul_params &lowoha_param,
     //     is malloc'd into the holder, and the kernel call site's matching
     //     cleanup_dlp_post_op() frees both at the end of the matmul.
     if (is_non_quant_src_int8 || is_bf16_f32_per_token_sym) {
-        dlp_metadata->a_pre_quant = &new_holder->a_pre_quant;
-        dlp_metadata->a_post_quant = &new_holder->a_post_quant;
+        // Unified A quant op (new AOCL DLP API): forward-quant (bf16/f32 -> s8)
+        // via quant_scale_factors (inverse-scale), dequant of the s32
+        // accumulator via dequant_scale_factors (src scale), src zp via
+        // zero_point (NULL == symmetric). Replaces the old a_pre_quant +
+        // a_post_quant pair.
+        dlp_metadata->a_quant_op = &new_holder->a_quant_op;
+        // QUANTIZE: A is forward-quantized to s8 and the accumulator is corrected
+        // afterwards. dlp_gemm_translate_adquantize_post_op rejects other kinds.
+        dlp_metadata->a_quant_op->quant_op_kind = DLP_QUANT_OP_QUANTIZE;
+        // quant/dequant scale-factor slots pre-wired by init_metadata_holder.
+        dlp_metadata->a_quant_op->quant_scale_factors
+                = &new_holder->a_quant_scl;
+        dlp_metadata->a_quant_op->dequant_scale_factors
+                = &new_holder->a_dequant_scl;
+
+        const DLP_PARAM_DIM_TYPE a_dim = is_bf16_f32_per_token_sym
+                ? DLP_PARAM_DIM_PER_TOKEN
+                : DLP_PARAM_DIM_PER_TENSOR;
+
         if (lowoha_param.quant_params.src_zp.buff) {
-            // a_pre_quant.zp is pre-wired by init_metadata_holder at the
-            // holder's embedded a_pre_quant_zp; the explicit re-assignment
-            // documents which holder field zp targets in the asymmetric path.
-            // The else branch nulls zp for the symmetric variant.
-            dlp_metadata->a_pre_quant->zp = &new_holder->a_pre_quant_zp;
-            dlp_metadata->a_pre_quant->zp->zero_point
+            // Asymmetric: zero_point slot pre-wired by init_metadata_holder; the
+            // explicit re-assignment documents the target. The else branch nulls
+            // zero_point for the symmetric variant (replaces the old `symmetric`
+            // bool).
+            dlp_metadata->a_quant_op->zero_point = &new_holder->a_quant_zp;
+            dlp_metadata->a_quant_op->zero_point->data
                     = const_cast<void *>(lowoha_param.quant_params.src_zp.buff);
-            dlp_metadata->a_pre_quant->zp->zero_point_len = 1;
-            dlp_metadata->a_pre_quant->zp->zero_point_type
+            dlp_metadata->a_quant_op->zero_point->len = 1;
+            dlp_metadata->a_quant_op->zero_point->stor_type
                     = to_dlp_type(lowoha_param.quant_params.src_zp.dt);
-            dlp_metadata->a_pre_quant->symmetric = false;
-            dlp_metadata->a_post_quant->symmetric = false;
-            dlp_metadata->a_post_quant->zp = dlp_metadata->a_pre_quant->zp;
+            dlp_metadata->a_quant_op->zero_point->outer_dim = a_dim;
         } else {
-            dlp_metadata->a_pre_quant->symmetric = true;
-            dlp_metadata->a_pre_quant->zp = nullptr;
-            dlp_metadata->a_post_quant->symmetric = true;
-            dlp_metadata->a_post_quant->zp = nullptr;
+            dlp_metadata->a_quant_op->zero_point = nullptr;
         }
         if (!lowoha_param.quant_params.src_scale.buff) {
             log_error("BF16-INT8: src_scale buffer is null");
@@ -1166,12 +1225,9 @@ dlp_metadata_t *create_dlp_post_op(const matmul_params &lowoha_param,
                 ? static_cast<md_t>(src_scale_nelems)
                 : 1;
 
-        dlp_metadata->a_pre_quant->group_size = 0;
-        dlp_metadata->a_post_quant->group_size = 0;
-        dlp_metadata->a_pre_quant->src_type = to_dlp_type(dtypes.src);
-        dlp_metadata->a_pre_quant->dst_type = DLP_S8;
-        dlp_metadata->a_post_quant->src_type = to_dlp_type(dtypes.src);
-        dlp_metadata->a_post_quant->dst_type = DLP_S8;
+        dlp_metadata->a_quant_op->group_size = 0;
+        dlp_metadata->a_quant_op->src_type = to_dlp_type(dtypes.src);
+        dlp_metadata->a_quant_op->dst_type = DLP_S8;
         if (is_bf16_f32_per_token_sym) {
             // Per-token-sym: M inverse scales malloc'd into the holder's
             // heap-owned slot. Mark the holder per-call so cleanup at the
@@ -1179,10 +1235,10 @@ dlp_metadata_t *create_dlp_post_op(const matmul_params &lowoha_param,
             // The cache.add at the tail of this function is gated on
             // !is_per_call, so this holder is never inserted into the cache.
             new_holder->is_per_call = true;
-            new_holder->a_pre_quant_inv_scales_dyn = static_cast<float *>(
+            new_holder->a_quant_inv_scales_dyn = static_cast<float *>(
                     std::malloc(static_cast<size_t>(src_quant_scale_len)
                             * sizeof(float)));
-            if (!new_holder->a_pre_quant_inv_scales_dyn) {
+            if (!new_holder->a_quant_inv_scales_dyn) {
                 log_error(
                         "BF16-INT8 per-token-sym: failed to allocate "
                         "inv_scales");
@@ -1197,11 +1253,11 @@ dlp_metadata_t *create_dlp_post_op(const matmul_params &lowoha_param,
                         lowoha_param.quant_params.src_scale.buff, src_scale_dt,
                         static_cast<size_t>(si));
                 if (s < 1e-20f) { s = 1e-20f; }
-                new_holder->a_pre_quant_inv_scales_dyn[si] = 1.0f / s;
+                new_holder->a_quant_inv_scales_dyn[si] = 1.0f / s;
             }
-            dlp_metadata->a_pre_quant->scl->scale_factor
-                    = new_holder->a_pre_quant_inv_scales_dyn;
-            dlp_metadata->a_pre_quant->scl->scale_factor_len
+            dlp_metadata->a_quant_op->quant_scale_factors->data
+                    = new_holder->a_quant_inv_scales_dyn;
+            dlp_metadata->a_quant_op->quant_scale_factors->len
                     = src_quant_scale_len;
         } else {
             // Scalar (is_non_quant_src_int8): single inverse scale written into
@@ -1212,44 +1268,76 @@ dlp_metadata_t *create_dlp_post_op(const matmul_params &lowoha_param,
                     lowoha_param.quant_params.src_scale.buff, src_scale_dt,
                     /*index=*/0);
             if (s < 1e-20f) { s = 1e-20f; }
-            *static_cast<float *>(dlp_metadata->a_pre_quant->scl->scale_factor)
+            *static_cast<float *>(
+                    dlp_metadata->a_quant_op->quant_scale_factors->data)
                     = 1.0f / s;
-            dlp_metadata->a_pre_quant->scl->scale_factor_len = 1;
+            dlp_metadata->a_quant_op->quant_scale_factors->len = 1;
         }
-        dlp_metadata->a_pre_quant->scl->scale_factor_type = DLP_F32;
-        dlp_metadata->a_post_quant->scl->scale_factor
+        dlp_metadata->a_quant_op->quant_scale_factors->stor_type = DLP_F32;
+        dlp_metadata->a_quant_op->quant_scale_factors->outer_dim = a_dim;
+
+        dlp_metadata->a_quant_op->dequant_scale_factors->data
                 = const_cast<void *>(lowoha_param.quant_params.src_scale.buff);
-        dlp_metadata->a_post_quant->scl->scale_factor_len = src_quant_scale_len;
-        dlp_metadata->a_post_quant->scl->scale_factor_type
+        dlp_metadata->a_quant_op->dequant_scale_factors->len
+                = src_quant_scale_len;
+        dlp_metadata->a_quant_op->dequant_scale_factors->stor_type
                 = to_dlp_type(src_scale_dt);
+        dlp_metadata->a_quant_op->dequant_scale_factors->outer_dim = a_dim;
     }
     if (is_sym_quant) {
         int64_t src_group_size = (src_scale_nelems == static_cast<size_t>(M))
                 ? K
                 : K / (static_cast<int64_t>(src_scale_nelems) / M);
 
-        dlp_metadata->post_op_grp = &new_holder->post_op_grp;
-        // post_op_grp->a_scl and ->b_scl pre-wired by init_metadata_holder.
-        dlp_metadata->post_op_grp->group_size
-                = static_cast<int>(src_group_size);
-        dlp_metadata->post_op_grp->seq_length = 1;
+        // s8 x s8 symmetric quant (new AOCL DLP API): the A-side dequant scale
+        // goes into a_quant_op.dequant_scale_factors, the weight (B) dequant
+        // scale into b_quant_op.dequant_scale_factors. Both are dequant-only
+        // (A and B are already s8, no forward-quant or zero-point). Replaces
+        // the old post_op_grp.
+        const bool a_per_token = (src_scale_nelems == static_cast<size_t>(M));
 
-        dlp_metadata->post_op_grp->a_scl->scale_factor
+        dlp_metadata->a_quant_op = &new_holder->a_quant_op;
+        // QUANTIZE: operands are already s8; the scales only dequantize/correct
+        // the s32 accumulator. Both the grouped post-op translator and the
+        // sym-quant reorder reject any other kind.
+        dlp_metadata->a_quant_op->quant_op_kind = DLP_QUANT_OP_QUANTIZE;
+        dlp_metadata->a_quant_op->src_type = DLP_S8;
+        dlp_metadata->a_quant_op->dst_type = DLP_S8;
+        dlp_metadata->a_quant_op->group_size = static_cast<int>(src_group_size);
+        dlp_metadata->a_quant_op->quant_scale_factors = nullptr;
+        dlp_metadata->a_quant_op->zero_point = nullptr;
+        dlp_metadata->a_quant_op->dequant_scale_factors
+                = &new_holder->a_dequant_scl;
+        dlp_metadata->a_quant_op->dequant_scale_factors->data
                 = const_cast<void *>(lowoha_param.quant_params.src_scale.buff);
-        dlp_metadata->post_op_grp->a_scl->scale_factor_len = src_scale_nelems;
-        dlp_metadata->post_op_grp->a_scl->scale_factor_type
+        dlp_metadata->a_quant_op->dequant_scale_factors->len = src_scale_nelems;
+        dlp_metadata->a_quant_op->dequant_scale_factors->stor_type
                 = to_dlp_type(lowoha_param.quant_params.src_scale.dt);
+        dlp_metadata->a_quant_op->dequant_scale_factors->outer_dim = a_per_token
+                ? DLP_PARAM_DIM_PER_TOKEN
+                : DLP_PARAM_DIM_PER_GROUP;
 
         size_t wei_scale_nelems
                 = get_num_elements(lowoha_param.quant_params.wei_scale.dims);
-        dlp_metadata->post_op_grp->b_scl->scale_factor
-                = const_cast<void *>(lowoha_param.quant_params.wei_scale.buff);
-        dlp_metadata->post_op_grp->b_scl->scale_factor_len = wei_scale_nelems;
-        dlp_metadata->post_op_grp->b_scl->scale_factor_type
-                = to_dlp_type(lowoha_param.quant_params.wei_scale.dt);
+        const bool b_per_channel = (wei_scale_nelems == static_cast<size_t>(N));
 
-        dlp_metadata->post_op_grp->a_zp = nullptr;
-        dlp_metadata->post_op_grp->b_zp = nullptr;
+        dlp_metadata->b_quant_op = &new_holder->b_quant_op;
+        dlp_metadata->b_quant_op->quant_op_kind = DLP_QUANT_OP_QUANTIZE;
+        dlp_metadata->b_quant_op->src_type = DLP_S8;
+        dlp_metadata->b_quant_op->dst_type = DLP_S8;
+        dlp_metadata->b_quant_op->group_size = static_cast<int>(src_group_size);
+        dlp_metadata->b_quant_op->quant_scale_factors = nullptr;
+        dlp_metadata->b_quant_op->zero_point = nullptr;
+        dlp_metadata->b_quant_op->dequant_scale_factors
+                = &new_holder->b_dequant_scl;
+        dlp_metadata->b_quant_op->dequant_scale_factors->data
+                = const_cast<void *>(lowoha_param.quant_params.wei_scale.buff);
+        dlp_metadata->b_quant_op->dequant_scale_factors->len = wei_scale_nelems;
+        dlp_metadata->b_quant_op->dequant_scale_factors->stor_type
+                = to_dlp_type(lowoha_param.quant_params.wei_scale.dt);
+        dlp_metadata->b_quant_op->dequant_scale_factors->outer_dim
+                = b_per_channel ? DLP_PARAM_DIM_PER_CHANNEL
+                                : DLP_PARAM_DIM_PER_GROUP;
     }
 
     // Wire scale array for INT8 (scale[i].sf and scale[i].zp pre-wired by
@@ -1302,8 +1390,7 @@ dlp_metadata_t *create_dlp_post_op(const matmul_params &lowoha_param,
         matrix_add_index++;
     }
 
-    // For INT8: Add source scale unless it is handled by post_op_grp or
-    // a_pre_quant/a_post_quant.
+    // For INT8: Add source scale unless it is handled by a_quant_op.
     if (is_int8 && lowoha_param.quant_params.src_scale.buff
             && !is_non_quant_src_int8 && !is_sym_quant
             && !is_bf16_f32_per_token_sym) {
@@ -1326,7 +1413,7 @@ dlp_metadata_t *create_dlp_post_op(const matmul_params &lowoha_param,
         scale_index++;
     }
 
-    // For INT8: Add weight scale (skip for sym_quant, handled via post_op_grp)
+    // For INT8: Add weight scale (skip for sym_quant, handled by b_quant_op).
     if (is_int8 && lowoha_param.quant_params.wei_scale.buff && !is_sym_quant) {
         dlp_metadata->seq_vector[op_index++] = SCALE;
         dlp_metadata->scale[scale_index].sf->scale_factor

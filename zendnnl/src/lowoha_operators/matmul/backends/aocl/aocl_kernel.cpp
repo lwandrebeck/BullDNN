@@ -619,8 +619,8 @@ bool reorderAndCacheWeightsSymQuant(Key_matmul key, const void *weights,
         void *&reorder_weights, const int k, const int n, const int ldb,
         const char order, const char trans, char mem_format_b,
         get_reorder_buf_size_sym_quant_func_ptr get_reorder_buf_size,
-        reorder_sym_quant_func_ptr<T> reorder_func,
-        DLP_SYMM_STAT_QUANT *symq_meta, int weight_cache_type) {
+        reorder_sym_quant_func_ptr<T> reorder_func, dlp_metadata_t *symq_meta,
+        int weight_cache_type) {
 
     lru_cache_t<Key_matmul, void *> &matmul_weight_cache
             = get_aocl_symquant_weight_cache();
@@ -636,8 +636,8 @@ bool reorderAndCacheWeightsSymQuant(Key_matmul key, const void *weights,
         apilog_verbose(
                 "[AOCL.reorder symquant] WEIGHT_CACHE_DISABLE — "
                 "out-of-place reorder for s8 weights (GEMM = s8s8_sym_quant)");
-        size_t b_reorder_buf_siz_req = get_reorder_buf_size(
-                order, trans, 'B', k, n, symq_meta, nullptr);
+        size_t b_reorder_buf_siz_req
+                = get_reorder_buf_size(order, trans, 'B', k, n, symq_meta);
         size_t alignment = 64;
         size_t reorder_size
                 = (b_reorder_buf_siz_req + alignment - 1) & ~(alignment - 1);
@@ -648,7 +648,7 @@ bool reorderAndCacheWeightsSymQuant(Key_matmul key, const void *weights,
             return false;
         }
         reorder_func(order, trans, 'B', (T *)weights, (T *)reorder_weights, k,
-                n, ldb, symq_meta, nullptr);
+                n, ldb, symq_meta);
     } else if (weight_cache_type == 1) {
         std::lock_guard<std::mutex> lock(weight_cache_mutex);
         void *cached_ptr = nullptr;
@@ -656,14 +656,14 @@ bool reorderAndCacheWeightsSymQuant(Key_matmul key, const void *weights,
         if (!found_obj) {
             apilog_verbose(
                     "[AOCL.reorder symquant MISS] weight cache miss — packing");
-            size_t b_reorder_buf_siz_req = get_reorder_buf_size(
-                    order, trans, 'B', k, n, symq_meta, nullptr);
+            size_t b_reorder_buf_siz_req
+                    = get_reorder_buf_size(order, trans, 'B', k, n, symq_meta);
             size_t alignment = 64;
             size_t reorder_size = (b_reorder_buf_siz_req + alignment - 1)
                     & ~(alignment - 1);
             reorder_weights = (T *)aligned_alloc(alignment, reorder_size);
             reorder_func(order, trans, 'B', (T *)weights, (T *)reorder_weights,
-                    k, n, ldb, symq_meta, nullptr);
+                    k, n, ldb, symq_meta);
             matmul_weight_cache.add(key, reorder_weights);
         } else {
             // See reorderAndCacheWeights: nullptr means a prior prepack or
@@ -704,8 +704,8 @@ bool reorderAndCacheWeightsSymQuant(Key_matmul key, const void *weights,
             return true;
         }
 
-        size_t b_reorder_buf_siz_req = get_reorder_buf_size(
-                order, trans, 'B', k, n, symq_meta, nullptr);
+        size_t b_reorder_buf_siz_req
+                = get_reorder_buf_size(order, trans, 'B', k, n, symq_meta);
         // See reorderAndCacheWeights for the rationale -- two-part gate:
         // (1) blocked size equals the plain k*n size (old library's
         //     WEIGHT_CACHE_INPLACE check), and
@@ -729,12 +729,12 @@ bool reorderAndCacheWeightsSymQuant(Key_matmul key, const void *weights,
                 reorder_weights = (T *)aligned_alloc(alignment, reorder_size);
                 if (!reorder_weights) { return false; }
                 reorder_func(order, trans, 'B', (T *)weights,
-                        (T *)reorder_weights, k, n, ldb, symq_meta, nullptr);
+                        (T *)reorder_weights, k, n, ldb, symq_meta);
                 matmul_weight_cache.add(key, reorder_weights);
                 return true;
             }
             reorder_func(order, trans, 'B', (T *)weights, interim, k, n, ldb,
-                    symq_meta, nullptr);
+                    symq_meta);
             std::memcpy(const_cast<void *>(weights), interim,
                     b_reorder_buf_siz_req);
             std::free(interim);
@@ -751,7 +751,7 @@ bool reorderAndCacheWeightsSymQuant(Key_matmul key, const void *weights,
             reorder_weights = (T *)aligned_alloc(alignment, reorder_size);
             if (!reorder_weights) { return false; }
             reorder_func(order, trans, 'B', (T *)weights, (T *)reorder_weights,
-                    k, n, ldb, symq_meta, nullptr);
+                    k, n, ldb, symq_meta);
             matmul_weight_cache.add(key, reorder_weights);
         }
     }
@@ -761,7 +761,7 @@ bool reorderAndCacheWeightsSymQuant(Key_matmul key, const void *weights,
 template bool reorderAndCacheWeightsSymQuant<int8_t>(Key_matmul, const void *,
         void *&, int, int, int, char, char, char,
         get_reorder_buf_size_sym_quant_func_ptr,
-        reorder_sym_quant_func_ptr<int8_t>, DLP_SYMM_STAT_QUANT *, int);
+        reorder_sym_quant_func_ptr<int8_t>, dlp_metadata_t *, int);
 
 void woqReorderAndCacheWeightsAocl(Key_matmul key, const int8_t *weights,
         void *&reorder_weights, const int k, const int n, const int ldb,
@@ -910,11 +910,17 @@ void w4a8ReorderAndCacheWeightsAocl(Key_matmul key, const int8_t *weights,
 
         size_t b_reorder_buf_siz_req = 0;
         size_t reorder_size = 0;
-        DLP_SYMM_STAT_QUANT symq_meta;
-        symq_meta.group_size
+        // Carry the B-side quantization group size through dlp_metadata_t's
+        // b_quant_op (new AOCL DLP reorder API); the standalone
+        // DLP_SYMM_STAT_QUANT struct was removed.
+        dlp_metadata_t symq_meta = {};
+        dlp_quant_op_t symq_b_quant_op = {};
+        symq_b_quant_op.quant_op_kind = DLP_QUANT_OP_QUANTIZE;
+        symq_b_quant_op.group_size
                 = sym_quant_group_size > 0 ? sym_quant_group_size : k;
+        symq_meta.b_quant_op = &symq_b_quant_op;
         b_reorder_buf_siz_req = aocl_get_reorder_buf_size_s8s8s32os32_sym_quant(
-                order, trans_cvt, 'B', k, n, &symq_meta, nullptr);
+                order, trans_cvt, 'B', k, n, &symq_meta);
         reorder_size
                 = (b_reorder_buf_siz_req + alignment - 1) & ~(alignment - 1);
         reorder_weights = (int8_t *)aligned_alloc(alignment, reorder_size);
@@ -926,7 +932,7 @@ void w4a8ReorderAndCacheWeightsAocl(Key_matmul key, const int8_t *weights,
         }
         apilog_verbose("Calling aocl_reorder_s8s8s32os32_sym_quant");
         aocl_reorder_s8s8s32os32_sym_quant(order, trans_cvt, 'B', cvt_weights,
-                (int8_t *)reorder_weights, k, n, ldb_cvt, &symq_meta, nullptr);
+                (int8_t *)reorder_weights, k, n, ldb_cvt, &symq_meta);
         if (own_cvt_buf) free(cvt_weights);
 
         if (is_weights_const && weight_cache_type == 1) {
@@ -1111,8 +1117,14 @@ void run_dlp(char layout, char transA, char transB, int M, int N, int K,
                         = (run_src_scale_nelems == static_cast<size_t>(M))
                         ? K
                         : K / (static_cast<int64_t>(run_src_scale_nelems) / M);
-                DLP_SYMM_STAT_QUANT symq_meta;
-                symq_meta.group_size = static_cast<int>(src_grp);
+                // Carry the B-side quantization group size through dlp_metadata_t's
+                // b_quant_op (new AOCL DLP reorder API); the standalone
+                // DLP_SYMM_STAT_QUANT struct was removed.
+                dlp_metadata_t symq_meta = {};
+                dlp_quant_op_t symq_b_quant_op = {};
+                symq_b_quant_op.quant_op_kind = DLP_QUANT_OP_QUANTIZE;
+                symq_b_quant_op.group_size = static_cast<int>(src_grp);
+                symq_meta.b_quant_op = &symq_b_quant_op;
                 blocked_flag = reorderAndCacheWeightsSymQuant<int8_t>(cache_key,
                         B, reordered_mem, K, N, ldb, 'r', transB, mem_format_b,
                         aocl_get_reorder_buf_size_s8s8s32os32_sym_quant,
@@ -1161,7 +1173,7 @@ void run_dlp(char layout, char transA, char transB, int M, int N, int K,
     dlp_metadata_t *aocl_po
             = create_dlp_post_op(is_w4a8 ? w4a8_lowoha_param : lowoha_param,
                     bias, is_w4a8 ? dtypes_for_postop : dtypes, N, K, M,
-                    zp_comp_acc, zp_comp_ndim, kernel, B);
+                    zp_comp_acc, zp_comp_ndim, kernel, B, is_w4a8);
 
     if (dtypes.src == data_type_t::f32 && dtypes.wei == data_type_t::f32
             && dtypes.dst == data_type_t::f32) {
