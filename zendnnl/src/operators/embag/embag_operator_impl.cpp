@@ -368,13 +368,26 @@ status_t embag_impl_t::kernel_factory() {
         //get forced kernel if any
         if (forced_kernel.empty()) {
 
+            // The _avx2 kernels are built with target("avx2,fma"), so they
+            // must not be selected merely because AVX-512 is missing: that
+            // assumes every non-AVX-512 host has AVX2 and FMA3, which is
+            // false for AMD family 15h (Bulldozer has neither, Piledriver
+            // and Steamroller have FMA3 but no AVX2) and for pre-Haswell
+            // x86 generally. Check the features and fall back to the
+            // reference kernel when they are absent.
+            const bool has_avx2_fma = platform_info.get_avx2_status()
+                    && platform_info.get_fma_status();
+
             if (table_dtype == data_type_t::f32) {
                 if (platform_info.get_avx512f_status()) {
                     kernel = std::shared_ptr<embag_f32_avx512_kernel_t>(
                             get_embag_f32_avx512_kernel());
-                } else {
+                } else if (has_avx2_fma) {
                     kernel = std::shared_ptr<embag_f32_avx2_kernel_t>(
                             get_embag_f32_avx2_kernel());
+                } else {
+                    kernel = std::shared_ptr<embag_ref_kernel_t>(
+                            get_embag_ref_kernel());
                 }
             } else if (table_dtype == data_type_t::bf16) {
                 if (platform_info.get_avx512f_status()) {
@@ -386,9 +399,12 @@ status_t embag_impl_t::kernel_factory() {
                     kernel = std::shared_ptr<embag_bf16_avx2_kernel_t>(
                             get_embag_bf16_avx2_kernel());
 #endif
-                } else {
+                } else if (has_avx2_fma) {
                     kernel = std::shared_ptr<embag_bf16_avx2_kernel_t>(
                             get_embag_bf16_avx2_kernel());
+                } else {
+                    kernel = std::shared_ptr<embag_ref_kernel_t>(
+                            get_embag_ref_kernel());
                 }
             } else if (table_dtype == data_type_t::f16) {
                 if (platform_info.get_avx512_f16_status()) {
