@@ -33,6 +33,8 @@ struct avx512_tag {};
 struct avx_tag {};
 // AVX + F16C + FMA3: AMD family 15h from Piledriver onwards.
 struct avx_f16c_tag {};
+// AVX2 + F16C + FMA3: within family 15h, Excavator only.
+struct avx2_tag {};
 struct scalar_tag {};
 
 template <typename Tag>
@@ -432,6 +434,58 @@ struct SimdOps<avx_f16c_tag> : SimdOps<avx_tag> {
 };
 
 #undef LOWOHA_SIMD_AVX_F16C_ATTR
+
+// ===========================================================================
+// AVX2 + F16C + FMA3 specialization — 8 float lanes, Excavator and newer.
+//
+// Within family 15h only Excavator (bdver4) has AVX2; it is also the tier
+// used by any newer AVX2 CPU that lacks AVX-512. Relative to avx_f16c_tag
+// the only gain available to this abstraction is 256-bit *integer* work:
+// the bf16 <-> fp32 conversions stop splitting into two 128-bit halves.
+//
+// The float math is unchanged — AVX2 adds nothing for 256-bit FP — so
+// everything except the bf16 pair is inherited.
+//
+// Note on family 15h: Excavator executes 256-bit operations as two 128-bit
+// halves internally, so this tier mainly saves instruction count rather
+// than doubling throughput. Treat it as a modest win to be measured, not
+// an assumed 2x.
+// ===========================================================================
+
+#define LOWOHA_SIMD_AVX2_ATTR __attribute__((target("avx2,f16c,fma")))
+
+template <>
+struct SimdOps<avx2_tag> : SimdOps<avx_f16c_tag> {
+
+    // 8 x bf16 -> 8 x FP32: one 256-bit widen plus shift, no lane splitting.
+    LOWOHA_SIMD_AVX2_ATTR
+    static inline VecF32 vec_mask_bf16_loadu(const uint16_t *p) {
+        __m128i u = _mm_loadu_si128(reinterpret_cast<const __m128i *>(p));
+        __m256i wide = _mm256_slli_epi32(_mm256_cvtepu16_epi32(u), 16);
+        return _mm256_castsi256_ps(wide);
+    }
+
+    // FP32 -> bf16 store with round-to-nearest-even, 256-bit throughout.
+    // _mm256_packus_epi32 packs per 128-bit lane, so the two low halves are
+    // stitched with unpacklo_epi64 to get the eight results contiguous.
+    LOWOHA_SIMD_AVX2_ATTR
+    static inline void vec_bf16_storeu(uint16_t *dst, VecF32 v) {
+        __m256i u = _mm256_castps_si256(v);
+        __m256i bias = _mm256_add_epi32(
+                _mm256_and_si256(
+                        _mm256_srli_epi32(u, 16), _mm256_set1_epi32(1)),
+                _mm256_set1_epi32(0x7FFF));
+        __m256i rounded =
+                _mm256_srli_epi32(_mm256_add_epi32(u, bias), 16);
+        __m256i packed = _mm256_packus_epi32(rounded, rounded);
+        __m128i lo = _mm256_castsi256_si128(packed);
+        __m128i hi = _mm256_extracti128_si256(packed, 1);
+        _mm_storeu_si128(reinterpret_cast<__m128i *>(dst),
+                _mm_unpacklo_epi64(lo, hi));
+    }
+};
+
+#undef LOWOHA_SIMD_AVX2_ATTR
 
 // ===========================================================================
 // AVX-512 specialization — 16 float lanes, enabled via target attribute.
