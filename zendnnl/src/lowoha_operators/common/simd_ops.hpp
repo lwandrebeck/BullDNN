@@ -28,7 +28,11 @@ namespace simd {
 // Tag types for compile-time SIMD dispatch.
 // ---------------------------------------------------------------------------
 struct avx512_tag {};
-struct avx_tag {};     // AVX (256-bit, no AVX2/AVX-512) — AMD family 15h baseline
+// AVX (256-bit, no AVX2 / AVX-512): AMD family 15h baseline, valid on
+// Bulldozer through Excavator.
+struct avx_tag {};
+// AVX + F16C + FMA3: AMD family 15h from Piledriver onwards.
+struct avx_f16c_tag {};
 struct scalar_tag {};
 
 template <typename Tag>
@@ -378,6 +382,56 @@ struct SimdOps<avx_tag> {
 };
 
 #undef LOWOHA_SIMD_AVX_ATTR
+
+// ===========================================================================
+// AVX + F16C + FMA3 specialization — 8 float lanes, Piledriver and later.
+//
+// Same 256-bit layout as avx_tag, refined for the family-15h cores that
+// added FMA3 and F16C (Piledriver, Steamroller, Excavator — both absent on
+// Bulldozer):
+//   - vec_fmadd becomes a true fused multiply-add (VFMADD*PS): one
+//     instruction and a single rounding instead of mul + add.
+//   - FP16 <-> FP32 use the hardware VCVTPH2PS / VCVTPS2PH instead of the
+//     scalar float16_t helpers.
+//
+// Everything else (loads, stores, reductions, exp kernels, bf16 pack and
+// unpack) is inherited from SimdOps<avx_tag>, which is deliberately
+// AVX2-free and therefore valid on every family-15h core.
+//
+// The inherited exp kernels are still written as mul + add, since they are
+// shared with the Bulldozer tier, but they are not stuck with it: inlined
+// into a caller that carries this tier's target attribute, the compiler
+// contracts those products into FMAs (verified on GCC: this instantiation
+// emits vfmadd*ps throughout the exp polynomials).
+// ===========================================================================
+
+#define LOWOHA_SIMD_AVX_F16C_ATTR __attribute__((target("avx,f16c,fma")))
+
+template <>
+struct SimdOps<avx_f16c_tag> : SimdOps<avx_tag> {
+
+    LOWOHA_SIMD_AVX_F16C_ATTR
+    static inline VecF32 vec_fmadd(VecF32 a, VecF32 b, VecF32 c) {
+        return _mm256_fmadd_ps(a, b, c);
+    }
+
+    // 8 x IEEE 754 binary16 -> 8 x FP32 via VCVTPH2PS.
+    LOWOHA_SIMD_AVX_F16C_ATTR
+    static inline VecF32 vec_mask_f16_loadu(const uint16_t *p) {
+        __m128i h = _mm_loadu_si128(reinterpret_cast<const __m128i *>(p));
+        return _mm256_cvtph_ps(h);
+    }
+
+    // 8 x FP32 -> 8 x IEEE 754 binary16 via VCVTPS2PH, round-to-nearest-even.
+    LOWOHA_SIMD_AVX_F16C_ATTR
+    static inline void vec_f16_storeu(uint16_t *dst, VecF32 v) {
+        __m128i h = _mm256_cvtps_ph(
+                v, _MM_FROUND_TO_NEAREST_INT | _MM_FROUND_NO_EXC);
+        _mm_storeu_si128(reinterpret_cast<__m128i *>(dst), h);
+    }
+};
+
+#undef LOWOHA_SIMD_AVX_F16C_ATTR
 
 // ===========================================================================
 // AVX-512 specialization — 16 float lanes, enabled via target attribute.
