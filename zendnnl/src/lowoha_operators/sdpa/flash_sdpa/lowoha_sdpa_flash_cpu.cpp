@@ -62,7 +62,16 @@ struct scratch_buffer {
     scratch_buffer &operator=(const scratch_buffer &) = delete;
 };
 
-static thread_local scratch_buffer g_flash_scratch;
+// Shared across every tier translation unit built from this file (see
+// ZENDNNL_SDPA_FLASH_TIER_SCALAR below) so that an explicit
+// sdpa_flash_cpu_free_scratch() releases the buffer no matter which tier
+// allocated it. External linkage is deliberate: `static` would give each
+// translation unit its own copy, and the free would only reach one of them.
+#ifdef ZENDNNL_SDPA_FLASH_TIER_SCALAR
+extern thread_local scratch_buffer g_flash_scratch;
+#else
+thread_local scratch_buffer g_flash_scratch;
+#endif
 
 namespace {
 
@@ -174,9 +183,19 @@ inline void zendnn_gemm(int64_t m, int64_t n, int64_t k, float alpha,
 // auto-vectorising scalar-path loops with AVX-512 instructions, which
 // would SIGILL on machines without AVX-512 support.
 // ---------------------------------------------------------------------------
+//
+// ZENDNNL_SDPA_FLASH_TIER_SCALAR builds this same body as a second
+// translation unit with NO target pragma, so the scalar kernels are plain
+// baseline code. That split is required, not cosmetic: `fma` in the target
+// list below also applies to the scalar_tag instantiations, and GCC then
+// contracts their mul+add into FMA3 (vfmadd*ss) — which faults on AMD
+// Bulldozer, the one family-15h core without FMA3.
+// ---------------------------------------------------------------------------
 #if defined(__GNUC__) && !defined(__clang__)
 #pragma GCC push_options
+#ifndef ZENDNNL_SDPA_FLASH_TIER_SCALAR
 #pragma GCC target("avx512f,avx512bw,avx512vl,fma")
+#endif
 #pragma GCC optimize("no-tree-vectorize")
 #endif
 
@@ -771,7 +790,68 @@ void flash_attention_kernel_sa_dispatch(
     }
 }
 
+// Q/K/V dtype fan-out for one SIMD tier. Lives inside the target region so
+// each translation unit instantiates it with that tier's ISA (see the note
+// above the pragma): the tier is fixed by the TU, not by the caller.
+template <typename SimdTag>
+void run_dtype_dispatch(const sdpa_flash_cpu_tensor_view &output,
+        const sdpa_flash_cpu_tensor_view &query,
+        const sdpa_flash_cpu_tensor_view &key,
+        const sdpa_flash_cpu_tensor_view &value, double dropout_p,
+        bool is_causal, const std::optional<sdpa_flash_cpu_mask_view> &mopt,
+        const std::optional<double> &scale, data_type_t qkv_dt,
+        data_type_t mask_dtype, int num_threads) {
+    using Tag = SimdTag;
+    // No-mask and f32-mask paths share the same mask_t = float
+    // instantiation; mopt is already std::nullopt when no mask is present.
+    if (qkv_dt == data_type_t::f32) {
+        flash_attention_kernel_sa_dispatch<Tag, float, float>(output, query,
+                key, value, dropout_p, is_causal, mopt, scale, num_threads);
+    } else if (qkv_dt == data_type_t::bf16) {
+        if (!mopt.has_value() || mask_dtype == data_type_t::f32) {
+            flash_attention_kernel_sa_dispatch<Tag, bfloat16_t, float>(output,
+                    query, key, value, dropout_p, is_causal, mopt, scale,
+                    num_threads);
+        } else {
+            flash_attention_kernel_sa_dispatch<Tag, bfloat16_t, bfloat16_t>(
+                    output, query, key, value, dropout_p, is_causal, mopt,
+                    scale, num_threads);
+        }
+    } else if (qkv_dt == data_type_t::f16) {
+        if (!mopt.has_value() || mask_dtype == data_type_t::f32) {
+            flash_attention_kernel_sa_dispatch<Tag, float16_t, float>(output,
+                    query, key, value, dropout_p, is_causal, mopt, scale,
+                    num_threads);
+        } else {
+            flash_attention_kernel_sa_dispatch<Tag, float16_t, float16_t>(
+                    output, query, key, value, dropout_p, is_causal, mopt,
+                    scale, num_threads);
+        }
+    } else {
+        log_error("sdpa_flash_cpu: unsupported Q/K/V dtype");
+        throw std::invalid_argument("unsupported Q/K/V dtype");
+    }
+}
+
 } // namespace
+
+#ifdef ZENDNNL_SDPA_FLASH_TIER_SCALAR
+
+// Scalar-tier entry. This translation unit was compiled from the same body
+// without the AVX-512 target pragma, so these kernels contain no FMA3 and no
+// AVX-512 — which is what makes them safe on AMD Bulldozer.
+void sdpa_flash_run_scalar_internal(const sdpa_flash_cpu_tensor_view &output,
+        const sdpa_flash_cpu_tensor_view &query,
+        const sdpa_flash_cpu_tensor_view &key,
+        const sdpa_flash_cpu_tensor_view &value, double dropout_p,
+        bool is_causal, const std::optional<sdpa_flash_cpu_mask_view> &mopt,
+        const std::optional<double> &scale, data_type_t qkv_dt,
+        data_type_t mask_dtype, int num_threads) {
+    run_dtype_dispatch<simd::scalar_tag>(output, query, key, value, dropout_p,
+            is_causal, mopt, scale, qkv_dt, mask_dtype, num_threads);
+}
+
+#endif // ZENDNNL_SDPA_FLASH_TIER_SCALAR
 
 #if defined(__GNUC__) && !defined(__clang__)
 #pragma GCC pop_options
@@ -779,7 +859,22 @@ void flash_attention_kernel_sa_dispatch(
 
 // ---------------------------------------------------------------------------
 // Public entry points
+//
+// Only the primary translation unit defines these; the scalar-tier TU built
+// from the same body contributes sdpa_flash_run_scalar_internal instead.
 // ---------------------------------------------------------------------------
+
+#ifndef ZENDNNL_SDPA_FLASH_TIER_SCALAR
+
+// Defined by the scalar-tier translation unit (same body, compiled without
+// the AVX-512 target pragma).
+void sdpa_flash_run_scalar_internal(const sdpa_flash_cpu_tensor_view &output,
+        const sdpa_flash_cpu_tensor_view &query,
+        const sdpa_flash_cpu_tensor_view &key,
+        const sdpa_flash_cpu_tensor_view &value, double dropout_p,
+        bool is_causal, const std::optional<sdpa_flash_cpu_mask_view> &mopt,
+        const std::optional<double> &scale, data_type_t qkv_dt,
+        data_type_t mask_dtype, int num_threads);
 
 void sdpa_flash_cpu_free_scratch() {
     free(g_flash_scratch.ptr);
@@ -814,47 +909,21 @@ status_t sdpa_flash_cpu_run_internal(const sdpa_flash_cpu_tensor_view &output,
             return status_t::isa_unsupported;
         }
 
-        // Runtime SIMD dispatch: AVX-512 when available, scalar fallback otherwise.
-        auto run = [&](auto simd_tag) {
-            using Tag = decltype(simd_tag);
-            // No-mask and f32-mask paths share the same mask_t = float
-            // instantiation; mopt is already std::nullopt when no mask is present.
-            if (qkv_dt == data_type_t::f32) {
-                flash_attention_kernel_sa_dispatch<Tag, float, float>(output,
-                        query, key, value, dropout_p, is_causal, mopt, scale,
-                        num_threads);
-            } else if (qkv_dt == data_type_t::bf16) {
-                if (!mopt.has_value() || mask_dtype == data_type_t::f32) {
-                    flash_attention_kernel_sa_dispatch<Tag, bfloat16_t, float>(
-                            output, query, key, value, dropout_p, is_causal,
-                            mopt, scale, num_threads);
-                } else {
-                    flash_attention_kernel_sa_dispatch<Tag, bfloat16_t,
-                            bfloat16_t>(output, query, key, value, dropout_p,
-                            is_causal, mopt, scale, num_threads);
-                }
-            } else if (qkv_dt == data_type_t::f16) {
-                if (!mopt.has_value() || mask_dtype == data_type_t::f32) {
-                    flash_attention_kernel_sa_dispatch<Tag, float16_t, float>(
-                            output, query, key, value, dropout_p, is_causal,
-                            mopt, scale, num_threads);
-                } else {
-                    flash_attention_kernel_sa_dispatch<Tag, float16_t,
-                            float16_t>(output, query, key, value, dropout_p,
-                            is_causal, mopt, scale, num_threads);
-                }
-            } else {
-                log_error("sdpa_flash_cpu: unsupported Q/K/V dtype");
-                throw std::invalid_argument("unsupported Q/K/V dtype");
-            }
-        };
-
+        // Runtime SIMD dispatch. The AVX-512 kernels are instantiated in this
+        // translation unit (compiled under the AVX-512 target pragma); the
+        // scalar kernels live in the separate scalar-tier TU, which is built
+        // from the same body without that pragma. Instantiating both here
+        // would give the scalar path FMA3 and fault on Bulldozer.
         if (zendnnl::common::zendnnl_platform_info().get_avx512f_status()) {
             apilog_info("sdpa_flash_cpu: using AVX-512 SIMD");
-            run(simd::avx512_tag {});
+            run_dtype_dispatch<simd::avx512_tag>(output, query, key, value,
+                    dropout_p, is_causal, mopt, scale, qkv_dt, mask_dtype,
+                    num_threads);
         } else {
             apilog_info("sdpa_flash_cpu: using scalar SIMD");
-            run(simd::scalar_tag {});
+            sdpa_flash_run_scalar_internal(output, query, key, value,
+                    dropout_p, is_causal, mopt, scale, qkv_dt, mask_dtype,
+                    num_threads);
         }
 
         return status_t::success;
@@ -864,6 +933,8 @@ status_t sdpa_flash_cpu_run_internal(const sdpa_flash_cpu_tensor_view &output,
         return status_t::failure;
     }
 }
+
+#endif // !ZENDNNL_SDPA_FLASH_TIER_SCALAR
 
 } // namespace sdpa
 } // namespace lowoha
