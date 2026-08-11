@@ -17,7 +17,9 @@
 #ifndef _LOWOHA_DISPATCH_KERNEL_HPP
 #define _LOWOHA_DISPATCH_KERNEL_HPP
 
+#include "common/platform_info.hpp"
 #include "lowoha_embag_common.hpp"
+#include "lowoha_embag_ref_kernel.hpp"
 #include "operators/embag/embag_config.hpp"
 #include "operators/embag/native_kernels/embag_avx512_kernels.hpp"
 #if ZENDNNL_DEPENDS_FBGEMM
@@ -714,6 +716,23 @@ static void dispatch_avx512_kernel(const void *table, const void *indices,
         return;
     }
 #endif
+
+    // The native kernels below are AVX-512 (embag_native_kernel instantiates
+    // embag_avx512_kernel; its _avx2 alternatives are selected by a
+    // compile-time __GNUC__ check, never by runtime ISA). On a host without
+    // AVX-512 — AMD family 15h, for one — run the reference implementation
+    // instead of executing zmm instructions. FBGEMM, attempted above, is left
+    // to its own runtime dispatch.
+    if (!zendnnl::common::zendnnl_platform_info().get_avx512f_status()) {
+        embag_config.set_accum_type(data_type_t::f32);
+        log_info("Using reference kernel (host has no AVX-512)");
+        const status_t ref_status = embedding_bag_ref_direct(
+                table, indices, offsets, weights, dst, params);
+        if (ref_status != status_t::success) {
+            log_error("embedding_bag: reference kernel failed");
+        }
+        return;
+    }
 
     // Native ZenDNN path: F16 accumulation only when at least one of
     // table/output is F16 AND the F16 FMA kernel is actually available

@@ -375,8 +375,10 @@ status_t embag_impl_t::kernel_factory() {
             // and Steamroller have FMA3 but no AVX2) and for pre-Haswell
             // x86 generally. Check the features and fall back to the
             // reference kernel when they are absent.
-            const bool has_avx2_fma = platform_info.get_avx2_status()
-                    && platform_info.get_fma_status();
+            // AVX2 alone is a sufficient proxy for the FMA3 these kernels also
+            // use: no shipping x86 part has AVX2 without FMA3 (they arrived
+            // together on Haswell, and on AMD from Excavator onward).
+            const bool has_avx2_fma = platform_info.get_avx2_status();
 
             if (table_dtype == data_type_t::f32) {
                 if (platform_info.get_avx512f_status()) {
