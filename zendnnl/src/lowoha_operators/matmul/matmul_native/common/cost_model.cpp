@@ -83,20 +83,28 @@ static UarchParams do_detect() {
     __cpuid(0, eax, ebx, ecx, edx);
     bool is_amd = (ebx == 0x68747541);
 
+    // A missing last level must not be replaced by a large invented one: the
+    // planners spend l3_bytes_per_ccd as an outer blocking budget, so a
+    // fictional 32 MB on a machine whose last level is a 1-2 MB L2 sizes the
+    // outer block for a cache that does not exist and streams to DRAM.
+    // AMD family 15h models 60h-6Fh (Carrizo / Bristol Ridge) are exactly
+    // this case: BKDG 50742 sec 2.4.2 lists only DC / IC / L2, CPUID
+    // Fn8000_0006_EDX reports L3Size = 0, and Fn8000_001D enumerates no
+    // level-3 subleaf. Fall back to the real last level instead.
     if (is_amd) {
         int l1 = read_amd_cache_size(1);
         int l2 = read_amd_cache_size(2);
         int l3 = read_amd_cache_size(3);
         p.l1d_bytes = l1 > 0 ? l1 : 32768;
         p.l2_bytes = l2 > 0 ? l2 : 1048576;
-        p.l3_bytes_per_ccd = l3 > 0 ? l3 : 33554432;
+        p.l3_bytes_per_ccd = l3 > 0 ? l3 : p.l2_bytes;
     } else {
         int l1 = read_intel_cache_size(1);
         int l2 = read_intel_cache_size(2);
         int l3 = read_intel_cache_size(3);
         p.l1d_bytes = l1 > 0 ? l1 : 32768;
         p.l2_bytes = l2 > 0 ? l2 : 1048576;
-        p.l3_bytes_per_ccd = l3 > 0 ? l3 : 33554432;
+        p.l3_bytes_per_ccd = l3 > 0 ? l3 : p.l2_bytes;
     }
 
     p.fma_ports = 2;
