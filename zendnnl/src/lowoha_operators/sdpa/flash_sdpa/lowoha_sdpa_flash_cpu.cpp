@@ -26,6 +26,18 @@
 #include "common/logging.hpp"
 #include "common/zendnnl_global.hpp"
 #include "lowoha_operators/common/omp_thread_control.hpp"
+#include "lowoha_operators/common/simd_tier.hpp"
+
+// Secondary tier translation units are built from this same body with one
+// ZENDNNL_SDPA_FLASH_TIER_* macro set (see the tier note further down). They
+// contribute one tier entry point each and leave the public entry points and
+// the shared scratch buffer to the primary unit.
+#if defined(ZENDNNL_SDPA_FLASH_TIER_SCALAR) \
+        || defined(ZENDNNL_SDPA_FLASH_TIER_AVX) \
+        || defined(ZENDNNL_SDPA_FLASH_TIER_AVX_F16C) \
+        || defined(ZENDNNL_SDPA_FLASH_TIER_AVX2)
+#define ZENDNNL_SDPA_FLASH_SECONDARY_TIER 1
+#endif
 
 // Suppress GCC's informational ABI-change note for 64-byte vector types
 // (__m512).  The note warns that the calling convention for these types
@@ -67,7 +79,7 @@ struct scratch_buffer {
 // sdpa_flash_cpu_free_scratch() releases the buffer no matter which tier
 // allocated it. External linkage is deliberate: `static` would give each
 // translation unit its own copy, and the free would only reach one of them.
-#ifdef ZENDNNL_SDPA_FLASH_TIER_SCALAR
+#ifdef ZENDNNL_SDPA_FLASH_SECONDARY_TIER
 extern thread_local scratch_buffer g_flash_scratch;
 #else
 thread_local scratch_buffer g_flash_scratch;
@@ -184,16 +196,34 @@ inline void zendnn_gemm(int64_t m, int64_t n, int64_t k, float alpha,
 // would SIGILL on machines without AVX-512 support.
 // ---------------------------------------------------------------------------
 //
-// ZENDNNL_SDPA_FLASH_TIER_SCALAR builds this same body as a second
-// translation unit with NO target pragma, so the scalar kernels are plain
-// baseline code. That split is required, not cosmetic: `fma` in the target
-// list below also applies to the scalar_tag instantiations, and GCC then
-// contracts their mul+add into FMA3 (vfmadd*ss) — which faults on AMD
-// Bulldozer, the one family-15h core without FMA3.
+// One SIMD tier per translation unit
+// ---------------------------------
+// This body is compiled once per tier; a ZENDNNL_SDPA_FLASH_TIER_* macro
+// selects which. That is required, not cosmetic, for two reasons:
+//
+//   - GCC applies a `#pragma GCC target(...)` region to every function
+//     *defined* inside it, template instantiations included. Compiling all
+//     tags under the AVX-512 region gave the scalar_tag instantiations FMA3
+//     (contracted mul+add, vfmadd*ss), which faults on AMD Bulldozer — the
+//     one family-15h core without FMA3.
+//   - The target options in effect at the *call* site do not influence how
+//     an instantiation is compiled, so the tier cannot be chosen where the
+//     kernel is invoked; it has to be fixed per translation unit.
+//
+// The kernels themselves are lane-generic (they only use SimdOps<Tag> and
+// Ops::kFloatLanes), which is what makes one body serve every tier.
 // ---------------------------------------------------------------------------
 #if defined(__GNUC__) && !defined(__clang__)
 #pragma GCC push_options
-#ifndef ZENDNNL_SDPA_FLASH_TIER_SCALAR
+#if defined(ZENDNNL_SDPA_FLASH_TIER_SCALAR)
+// No target pragma: plain baseline code, valid on any x86-64 host.
+#elif defined(ZENDNNL_SDPA_FLASH_TIER_AVX)
+#pragma GCC target("avx")
+#elif defined(ZENDNNL_SDPA_FLASH_TIER_AVX_F16C)
+#pragma GCC target("avx,f16c,fma")
+#elif defined(ZENDNNL_SDPA_FLASH_TIER_AVX2)
+#pragma GCC target("avx2,f16c,fma")
+#else
 #pragma GCC target("avx512f,avx512bw,avx512vl,fma")
 #endif
 #pragma GCC optimize("no-tree-vectorize")
@@ -835,23 +865,36 @@ void run_dtype_dispatch(const sdpa_flash_cpu_tensor_view &output,
 
 } // namespace
 
-#ifdef ZENDNNL_SDPA_FLASH_TIER_SCALAR
+// Per-tier entry point. Each secondary translation unit contributes exactly
+// one of these; the primary unit instantiates the AVX-512 tier inline and
+// owns the public entry points instead.
+#if defined(ZENDNNL_SDPA_FLASH_TIER_SCALAR)
+#define ZENDNNL_SDPA_TIER_TAG simd::scalar_tag
+#define ZENDNNL_SDPA_TIER_ENTRY sdpa_flash_run_scalar_internal
+#elif defined(ZENDNNL_SDPA_FLASH_TIER_AVX)
+#define ZENDNNL_SDPA_TIER_TAG simd::avx_tag
+#define ZENDNNL_SDPA_TIER_ENTRY sdpa_flash_run_avx_internal
+#elif defined(ZENDNNL_SDPA_FLASH_TIER_AVX_F16C)
+#define ZENDNNL_SDPA_TIER_TAG simd::avx_f16c_tag
+#define ZENDNNL_SDPA_TIER_ENTRY sdpa_flash_run_avx_f16c_internal
+#elif defined(ZENDNNL_SDPA_FLASH_TIER_AVX2)
+#define ZENDNNL_SDPA_TIER_TAG simd::avx2_tag
+#define ZENDNNL_SDPA_TIER_ENTRY sdpa_flash_run_avx2_internal
+#endif
 
-// Scalar-tier entry. This translation unit was compiled from the same body
-// without the AVX-512 target pragma, so these kernels contain no FMA3 and no
-// AVX-512 — which is what makes them safe on AMD Bulldozer.
-void sdpa_flash_run_scalar_internal(const sdpa_flash_cpu_tensor_view &output,
+#ifdef ZENDNNL_SDPA_TIER_ENTRY
+void ZENDNNL_SDPA_TIER_ENTRY(const sdpa_flash_cpu_tensor_view &output,
         const sdpa_flash_cpu_tensor_view &query,
         const sdpa_flash_cpu_tensor_view &key,
         const sdpa_flash_cpu_tensor_view &value, double dropout_p,
         bool is_causal, const std::optional<sdpa_flash_cpu_mask_view> &mopt,
         const std::optional<double> &scale, data_type_t qkv_dt,
         data_type_t mask_dtype, int num_threads) {
-    run_dtype_dispatch<simd::scalar_tag>(output, query, key, value, dropout_p,
-            is_causal, mopt, scale, qkv_dt, mask_dtype, num_threads);
+    run_dtype_dispatch<ZENDNNL_SDPA_TIER_TAG>(output, query, key, value,
+            dropout_p, is_causal, mopt, scale, qkv_dt, mask_dtype,
+            num_threads);
 }
-
-#endif // ZENDNNL_SDPA_FLASH_TIER_SCALAR
+#endif // ZENDNNL_SDPA_TIER_ENTRY
 
 #if defined(__GNUC__) && !defined(__clang__)
 #pragma GCC pop_options
@@ -860,21 +903,28 @@ void sdpa_flash_run_scalar_internal(const sdpa_flash_cpu_tensor_view &output,
 // ---------------------------------------------------------------------------
 // Public entry points
 //
-// Only the primary translation unit defines these; the scalar-tier TU built
-// from the same body contributes sdpa_flash_run_scalar_internal instead.
+// Only the primary translation unit defines these; each secondary tier unit
+// contributes its own tier entry point instead.
 // ---------------------------------------------------------------------------
 
-#ifndef ZENDNNL_SDPA_FLASH_TIER_SCALAR
+#ifndef ZENDNNL_SDPA_FLASH_SECONDARY_TIER
 
-// Defined by the scalar-tier translation unit (same body, compiled without
-// the AVX-512 target pragma).
-void sdpa_flash_run_scalar_internal(const sdpa_flash_cpu_tensor_view &output,
-        const sdpa_flash_cpu_tensor_view &query,
-        const sdpa_flash_cpu_tensor_view &key,
-        const sdpa_flash_cpu_tensor_view &value, double dropout_p,
-        bool is_causal, const std::optional<sdpa_flash_cpu_mask_view> &mopt,
-        const std::optional<double> &scale, data_type_t qkv_dt,
-        data_type_t mask_dtype, int num_threads);
+// Defined by the secondary tier translation units, each built from this same
+// body under its own target pragma.
+#define ZENDNNL_SDPA_DECLARE_TIER_ENTRY(name) \
+    void name(const sdpa_flash_cpu_tensor_view &output, \
+            const sdpa_flash_cpu_tensor_view &query, \
+            const sdpa_flash_cpu_tensor_view &key, \
+            const sdpa_flash_cpu_tensor_view &value, double dropout_p, \
+            bool is_causal, \
+            const std::optional<sdpa_flash_cpu_mask_view> &mopt, \
+            const std::optional<double> &scale, data_type_t qkv_dt, \
+            data_type_t mask_dtype, int num_threads)
+
+ZENDNNL_SDPA_DECLARE_TIER_ENTRY(sdpa_flash_run_scalar_internal);
+ZENDNNL_SDPA_DECLARE_TIER_ENTRY(sdpa_flash_run_avx_internal);
+ZENDNNL_SDPA_DECLARE_TIER_ENTRY(sdpa_flash_run_avx_f16c_internal);
+ZENDNNL_SDPA_DECLARE_TIER_ENTRY(sdpa_flash_run_avx2_internal);
 
 void sdpa_flash_cpu_free_scratch() {
     free(g_flash_scratch.ptr);
@@ -910,20 +960,45 @@ status_t sdpa_flash_cpu_run_internal(const sdpa_flash_cpu_tensor_view &output,
         }
 
         // Runtime SIMD dispatch. The AVX-512 kernels are instantiated in this
-        // translation unit (compiled under the AVX-512 target pragma); the
-        // scalar kernels live in the separate scalar-tier TU, which is built
-        // from the same body without that pragma. Instantiating both here
-        // would give the scalar path FMA3 and fault on Bulldozer.
-        if (zendnnl::common::zendnnl_platform_info().get_avx512f_status()) {
-            apilog_info("sdpa_flash_cpu: using AVX-512 SIMD");
-            run_dtype_dispatch<simd::avx512_tag>(output, query, key, value,
-                    dropout_p, is_causal, mopt, scale, qkv_dt, mask_dtype,
-                    num_threads);
-        } else {
-            apilog_info("sdpa_flash_cpu: using scalar SIMD");
-            sdpa_flash_run_scalar_internal(output, query, key, value,
-                    dropout_p, is_causal, mopt, scale, qkv_dt, mask_dtype,
-                    num_threads);
+        // translation unit (compiled under the AVX-512 target pragma); every
+        // other tier lives in its own unit, built from the same body under
+        // its own pragma. Instantiating them all here would contaminate the
+        // weaker tiers with instructions their CPUs lack.
+        const auto &pinfo = zendnnl::common::zendnnl_platform_info();
+        const simd::simd_isa isa {pinfo.get_avx_status(),
+                pinfo.get_f16c_status(), pinfo.get_fma_status(),
+                pinfo.get_avx2_status(), pinfo.get_avx512f_status(),
+                pinfo.get_avx512_bw_vl_status()};
+        const simd::simd_tier tier = simd::select_simd_tier(isa);
+        apilog_info("sdpa_flash_cpu: using ", simd::simd_tier_name(tier),
+                " SIMD");
+
+        switch (tier) {
+            case simd::simd_tier::avx512:
+                run_dtype_dispatch<simd::avx512_tag>(output, query, key, value,
+                        dropout_p, is_causal, mopt, scale, qkv_dt, mask_dtype,
+                        num_threads);
+                break;
+            case simd::simd_tier::avx2:
+                sdpa_flash_run_avx2_internal(output, query, key, value,
+                        dropout_p, is_causal, mopt, scale, qkv_dt, mask_dtype,
+                        num_threads);
+                break;
+            case simd::simd_tier::avx_f16c:
+                sdpa_flash_run_avx_f16c_internal(output, query, key, value,
+                        dropout_p, is_causal, mopt, scale, qkv_dt, mask_dtype,
+                        num_threads);
+                break;
+            case simd::simd_tier::avx:
+                sdpa_flash_run_avx_internal(output, query, key, value,
+                        dropout_p, is_causal, mopt, scale, qkv_dt, mask_dtype,
+                        num_threads);
+                break;
+            case simd::simd_tier::scalar:
+                sdpa_flash_run_scalar_internal(output, query, key, value,
+                        dropout_p, is_causal, mopt, scale, qkv_dt, mask_dtype,
+                        num_threads);
+                break;
         }
 
         return status_t::success;
@@ -934,7 +1009,7 @@ status_t sdpa_flash_cpu_run_internal(const sdpa_flash_cpu_tensor_view &output,
     }
 }
 
-#endif // !ZENDNNL_SDPA_FLASH_TIER_SCALAR
+#endif // !ZENDNNL_SDPA_FLASH_SECONDARY_TIER
 
 } // namespace sdpa
 } // namespace lowoha

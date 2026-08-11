@@ -25,15 +25,21 @@
 # ---------------------------------------------------------------------------
 # Sources and headers
 # ---------------------------------------------------------------------------
-# lowoha_sdpa_flash_cpu_scalar.cpp rebuilds lowoha_sdpa_flash_cpu.cpp with
-# ZENDNNL_SDPA_FLASH_TIER_SCALAR set, i.e. without the AVX-512 target pragma,
-# so the scalar fallback kernels carry no FMA3 (which AMD Bulldozer lacks).
-# See the comment at the top of that file.
+# The lowoha_sdpa_flash_cpu_*.cpp units each rebuild lowoha_sdpa_flash_cpu.cpp
+# with one ZENDNNL_SDPA_FLASH_TIER_* macro set, so every SIMD tier is compiled
+# under a target pragma matching its own ISA. GCC applies such a pragma to
+# every function defined in the region, template instantiations included, so
+# one tier per translation unit is the only way to keep the weaker tiers free
+# of instructions their CPUs lack (this is what previously gave the scalar
+# path FMA3, which faults on AMD Bulldozer). See those files for details.
 set(lowoha_flash_sdpa_sources
     lowoha_flash_sdpa.cpp
     lowoha_flash_sdpa_utils.cpp
     lowoha_sdpa_flash_cpu.cpp
-    lowoha_sdpa_flash_cpu_scalar.cpp)
+    lowoha_sdpa_flash_cpu_scalar.cpp
+    lowoha_sdpa_flash_cpu_avx.cpp
+    lowoha_sdpa_flash_cpu_avx_f16c.cpp
+    lowoha_sdpa_flash_cpu_avx2.cpp)
 
 set(lowoha_flash_sdpa_public_headers
     lowoha_flash_sdpa.hpp
