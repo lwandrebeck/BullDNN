@@ -606,11 +606,11 @@ status_t validate_dynamic_quant_params(
 
 status_t compute_dynamic_quant_params(
         const void *src, const reorder_params_t &params) {
-    // All scale-compute kernels below are AVX-512 (_native). Decline on
-    // non-AVX-512 hosts (e.g. AMD family 15h) so callers fail gracefully
-    // instead of executing zmm instructions and raising SIGILL.
-    if (!zendnnl::common::zendnnl_platform_info().get_avx512f_status())
-        return status_t::isa_unsupported;
+    // Only the fast-path block further down is AVX-512; everything else here
+    // is portable scalar code. The ISA check therefore belongs on that block
+    // (the has_avx512 condition below), not on the whole function.
+    const bool has_avx512
+            = zendnnl::common::zendnnl_platform_info().get_avx512f_status();
     const auto &scale_dims = params.quant_params.scale.dims;
     const auto &shape = params.src_shape;
 
@@ -857,7 +857,11 @@ status_t compute_dynamic_quant_params(
             // The fast-path kernels always emit f32 scales; if the caller
             // requested a narrowed scale dtype (bf16 or f16), we stage into a
             // local f32 buffer and narrow afterwards via write_scale().
-            if (contiguous_batch1 && M > 0 && N > 0
+            // has_avx512 gates only this block: the kernels it calls emit
+            // zmm instructions. Without it, a non-AVX-512 host (AMD family
+            // 15h, for one) falls through to the generic scalar loops below
+            // and still gets its scales computed.
+            if (has_avx512 && contiguous_batch1 && M > 0 && N > 0
                     && skind != src_kind_t::f16) {
                 const bool is_bf16_src = (skind == src_kind_t::bf16);
                 // Pick a destination buffer the AVX kernel can write f32 scales
