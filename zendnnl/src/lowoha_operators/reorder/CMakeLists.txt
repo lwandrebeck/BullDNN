@@ -22,6 +22,7 @@ set(lowoha_reorder_sources
   reorder_data_type/scalar_impl/scalar_granular_impl.cpp
   reorder_data_type/scalar_impl/scalar_dynamic_dispatch.cpp
   reorder_data_type/scalar_impl/dynamic_per_token_ref_kernel.cpp
+  reorder_data_type/scalar_impl/group_dynamic_quant_ref_kernel.cpp
   reorder_data_type/static_quant_dequant_impl/quant_dequant_per_tensor_avx512_f32_fma_kernel.cpp
   reorder_data_type/static_quant_dequant_impl/quant_dequant_per_tensor_avx512_f16_fma_kernel.cpp
   reorder_data_type/static_quant_dequant_impl/bf16_f32_per_tensor_avx512_kernel.cpp

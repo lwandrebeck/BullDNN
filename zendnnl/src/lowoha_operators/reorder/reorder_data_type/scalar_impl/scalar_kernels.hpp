@@ -19,6 +19,7 @@
 
 #include <cstddef>
 #include <cstdint>
+#include <vector>
 #include "lowoha_operators/reorder/lowoha_reorder_common.hpp"
 
 namespace zendnnl {
@@ -88,6 +89,38 @@ void reorder_granular_scaler_impl_3d(
 // Scalar fused dynamic per-token dispatch
 bool dispatch_fused_per_token_ref(const void *src, void *dst,
         const reorder_params_t &params, int64_t M, int64_t N);
+
+// Portable equivalents of the grouped (MoE) dynamic-quantization kernels in
+// dynamic_quant_impl/, for hosts without AVX-512. Same layouts as the
+// _native versions: sources are independent [M_i, K_i] matrices with row
+// stride lda[i], destinations are [M_i, K_i] with stride dst_lda[i]. The
+// per-token forms write one scale per row; the per-group forms write G
+// scales per row at index m * G + g, with group_size = K_i / G.
+void dynamic_per_token_group_quant_bf16_s8_ref(
+        const std::vector<const void *> &src, const std::vector<int> &M,
+        const std::vector<int> &K, const std::vector<int> &lda,
+        const std::vector<void *> &dst, const std::vector<int> &dst_lda,
+        const std::vector<float *> &scales, int num_threads);
+void dynamic_per_token_group_quant_f32_s8_ref(
+        const std::vector<const void *> &src, const std::vector<int> &M,
+        const std::vector<int> &K, const std::vector<int> &lda,
+        const std::vector<void *> &dst, const std::vector<int> &dst_lda,
+        const std::vector<float *> &scales, int num_threads);
+void dynamic_per_token_group_quant_f16_s8_ref(
+        const std::vector<const void *> &src, const std::vector<int> &M,
+        const std::vector<int> &K, const std::vector<int> &lda,
+        const std::vector<void *> &dst, const std::vector<int> &dst_lda,
+        const std::vector<float *> &scales, int num_threads);
+void dynamic_per_group_group_quant_bf16_s8_ref(
+        const std::vector<const void *> &src, const std::vector<int> &M,
+        const std::vector<int> &K, const std::vector<int> &lda,
+        const std::vector<void *> &dst, const std::vector<int> &dst_lda,
+        const std::vector<float *> &scales, int64_t G, int num_threads);
+void dynamic_per_group_group_quant_f32_s8_ref(
+        const std::vector<const void *> &src, const std::vector<int> &M,
+        const std::vector<int> &K, const std::vector<int> &lda,
+        const std::vector<void *> &dst, const std::vector<int> &dst_lda,
+        const std::vector<float *> &scales, int64_t G, int num_threads);
 
 } // namespace reorder
 } // namespace lowoha

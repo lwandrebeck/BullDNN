@@ -17,6 +17,7 @@
 #include "lowoha_operators/reorder/lowoha_reorder_utils.hpp"
 #include "common/platform_info.hpp"
 #include "lowoha_operators/reorder/reorder_data_type/dynamic_quant_impl/dynamic_kernels.hpp"
+#include "lowoha_operators/reorder/reorder_data_type/scalar_impl/scalar_kernels.hpp"
 
 #include <algorithm>
 #include <vector>
@@ -388,10 +389,11 @@ bool dispatch_group_dynamic_per_token(const std::vector<const void *> &src,
         const std::vector<int> &lda, const std::vector<void *> &dst,
         const std::vector<int> &dst_lda, const std::vector<void *> &scale,
         const group_dynamic_quant_params_t &params) {
-    // Native kernels below emit AVX-512 (zmm); decline on non-AVX-512 hosts
-    // (e.g. AMD family 15h) so the caller fails gracefully instead of SIGILL.
-    if (!zendnnl::common::zendnnl_platform_info().get_avx512f_status())
-        return false;
+    // The _native kernels emit AVX-512; hosts without it (AMD family 15h
+    // among them) run the portable _ref kernels instead, which follow the
+    // same layouts and the same rounding as dynamic_per_token_ref_kernel.cpp.
+    const bool has_avx512
+            = zendnnl::common::zendnnl_platform_info().get_avx512f_status();
     if (params.dst_dtype != data_type_t::s8) return false;
     if (params.scale_dtype != data_type_t::f32
             && params.scale_dtype != data_type_t::bf16
@@ -427,14 +429,29 @@ bool dispatch_group_dynamic_per_token(const std::vector<const void *> &src,
     }
 
     if (params.src_dtype == data_type_t::bf16) {
-        dynamic_per_token_group_quant_bf16_s8_native(
-                src, M, K, lda, dst, dst_lda, scale_f32, params.num_threads);
+        if (has_avx512) {
+            dynamic_per_token_group_quant_bf16_s8_native(src, M, K, lda, dst,
+                    dst_lda, scale_f32, params.num_threads);
+        } else {
+            dynamic_per_token_group_quant_bf16_s8_ref(src, M, K, lda, dst,
+                    dst_lda, scale_f32, params.num_threads);
+        }
     } else if (params.src_dtype == data_type_t::f32) {
-        dynamic_per_token_group_quant_f32_s8_native(
-                src, M, K, lda, dst, dst_lda, scale_f32, params.num_threads);
+        if (has_avx512) {
+            dynamic_per_token_group_quant_f32_s8_native(src, M, K, lda, dst,
+                    dst_lda, scale_f32, params.num_threads);
+        } else {
+            dynamic_per_token_group_quant_f32_s8_ref(src, M, K, lda, dst,
+                    dst_lda, scale_f32, params.num_threads);
+        }
     } else {
-        dynamic_per_token_group_quant_f16_s8_native(
-                src, M, K, lda, dst, dst_lda, scale_f32, params.num_threads);
+        if (has_avx512) {
+            dynamic_per_token_group_quant_f16_s8_native(src, M, K, lda, dst,
+                    dst_lda, scale_f32, params.num_threads);
+        } else {
+            dynamic_per_token_group_quant_f16_s8_ref(src, M, K, lda, dst,
+                    dst_lda, scale_f32, params.num_threads);
+        }
     }
 
     if (scale_needs_narrow) {
@@ -463,10 +480,11 @@ bool dispatch_group_dynamic_per_group(const std::vector<const void *> &src,
         const std::vector<int> &lda, const std::vector<void *> &dst,
         const std::vector<int> &dst_lda, const std::vector<void *> &scale,
         const group_dynamic_quant_params_t &params) {
-    // Native kernels below emit AVX-512 (zmm); decline on non-AVX-512 hosts
-    // (e.g. AMD family 15h) so the caller fails gracefully instead of SIGILL.
-    if (!zendnnl::common::zendnnl_platform_info().get_avx512f_status())
-        return false;
+    // The _native kernels emit AVX-512; hosts without it (AMD family 15h
+    // among them) run the portable _ref kernels instead, which follow the
+    // same layouts and the same rounding as dynamic_per_token_ref_kernel.cpp.
+    const bool has_avx512
+            = zendnnl::common::zendnnl_platform_info().get_avx512f_status();
     if (params.dst_dtype != data_type_t::s8) return false;
     if (params.scale_dtype != data_type_t::f32
             && params.scale_dtype != data_type_t::bf16) {
@@ -503,11 +521,21 @@ bool dispatch_group_dynamic_per_group(const std::vector<const void *> &src,
     }
 
     if (params.src_dtype == data_type_t::bf16) {
-        dynamic_per_group_group_quant_bf16_s8_native(
-                src, M, K, lda, dst, dst_lda, scale_f32, G, params.num_threads);
+        if (has_avx512) {
+            dynamic_per_group_group_quant_bf16_s8_native(src, M, K, lda, dst,
+                    dst_lda, scale_f32, G, params.num_threads);
+        } else {
+            dynamic_per_group_group_quant_bf16_s8_ref(src, M, K, lda, dst,
+                    dst_lda, scale_f32, G, params.num_threads);
+        }
     } else {
-        dynamic_per_group_group_quant_f32_s8_native(
-                src, M, K, lda, dst, dst_lda, scale_f32, G, params.num_threads);
+        if (has_avx512) {
+            dynamic_per_group_group_quant_f32_s8_native(src, M, K, lda, dst,
+                    dst_lda, scale_f32, G, params.num_threads);
+        } else {
+            dynamic_per_group_group_quant_f32_s8_ref(src, M, K, lda, dst,
+                    dst_lda, scale_f32, G, params.num_threads);
+        }
     }
 
     if (scale_is_bf16) {
