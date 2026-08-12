@@ -247,6 +247,32 @@ bool validateMatmulKernelName(const std::string &kernel_name) {
             != VALID_KERNEL_NAMES.end();
 }
 
+matmul_algo_t strToMatmulAlgo(const std::string &kernel_name) {
+    // Inverse of algoToStr(). "auto_tuner" is accepted as an alias of "auto"
+    // because that is the enumerator's own name and scripts use both spellings.
+    if (kernel_name == "dynamic_dispatch") {
+        return matmul_algo_t::dynamic_dispatch;
+    }
+    if (kernel_name == "aocl_dlp_blocked") {
+        return matmul_algo_t::aocl_dlp_blocked;
+    }
+    if (kernel_name == "onednn_blocked") { return matmul_algo_t::onednn_blocked; }
+    if (kernel_name == "libxsmm_blocked") {
+        return matmul_algo_t::libxsmm_blocked;
+    }
+    if (kernel_name == "aocl_dlp") { return matmul_algo_t::aocl_dlp; }
+    if (kernel_name == "onednn") { return matmul_algo_t::onednn; }
+    if (kernel_name == "libxsmm") { return matmul_algo_t::libxsmm; }
+    if (kernel_name == "batched_sgemm") { return matmul_algo_t::batched_sgemm; }
+    if (kernel_name == "auto" || kernel_name == "auto_tuner") {
+        return matmul_algo_t::auto_tuner;
+    }
+    if (kernel_name == "reference") { return matmul_algo_t::reference; }
+    if (kernel_name == "native_gemm") { return matmul_algo_t::native_gemm; }
+    if (kernel_name == "native_brgemm") { return matmul_algo_t::native_brgemm; }
+    return matmul_algo_t::none;
+}
+
 void flush_cache(size_t cache_size) {
     // Pre-calculate to avoid runtime variability
     size_t buffer_size = cache_size * 2;

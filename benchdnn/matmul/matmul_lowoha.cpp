@@ -212,6 +212,14 @@ void set_lowoha_matmul_params(matmul_params &params, int &lda, int &ldb,
     matmul_dtypes.compute = data_type_t::none;
     params.dtypes = matmul_dtypes;
 
+    // Route --kernel_name to the library. `matmul_params::lowoha_algo` is
+    // default-constructed to matmul_algo_t::none, and kernel_select() turns
+    // `none` into aocl_dlp_blocked; without this assignment the requested
+    // kernel was silently ignored and every LOWOHA matmul run failed on a build
+    // configured with --no-aocldlp. An unrecognized name maps back to `none`,
+    // which preserves the library's own default selection.
+    params.lowoha_algo = strToMatmulAlgo(cfg.kernel_name);
+
     // Check if this is INT8 quantization
     bool is_int8 = (input_tensor.get_data_type() == data_type_t::u8
                            || input_tensor.get_data_type() == data_type_t::s8)
