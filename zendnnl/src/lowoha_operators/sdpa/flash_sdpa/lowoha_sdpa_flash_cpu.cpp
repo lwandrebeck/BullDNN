@@ -16,6 +16,7 @@
 #include <cstring>
 #include <limits>
 #include <optional>
+#include <string>
 #include <stdexcept>
 #include <type_traits>
 
@@ -969,7 +970,39 @@ status_t sdpa_flash_cpu_run_internal(const sdpa_flash_cpu_tensor_view &output,
                 pinfo.get_f16c_status(), pinfo.get_fma_status(),
                 pinfo.get_avx2_status(), pinfo.get_avx512f_status(),
                 pinfo.get_avx512_bw_vl_status()};
-        const simd::simd_tier tier = simd::select_simd_tier(isa);
+        simd::simd_tier tier = simd::select_simd_tier(isa);
+
+        // ZENDNNL_SDPA_SIMD_TIER pins the tier, for A/B comparison between
+        // tiers on one host (scalar | avx | avx_f16c | avx2 | avx512).
+        // A tier the CPU cannot execute is refused rather than obeyed.
+        static const char *tier_env = std::getenv("ZENDNNL_SDPA_SIMD_TIER");
+        if (tier_env != nullptr) {
+            const std::string want(tier_env);
+            simd::simd_tier forced = tier;
+            bool known = true;
+            if (want == "scalar") {
+                forced = simd::simd_tier::scalar;
+            } else if (want == "avx") {
+                forced = simd::simd_tier::avx;
+            } else if (want == "avx_f16c") {
+                forced = simd::simd_tier::avx_f16c;
+            } else if (want == "avx2") {
+                forced = simd::simd_tier::avx2;
+            } else if (want == "avx512") {
+                forced = simd::simd_tier::avx512;
+            } else {
+                known = false;
+                log_error("ZENDNNL_SDPA_SIMD_TIER: unknown tier '", want,
+                        "'; ignoring");
+            }
+            if (known && forced > tier) {
+                log_error("ZENDNNL_SDPA_SIMD_TIER: this CPU cannot run the '",
+                        want, "' tier; ignoring");
+            } else if (known) {
+                tier = forced;
+            }
+        }
+
         apilog_info("sdpa_flash_cpu: using ", simd::simd_tier_name(tier),
                 " SIMD");
 
