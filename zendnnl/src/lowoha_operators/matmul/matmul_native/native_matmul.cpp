@@ -252,6 +252,26 @@ bool native_matmul_execute(matmul_algo_t kernel, char layout, bool transA,
     const bool is_bf16 = (params.dtypes.src == data_type_t::bf16
             && params.dtypes.wei == data_type_t::bf16);
 
+    // Every native BF16 kernel requires AVX512-BF16: both bf16_gemm_execute and
+    // bf16_brgemm_execute are gated on uarch.avx512bf16 below. Without it there
+    // is no native BF16 kernel at all, and the FP32 paths those branches fall
+    // back to are not a substitute -- they would reinterpret 2-byte BF16
+    // buffers as 4-byte floats, reading and writing twice the bytes of every
+    // operand. That silently corrupts the heap past the end of dst (observed on
+    // an A10-8770E as a SIGSEGV inside free() during teardown, after the run
+    // "completed" and reported a timing) and returns garbage for the values it
+    // did write.
+    //
+    // Decline instead, exactly as the INT8 path below does when AVX512-VNNI is
+    // missing. Returning false lets the caller choose another backend rather
+    // than reporting success on a buffer that was never correctly computed.
+    if (is_bf16 && !detect_uarch().avx512bf16) {
+        log_info(
+                "Native kernel: BF16 requires AVX512-BF16, which this host "
+                "does not have; declining so another backend can run it");
+        return false;
+    }
+
     // ════════════════════════════════════════════════════════════════════
     // ALGO 11 (Native BRGEMM): BRGEMM-based paths with GEMM fallback.
     //   BF16 + AVX512BF16 → bf16_brgemm_execute
@@ -338,6 +358,23 @@ bool native_matmul_execute(matmul_algo_t kernel, char layout, bool transA,
     //   No BRGEMM microkernel, no GEMV special path.
     //   Uses inner-product style, adaptive NR, simpler looper.
     // ════════════════════════════════════════════════════════════════════
+
+    // INT8 is implemented only by the BRGEMM path above (int8_brgemm_execute /
+    // int8_gemv_direct); Native GEMM has no INT8 kernel. The FP32 looper reached
+    // below casts src and weight straight to const float*, so an INT8 problem
+    // would have its 1-byte values reinterpreted as 4-byte floats -- reading
+    // roughly four times past the end of both operands and writing dst as FP32
+    // whatever its real dtype. Decline so the caller can pick a backend that
+    // implements INT8. Unlike the BF16 case above this is not ISA-dependent: the
+    // kernel does not exist on any host.
+    if ((params.dtypes.src == data_type_t::u8
+                || params.dtypes.src == data_type_t::s8)
+            && params.dtypes.wei == data_type_t::s8) {
+        log_info(
+                "Native GEMM: INT8 is implemented only by native_brgemm; "
+                "declining so another backend can run it");
+        return false;
+    }
 
     const UarchParams &uarch = detect_uarch();
     GemmDescriptor desc = make_desc(transA, transB, M, N, K, alpha, beta, lda,
