@@ -144,7 +144,8 @@ matmul_algo_t auto_compute_matmul_v1(char layout, char transA, char transB,
         zendnnl::ops::matmul_algo_t kernel, char mem_format_a,
         char mem_format_b, matmul_params &lowoha_param,
         matmul_batch_params_t &batch_params, const void *bias,
-        bool is_weights_const, int num_threads);
+        bool is_weights_const, size_t src_type_size, size_t out_type_size,
+        int num_threads);
 
 /**
  * @brief Auto-tunes and executes matrix multiplication using alternative tuning strategy
@@ -200,7 +201,8 @@ matmul_algo_t auto_compute_matmul_v2(char layout, char transA, char transB,
         zendnnl::ops::matmul_algo_t kernel, char mem_format_a,
         char mem_format_b, matmul_params &lowoha_param,
         matmul_batch_params_t &batch_params, const void *bias,
-        bool is_weights_const, int num_threads);
+        bool is_weights_const, size_t src_type_size, size_t out_type_size,
+        int num_threads);
 } // namespace matmul
 } // namespace lowoha
 } // namespace zendnnl

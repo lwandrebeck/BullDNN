@@ -59,6 +59,30 @@ void matmul_execute(const char layout, const bool transA, const bool transB,
         matmul_batch_params_t &batch_params, unsigned int auto_version);
 
 /**
+ * @brief Execute one concrete algorithm, everything matmul_execute() does once
+ *        an algorithm has been chosen.
+ *
+ * Covers the mm partitioner where it applies, then the backend branches, then
+ * the universal fallback tail. Split out of matmul_execute() so the auto-tuner
+ * runs its candidates through exactly the same path as an explicitly requested
+ * algorithm: the tuner used to call matmul_kernel_wrapper() directly, which
+ * skipped should_use_mm_partitioner() and therefore never reached libxsmm's
+ * partitioned implementation.
+ *
+ * @param kernel In/out. On return it is the algorithm that actually executed,
+ *               which may be the AOCL-DLP fallback marker if the requested one
+ *               declined without computing.
+ */
+void execute_selected_algo(const char layout, const bool transA,
+        const bool transB, const int M, const int N, const int K,
+        const float alpha, const void *src, const int lda, const void *weight,
+        const int ldb, const void *bias, const float beta, void *dst,
+        const int ldc, const bool is_weights_const, const size_t src_type_size,
+        const size_t out_type_size, const int num_threads,
+        matmul_algo_t &kernel, matmul_params &params,
+        matmul_batch_params_t &batch_params);
+
+/**
  * @brief Execute matrix multiplication with automatic kernel selection and optimization
  *
  * This function performs C = alpha * op(A) * op(B) + beta * C + fused post-ops.

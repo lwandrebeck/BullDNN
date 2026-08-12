@@ -138,23 +138,44 @@ void matmul_execute(const char layout, const bool transA, const bool transB,
     const char trans_input = transA ? 't' : 'n';
     const char trans_weight = transB ? 't' : 'n';
 
-    // Auto-tuner kernel selection for single batch.
+    // Auto-tuner kernel selection for single batch. The tuner runs its
+    // candidates through execute_selected_algo() too, so whatever it picks takes
+    // the same path -- partitioner included -- as an explicitly requested algo.
     if (kernel == matmul_algo_t::auto_tuner) {
         if (auto_version == 1) {
             kernel = auto_compute_matmul_v1(layout, trans_input, trans_weight,
                     M, N, K, alpha, src, lda, weight, ldb, beta, dst, ldc,
                     params.dtypes, kernel, params.mem_format_a,
                     params.mem_format_b, params, batch_params, bias,
-                    is_weights_const, num_threads);
+                    is_weights_const, src_type_size, out_type_size,
+                    num_threads);
         } else {
             kernel = auto_compute_matmul_v2(layout, trans_input, trans_weight,
                     M, N, K, alpha, src, lda, weight, ldb, beta, dst, ldc,
                     params.dtypes, kernel, params.mem_format_a,
                     params.mem_format_b, params, batch_params, bias,
-                    is_weights_const, num_threads);
+                    is_weights_const, src_type_size, out_type_size,
+                    num_threads);
         }
         return;
     }
+
+    execute_selected_algo(layout, transA, transB, M, N, K, alpha, src, lda,
+            weight, ldb, bias, beta, dst, ldc, is_weights_const, src_type_size,
+            out_type_size, num_threads, kernel, params, batch_params);
+}
+
+void execute_selected_algo(const char layout, const bool transA,
+        const bool transB, const int M, const int N, const int K,
+        const float alpha, const void *src, const int lda, const void *weight,
+        const int ldb, const void *bias, const float beta, void *dst,
+        const int ldc, const bool is_weights_const, const size_t src_type_size,
+        const size_t out_type_size, const int num_threads,
+        matmul_algo_t &kernel, matmul_params &params,
+        matmul_batch_params_t &batch_params) {
+
+    const char trans_input = transA ? 't' : 'n';
+    const char trans_weight = transB ? 't' : 'n';
 
     // Currently supported only for LIBXSMM BACKEND
     if (should_use_mm_partitioner(kernel)) {

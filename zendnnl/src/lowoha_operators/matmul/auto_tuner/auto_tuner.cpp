@@ -257,7 +257,8 @@ matmul_algo_t auto_compute_matmul_v1(char layout, char transA, char transB,
         zendnnl::ops::matmul_algo_t kernel, char mem_format_a,
         char mem_format_b, matmul_params &lowoha_param,
         matmul_batch_params_t &batch_params, const void *bias,
-        bool is_weights_const, int num_threads) {
+        bool is_weights_const, size_t src_type_size, size_t out_type_size,
+        int num_threads) {
 
     //Simplified Map having Key as struct and value as Algo.
     static std::unordered_map<Key_matmul, matmul_algo_t> matmul_kernel_map;
@@ -286,10 +287,15 @@ matmul_algo_t auto_compute_matmul_v1(char layout, char transA, char transB,
     // actually executed, not what was asked for.
     auto run_algo = [&](matmul_algo_t candidate) {
         matmul_algo_t executed = candidate;
-        matmul_kernel_wrapper(layout, transA, transB, M, N, K, alpha, A, lda, B,
-                ldb, beta, C, ldc, dtypes, executed, mem_format_a, mem_format_b,
-                lowoha_param, batch_params, bias, is_weights_const,
-                num_threads);
+        // Go through execute_selected_algo(), not matmul_kernel_wrapper(), so a
+        // candidate is measured and run exactly as it would be if the caller had
+        // requested it by name -- mm partitioner included. Calling the wrapper
+        // directly skipped the partitioner, so libxsmm was both timed and
+        // executed in its slower unpartitioned form.
+        execute_selected_algo(layout, transA == 't', transB == 't', M, N, K,
+                alpha, A, lda, B, ldb, bias, beta, C, ldc, is_weights_const,
+                src_type_size, out_type_size, num_threads, executed,
+                lowoha_param, batch_params);
         return executed;
     };
 
@@ -425,7 +431,8 @@ matmul_algo_t auto_compute_matmul_v2(char layout, char transA, char transB,
         zendnnl::ops::matmul_algo_t kernel, char mem_format_a,
         char mem_format_b, matmul_params &lowoha_param,
         matmul_batch_params_t &batch_params, const void *bias,
-        bool is_weights_const, int num_threads) {
+        bool is_weights_const, size_t src_type_size, size_t out_type_size,
+        int num_threads) {
     // Per-layer iteration count drives this layer's phase (skip/eval/inference)
     // and selects the eval slot for its current call. The map is keyed by the
     // matmul shape; layers with identical shapes share an entry, which is
@@ -483,10 +490,15 @@ matmul_algo_t auto_compute_matmul_v2(char layout, char transA, char transB,
     // actually executed, not what was asked for.
     auto run_algo = [&](matmul_algo_t candidate) {
         matmul_algo_t executed = candidate;
-        matmul_kernel_wrapper(layout, transA, transB, M, N, K, alpha, A, lda, B,
-                ldb, beta, C, ldc, dtypes, executed, mem_format_a, mem_format_b,
-                lowoha_param, batch_params, bias, is_weights_const,
-                num_threads);
+        // Go through execute_selected_algo(), not matmul_kernel_wrapper(), so a
+        // candidate is measured and run exactly as it would be if the caller had
+        // requested it by name -- mm partitioner included. Calling the wrapper
+        // directly skipped the partitioner, so libxsmm was both timed and
+        // executed in its slower unpartitioned form.
+        execute_selected_algo(layout, transA == 't', transB == 't', M, N, K,
+                alpha, A, lda, B, ldb, bias, beta, C, ldc, is_weights_const,
+                src_type_size, out_type_size, num_threads, executed,
+                lowoha_param, batch_params);
         return executed;
     };
 
