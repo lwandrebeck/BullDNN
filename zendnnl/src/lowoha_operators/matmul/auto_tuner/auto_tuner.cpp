@@ -103,14 +103,40 @@ static std::vector<matmul_algo_t> parse_algo_candidates_from_env() {
 // falling back to a built-in default when the env var is unset or empty.
 // Magic-statics initialization is thread-safe in C++11+, so the returned
 // const reference is safe to share across threads.
+//
+// The default list must only contain backends this build can actually execute.
+// A candidate that returns without computing is not merely useless: the
+// evaluate phase below keeps whichever candidate timed fastest, and "did not
+// compute" times as near-zero, so an unavailable backend would win the
+// comparison and be cached as the best algorithm for that shape.
 const std::vector<matmul_algo_t> &get_algo_candidates() {
     static const std::vector<matmul_algo_t> candidates = []() {
         auto env_candidates = parse_algo_candidates_from_env();
         if (!env_candidates.empty()) { return env_candidates; }
+#if ZENDNNL_DEPENDS_AOCLDLP
         return std::vector<matmul_algo_t> {
                 matmul_algo_t::aocl_dlp_blocked,
                 matmul_algo_t::onednn_blocked,
         };
+#elif ZENDNNL_DEPENDS_ONEDNN
+        // No AOCL-DLP in this build, so aocl_dlp_blocked can never compute and
+        // must not be offered. oneDNN alone covers the dtype range the tuner
+        // sees, which keeps the default matmul path (auto_tuner) working on a
+        // --no-aocldlp build. native_gemm is deliberately left out: it declines
+        // anything that is not f32/bf16, and a declining candidate would be
+        // cached as "fastest" for those dtypes. Add it explicitly through
+        // ZENDNNL_MATMUL_AUTO_ALGO_CANDIDATES to tune f32/bf16 shapes against
+        // it.
+        return std::vector<matmul_algo_t> {
+                matmul_algo_t::onednn_blocked,
+        };
+#else
+        // Neither AOCL-DLP nor oneDNN: the native kernels are the only thing
+        // left that can compute anything at all.
+        return std::vector<matmul_algo_t> {
+                matmul_algo_t::native_gemm,
+        };
+#endif
     }();
     return candidates;
 }
