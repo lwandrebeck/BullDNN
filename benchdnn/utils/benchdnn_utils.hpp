@@ -286,12 +286,19 @@ std::string algoToStr(matmul_algo_t algo);
 /** @brief List of valid kernel names accepted for matmul benchmarking.
  *
  * Supported names: aocl_dlp_blocked, onednn_blocked, libxsmm_blocked, aocl_dlp,
- * onednn, libxsmm, batched_sgemm, auto, dynamic_dispatch, reference.
+ * onednn, libxsmm, batched_sgemm, auto, auto_tuner, dynamic_dispatch,
+ * native_gemm, native_brgemm, reference.
+ *
+ * `native_gemm`, `native_brgemm` and the `auto_tuner` spelling of `auto` are
+ * real `matmul_algo_t` values, so they belong here: a name missing from this
+ * list is silently replaced by an AOCL-DLP default, which cannot run at all on
+ * a build configured with --no-aocldlp.
  * Used when validating user-specified kernel names.
  */
 inline const std::vector<std::string> VALID_KERNEL_NAMES = {"aocl_dlp_blocked",
         "onednn_blocked", "libxsmm_blocked", "aocl_dlp", "onednn", "libxsmm",
-        "batched_sgemm", "auto", "dynamic_dispatch", "reference"};
+        "batched_sgemm", "auto", "auto_tuner", "dynamic_dispatch",
+        "native_gemm", "native_brgemm", "reference"};
 
 /**
  * @brief Validates that the given kernel name is supported for matmul.
@@ -300,6 +307,21 @@ inline const std::vector<std::string> VALID_KERNEL_NAMES = {"aocl_dlp_blocked",
  * @return true if valid, false if unknown (error is logged).
  */
 bool validateMatmulKernelName(const std::string &kernel_name);
+
+/**
+ * @brief Converts a benchdnn kernel name into the corresponding `matmul_algo_t`.
+ *
+ * Inverse of `algoToStr()`, and additionally accepts "auto_tuner" as an alias of
+ * "auto". This is what lets `--kernel_name` actually reach the library: the
+ * LOWOHA matmul entry point receives the algorithm through
+ * `matmul_params::lowoha_algo`, which is default-constructed to
+ * `matmul_algo_t::none`.
+ *
+ * @param kernel_name Kernel name, expected to be one of VALID_KERNEL_NAMES.
+ * @return matmul_algo_t Corresponding enum value, or `matmul_algo_t::none` if
+ *         the name is unknown (the caller then keeps the library default).
+ */
+matmul_algo_t strToMatmulAlgo(const std::string &kernel_name);
 
 /**
 * @brief Simulates cold cache conditions by flushing the entire cache.
