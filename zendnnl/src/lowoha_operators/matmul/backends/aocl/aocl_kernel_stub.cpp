@@ -68,6 +68,56 @@ void clear_aocl_matmul_weight_caches() {
     // No AOCL weight caches exist in this build; nothing to clear.
 }
 
+// The three W4A8 entry points below are referenced by always-compiled code
+// (ggml_weight_unpack.cpp, group_matmul_dispatch.cpp,
+// group_matmul_n_tile.cpp), so without stubs a ZENDNNL_DEPENDS_AOCLDLP=0
+// build fails to link.
+//
+// Note that cvt_s4_to_s8 is itself backend-agnostic — it only sign-extends
+// s4 nibbles to s8 and its own documentation describes it as shared with the
+// GGML Q4_0 unpack path — so the real fix upstream is to move it out of the
+// AOCL backend rather than stub it here. It is stubbed rather than
+// reimplemented on purpose: a second copy of weight-unpacking logic could
+// drift from the original and silently change quantized weights. Failing
+// loudly is preferable, and no AOCL-DLP-free path can consume the result
+// anyway (the s8 GEMM that would follow needs either AOCL-DLP or the
+// AVX-512 VNNI custom kernel).
+void cvt_s4_to_s8(const int8_t *, int8_t *, int, int, int, bool) {
+    apilog_error(
+            "W4A8/GGML s4->s8 upcast (cvt_s4_to_s8) invoked but ZenDNNL was "
+            "built without AOCL-DLP support (ZENDNNL_DEPENDS_AOCLDLP=0), "
+            "which is where that routine currently lives.");
+    EXCEPTION_WITH_LOC(
+            "W4A8/GGML s4->s8 upcast (cvt_s4_to_s8) invoked but ZenDNNL was "
+            "built without AOCL-DLP support (ZENDNNL_DEPENDS_AOCLDLP=0).");
+}
+
+// Void, and its callers rely on the plain-s8 LRU actually being populated:
+// returning quietly would leave them pointing at unconverted s4 data, so
+// fail loudly instead.
+void w4a8_populate_plain_s8_cache(const std::vector<const void *> &,
+        const std::vector<int> &, const std::vector<int> &,
+        const std::vector<int> &, const std::vector<bool> &,
+        const std::vector<matmul_params> &, int, std::vector<void *> &,
+        bool &) {
+    apilog_error(
+            "W4A8 plain-s8 cache population invoked but ZenDNNL was built "
+            "without AOCL-DLP support (ZENDNNL_DEPENDS_AOCLDLP=0).");
+    EXCEPTION_WITH_LOC(
+            "W4A8 plain-s8 cache population invoked but ZenDNNL was built "
+            "without AOCL-DLP support (ZENDNNL_DEPENDS_AOCLDLP=0).");
+}
+
+// Returns a status and every caller checks it, so decline gracefully here
+// rather than throwing.
+status_t broadcast_w4a8_src_scale(
+        matmul_params &, int, std::vector<uint8_t> &) {
+    apilog_error(
+            "W4A8 source-scale broadcast requested but ZenDNNL was built "
+            "without AOCL-DLP support (ZENDNNL_DEPENDS_AOCLDLP=0).");
+    return status_t::unimplemented;
+}
+
 template <typename T>
 bool reorderAndCacheWeights(Key_matmul, const void *, void *&, const int,
         const int, const int, const char, const char, char,
