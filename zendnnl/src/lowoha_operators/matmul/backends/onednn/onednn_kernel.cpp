@@ -199,9 +199,15 @@ void getOrCreateBlockedWeights(bool transA, bool transB, int M, int K, int N,
     matmul_weight_cache.add(cache_key, dnnl_params.weights.mem);
 }
 
-void matmul_onednn_wrapper(char transA, char transB, int M, int N, int K,
-        float alpha, const void *A, int lda, const void *B, int ldb, float beta,
-        void *C, int ldc, matmul_params &lowoha_params,
+// Real implementation. Every oneDNN entry point below can throw dnnl::error --
+// notably primitive-descriptor creation, which fails outright when the host ISA
+// cannot serve the requested dtype (e.g. bf16 on a CPU without AVX-512 or
+// AVX2-VNNI-2). matmul_onednn_wrapper() is the public entry point and converts
+// that throw into the "did not compute" contract used by the rest of the
+// dispatch; see the comment there.
+static void matmul_onednn_wrapper_impl(char transA, char transB, int M, int N,
+        int K, float alpha, const void *A, int lda, const void *B, int ldb,
+        float beta, void *C, int ldc, matmul_params &lowoha_params,
         matmul_batch_params_t &batch_params, const void *bias,
         zendnnl::ops::matmul_algo_t &kernel, size_t src_batch_stride,
         size_t weight_batch_stride, size_t dst_batch_stride) {
@@ -569,6 +575,35 @@ void matmul_onednn_wrapper(char transA, char transB, int M, int N, int K,
 
     matmul_onednn_kernel_t::execute_matmul(
             dnnl_params, matmul_args, matmul_attr, eng);
+}
+
+void matmul_onednn_wrapper(char transA, char transB, int M, int N, int K,
+        float alpha, const void *A, int lda, const void *B, int ldb, float beta,
+        void *C, int ldc, matmul_params &lowoha_params,
+        matmul_batch_params_t &batch_params, const void *bias,
+        zendnnl::ops::matmul_algo_t &kernel, size_t src_batch_stride,
+        size_t weight_batch_stride, size_t dst_batch_stride) {
+    try {
+        matmul_onednn_wrapper_impl(transA, transB, M, N, K, alpha, A, lda, B,
+                ldb, beta, C, ldc, lowoha_params, batch_params, bias, kernel,
+                src_batch_stride, weight_batch_stride, dst_batch_stride);
+        return;
+    } catch (const dnnl::error &e) {
+        // oneDNN cannot serve this problem on this host -- most commonly a
+        // dtype the CPU has no support for, such as bf16 without AVX-512 or
+        // AVX2-VNNI-2. Letting this escape would call std::terminate: three of
+        // this function's callers (bmm_kernel, bmm_looper, matmul_partitioner)
+        // invoke it from inside an OpenMP parallel region, where an exception
+        // may not cross the region boundary. The same reasoning already governs
+        // the AOCL-DLP tail in lowoha_matmul.cpp.
+        apilog_error("oneDNN could not run this matmul on this host (",
+                e.what() ? e.what() : "unknown dnnl::error",
+                "); output not computed.");
+    }
+    // Report the failure the way the rest of the dispatch expects: marking the
+    // AOCL-DLP fallback makes matmul_direct()'s post-dispatch guard return
+    // status_t::unimplemented instead of reporting success on an untouched C.
+    kernel = matmul_algo_t::aocl_dlp;
 }
 
 #endif
