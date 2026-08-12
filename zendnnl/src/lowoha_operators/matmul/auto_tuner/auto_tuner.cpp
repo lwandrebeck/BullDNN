@@ -118,24 +118,34 @@ const std::vector<matmul_algo_t> &get_algo_candidates() {
                 matmul_algo_t::aocl_dlp_blocked,
                 matmul_algo_t::onednn_blocked,
         };
-#elif ZENDNNL_DEPENDS_ONEDNN
-        // No AOCL-DLP in this build, so aocl_dlp_blocked can never compute and
-        // must not be offered. oneDNN alone covers the dtype range the tuner
-        // sees, which keeps the default matmul path (auto_tuner) working on a
-        // --no-aocldlp build. native_gemm is deliberately left out: it declines
-        // anything that is not f32/bf16, and a declining candidate would be
-        // cached as "fastest" for those dtypes. Add it explicitly through
-        // ZENDNNL_MATMUL_AUTO_ALGO_CANDIDATES to tune f32/bf16 shapes against
-        // it.
-        return std::vector<matmul_algo_t> {
-                matmul_algo_t::onednn_blocked,
-        };
 #else
-        // Neither AOCL-DLP nor oneDNN: the native kernels are the only thing
-        // left that can compute anything at all.
-        return std::vector<matmul_algo_t> {
-                matmul_algo_t::native_gemm,
-        };
+        // No AOCL-DLP in this build, so aocl_dlp_blocked can never compute and
+        // must not be offered. Offer every backend this build does contain: no
+        // single one covers all dtypes on a host without AVX-512, so the list
+        // has to span them. On an Excavator part, for example, oneDNN serves f32
+        // but cannot create a BF16 primitive, while libxsmm serves BF16 but
+        // declines f32.
+        //
+        // Candidates that decline a given problem are safe here because
+        // run_first_computing_candidate() moves on to the next one and the
+        // declined attempt is neither timed nor cached.
+        std::vector<matmul_algo_t> selected;
+#if ZENDNNL_DEPENDS_ONEDNN
+        selected.push_back(matmul_algo_t::onednn_blocked);
+#endif
+#if ZENDNNL_DEPENDS_LIBXSMM
+        // matmul_algo_t::libxsmm, not libxsmm_blocked: the libxsmm branch in
+        // matmul_kernel_wrapper() tests for the former only, so the blocked
+        // spelling reaches the partitioner instead and declines the shapes we
+        // need it for. Measured on an A10-8770E, BF16 512x512x512: algo
+        // libxsmm computes at ~39 GFLOPS, libxsmm_blocked declines.
+        selected.push_back(matmul_algo_t::libxsmm);
+#endif
+        // Always last, and always present: the native kernels need no external
+        // dependency, so they keep the list non-empty even in a build with
+        // neither oneDNN nor libxsmm.
+        selected.push_back(matmul_algo_t::native_gemm);
+        return selected;
 #endif
     }();
     return candidates;
@@ -144,6 +154,61 @@ const std::vector<matmul_algo_t> &get_algo_candidates() {
 inline matmul_algo_t get_algo(
         int index, const std::vector<matmul_algo_t> &candidates) {
     return candidates[index % candidates.size()];
+}
+
+// True when a dispatched call came back marked as the AOCL-DLP fallback in a
+// build that has no AOCL-DLP. matmul_kernel_wrapper() takes `kernel` by
+// reference and rewrites it to aocl_dlp when a backend declined without
+// computing, so this is the dispatch's existing "did not compute" signal.
+//
+// The tuner must never time or cache such a call: doing nothing is the fastest
+// thing a candidate can do, so an algorithm that cannot run on this host would
+// win every comparison and be cached as the best one for that shape. Where
+// AOCL-DLP is present the fallback genuinely computed, so this is always false
+// and every decision below behaves exactly as before.
+inline bool did_not_compute(matmul_algo_t executed) {
+#if ZENDNNL_DEPENDS_AOCLDLP
+    (void)executed;
+    return false;
+#else
+    return executed == matmul_algo_t::aocl_dlp
+            || executed == matmul_algo_t::aocl_dlp_blocked
+            || executed == matmul_algo_t::batched_sgemm;
+#endif
+}
+
+// Runs `first`, then each remaining candidate in turn until one actually
+// computes, and returns the algorithm that did. `run` executes a single
+// candidate and returns what the dispatch reports having executed.
+//
+// This is what lets the candidate list hold algorithms that only cover some
+// dtypes. Without it, a candidate that cannot serve the current problem would
+// leave the output untouched and the caller would report failure -- which the
+// skip phase would do on its very first call, before any timing exists.
+// Retrying costs nothing because a declining backend computes nothing.
+// `computed` is set false only when no candidate could run the problem.
+template <typename RunFn>
+matmul_algo_t run_first_computing_candidate(matmul_algo_t first,
+        const std::vector<matmul_algo_t> &candidates, RunFn &&run,
+        bool &computed) {
+    matmul_algo_t executed = run(first);
+    if (!did_not_compute(executed)) {
+        computed = true;
+        return executed;
+    }
+    for (matmul_algo_t candidate : candidates) {
+        if (candidate == first) { continue; }
+        apilog_info("AutoTuner: algo ", static_cast<int32_t>(first),
+                " could not run this problem; trying algo ",
+                static_cast<int32_t>(candidate));
+        executed = run(candidate);
+        if (!did_not_compute(executed)) {
+            computed = true;
+            return executed;
+        }
+    }
+    computed = false;
+    return executed;
 }
 
 /**
@@ -215,6 +280,19 @@ matmul_algo_t auto_compute_matmul_v1(char layout, char transA, char transB,
     const auto &candidates = get_algo_candidates();
     const auto num_algo = candidates.size();
 
+    // Executes one candidate and returns the algorithm the dispatch reports
+    // having run. matmul_kernel_wrapper() takes `kernel` by reference and
+    // rewrites it when a backend declines, so the returned value is what
+    // actually executed, not what was asked for.
+    auto run_algo = [&](matmul_algo_t candidate) {
+        matmul_algo_t executed = candidate;
+        matmul_kernel_wrapper(layout, transA, transB, M, N, K, alpha, A, lda, B,
+                ldb, beta, C, ldc, dtypes, executed, mem_format_a, mem_format_b,
+                lowoha_param, batch_params, bias, is_weights_const,
+                num_threads);
+        return executed;
+    };
+
     static const unsigned int base_skip_iter
             = get_auto_tuner_iter("ZENDNNL_MATMUL_SKIP_ITER", true);
     static const unsigned int base_evaluate_iter
@@ -250,7 +328,6 @@ matmul_algo_t auto_compute_matmul_v1(char layout, char transA, char transB,
             || std::get<0>(found_obj->second) < skip_iter) {
 
         apilog_info("AutoTuner SKIP Iteration");
-        kernel = candidates[0];
 
         //If Key not found in map then time the algo and add new element to map
         if (found_obj == matmul_kernel_map1_helper.end()) {
@@ -258,10 +335,9 @@ matmul_algo_t auto_compute_matmul_v1(char layout, char transA, char transB,
             //Time start
             profiler.tbp_start();
 
-            matmul_kernel_wrapper(layout, transA, transB, M, N, K, alpha, A,
-                    lda, B, ldb, beta, C, ldc, dtypes, kernel, mem_format_a,
-                    mem_format_b, lowoha_param, batch_params, bias,
-                    is_weights_const, num_threads);
+            bool computed = false;
+            kernel = run_first_computing_candidate(
+                    candidates[0], candidates, run_algo, computed);
             //Time end
             profiler.tbp_stop();
             cur_algo_time = profiler.tbp_elapsedtime();
@@ -269,22 +345,29 @@ matmul_algo_t auto_compute_matmul_v1(char layout, char transA, char transB,
             //Create new entry
             get_lowoha_mutex().lock();
             //Map value is tuple of (iteration count, execution time of algo, Algo Path)
+            // Seed the best-time field with the largest float when nothing
+            // computed. Seeding it with the ~0 ms of a call that did no work
+            // would make this entry unbeatable for the life of the process, so
+            // no real measurement could ever replace it.
             matmul_kernel_map1_helper[key_obj_auto]
-                    = {1, cur_algo_time, candidates[0]};
+                    = {1,
+                            computed ? cur_algo_time
+                                     : std::numeric_limits<float>::max(),
+                            kernel};
             //Simplified Map having Key as struct and value as Algo.
-            matmul_kernel_map[key_obj_auto] = candidates[0];
+            matmul_kernel_map[key_obj_auto] = kernel;
             get_lowoha_mutex().unlock();
         }
         //If key found then increment the iter_count and run next algo.
         else {
             get_lowoha_mutex().lock();
-            kernel = get_algo(std::get<0>(found_obj->second), candidates);
+            matmul_algo_t skip_candidate
+                    = get_algo(std::get<0>(found_obj->second), candidates);
             std::get<0>(found_obj->second) += 1;
             get_lowoha_mutex().unlock();
-            matmul_kernel_wrapper(layout, transA, transB, M, N, K, alpha, A,
-                    lda, B, ldb, beta, C, ldc, dtypes, kernel, mem_format_a,
-                    mem_format_b, lowoha_param, batch_params, bias,
-                    is_weights_const, num_threads);
+            bool computed = false;
+            kernel = run_first_computing_candidate(
+                    skip_candidate, candidates, run_algo, computed);
         }
     }
     //Read Value from map.
@@ -293,10 +376,9 @@ matmul_algo_t auto_compute_matmul_v1(char layout, char transA, char transB,
         //Get best algo for given layer from MAP
         kernel = matmul_kernel_map[key_obj_auto];
 
-        matmul_kernel_wrapper(layout, transA, transB, M, N, K, alpha, A, lda, B,
-                ldb, beta, C, ldc, dtypes, kernel, mem_format_a, mem_format_b,
-                lowoha_param, batch_params, bias, is_weights_const,
-                num_threads);
+        bool computed = false;
+        kernel = run_first_computing_candidate(
+                kernel, candidates, run_algo, computed);
     }
     //Updates the map values by running different algorithms
     else {
@@ -307,16 +389,15 @@ matmul_algo_t auto_compute_matmul_v1(char layout, char transA, char transB,
         unsigned int iter_count = std::get<0>(state);
         // Evaluate phase restarts round-robin from candidates[0]
         unsigned int eval_index = iter_count - skip_iter;
-        kernel = get_algo(eval_index, candidates);
+        matmul_algo_t eval_candidate = get_algo(eval_index, candidates);
         std::get<0>(state) += 1;
         get_lowoha_mutex().unlock();
         //Time start
         profiler.tbp_start();
 
-        matmul_kernel_wrapper(layout, transA, transB, M, N, K, alpha, A, lda, B,
-                ldb, beta, C, ldc, dtypes, kernel, mem_format_a, mem_format_b,
-                lowoha_param, batch_params, bias, is_weights_const,
-                num_threads);
+        bool computed = false;
+        kernel = run_first_computing_candidate(
+                eval_candidate, candidates, run_algo, computed);
 
         //Time end
         profiler.tbp_stop();
@@ -325,7 +406,10 @@ matmul_algo_t auto_compute_matmul_v1(char layout, char transA, char transB,
                 " time:", cur_algo_time);
         //If current run gives better timing then update
         get_lowoha_mutex().lock();
-        if (cur_algo_time < std::get<1>(state)) {
+        // Only a call that computed carries a usable time. The measurement spans
+        // any declined attempt preceding the successful one, but a decline
+        // returns without doing work, so the distortion is negligible.
+        if (computed && cur_algo_time < std::get<1>(state)) {
             std::get<1>(state) = cur_algo_time; //Minimum time for chosen algo
             std::get<2>(state) = kernel;
             matmul_kernel_map[key_obj_auto] = kernel;
@@ -389,6 +473,23 @@ matmul_algo_t auto_compute_matmul_v2(char layout, char transA, char transB,
     }
 
     static std::vector<double> global_eval_times(evaluate_iter, 0.0);
+    // Samples per eval slot that actually computed; see the selection logic and
+    // the eval phase below.
+    static std::vector<unsigned int> global_eval_samples(evaluate_iter, 0);
+
+    // Executes one candidate and returns the algorithm the dispatch reports
+    // having run. matmul_kernel_wrapper() takes `kernel` by reference and
+    // rewrites it when a backend declines, so the returned value is what
+    // actually executed, not what was asked for.
+    auto run_algo = [&](matmul_algo_t candidate) {
+        matmul_algo_t executed = candidate;
+        matmul_kernel_wrapper(layout, transA, transB, M, N, K, alpha, A, lda, B,
+                ldb, beta, C, ldc, dtypes, executed, mem_format_a, mem_format_b,
+                lowoha_param, batch_params, bias, is_weights_const,
+                num_threads);
+        return executed;
+    };
+
     get_lowoha_mutex().lock();
     unsigned int iter_count = per_layer_iter_count[key_obj_auto];
     get_lowoha_mutex().unlock();
@@ -398,12 +499,10 @@ matmul_algo_t auto_compute_matmul_v2(char layout, char transA, char transB,
     //so the first eval sample for each algo is not penalized by one-time setup costs.
     if (iter_count < skip_iter) {
         apilog_info("AutoTuner SKIP Iteration");
-        kernel = get_algo(iter_count, candidates);
-
-        matmul_kernel_wrapper(layout, transA, transB, M, N, K, alpha, A, lda, B,
-                ldb, beta, C, ldc, dtypes, kernel, mem_format_a, mem_format_b,
-                lowoha_param, batch_params, bias, is_weights_const,
-                num_threads);
+        bool computed = false;
+        kernel = run_first_computing_candidate(
+                get_algo(iter_count, candidates), candidates, run_algo,
+                computed);
 
         get_lowoha_mutex().lock();
         per_layer_iter_count[key_obj_auto] = iter_count + 1;
@@ -417,9 +516,24 @@ matmul_algo_t auto_compute_matmul_v2(char layout, char transA, char transB,
             // then map it back to the algo that was run at that slot via the
             // round-robin index (eval slot e ran candidates[e % num_algo]).
             const auto &times = global_eval_times;
-            unsigned int best_e
-                    = static_cast<unsigned int>(std::distance(times.begin(),
-                            std::min_element(times.begin(), times.end())));
+            // Consider only slots that actually computed at least once. A slot
+            // whose algorithm declined every call has a summed time of 0 and
+            // would otherwise always be the minimum.
+            unsigned int best_e = 0;
+            bool best_found = false;
+            for (unsigned int e = 0; e < times.size(); ++e) {
+                if (global_eval_samples[e] == 0) { continue; }
+                if (!best_found || times[e] < times[best_e]) {
+                    best_e = e;
+                    best_found = true;
+                }
+            }
+            if (!best_found) {
+                // Nothing computed during the whole eval phase. Keep slot 0 so
+                // behaviour matches the previous code rather than leaving the
+                // algo unset; the dispatch will report the failure itself.
+                best_e = 0;
+            }
             unsigned int best_idx = best_e % num_algo;
             global_best_algo = candidates[best_idx];
             global_best_computed = true;
@@ -431,26 +545,23 @@ matmul_algo_t auto_compute_matmul_v2(char layout, char transA, char transB,
         kernel = global_best_algo;
         get_lowoha_mutex().unlock();
 
-        matmul_kernel_wrapper(layout, transA, transB, M, N, K, alpha, A, lda, B,
-                ldb, beta, C, ldc, dtypes, kernel, mem_format_a, mem_format_b,
-                lowoha_param, batch_params, bias, is_weights_const,
-                num_threads);
+        bool computed = false;
+        kernel = run_first_computing_candidate(
+                kernel, candidates, run_algo, computed);
     }
     //Eval phase: round-robin across candidates, accumulate per-slot time globally.
     else {
         // Evaluate phase restarts round-robin from candidates[0]
         unsigned int eval_index = iter_count - skip_iter;
         unsigned int algo_idx = eval_index % num_algo;
-        kernel = candidates[algo_idx];
         double cur_algo_time = 0.0;
         profiler_t profiler;
 
         profiler.tbp_start();
 
-        matmul_kernel_wrapper(layout, transA, transB, M, N, K, alpha, A, lda, B,
-                ldb, beta, C, ldc, dtypes, kernel, mem_format_a, mem_format_b,
-                lowoha_param, batch_params, bias, is_weights_const,
-                num_threads);
+        bool computed = false;
+        kernel = run_first_computing_candidate(
+                candidates[algo_idx], candidates, run_algo, computed);
 
         profiler.tbp_stop();
         cur_algo_time = profiler.tbp_elapsedtime();
@@ -458,7 +569,13 @@ matmul_algo_t auto_compute_matmul_v2(char layout, char transA, char transB,
                 " time:", cur_algo_time);
 
         get_lowoha_mutex().lock();
-        global_eval_times[eval_index] += cur_algo_time;
+        // Only accumulate a slot's time when the call actually computed. A slot
+        // whose algorithm cannot run on this host would otherwise collect ~0 ms
+        // and win the selection below, which compares summed times.
+        if (computed) {
+            global_eval_times[eval_index] += cur_algo_time;
+            global_eval_samples[eval_index] += 1;
+        }
         per_layer_iter_count[key_obj_auto] = iter_count + 1;
         get_lowoha_mutex().unlock();
     }

@@ -25,6 +25,7 @@
 #include <cerrno>
 #include <climits>
 #include <cstdlib>
+#include <limits>
 #include <sstream>
 #include <tuple>
 #include <vector>
