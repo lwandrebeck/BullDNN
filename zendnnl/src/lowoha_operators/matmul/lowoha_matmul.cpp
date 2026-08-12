@@ -56,7 +56,13 @@ void matmul_kernel_wrapper(char layout, char transA, char transB, int M, int N,
         log_info("Using onednn kernel");
         matmul_onednn_wrapper(transA, transB, M, N, K, alpha, A, lda, B, ldb,
                 beta, C, ldc, lowoha_param, batch_params, bias, kernel);
-        return;
+        // matmul_onednn_wrapper() marks the AOCL-DLP fallback when oneDNN threw
+        // rather than computing (e.g. bf16 on a host with no AVX-512). Falling
+        // through then lets the chain below handle it properly: AOCL computes it
+        // in a build that has AOCL-DLP, and the tail reports "not computed" in a
+        // build that does not. Returning here would claim success on an
+        // untouched C.
+        if (kernel != matmul_algo_t::aocl_dlp) { return; }
     }
 #endif
     if (kernel == matmul_algo_t::native_gemm
@@ -190,7 +196,10 @@ void matmul_execute(const char layout, const bool transA, const bool transB,
         matmul_onednn_wrapper(trans_input, trans_weight, M, N, K, alpha, src,
                 lda, weight, ldb, beta, dst, ldc, params, batch_params, bias,
                 kernel);
-        return;
+        // See the matching comment in matmul_kernel_wrapper(): a marked AOCL-DLP
+        // fallback means oneDNN threw without computing, so fall through to the
+        // chain below rather than reporting success on an untouched dst.
+        if (kernel != matmul_algo_t::aocl_dlp) { return; }
     }
 
 #endif
