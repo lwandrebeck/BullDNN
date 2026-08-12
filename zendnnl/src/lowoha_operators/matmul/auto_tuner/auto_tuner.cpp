@@ -177,6 +177,34 @@ inline bool did_not_compute(matmul_algo_t executed) {
 #endif
 }
 
+// Hash of the dtype combination, folded into the tuner's key.
+//
+// Key_matmul carries shape, leading dimensions, transposes and the weight
+// pointer, but no dtypes -- so an f32 and a BF16 matmul of the same shape shared
+// one entry, and therefore one "best algorithm". On a host without AVX-512 those
+// two do not even share a backend: oneDNN serves f32 and cannot create a BF16
+// primitive, while libxsmm serves BF16 and declines f32. A single shared entry
+// therefore recorded whichever dtype ran last and made the tuner fight itself,
+// re-selecting on every dtype change instead of settling.
+//
+// extra_input_hash exists for exactly this kind of extra discriminator and is
+// already part of Key_matmul's operator== and its std::hash specialization, so
+// no shared key structure has to change.
+inline size_t hash_dtypes(const matmul_data_types &dtypes) {
+    size_t seed = 0;
+    seed = zendnnl::common::hash_combine(
+            seed, static_cast<uint64_t>(dtypes.src));
+    seed = zendnnl::common::hash_combine(
+            seed, static_cast<uint64_t>(dtypes.wei));
+    seed = zendnnl::common::hash_combine(
+            seed, static_cast<uint64_t>(dtypes.dst));
+    seed = zendnnl::common::hash_combine(
+            seed, static_cast<uint64_t>(dtypes.bias));
+    seed = zendnnl::common::hash_combine(
+            seed, static_cast<uint64_t>(dtypes.compute));
+    return seed;
+}
+
 // Runs `first`, then each remaining candidate in turn until one actually
 // computes, and returns the algorithm that did. `run` executes a single
 // candidate and returns what the dispatch reports having executed.
@@ -271,7 +299,7 @@ matmul_algo_t auto_compute_matmul_v1(char layout, char transA, char transB,
     unsigned int binned_m = get_binned_m(M);
 
     Key_matmul key_obj_auto(transA, transB, binned_m, K, N, lda, ldb, B,
-            (int32_t)matmul_algo_t::none);
+            (int32_t)matmul_algo_t::none, hash_dtypes(dtypes));
 
     double cur_algo_time = 0.0;
     key_obj_auto.weights = is_weights_const ? B : nullptr;
@@ -442,8 +470,8 @@ matmul_algo_t auto_compute_matmul_v2(char layout, char transA, char transB,
     static matmul_algo_t global_best_algo = matmul_algo_t::none;
     static bool global_best_computed = false;
 
-    Key_matmul key_obj_auto(
-            transA, transB, M, K, N, lda, ldb, B, (int32_t)matmul_algo_t::none);
+    Key_matmul key_obj_auto(transA, transB, M, K, N, lda, ldb, B,
+            (int32_t)matmul_algo_t::none, hash_dtypes(dtypes));
 
     key_obj_auto.weights = is_weights_const ? B : nullptr;
 
