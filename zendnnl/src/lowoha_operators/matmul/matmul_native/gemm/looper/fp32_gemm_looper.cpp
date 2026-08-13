@@ -119,6 +119,18 @@ static void native_thread_loop(const GemmDescriptor &desc,
     }
 
     std::vector<matmul_post_op> remaining_postops;
+    // Only a post-op at the head of the chain may be fused. The scan above
+    // accepts the first *fusable* op wherever it sits, but the microkernel
+    // epilogue applies the fused op before everything in remaining_postops, so
+    // fusing an op that is not first silently reorders the chain: binary_add
+    // followed by sigmoid would compute binary_add(sigmoid(x)) rather than
+    // sigmoid(binary_add(x)). Leave a non-leading op unfused so the chain is
+    // applied in the order the caller asked for.
+    if (fused_idx > 0) {
+        fused_op = fused_postop_t::none;
+        fused_idx = -1;
+    }
+
     remaining_postops.reserve(params.postop_.size());
     for (int i = 0; i < static_cast<int>(params.postop_.size()); ++i) {
         if (i != fused_idx) remaining_postops.push_back(params.postop_[i]);

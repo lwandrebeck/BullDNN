@@ -166,6 +166,18 @@ static void bf16_brgemm_thread_loop(const GemmDescriptor &desc,
         }
     }
 
+    // Only a post-op at the head of the chain may be fused. The scan above
+    // accepts the first *fusable* op wherever it sits, but the microkernel
+    // epilogue applies the fused op before everything in remaining_postops, so
+    // fusing an op that is not first silently reorders the chain: binary_add
+    // followed by sigmoid would compute binary_add(sigmoid(x)) rather than
+    // sigmoid(binary_add(x)). Leave a non-leading op unfused so the chain is
+    // applied in the order the caller asked for.
+    if (fused_idx > 0) {
+        fused_op = fused_postop_t::none;
+        fused_idx = -1;
+    }
+
     std::vector<matmul_post_op> remaining_postops;
     std::vector<matmul_post_op> fused_as_postop;
     for (int i = 0; i < static_cast<int>(params.postop_.size()); ++i)
