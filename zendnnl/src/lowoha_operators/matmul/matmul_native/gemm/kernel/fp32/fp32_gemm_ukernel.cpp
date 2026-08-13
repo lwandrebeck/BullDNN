@@ -565,6 +565,16 @@ void scalar_microkernel(const float *pa, int a_stride, const float *pb,
             for (int n = 0; n < nr_count; ++n)
                 C[m * ldc + n] += a * pb[kk * b_stride + n];
         }
+    apply_bias_and_postop_tile(C, ldc, mr_count, nr_count, bias, fused_op);
+}
+
+// Bias and fused activation over an already-accumulated mr_count x nr_count
+// tile. Split out of scalar_microkernel() so the 128-bit FMA4/AVX microkernel
+// shares exactly this arithmetic instead of restating it, which would let the
+// two drift apart. The AVX-512 kernels are untouched: they apply their own
+// vectorized epilogues.
+void apply_bias_and_postop_tile(float *C, int ldc, int mr_count, int nr_count,
+        const float *bias, fused_postop_t fused_op) {
     // Bias
     if (bias) {
         for (int m = 0; m < mr_count; ++m)

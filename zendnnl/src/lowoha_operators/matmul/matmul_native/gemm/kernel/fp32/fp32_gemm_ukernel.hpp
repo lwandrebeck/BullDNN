@@ -51,9 +51,26 @@ void scalar_microkernel(const float *__restrict__ pa, int a_stride,
         int ldc, int k, int mr_act, int nr_act, float beta,
         const float *__restrict__ bias, fused_postop_t fused_op);
 
+// Bias and fused activation over an already-accumulated tile. Shared by
+// scalar_microkernel() and the 128-bit microkernel so the epilogue arithmetic
+// exists in exactly one place.
+void apply_bias_and_postop_tile(float *C, int ldc, int mr_count, int nr_count,
+        const float *bias, fused_postop_t fused_op);
+
 // Select best microkernel for given MR and NR.
 __attribute__((target("avx512f,fma"))) ukernel_fn_t select_ukernel(
         int MR, int NR);
+
+// Select the 128-bit microkernel for hosts without AVX-512, or nullptr when
+// this build has no 128-bit path compiled in.
+//
+// Family 15h has no AVX-512, so select_ukernel() above yields nothing usable and
+// every full tile used to fall through to scalar_microkernel(). This is the
+// replacement for those hosts, built on FMA4 (or FMA3 where the target has it)
+// and 128-bit AVX. It is compiled only when the translation unit's target ISA
+// provides AVX, which for BullDNN means a -march=bdverN build; a plain
+// x86-64 build gets nullptr and the unchanged scalar path.
+ukernel_fn_t select_ukernel_128(int MR, int NR);
 
 } // namespace native
 } // namespace matmul

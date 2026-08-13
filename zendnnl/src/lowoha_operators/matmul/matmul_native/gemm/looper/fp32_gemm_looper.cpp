@@ -131,7 +131,13 @@ static void native_thread_loop(const GemmDescriptor &desc,
     const bool do_pack_a
             = transA || (lda * static_cast<int>(sizeof(float)) > 4096);
 
-    ukernel_fn_t hot_ukernel = use_avx512 ? select_ukernel(MR, NR) : nullptr;
+    // Without AVX-512 this used to be nullptr, sending every full tile to
+    // scalar_microkernel(). select_ukernel_128() supplies a 128-bit FMA4/AVX
+    // kernel for those hosts -- family 15h in particular -- and returns nullptr
+    // itself if this build has no 128-bit path compiled in, preserving the old
+    // behaviour exactly.
+    ukernel_fn_t hot_ukernel
+            = use_avx512 ? select_ukernel(MR, NR) : select_ukernel_128(MR, NR);
 
     const int jc_tiles = (N + NB - 1) / NB;
     const size_t pa_elems = static_cast<size_t>(((MB + MR - 1) / MR) * MR) * KB;

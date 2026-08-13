@@ -1,6 +1,7 @@
 # FP32 GEMM microkernels
 set(sources
-    fp32_gemm_ukernel.cpp)
+    fp32_gemm_ukernel.cpp
+    fp32_gemm_ukernel_128.cpp)
 
 set(headers
     fp32_gemm_ukernel.hpp)
