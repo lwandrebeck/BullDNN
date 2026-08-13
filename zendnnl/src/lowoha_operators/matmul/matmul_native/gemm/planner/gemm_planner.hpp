@@ -52,6 +52,11 @@ struct FP32GemmPlan {
 /// Compute base blocking parameters (shared by BF16 and FP32).
 BlockPlan plan_blocks(const GemmDescriptor &desc, const UarchParams &uarch);
 
+// A-packing policy override: -1 default, 0 never pack, 1 always pack.
+// Read from ZENDNNL_NATIVE_GEMM_PACK_A. Shared so the planner's MB sizing and
+// the looper's packing decision cannot disagree.
+int native_pack_a_override();
+
 /// Build BF16 GEMM plan with thread-local plan caching.
 BF16GemmPlan plan_bf16_gemm(const GemmDescriptor &desc,
         const UarchParams &uarch, const matmul_params &params);

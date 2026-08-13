@@ -120,6 +120,25 @@ static int choose_even_mb(int M, int mb_cap, int MR, int nt, int kb,
     return best_mb;
 }
 
+// A-packing policy override, shared by the planner and the loopers so both
+// agree (the planner sizes MB differently depending on whether A is packed).
+//
+// -1 leaves the default lda-threshold policy alone, 0 never packs, 1 always
+// packs. The default threshold is documented as the Zen4/5 L1 stride
+// prefetcher limit, and on family 15h packing measures as a 22-30%
+// pessimization at lda just over it, so this exists to find the real
+// crossover rather than inherit a constant from another microarchitecture.
+int native_pack_a_override() {
+    static const int s_ov = [] {
+        const char *v = std::getenv("ZENDNNL_NATIVE_GEMM_PACK_A");
+        if (v == nullptr || v[0] == '\0') return -1;
+        if (std::strcmp(v, "0") == 0) return 0;
+        if (std::strcmp(v, "1") == 0) return 1;
+        return -1;
+    }();
+    return s_ov;
+}
+
 static int choose_even_kb(int K, int kb_max) {
     if (kb_max >= K) return K;
     int n_blocks = (K + kb_max - 1) / kb_max;
@@ -284,8 +303,12 @@ FP32GemmPlan plan_fp32_gemm(const GemmDescriptor &desc,
     plan.NB = std::min(plan.NB, N);
 
     {
+        const int pack_ov = native_pack_a_override();
         bool will_pack_a = desc.transA
-                || (desc.lda * static_cast<int>(sizeof(float)) > 4096);
+                || (pack_ov >= 0
+                                ? pack_ov == 1
+                                : (desc.lda * static_cast<int>(sizeof(float))
+                                        > 4096));
         int mb_cap = 0;
         if (will_pack_a) {
             int b_lines_per_krow = ((plan.NR + 15) / 16) * 64;

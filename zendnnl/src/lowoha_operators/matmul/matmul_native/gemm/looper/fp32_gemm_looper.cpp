@@ -151,8 +151,13 @@ static void native_thread_loop(const GemmDescriptor &desc,
     // Pack controls (read once from singleton, cached across calls).
     // Auto-enable A packing when row stride exceeds L1 stride prefetcher
     // limit (~4KB on Zen4/5). For lda=3584 FP32: 14KB stride → pack.
-    const bool do_pack_a
-            = transA || (lda * static_cast<int>(sizeof(float)) > 4096);
+    // transA always packs (the microkernel needs row-major A); the lda
+    // threshold is overridable, see native_pack_a_override().
+    const int pack_a_ov = native_pack_a_override();
+    const bool do_pack_a = transA
+            || (pack_a_ov >= 0
+                            ? pack_a_ov == 1
+                            : (lda * static_cast<int>(sizeof(float)) > 4096));
 
     // Without AVX-512 this used to be nullptr, sending every full tile to
     // scalar_microkernel(). select_ukernel_128() supplies a 128-bit FMA4/AVX
@@ -348,6 +353,18 @@ static void native_thread_loop(const GemmDescriptor &desc,
         {
             static thread_local float *tl_pa = nullptr;
             static thread_local size_t tl_pa_cap = 0;
+            // What tl_pa currently holds. The parallel loop is flattened over
+            // (ic, jc) tiles, but a packed A block depends only on ic and pc --
+            // so packing inside it repacked the same block once per jc tile,
+            // jc_tiles times over. With N=1024 and NB=64 that is 16x the
+            // necessary copy, which is why packing measured as a 2x loss rather
+            // than the ~1% the copy volume implies. jc varies fastest within a
+            // thread's static chunk, so remembering the last block collapses
+            // those repeats back to one.
+            static thread_local const float *tl_pa_src = nullptr;
+            static thread_local int tl_pa_ic = -1, tl_pa_pc = -1;
+            static thread_local int tl_pa_mb = -1, tl_pa_kb = -1;
+            static thread_local int tl_pa_lda = -1;
 
 #pragma omp for schedule(static)
             for (int tile_idx = 0; tile_idx < total_2d_tiles; ++tile_idx) {
@@ -375,10 +392,25 @@ static void native_thread_loop(const GemmDescriptor &desc,
                             tl_pa = static_cast<float *>(std::aligned_alloc(
                                     64, ((need * 4 + 63) & ~size_t(63))));
                             tl_pa_cap = tl_pa ? need : 0;
+                            tl_pa_src = nullptr; // buffer moved, contents gone
                         }
                         if (tl_pa) {
-                            pack_a_block(A, tl_pa, ic, pc, M, K, lda, transA,
-                                    mb_act, kb_act, MR);
+                            // Repack only when the block actually differs. The
+                            // source pointer and lda are part of the key because
+                            // these are thread_local and outlive the call.
+                            if (tl_pa_src != A || tl_pa_ic != ic
+                                    || tl_pa_pc != pc || tl_pa_mb != mb_act
+                                    || tl_pa_kb != kb_act
+                                    || tl_pa_lda != lda) {
+                                pack_a_block(A, tl_pa, ic, pc, M, K, lda,
+                                        transA, mb_act, kb_act, MR);
+                                tl_pa_src = A;
+                                tl_pa_ic = ic;
+                                tl_pa_pc = pc;
+                                tl_pa_mb = mb_act;
+                                tl_pa_kb = kb_act;
+                                tl_pa_lda = lda;
+                            }
                             a_base = tl_pa;
                             a_stride_base = kb_act;
                         } else {
