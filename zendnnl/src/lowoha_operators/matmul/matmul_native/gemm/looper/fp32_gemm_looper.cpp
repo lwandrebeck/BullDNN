@@ -344,9 +344,28 @@ static void native_thread_loop(const GemmDescriptor &desc,
         // K-blocks for its tiles, eliminating inter-K-block barriers.
         const int active_threads = std::min(num_threads, total_2d_tiles);
 
-        const bool skip_pack_a = do_pack_a
-                && (static_cast<size_t>(M) * K * sizeof(float)
-                        <= static_cast<size_t>(uarch.l2_bytes));
+        // Skip packing when A already fits L2, and when K is split into more
+        // than one block.
+        //
+        // The second case follows from the tile-outer, K-inner order above. A
+        // packed block is identified by (ic, pc), but pc cycles inside each
+        // tile, so the single-block cache below holds the last pc of the
+        // previous tile and misses on every jc step -- A gets repacked
+        // jc_tiles times again, which is the cost the cache was added to
+        // remove. Measured on an A10-8770E at M=N=1024, forcing packing on,
+        // the recovery tracks the K-block count exactly: +39% and +101% with
+        // one block (K=1025, 2048), then +46%, +8%, +7% with two, four and
+        // eight (K=4096, 8192, 16384), where not packing is 30-44% faster
+        // outright. Holding one entry per pc would need MB*K*elem of buffer,
+        // 3.9 MB at K=16384, so declining to pack is the cheaper answer.
+        //
+        // transA still packs regardless: the microkernel needs row-major A and
+        // has no alternative there.
+        const bool a_fits_l2 = static_cast<size_t>(M) * K * sizeof(float)
+                <= static_cast<size_t>(uarch.l2_bytes);
+        const bool k_is_split = KB < K;
+        const bool skip_pack_a
+                = do_pack_a && !transA && (a_fits_l2 || k_is_split);
         const bool actual_pack_a = do_pack_a && !skip_pack_a;
 
 #pragma omp parallel num_threads(active_threads)
