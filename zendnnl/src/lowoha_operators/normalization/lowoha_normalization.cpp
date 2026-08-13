@@ -184,8 +184,8 @@ status_t normalization_kernel_wrapper(const void *input, void *output,
                 params.num_threads, thread_guard::max_threads());
         log_info("Using portable 128-bit kernel for ",
                 norm_type_to_str(params.norm_type));
-        status_t portable_status = normalization_portable(
-                input, output, gamma, beta, params, portable_threads);
+        status_t portable_status = normalization_portable(input, output,
+                residual, gamma, beta, params, portable_threads);
         if (portable_status == status_t::success) { return portable_status; }
         log_info("Portable kernel declined; falling back to reference");
     }

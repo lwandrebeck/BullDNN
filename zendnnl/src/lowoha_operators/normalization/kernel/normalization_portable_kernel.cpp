@@ -44,11 +44,10 @@
 // left shift, which is an unpack against zero, and narrowing is round-to-nearest
 // -even done with integer ops. That is where most of the BF16 gain comes from.
 //
-// Scope is deliberately narrow: RMSNorm and LayerNorm, with f32 or bf16 in and
-// out. gamma/beta may be f32, bf16 or f16 -- they are norm_size elements reused
+// Scope: RMSNorm, LayerNorm and the fused residual-add RMSNorm, with f32 or bf16
+// in and out. gamma/beta may be f32, bf16 or f16 -- they are norm_size elements reused
 // by every row, so they are widened to f32 once per call rather than converted
-// per element. BatchNorm, f16 source/destination, and FUSED_ADD_RMS_NORM (which
-// updates `residual` in place before normalising) still go to the reference
+// per element. BatchNorm and f16 source/destination still go to the reference
 // kernel, which remains correct.
 //
 
@@ -290,6 +289,80 @@ void run_rows(const void *input, void *output, const float *gamma,
     }
 }
 
+// FUSED_ADD_RMS_NORM: residual[i] += input[i] in place, then RMS-normalise the
+// summed row into output.
+//
+// Pass 1 stores the sum back to `residual` in src_dt and pass 2 reads it again,
+// so for bf16 the value round-trips through bf16 rounding before it is
+// normalised, and the sum-of-squares is taken over the *rounded* value. Keeping
+// the sum in registers would be slightly more accurate but would not match the
+// reference kernel, so the store-then-reload is deliberate. The reload is
+// L1-resident.
+template <typename SrcT, typename DstT, typename SrcTag, typename DstTag>
+void run_rows_fused(const void *input, void *residual, void *output,
+        const float *gamma, const norm_params &params, int num_threads,
+        SrcTag stag, DstTag dtag) {
+    const uint64_t batch = params.batch;
+    const uint64_t n = params.norm_size;
+    const float eps = params.epsilon;
+    const float inv_n = 1.0f / static_cast<float>(n);
+
+#pragma omp parallel for num_threads(num_threads)
+    for (uint64_t b = 0; b < batch; ++b) {
+        const SrcT *in = static_cast<const SrcT *>(input) + b * n;
+        SrcT *res = static_cast<SrcT *>(residual) + b * n;
+        DstT *out = static_cast<DstT *>(output) + b * n;
+
+        __m128 q0 = _mm_setzero_ps(), q1 = _mm_setzero_ps();
+        __m128 q2 = _mm_setzero_ps(), q3 = _mm_setzero_ps();
+
+        uint64_t i = 0;
+        for (; i + 16 <= n; i += 16) {
+            const __m128 s0
+                    = _mm_add_ps(load4(res + i, stag), load4(in + i, stag));
+            const __m128 s1 = _mm_add_ps(
+                    load4(res + i + 4, stag), load4(in + i + 4, stag));
+            const __m128 s2 = _mm_add_ps(
+                    load4(res + i + 8, stag), load4(in + i + 8, stag));
+            const __m128 s3 = _mm_add_ps(
+                    load4(res + i + 12, stag), load4(in + i + 12, stag));
+            store4(res + i, s0, stag);
+            store4(res + i + 4, s1, stag);
+            store4(res + i + 8, s2, stag);
+            store4(res + i + 12, s3, stag);
+            // Reload so the accumulation sees the stored (src_dt-rounded) value.
+            const __m128 r0 = load4(res + i, stag);
+            const __m128 r1 = load4(res + i + 4, stag);
+            const __m128 r2 = load4(res + i + 8, stag);
+            const __m128 r3 = load4(res + i + 12, stag);
+            q0 = fmadd128(r0, r0, q0);
+            q1 = fmadd128(r1, r1, q1);
+            q2 = fmadd128(r2, r2, q2);
+            q3 = fmadd128(r3, r3, q3);
+        }
+        for (; i + 4 <= n; i += 4) {
+            const __m128 s
+                    = _mm_add_ps(load4(res + i, stag), load4(in + i, stag));
+            store4(res + i, s, stag);
+            const __m128 r = load4(res + i, stag);
+            q0 = fmadd128(r, r, q0);
+        }
+
+        float sum_sq = horizontal_add(
+                _mm_add_ps(_mm_add_ps(q0, q1), _mm_add_ps(q2, q3)));
+        for (; i < n; ++i) {
+            const float s = load1(res + i, stag) + load1(in + i, stag);
+            store1(res + i, s, stag);
+            const float r = load1(res + i, stag);
+            sum_sq += r * r;
+        }
+
+        const float inv_rms = 1.0f / std::sqrt(sum_sq * inv_n + eps);
+        row_apply<SrcT, DstT, SrcTag, DstTag>(
+                res, out, n, 0.0f, inv_rms, gamma, nullptr, stag, dtag);
+    }
+}
+
 } // namespace
 
 #endif // __AVX__
@@ -299,11 +372,9 @@ bool normalization_portable_supported(const norm_params &params) {
     (void)params;
     return false;
 #else
-    // FUSED_ADD_RMS_NORM is excluded on purpose: it updates `residual` in place
-    // (residual[i] += input[i]) before normalising, a different data flow that
-    // the reference kernel still handles.
     const bool norm_ok = params.norm_type == norm_type_t::RMS_NORM
-            || params.norm_type == norm_type_t::LAYER_NORM;
+            || params.norm_type == norm_type_t::LAYER_NORM
+            || params.norm_type == norm_type_t::FUSED_ADD_RMS_NORM;
     const auto dt_ok = [](data_type_t dt) {
         return dt == data_type_t::f32 || dt == data_type_t::bf16;
     };
@@ -311,12 +382,13 @@ bool normalization_portable_supported(const norm_params &params) {
 #endif
 }
 
-status_t normalization_portable(const void *input, void *output,
+status_t normalization_portable(const void *input, void *output, void *residual,
         const void *gamma, const void *beta, norm_params &params,
         int num_threads) {
 #if !defined(__AVX__)
     (void)input;
     (void)output;
+    (void)residual;
     (void)gamma;
     (void)beta;
     (void)params;
@@ -327,6 +399,12 @@ status_t normalization_portable(const void *input, void *output,
         return status_t::unimplemented;
     }
 
+    const bool fused = (params.norm_type == norm_type_t::FUSED_ADD_RMS_NORM);
+    if (fused && residual == nullptr) {
+        // The fused variant has nowhere to accumulate; let the reference kernel
+        // report this rather than dereferencing null.
+        return status_t::unimplemented;
+    }
     const bool subtract_mean = (params.norm_type == norm_type_t::LAYER_NORM);
     // RMSNorm has no shift; LayerNorm honours use_shift.
     const bool want_beta = subtract_mean && params.use_shift && beta != nullptr;
@@ -347,7 +425,22 @@ status_t normalization_portable(const void *input, void *output,
     const bool src_bf16 = (params.src_dt == data_type_t::bf16);
     const bool dst_bf16 = (params.dst_dt == data_type_t::bf16);
 
-    if (!src_bf16 && !dst_bf16) {
+    if (fused) {
+        // residual carries src_dt, so its element type follows the source.
+        if (!src_bf16 && !dst_bf16) {
+            run_rows_fused<float, float>(input, residual, output, g, params,
+                    num_threads, f32_tag {}, f32_tag {});
+        } else if (src_bf16 && dst_bf16) {
+            run_rows_fused<uint16_t, uint16_t>(input, residual, output, g,
+                    params, num_threads, bf16_tag {}, bf16_tag {});
+        } else if (src_bf16) {
+            run_rows_fused<uint16_t, float>(input, residual, output, g, params,
+                    num_threads, bf16_tag {}, f32_tag {});
+        } else {
+            run_rows_fused<float, uint16_t>(input, residual, output, g, params,
+                    num_threads, f32_tag {}, bf16_tag {});
+        }
+    } else if (!src_bf16 && !dst_bf16) {
         run_rows<float, float>(input, output, g, bt, params, num_threads,
                 subtract_mean, f32_tag {}, f32_tag {});
     } else if (src_bf16 && dst_bf16) {
