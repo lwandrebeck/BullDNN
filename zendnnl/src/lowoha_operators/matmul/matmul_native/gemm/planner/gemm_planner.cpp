@@ -17,6 +17,8 @@
 #include "lowoha_operators/matmul/matmul_native/gemm/planner/gemm_planner.hpp"
 #include <algorithm>
 #include <cmath>
+#include <cstdlib>
+#include <cstring>
 #include "common/zendnnl_global.hpp"
 #include "lowoha_operators/matmul/matmul_native/common/kernel_cache.hpp"
 #include "operators/matmul/matmul_config.hpp"
@@ -34,6 +36,88 @@ static inline int round_up(int x, int m) {
 }
 static inline int round_down(int x, int m) {
     return (x / m) * m;
+}
+
+// Blocking override, for sweeping MB/NB/KB on a part before committing a
+// cost-model change. Zero (the default, and the value for anything
+// unparseable) means "leave the planner's choice alone".
+static int env_block_override(const char *name) {
+    const char *v = std::getenv(name);
+    if (v == nullptr) return 0;
+    int x = std::atoi(v);
+    return x > 0 ? x : 0;
+}
+
+// Pick MB no larger than mb_cap that tiles M evenly across nt threads.
+//
+// A cache budget alone says nothing about how M divides. MB=246 on M=1024
+// leaves 40 rows as the last of five tiles, so one thread carries a sixth of
+// the work its peers do and the wavefront waits on the stragglers; measured on
+// Excavator that costs about 19% against MB=132, which yields eight tiles for
+// four threads. Tile count matters more than the last tile being full: MB=114
+// leaves a 98%-full last tile but nine tiles for four threads, and loses.
+//
+// So score candidates by tile count divisible by nt first, fullest last tile
+// second. This is the M-dimension counterpart of choose_even_kb below and of
+// the NB even-ization in plan_blocks, both of which K and N already got.
+static int choose_even_mb(int M, int mb_cap, int MR, int nt, int kb,
+        int elem_bytes, int cache_per_thread) {
+    mb_cap = round_down(std::max(mb_cap, MR), MR);
+    if (mb_cap >= M) return M;
+    if (nt < 1) nt = 1;
+
+    // Escape hatch for A/B measurement: reproduces the cache-budget-only MB
+    // this function replaced. Requires a non-empty value other than "0", so
+    // that an exported-but-empty variable does not silently disable the
+    // planner -- which is exactly what it did during the first A/B attempt.
+    static const bool s_off = [] {
+        const char *v = std::getenv("ZENDNNL_NATIVE_GEMM_NO_EVEN_MB");
+        return v != nullptr && v[0] != '\0' && std::strcmp(v, "0") != 0;
+    }();
+    if (s_off) return mb_cap;
+
+    // Shrinking MB is not free: every extra i-tile re-streams the whole B
+    // panel, so it only pays when it buys something. Two cases where it does.
+    //
+    //   1. The cap leaves fewer tiles than threads, so threads sit idle.
+    //   2. The A block does not fit the cache each thread actually gets, so
+    //      the big block streams from memory anyway.
+    //
+    // Where neither holds, keep the largest block the cache budget allows.
+    // Measured on a Xeon 6767P at 8 threads, forcing the shrink anyway cost 9%
+    // on 4096x1024x1024 and 5% on 8192x2048x2048 -- both had ample tiles and an
+    // A block inside the 2 MB private L2. Excavator hits case 2 on essentially
+    // every large shape (1 MB L2 shared by a module's two cores, so 512 KB a
+    // thread), which is why the same shapes only ever gained there.
+    const long long a_block
+            = static_cast<long long>(mb_cap) * std::max(kb, 1) * elem_bytes;
+    const int tiles_at_cap = (M + mb_cap - 1) / mb_cap;
+    const bool starved_of_tiles = tiles_at_cap < nt;
+    const bool a_block_spills
+            = cache_per_thread > 0 && a_block > cache_per_thread;
+    if (!starved_of_tiles && !a_block_spills) return mb_cap;
+
+    const int t_min = (M + mb_cap - 1) / mb_cap;
+    int best_mb = mb_cap;
+    double best_score = -1.0;
+
+    // Past a few times the thread count the tiles are so small that per-tile
+    // overhead dominates, so cap the search rather than walking to M/MR.
+    const int t_max = std::max(t_min + 8, 4 * nt);
+    for (int t = t_min; t <= t_max; ++t) {
+        int mb = round_up((M + t - 1) / t, MR);
+        if (mb > mb_cap || mb < MR) continue;
+        const int tiles = (M + mb - 1) / mb;
+        const int last = M - (tiles - 1) * mb;
+        if (last <= 0) continue;
+        const double score = (tiles % nt == 0 ? 2.0 : 0.0)
+                + static_cast<double>(last) / static_cast<double>(mb);
+        if (score > best_score) {
+            best_score = score;
+            best_mb = mb;
+        }
+    }
+    return best_mb;
 }
 
 static int choose_even_kb(int K, int kb_max) {
@@ -202,18 +286,25 @@ FP32GemmPlan plan_fp32_gemm(const GemmDescriptor &desc,
     {
         bool will_pack_a = desc.transA
                 || (desc.lda * static_cast<int>(sizeof(float)) > 4096);
+        int mb_cap = 0;
         if (will_pack_a) {
             int b_lines_per_krow = ((plan.NR + 15) / 16) * 64;
             int b_accessed_bytes = plan.KB * b_lines_per_krow;
             int l2_for_a = std::max(uarch.l2_bytes - b_accessed_bytes, 0);
-            plan.MB = std::max(l2_for_a / (plan.KB * 4), plan.MR);
+            mb_cap = std::max(l2_for_a / (plan.KB * 4), plan.MR);
         } else {
-            plan.MB = std::max((uarch.l1d_bytes + uarch.l2_bytes)
+            mb_cap = std::max((uarch.l1d_bytes + uarch.l2_bytes)
                             / (plan.NB * 4 + plan.KB * 4),
                     plan.MR);
         }
-        plan.MB = plan.MB / plan.MR * plan.MR;
-        plan.MB = std::min(plan.MB, M);
+        // choose_even_mb has the last word: it already returns a multiple of
+        // MR bounded by M, and it needs the raw cache cap to tell whether a
+        // single tile fits. Rounding down to MR afterwards would undo that --
+        // on M=128 it turned a one-tile plan into 126 plus a two-row tail.
+        const int l2_share = uarch.l2_bytes
+                / std::max(std::min(plan.num_threads, uarch.cores_per_l2), 1);
+        plan.MB = choose_even_mb(M, mb_cap, plan.MR, plan.num_threads, plan.KB,
+                4, l2_share);
     }
 
     if (plan.num_threads > 1) {
@@ -226,6 +317,25 @@ FP32GemmPlan plan_fp32_gemm(const GemmDescriptor &desc,
             plan.MB = panels_per_block * plan.MR;
             plan.MB = std::min(plan.MB, M);
         }
+    }
+
+    // Applied last so a sweep sees exactly the block sizes it asked for,
+    // clamped only by what the loopers and microkernel require: MB a multiple
+    // of MR, NB a multiple of NR, KB even (the packing routines step K in
+    // pairs), and none of them past the problem dimension.
+    static const int s_mb_env = env_block_override("ZENDNNL_NATIVE_GEMM_MB");
+    static const int s_nb_env = env_block_override("ZENDNNL_NATIVE_GEMM_NB");
+    static const int s_kb_env = env_block_override("ZENDNNL_NATIVE_GEMM_KB");
+    if (s_mb_env > 0) {
+        plan.MB = std::min(
+                round_down(std::max(s_mb_env, plan.MR), plan.MR), M);
+    }
+    if (s_nb_env > 0) {
+        plan.NB = std::min(
+                round_down(std::max(s_nb_env, plan.NR), plan.NR), N);
+    }
+    if (s_kb_env > 0) {
+        plan.KB = std::min(round_up(std::max(s_kb_env, 8), 8), K);
     }
 
     static bool s_log_fp32 = apilog_info_enabled();
@@ -353,19 +463,27 @@ BF16GemmPlan plan_bf16_gemm(const GemmDescriptor &desc,
     if (!is_decode) {
         bool will_pack_a
                 = (desc.lda * static_cast<int>(sizeof(uint16_t)) > 4096);
+        int mb_cap = 0;
         if (will_pack_a) {
             int b_lines_per_krow = ((plan.NR + 15) / 16) * 64;
             int k_pairs_kb = (plan.KB + 1) / 2;
             int b_accessed_bytes = k_pairs_kb * b_lines_per_krow;
             int l2_for_a = std::max(uarch.l2_bytes - b_accessed_bytes, 0);
-            plan.MB = std::max(l2_for_a / (plan.KB * 2), plan.MR);
+            mb_cap = std::max(l2_for_a / (plan.KB * 2), plan.MR);
         } else {
-            plan.MB = std::max((uarch.l1d_bytes + uarch.l2_bytes)
+            mb_cap = std::max((uarch.l1d_bytes + uarch.l2_bytes)
                             / (plan.NB * 4 + plan.KB * 2),
                     plan.MR);
         }
-        plan.MB = plan.MB / plan.MR * plan.MR;
-        plan.MB = std::min(plan.MB, M);
+        // Same M-tiling problem the FP32 planner had: a cache budget alone can
+        // leave a sliver as the last tile. Unlike the BRGEMM planners, which
+        // rebalance when the tail falls below half a tile, nothing here caught
+        // it. Validated on a Xeon 6767P, the only host here with avx512bf16:
+        // 885 vs 591 GFLOPS at 1024x1024x1024 on eight threads (MB 132 vs 642).
+        const int l2_share = uarch.l2_bytes
+                / std::max(std::min(plan.num_threads, uarch.cores_per_l2), 1);
+        plan.MB = choose_even_mb(M, mb_cap, plan.MR, plan.num_threads, plan.KB,
+                2, l2_share);
     }
 
     if (!is_decode && plan.num_threads > 1) {
