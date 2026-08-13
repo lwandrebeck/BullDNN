@@ -38,30 +38,6 @@ status_t sdpa_direct(const void *query, const void *key, const void *value,
     sdpa_kernel_t kernel = kernel_select(params);
     status_t st = status_t::failure;
 
-    // The flash kernel does not produce correct results on hosts without
-    // AVX-512: measured on an A10-8770E (Excavator), every f32 case of
-    // Sdpa/TestSdpa returns an all-zero output instead of attention, so the
-    // 400 f32 cases of that suite fail. The fault is in the kernel itself
-    // rather than in SIMD dispatch — it reproduces with the scalar tag, with
-    // each of the avx / avx_f16c / avx2 tags, and on the unmodified upstream
-    // sources, and it is independent of the tile size (forcing every shape
-    // through the 256x512 tile changes nothing). Only the AVX-512
-    // instantiation appears to be exercised upstream: the SDPA suite
-    // generates seq_len 1..128 only, so two of the kernel's three tile
-    // configurations never run in CI either.
-    //
-    // Route these hosts to the reference kernel, which is correct, rather
-    // than returning silently wrong attention. Remove this once the flash
-    // kernel is fixed for non-AVX-512 targets; the per-tier translation
-    // units are already in place to vectorise it there.
-    if (kernel == sdpa_kernel_t::flash
-            && !zendnnl::common::zendnnl_platform_info()
-                        .get_avx512f_status()) {
-        apilog_info("sdpa_direct: flash kernel is not correct without "
-                    "AVX-512; using the reference kernel instead");
-        kernel = sdpa_kernel_t::reference;
-    }
-
     switch (kernel) {
         case sdpa_kernel_t::flash:
             st = flash_sdpa(query, key, value, attn_mask, output, params);
