@@ -143,10 +143,10 @@ void ukernel_6xnr_128(const float *__restrict__ pa, int a_stride,
             }
         }
 
-        // beta is a flag rather than a scale here, matching scalar_microkernel():
-        // zero means overwrite C, anything else means accumulate into it. Keep
-        // that contract exactly -- the looper relies on it for K-blocking, where
-        // the second and later K blocks must add to what the first wrote.
+        // beta scales the incoming C: C = beta * C_old + A*B, which is what the
+        // AVX-512 microkernels do via fmadd. It is not a mere accumulate flag --
+        // the looper passes beta/alpha whenever alpha != 1, an arbitrary value,
+        // and K-blocking passes 1 for the second and later K blocks.
         if (beta == 0.0f) {
 #pragma GCC unroll 6
             for (int m = 0; m < kMR; ++m) {
@@ -154,13 +154,14 @@ void ukernel_6xnr_128(const float *__restrict__ pa, int a_stride,
                 _mm_storeu_ps(C + m * ldc + n0 + 4, acc[m][1]);
             }
         } else {
+            const __m128 bv = _mm_set1_ps(beta);
 #pragma GCC unroll 6
             for (int m = 0; m < kMR; ++m) {
                 float *c_row = C + m * ldc + n0;
-                _mm_storeu_ps(
-                        c_row, _mm_add_ps(_mm_loadu_ps(c_row), acc[m][0]));
+                _mm_storeu_ps(c_row,
+                        fmadd128(bv, _mm_loadu_ps(c_row), acc[m][0]));
                 _mm_storeu_ps(c_row + 4,
-                        _mm_add_ps(_mm_loadu_ps(c_row + 4), acc[m][1]));
+                        fmadd128(bv, _mm_loadu_ps(c_row + 4), acc[m][1]));
             }
         }
     }
@@ -237,7 +238,7 @@ void ukernel_6xnr_256(const float *__restrict__ pa, int a_stride,
             }
         }
 
-        // Same beta-as-a-flag contract as the 128-bit kernel.
+        // Same beta-as-a-scale contract as the 128-bit kernel.
         if (beta == 0.0f) {
 #pragma GCC unroll 6
             for (int m = 0; m < kMR; ++m) {
@@ -245,13 +246,14 @@ void ukernel_6xnr_256(const float *__restrict__ pa, int a_stride,
                 _mm256_storeu_ps(C + m * ldc + n0 + 8, acc[m][1]);
             }
         } else {
+            const __m256 bv = _mm256_set1_ps(beta);
 #pragma GCC unroll 6
             for (int m = 0; m < kMR; ++m) {
                 float *c_row = C + m * ldc + n0;
                 _mm256_storeu_ps(c_row,
-                        _mm256_add_ps(_mm256_loadu_ps(c_row), acc[m][0]));
+                        fmadd256(bv, _mm256_loadu_ps(c_row), acc[m][0]));
                 _mm256_storeu_ps(c_row + 8,
-                        _mm256_add_ps(_mm256_loadu_ps(c_row + 8), acc[m][1]));
+                        fmadd256(bv, _mm256_loadu_ps(c_row + 8), acc[m][1]));
             }
         }
     }

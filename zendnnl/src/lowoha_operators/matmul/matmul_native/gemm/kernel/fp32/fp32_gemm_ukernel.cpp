@@ -554,10 +554,21 @@ void scalar_microkernel(const float *pa, int a_stride, const float *pb,
         int b_stride, float *C, int ldc, int k, int mr_count, int nr_count,
         float beta, const float *bias, fused_postop_t fused_op) {
 
+    // beta scales the incoming C, matching the AVX-512 microkernels, which do
+    // acc += beta * C_old via fmadd. Treating a non-zero beta as a mere
+    // "accumulate" flag -- as this function used to -- silently computes
+    // C_old + A*B instead of beta*C_old + A*B, so every beta outside {0, 1} was
+    // wrong. The FP32 looper reaches exactly that case: when alpha != 1 it
+    // rescales and passes beta/alpha to the microkernel, which is an arbitrary
+    // value.
     if (beta == 0.0f) {
         for (int m = 0; m < mr_count; ++m)
             for (int n = 0; n < nr_count; ++n)
                 C[m * ldc + n] = 0.0f;
+    } else if (beta != 1.0f) {
+        for (int m = 0; m < mr_count; ++m)
+            for (int n = 0; n < nr_count; ++n)
+                C[m * ldc + n] *= beta;
     }
     for (int kk = 0; kk < k; ++kk)
         for (int m = 0; m < mr_count; ++m) {
