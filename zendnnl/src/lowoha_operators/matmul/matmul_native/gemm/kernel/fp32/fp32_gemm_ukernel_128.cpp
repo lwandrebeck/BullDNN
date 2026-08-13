@@ -97,16 +97,42 @@ inline void pin_reg(Vec &v0, Vec &v1) {
 
 // One 128-bit multiply-add, using the best form this target offers.
 //
-// FMA4 (all of family 15h) is a single non-destructive VFMADDPS. FMA3 covers
-// Piledriver onward and every Zen part, and is what a non-family-15h build
-// without AVX-512 will pick up. The mul+add fallback keeps the kernel correct
-// on a plain AVX target such as Sandy Bridge; it is two operations rather than
-// one but still four lanes wide.
+// FMA3 first, and not FMA4, even though family 15h has both from Piledriver
+// on. Measured at M=N=K=1024 on an A10-8770E (Excavator, 4 threads, 200
+// iterations, four interleaved passes):
+//
+//     FMA3   vfmadd231ps        64.2 GFLOPS
+//     FMA4   vfmaddps           58.4 GFLOPS   (-9%)
+//     mul+add vmulps/vaddps     40.3 GFLOPS   (-37%)
+//
+// FMA4's non-destructive four-operand form only pays when both multiplicands
+// must survive the operation; this kernel accumulates in place, so it buys
+// nothing and costs encoding length. GCC agrees -- under -march=bdver4 it
+// lowers _mm_macc_ps to vfmadd231ps, so reaching FMA4 at all takes -mno-fma,
+// which is how the row above was measured. The FMA4 branch below is therefore
+// for bdver1 (Bulldozer), the one family 15h model with FMA4 but no FMA3.
+//
+// Fusion itself is what matters, and it is worth 1.59x here -- short of the 2x
+// the op count suggests, because the eight loads per k take up the slack. The
+// mul+add fallback keeps the kernel correct on a plain AVX target such as
+// Sandy Bridge; note GCC contracts it back to an FMA unless built with
+// -ffp-contract=off.
+// ZENDNNL_FORCE_FMA pins the form for ISA A/B measurement: 4 = FMA4, 3 = FMA3,
+// 0 = separate multiply and add. Unset picks the best the target offers. Note
+// that on bdver4 GCC lowers _mm_macc_ps to FMA3 anyway -- both are available
+// and its tuning prefers the three-operand form -- so 4 and 3 emit the same
+// instruction unless the compiler is told otherwise.
 inline __m128 fmadd128(__m128 a, __m128 b, __m128 acc) {
-#if defined(__FMA4__)
-    return _mm_macc_ps(a, b, acc);
+#if defined(ZENDNNL_FORCE_FMA) && ZENDNNL_FORCE_FMA == 0
+    return _mm_add_ps(_mm_mul_ps(a, b), acc);
+#elif defined(ZENDNNL_FORCE_FMA) && ZENDNNL_FORCE_FMA == 3
+    return _mm_fmadd_ps(a, b, acc);
+#elif defined(ZENDNNL_FORCE_FMA) && ZENDNNL_FORCE_FMA == 4
+    return __builtin_ia32_vfmaddps(a, b, acc);
 #elif defined(__FMA__)
     return _mm_fmadd_ps(a, b, acc);
+#elif defined(__FMA4__)
+    return _mm_macc_ps(a, b, acc);
 #else
     return _mm_add_ps(_mm_mul_ps(a, b), acc);
 #endif
