@@ -166,14 +166,55 @@ inline void zendnn_gemm(int64_t m, int64_t n, int64_t k, float alpha,
         matmul_dtype.wei = zendnnl::common::data_type_t::f16;
     }
     params.dtypes = matmul_dtype;
-    params.lowoha_algo = zendnnl::ops::matmul_algo_t::aocl_dlp;
 
     zendnnl::lowoha::matmul::matmul_batch_params_t batch_params;
     batch_params.Batch_A = 1;
     batch_params.Batch_B = 1;
 
-    zendnnl::lowoha::matmul::matmul_direct('r', TransA, TransB, m, n, k, alpha,
-            a, lda, b, ldb, nullptr, beta, c, ldc, false, batch_params, params);
+    // Try each backend this build actually contains, in preference order, and
+    // stop at the first that computes.
+    //
+    // This used to pin matmul_algo_t::aocl_dlp unconditionally and discard the
+    // returned status. In a build without AOCL-DLP that call is rejected before
+    // dispatch and computes nothing, and because the status was dropped the
+    // kernel carried on and emitted its zero-initialised accumulator as the
+    // attention output -- silently wrong numerics for both GEMMs, QK^T and PV.
+    //
+    // The failure has nothing to do with SIMD support, which is what made it
+    // look like a kernel bug: it reproduces identically on an AMD Excavator part
+    // with no AVX-512 (62,772 rejections in one SDPA shard) and on an Intel Xeon
+    // 6767P with avx512f, avx512_bf16 and avx512_vnni (62,402). The only
+    // variable is whether AOCL-DLP is present.
+    //
+    // AOCL-DLP stays first so a build that has it behaves exactly as before.
+    static constexpr zendnnl::ops::matmul_algo_t kBackends[] = {
+#if ZENDNNL_DEPENDS_AOCLDLP
+            zendnnl::ops::matmul_algo_t::aocl_dlp,
+#endif
+#if ZENDNNL_DEPENDS_ONEDNN
+            zendnnl::ops::matmul_algo_t::onednn,
+#endif
+#if ZENDNNL_DEPENDS_LIBXSMM
+            zendnnl::ops::matmul_algo_t::libxsmm,
+#endif
+            // Needs no external dependency, so the list is never empty.
+            zendnnl::ops::matmul_algo_t::native_gemm,
+    };
+
+    for (const auto algo : kBackends) {
+        params.lowoha_algo = algo;
+        const status_t st = zendnnl::lowoha::matmul::matmul_direct('r', TransA,
+                TransB, m, n, k, alpha, a, lda, b, ldb, nullptr, beta, c, ldc,
+                false, batch_params, params);
+        if (st == status_t::success) { return; }
+    }
+
+    // Nothing computed. Say so rather than letting a zero-filled accumulator
+    // pass for attention output.
+    log_error(
+            "flash SDPA: no matmul backend in this build could compute the "
+            "attention GEMM (m=", m, " n=", n, " k=", k,
+            "); the output is not valid");
 }
 
 // ---------------------------------------------------------------------------
