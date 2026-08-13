@@ -19,6 +19,7 @@
 #include "lowoha_operators/common/operator_instrumentation.hpp"
 #include "lowoha_operators/normalization/kernel/layernorm_avx512_fp16_kernel.hpp"
 #include "lowoha_operators/normalization/kernel/layernorm_avx512_kernel.hpp"
+#include "lowoha_operators/normalization/kernel/normalization_portable_kernel.hpp"
 #include "lowoha_operators/normalization/kernel/reference_kernel.hpp"
 #include "lowoha_operators/normalization/kernel/rmsnorm_avx512_fp16_kernel.hpp"
 #include "lowoha_operators/normalization/kernel/rmsnorm_avx512_kernel.hpp"
@@ -172,6 +173,21 @@ status_t normalization_kernel_wrapper(const void *input, void *output,
             log_error(norm_type_to_str(params.norm_type), " kernel failed");
         }
         return status;
+    }
+
+    // Before the reference kernel, try the portable 128-bit vector path. The
+    // reference kernel reads every element through a runtime dtype switch and
+    // makes two passes over each row for LayerNorm, which on a host without
+    // AVX-512 is the only thing that was available.
+    if (normalization_portable_supported(params)) {
+        const int32_t portable_threads = resolve_num_threads(
+                params.num_threads, thread_guard::max_threads());
+        log_info("Using portable 128-bit kernel for ",
+                norm_type_to_str(params.norm_type));
+        status_t portable_status = normalization_portable(
+                input, output, gamma, beta, params, portable_threads);
+        if (portable_status == status_t::success) { return portable_status; }
+        log_info("Portable kernel declined; falling back to reference");
     }
 
     log_info("Using reference kernel for ", norm_type_to_str(params.norm_type));

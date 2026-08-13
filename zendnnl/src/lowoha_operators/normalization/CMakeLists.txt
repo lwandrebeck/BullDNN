@@ -21,7 +21,8 @@ set(lowoha_normalization_sources
   kernel/rmsnorm_avx512_kernel.cpp
   kernel/layernorm_avx512_kernel.cpp
   kernel/rmsnorm_avx512_fp16_kernel.cpp
-  kernel/layernorm_avx512_fp16_kernel.cpp)
+  kernel/layernorm_avx512_fp16_kernel.cpp
+  kernel/normalization_portable_kernel.cpp)
 
 set(lowoha_normalization_public_headers
   lowoha_normalization.hpp
