@@ -150,8 +150,25 @@ void matmul_execute(const char layout, const bool transA, const bool transB,
         return;
     }
 
+    // A strided operand -- any leading dimension wider than the packed minimum,
+    // or ldc != N -- is rejected by the partitioned LIBXSMM path, which then
+    // falls back to AOCL-DLP ("LibXSMM partitioned kernel does not support
+    // strided layouts"). The unpartitioned path has no such limitation: it hands
+    // lda/ldb/ldc straight to run_libxsmm_std(), which passes them to
+    // libxsmm_gemm like any BLAS-style GEMM. So the restriction belongs to the
+    // partitioner, not to LIBXSMM, and falling back to DLP for it means a build
+    // without AOCL-DLP has no backend at all for a case LIBXSMM can serve.
+    //
+    // Flash SDPA hits exactly this: it tiles a [batch, heads, seq, head_dim]
+    // tensor, so its GEMM operands are strided slices. Skip the partitioner for
+    // these and let the direct kernel take them.
+    const int min_lda = transA ? M : K;
+    const int min_ldb = transB ? K : N;
+    const bool strided_operands
+            = (lda != min_lda) || (ldb != min_ldb) || (ldc != N);
+
     // Currently supported only for LIBXSMM BACKEND
-    if (should_use_mm_partitioner(kernel)) {
+    if (should_use_mm_partitioner(kernel) && !strided_operands) {
         // Setup partition configuration
         matmul_partition_config_t part_config;
         part_config.M = M;
