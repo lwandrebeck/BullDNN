@@ -45,7 +45,7 @@ using namespace zendnnl::error_handling;
 using zendnnl::ops::matmul_config_t;
 using zendnnl::ops::post_op_type_t;
 
-__attribute__((target("avx512f"))) static void scale_tile(
+__attribute__((target("avx512f"))) static void scale_tile_avx512(
         float *C, int ldc, int m_count, int n_count, float alpha) {
     __m512 av = _mm512_set1_ps(alpha);
     for (int m = 0; m < m_count; ++m) {
@@ -56,6 +56,29 @@ __attribute__((target("avx512f"))) static void scale_tile(
                     row + n, _mm512_mul_ps(_mm512_loadu_ps(row + n), av));
         for (; n < n_count; ++n)
             row[n] *= alpha;
+    }
+}
+
+// Portable alpha scaling, identical to the scalar tail above. Without this, a
+// host with no AVX-512 executing scale_tile_avx512() dies with SIGILL on the
+// first vbroadcastss -- which is what alpha != 1 used to do on family 15h.
+static void scale_tile_scalar(
+        float *C, int ldc, int m_count, int n_count, float alpha) {
+    for (int m = 0; m < m_count; ++m) {
+        float *row = C + m * ldc;
+        for (int n = 0; n < n_count; ++n) {
+            row[n] *= alpha;
+        }
+    }
+}
+
+static void scale_tile(
+        float *C, int ldc, int m_count, int n_count, float alpha) {
+    static const bool has_avx512 = detect_uarch().avx512f;
+    if (has_avx512) {
+        scale_tile_avx512(C, ldc, m_count, n_count, alpha);
+    } else {
+        scale_tile_scalar(C, ldc, m_count, n_count, alpha);
     }
 }
 

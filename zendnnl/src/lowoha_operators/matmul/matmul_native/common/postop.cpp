@@ -20,6 +20,7 @@
 #include <cstring>
 #include <immintrin.h>
 #include "lowoha_operators/matmul/matmul_native/common/avx512_math.hpp"
+#include "lowoha_operators/matmul/matmul_native/common/cost_model.hpp"
 #include "operators/common/post_op.hpp"
 
 namespace zendnnl {
@@ -36,9 +37,10 @@ using zendnnl::ops::post_op_type_t;
 // Main vectorized post-op application
 // ============================================================================
 
-__attribute__((target("avx512f,avx512bw,fma"))) void apply_postops_tile(
-        float *C, int ldc, int m_count, int n_count, int n_offset, int m_offset,
-        const float *bias, const std::vector<matmul_post_op> &postops) {
+__attribute__((target("avx512f,avx512bw,fma"))) static void
+apply_postops_tile_avx512(float *C, int ldc, int m_count, int n_count,
+        int n_offset, int m_offset, const float *bias,
+        const std::vector<matmul_post_op> &postops) {
 
     // Bias addition (vectorized)
     if (bias != nullptr) {
@@ -412,6 +414,257 @@ __attribute__((target("avx512f,avx512bw,fma"))) void apply_postops_tile(
 
             default: break;
         }
+    }
+}
+
+// ============================================================================
+// Portable post-op application
+// ============================================================================
+
+// Same arithmetic as apply_postops_tile_avx512() with no vector instructions, so
+// hosts without AVX-512 -- every AMD family 15h part, and Zen 1/2/3 -- can run
+// the native matmul epilogue instead of having the whole problem declined.
+//
+// Every case below is the scalar tail loop of its AVX-512 counterpart above,
+// which each already carried one for the sub-16-element remainder. Keeping them
+// literally identical is what makes the two paths agree numerically: the
+// AVX-512 version's own remainder elements go through this same expression.
+//
+// The one deliberate difference is the transcendentals. The AVX-512 path uses
+// the polynomial approximations in avx512_math.hpp (avx512_exp, avx512_tanh,
+// avx512_sigmoid, avx512_erf) for full vectors, whereas this uses libm. libm is
+// the more accurate of the two, so results can differ in the last bits -- the
+// same tolerance the AVX-512 path's own scalar tail already relies on.
+static void apply_postops_tile_scalar(float *C, int ldc, int m_count,
+        int n_count, int n_offset, int m_offset, const float *bias,
+        const std::vector<matmul_post_op> &postops) {
+
+    if (bias != nullptr) {
+        const float *bias_row = bias + n_offset;
+        for (int mr = 0; mr < m_count; ++mr) {
+            float *row = C + mr * ldc;
+            for (int nr = 0; nr < n_count; ++nr) {
+                row[nr] += bias_row[nr];
+            }
+        }
+    }
+
+    for (const auto &po : postops) {
+        switch (po.po_type) {
+
+            case post_op_type_t::relu: {
+                const bool is_pure_relu = (po.alpha == 0.0f);
+                for (int mr = 0; mr < m_count; ++mr) {
+                    float *row = C + mr * ldc;
+                    for (int nr = 0; nr < n_count; ++nr) {
+                        float &val = row[nr];
+                        if (val < 0.0f) {
+                            val = is_pure_relu ? 0.0f : po.alpha * val;
+                        }
+                    }
+                }
+                break;
+            }
+
+            case post_op_type_t::leaky_relu: {
+                for (int mr = 0; mr < m_count; ++mr) {
+                    float *row = C + mr * ldc;
+                    for (int nr = 0; nr < n_count; ++nr) {
+                        float &val = row[nr];
+                        if (val < 0.0f) { val *= po.alpha; }
+                    }
+                }
+                break;
+            }
+
+            case post_op_type_t::elu: {
+                for (int mr = 0; mr < m_count; ++mr) {
+                    float *row = C + mr * ldc;
+                    for (int nr = 0; nr < n_count; ++nr) {
+                        float &val = row[nr];
+                        if (val < 0.0f) {
+                            val = po.alpha * (std::exp(val) - 1.0f);
+                        }
+                    }
+                }
+                break;
+            }
+
+            case post_op_type_t::gelu_tanh: {
+                for (int mr = 0; mr < m_count; ++mr) {
+                    float *row = C + mr * ldc;
+                    for (int nr = 0; nr < n_count; ++nr) {
+                        float &v = row[nr];
+                        const float x3 = v * v * v;
+                        v = 0.5f * v
+                                * (1.0f
+                                        + std::tanh(0.7978845608028654f
+                                                * (v + 0.044715f * x3)));
+                    }
+                }
+                break;
+            }
+
+            case post_op_type_t::gelu_erf: {
+                for (int mr = 0; mr < m_count; ++mr) {
+                    float *row = C + mr * ldc;
+                    for (int nr = 0; nr < n_count; ++nr) {
+                        float &v = row[nr];
+                        v = 0.5f * v
+                                * (1.0f + std::erf(v * 0.7071067811865476f));
+                    }
+                }
+                break;
+            }
+
+            case post_op_type_t::sigmoid: {
+                for (int mr = 0; mr < m_count; ++mr) {
+                    float *row = C + mr * ldc;
+                    for (int nr = 0; nr < n_count; ++nr) {
+                        row[nr] = 1.0f / (1.0f + std::exp(-row[nr]));
+                    }
+                }
+                break;
+            }
+
+            case post_op_type_t::swish: {
+                for (int mr = 0; mr < m_count; ++mr) {
+                    float *row = C + mr * ldc;
+                    for (int nr = 0; nr < n_count; ++nr) {
+                        float &v = row[nr];
+                        v = v / (1.0f + std::exp(-po.alpha * v));
+                    }
+                }
+                break;
+            }
+
+            case post_op_type_t::tanh: {
+                for (int mr = 0; mr < m_count; ++mr) {
+                    float *row = C + mr * ldc;
+                    for (int nr = 0; nr < n_count; ++nr) {
+                        row[nr] = std::tanh(row[nr]);
+                    }
+                }
+                break;
+            }
+
+            case post_op_type_t::square: {
+                for (int mr = 0; mr < m_count; ++mr) {
+                    float *row = C + mr * ldc;
+                    for (int nr = 0; nr < n_count; ++nr) {
+                        row[nr] *= row[nr];
+                    }
+                }
+                break;
+            }
+
+            case post_op_type_t::abs: {
+                for (int mr = 0; mr < m_count; ++mr) {
+                    float *row = C + mr * ldc;
+                    for (int nr = 0; nr < n_count; ++nr) {
+                        row[nr] = std::abs(row[nr]);
+                    }
+                }
+                break;
+            }
+
+            case post_op_type_t::sqrt: {
+                for (int mr = 0; mr < m_count; ++mr) {
+                    float *row = C + mr * ldc;
+                    for (int nr = 0; nr < n_count; ++nr) {
+                        row[nr] = std::sqrt(row[nr]);
+                    }
+                }
+                break;
+            }
+
+            case post_op_type_t::exp: {
+                for (int mr = 0; mr < m_count; ++mr) {
+                    float *row = C + mr * ldc;
+                    for (int nr = 0; nr < n_count; ++nr) {
+                        row[nr] = std::exp(row[nr]);
+                    }
+                }
+                break;
+            }
+
+            case post_op_type_t::log: {
+                for (int mr = 0; mr < m_count; ++mr) {
+                    for (int nr = 0; nr < n_count; ++nr) {
+                        C[mr * ldc + nr] = std::log(C[mr * ldc + nr]);
+                    }
+                }
+                break;
+            }
+
+            case post_op_type_t::clip: {
+                for (int mr = 0; mr < m_count; ++mr) {
+                    float *row = C + mr * ldc;
+                    for (int nr = 0; nr < n_count; ++nr) {
+                        row[nr] = std::min(
+                                std::max(row[nr], po.alpha), po.beta);
+                    }
+                }
+                break;
+            }
+
+            case post_op_type_t::binary_add:
+            case post_op_type_t::binary_mul: {
+                if (po.buff == nullptr) { break; }
+                const int ld = (po.leading_dim > 0) ? po.leading_dim : n_count;
+                const bool is_1d = (po.dims.size() <= 1)
+                        || (po.dims.size() == 2 && po.dims[0] == 1);
+                const bool is_add = (po.po_type == post_op_type_t::binary_add);
+                const bool bin_is_bf16 = (po.dtype == data_type_t::bf16);
+
+                for (int mr = 0; mr < m_count; ++mr) {
+                    float *row = C + mr * ldc;
+                    for (int nr = 0; nr < n_count; ++nr) {
+                        float bval;
+                        if (bin_is_bf16) {
+                            const uint16_t *bin_bf16
+                                    = static_cast<const uint16_t *>(po.buff);
+                            const uint16_t *bp = is_1d
+                                    ? bin_bf16 + n_offset + nr
+                                    : bin_bf16 + (m_offset + mr) * ld
+                                            + (n_offset + nr);
+                            const uint32_t bits
+                                    = static_cast<uint32_t>(*bp) << 16;
+                            std::memcpy(&bval, &bits, sizeof(bval));
+                        } else {
+                            const float *bin
+                                    = static_cast<const float *>(po.buff);
+                            bval = is_1d ? bin[n_offset + nr]
+                                         : bin[(m_offset + mr) * ld
+                                                 + (n_offset + nr)];
+                        }
+                        if (is_add) {
+                            row[nr] += bval;
+                        } else {
+                            row[nr] *= bval;
+                        }
+                    }
+                }
+                break;
+            }
+
+            default: break;
+        }
+    }
+}
+
+void apply_postops_tile(float *C, int ldc, int m_count, int n_count,
+        int n_offset, int m_offset, const float *bias,
+        const std::vector<matmul_post_op> &postops) {
+    // Cached once: detect_uarch() itself caches, this just avoids the repeated
+    // indirection in what is a per-tile call.
+    static const bool has_avx512 = detect_uarch().avx512f;
+    if (has_avx512) {
+        apply_postops_tile_avx512(
+                C, ldc, m_count, n_count, n_offset, m_offset, bias, postops);
+    } else {
+        apply_postops_tile_scalar(
+                C, ldc, m_count, n_count, n_offset, m_offset, bias, postops);
     }
 }
 

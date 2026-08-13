@@ -36,7 +36,6 @@ namespace matmul {
 namespace native {
 
 using zendnnl::common::size_of;
-using zendnnl::ops::post_op_type_t;
 using namespace zendnnl::error_handling;
 
 // ════════════════════════════════════════════════════════════════════════
@@ -271,54 +270,6 @@ bool native_matmul_execute(matmul_algo_t kernel, char layout, bool transA,
                 "Native kernel: BF16 requires AVX512-BF16, which this host "
                 "does not have; declining so another backend can run it");
         return false;
-    }
-
-    // The native loopers finish a tile with scale_tile() and
-    // apply_postops_tile(). Both are compiled AVX-512 only --
-    // target("avx512f") and target("avx512f,avx512bw,fma") respectively -- and
-    // both are called with no ISA guard, so on a host without AVX-512 reaching
-    // either one is an immediate SIGILL that kills the process rather than
-    // returning a status. Confirmed on an A10-8770E, where forcing this path
-    // with a random alpha died at `vbroadcastss %xmm2,%zmm1` inside scale_tile.
-    //
-    // Exactly two things reach them: a non-unit alpha, and any post-op the
-    // microkernel epilogue does not fuse. Everything else -- unit alpha, bias,
-    // and a single fusable activation -- stays on the microkernel path and is
-    // unaffected. Decline the rest so another backend computes the problem.
-    //
-    // The fusable set and the "remaining" rule below mirror the looper's own
-    // detection: it fuses the first relu-with-alpha-0 / gelu_tanh / gelu_erf /
-    // sigmoid / tanh / swish in the chain, and treats every other entry in the
-    // chain as remaining -- including post_op_type_t::none placeholders, which
-    // still cause the call to be made.
-    if (!detect_uarch().avx512f) {
-        int fused_idx = -1;
-        for (size_t i = 0; i < params.postop_.size(); ++i) {
-            const auto pt = params.postop_[i].po_type;
-            const bool fusable
-                    = (pt == post_op_type_t::relu
-                              && params.postop_[i].alpha == 0.0f)
-                    || pt == post_op_type_t::gelu_tanh
-                    || pt == post_op_type_t::gelu_erf
-                    || pt == post_op_type_t::sigmoid
-                    || pt == post_op_type_t::tanh
-                    || pt == post_op_type_t::swish;
-            if (fusable) {
-                fused_idx = static_cast<int>(i);
-                break;
-            }
-        }
-        const size_t fused_count = (fused_idx >= 0) ? 1u : 0u;
-        const bool has_remaining_postops
-                = params.postop_.size() > fused_count;
-
-        if (alpha != 1.0f || has_remaining_postops) {
-            log_info("Native kernel: alpha scaling and unfused post-ops go "
-                     "through AVX-512-only helpers (scale_tile / "
-                     "apply_postops_tile) that would fault on this host; "
-                     "declining so another backend can run it");
-            return false;
-        }
     }
 
     // ════════════════════════════════════════════════════════════════════
