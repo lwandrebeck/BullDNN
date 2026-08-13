@@ -75,6 +75,26 @@ namespace native {
 
 namespace {
 
+// Force a pair of vectors to live in registers across the loop body.
+//
+// Without this GCC's combine pass folds each B load back into every FMA that
+// consumes it: it sees one use per instruction and does not account for the
+// reuse across the six rows. Two loads per k become twelve, and the loop turns
+// load-bound -- 6 A broadcasts + 12 folded B loads + 2 prefetches is 20
+// load-unit ops, so ten cycles at the two per cycle the LSU sustains (47414),
+// against the six the twelve FMAs need. Pinning B restores the intended eight
+// loads per k, four cycles, leaving the FMACs the bottleneck. The registers
+// are there for the taking: the folded form left three XMM registers unused.
+//
+// An empty asm with "+x" read-write operands is the portable way to say this.
+// It emits no instruction and only constrains register allocation.
+template <typename Vec>
+inline void pin_reg(Vec &v0, Vec &v1) {
+#if defined(__GNUC__)
+    asm("" : "+x"(v0), "+x"(v1));
+#endif
+}
+
 // One 128-bit multiply-add, using the best form this target offers.
 //
 // FMA4 (all of family 15h) is a single non-destructive VFMADDPS. FMA3 covers
@@ -132,8 +152,9 @@ void ukernel_6xnr_128(const float *__restrict__ pa, int a_stride,
         // columns, issue twelve independent multiply-adds.
         for (int kk = 0; kk < k; ++kk) {
             const float *b_row = pb + kk * b_stride + n0;
-            const __m128 b0 = _mm_loadu_ps(b_row);
-            const __m128 b1 = _mm_loadu_ps(b_row + 4);
+            __m128 b0 = _mm_loadu_ps(b_row);
+            __m128 b1 = _mm_loadu_ps(b_row + 4);
+            pin_reg(b0, b1);
 
 #pragma GCC unroll 6
             for (int m = 0; m < kMR; ++m) {
@@ -227,8 +248,9 @@ void ukernel_6xnr_256(const float *__restrict__ pa, int a_stride,
 
         for (int kk = 0; kk < k; ++kk) {
             const float *b_row = pb + kk * b_stride + n0;
-            const __m256 b0 = _mm256_loadu_ps(b_row);
-            const __m256 b1 = _mm256_loadu_ps(b_row + 8);
+            __m256 b0 = _mm256_loadu_ps(b_row);
+            __m256 b1 = _mm256_loadu_ps(b_row + 8);
+            pin_reg(b0, b1);
 
 #pragma GCC unroll 6
             for (int m = 0; m < kMR; ++m) {
