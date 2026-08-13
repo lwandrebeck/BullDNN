@@ -136,16 +136,22 @@ static matmul_algo_t select_partition_kernel(const char trans_input,
         return matmul_algo_t::aocl_dlp;
     }
 
-    // LibXSMM matmul path (libxsmm / libxsmm_blocked) is currently supported
-    // only for the BF16_BF16 case. Any other
-    // dtype combination must fall back to the DLP kernel.
-    // TODO: Add support for other dtype combinations.
+    // LibXSMM matmul takes BF16 inputs with either a BF16 or an FP32 output.
+    // run_libxsmm_std() implements both -- see the bf16->f32 branch, which
+    // instantiates libxsmm_gemm<bfloat16, bfloat16, float> with
+    // LIBXSMM_DATATYPE_F32 output -- so gating on a BF16 destination here made
+    // an implemented path unreachable and sent BF16 with FP32 accumulation to
+    // AOCL-DLP instead. In a build without AOCL-DLP that combination then has no
+    // backend at all, which is exactly what flash SDPA asks for: it accumulates
+    // attention in FP32 from BF16 Q/K/V.
+    // TODO: Add support for the remaining dtype combinations.
     if (config.dtypes.src != data_type_t::bf16
             || config.dtypes.wei != data_type_t::bf16
-            || config.dtypes.dst != data_type_t::bf16) {
+            || (config.dtypes.dst != data_type_t::bf16
+                    && config.dtypes.dst != data_type_t::f32)) {
         apilog_info(
-                "LibXSMM kernel is only supported for BF16_BF16 combination, "
-                "falling back to DLP");
+                "LibXSMM kernel supports BF16 inputs with a BF16 or FP32 "
+                "output; falling back to DLP for this dtype combination");
         return matmul_algo_t::aocl_dlp;
     }
 
