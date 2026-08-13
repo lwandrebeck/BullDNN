@@ -46,6 +46,29 @@ static int read_amd_cache_size(int level) {
     return 0;
 }
 
+// Logical processors sharing the cache at the given level, read from the same
+// CPUID leaf as its size: Fn8000_001D_EAX[25:14] on AMD, leaf 4 EAX[25:14] on
+// Intel -- the field has the same position and meaning in both. Returns 0 when
+// the level is not reported.
+//
+// This is what makes a blocking budget per-thread rather than per-cache. On AMD
+// family 15h the two cores of a compute unit share one L2, so it reports 2; on a
+// part with SMT it also reports 2, which is equally correct once both siblings
+// are busy.
+static int read_cache_sharing(int level, bool is_amd) {
+    const unsigned leaf = is_amd ? 0x8000001Du : 0x04u;
+    for (unsigned sub = 0; sub < 16; ++sub) {
+        unsigned eax = 0, ebx = 0, ecx_out = 0, edx = 0;
+        __cpuid_count(leaf, sub, eax, ebx, ecx_out, edx);
+        int cache_type = eax & 0x1F;
+        if (cache_type == 0) break;
+        int cache_level = (eax >> 5) & 0x7;
+        if (cache_level == level && (cache_type == 1 || cache_type == 3))
+            return static_cast<int>(((eax >> 14) & 0xFFF) + 1);
+    }
+    return 0;
+}
+
 static int read_intel_cache_size(int level) {
     for (unsigned sub = 0; sub < 16; ++sub) {
         unsigned eax = 0, ebx = 0, ecx_out = 0, edx = 0;
@@ -128,6 +151,13 @@ static UarchParams do_detect() {
         p.ccx_cores = 8;
     else
         p.ccx_cores = 1;
+
+    // Read L2 sharing from CPUID rather than inferring it from the family.
+    // get_cpu_family() comes from AOCL-utils, which is Zen-oriented and does not
+    // report 0x15 for Bulldozer -- relying on it silently left the budget at the
+    // full L2 on the one family that needs it halved.
+    const int l2_sharing = read_cache_sharing(2, is_amd);
+    p.cores_per_l2 = l2_sharing > 0 ? l2_sharing : 1;
 
     return p;
 }

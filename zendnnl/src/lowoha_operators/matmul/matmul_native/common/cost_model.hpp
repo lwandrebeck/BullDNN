@@ -38,6 +38,13 @@ struct UarchParams {
     /// Logical cores per CCX for M=1 GEMV OpenMP slice scheduling (AMD Zen ≈ 8).
     /// When 1, column slices follow linear tid order.
     int ccx_cores;
+    /// Cores sharing one L2, so blocking budgets can divide by the number of
+    /// threads actually competing for it. 1 where L2 is private (Zen, modern
+    /// Intel); 2 on AMD family 15h, where the two cores of a compute unit share
+    /// both the L2 and the FPU (47414 sec 2.3, BKDG 50742 sec 2.4.2). Measured
+    /// on an A10-8770E: a second thread on the same module adds only 1.10x,
+    /// against 1.87x for one thread on each of two modules.
+    int cores_per_l2;
 
     UarchParams()
         : l1d_bytes(32768)
@@ -49,7 +56,8 @@ struct UarchParams {
         , avx512f(false)
         , avx512bf16(false)
         , avx512vnni(false)
-        , ccx_cores(1) {}
+        , ccx_cores(1)
+        , cores_per_l2(1) {}
 };
 
 /// Detect micro-architecture parameters via CPUID (cached after first call).
