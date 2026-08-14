@@ -156,19 +156,22 @@ std::mutex &get_ggml_reordered_weight_cache_mutex() {
     return mutex;
 }
 
-size_t ggml_scale_bytes(int64_t N, int64_t K, bool use_bf16_scales) {
-    return static_cast<size_t>(N * (K / 32)
+size_t ggml_scale_bytes(int64_t N, int64_t K, bool use_bf16_scales,
+        int group_size = kGgmlGroupSize) {
+    return static_cast<size_t>(N * (K / group_size)
             * (use_bf16_scales ? sizeof(uint16_t) : sizeof(float)));
 }
 
-status_t ggml_reorder_size(int N, int K, char trans, size_t &reorder_size) {
+status_t ggml_reorder_size(
+        int N, int K, char trans, size_t &reorder_size,
+        int group_size = kGgmlGroupSize) {
 #if ZENDNNL_DEPENDS_AOCLDLP
     // B-side group size now travels inside dlp_metadata_t->b_quant_op
     // (new AOCL DLP reorder API); DLP_SYMM_STAT_QUANT was removed.
     dlp_metadata_t symq_meta = {};
     dlp_quant_op_t symq_b_quant_op = {};
     symq_b_quant_op.quant_op_kind = DLP_QUANT_OP_QUANTIZE;
-    symq_b_quant_op.group_size = kGgmlGroupSize;
+    symq_b_quant_op.group_size = group_size;
     symq_meta.b_quant_op = &symq_b_quant_op;
     size_t raw_size = aocl_get_reorder_buf_size_s8s8s32os32_sym_quant(
             'r', trans, 'B', K, N, &symq_meta);
@@ -181,14 +184,15 @@ status_t ggml_reorder_size(int N, int K, char trans, size_t &reorder_size) {
 }
 
 status_t ggml_reorder_unpacked_weights(int N, int K, int ldb, char trans,
-        const int8_t *unpacked_weights, int8_t *reordered_weights) {
+        const int8_t *unpacked_weights, int8_t *reordered_weights,
+        int group_size = kGgmlGroupSize) {
 #if ZENDNNL_DEPENDS_AOCLDLP
     // B-side group size now travels inside dlp_metadata_t->b_quant_op
     // (new AOCL DLP reorder API); DLP_SYMM_STAT_QUANT was removed.
     dlp_metadata_t symq_meta = {};
     dlp_quant_op_t symq_b_quant_op = {};
     symq_b_quant_op.quant_op_kind = DLP_QUANT_OP_QUANTIZE;
-    symq_b_quant_op.group_size = kGgmlGroupSize;
+    symq_b_quant_op.group_size = group_size;
     symq_meta.b_quant_op = &symq_b_quant_op;
     aocl_reorder_s8s8s32os32_sym_quant('r', trans, 'B', unpacked_weights,
             reordered_weights, K, N, ldb, &symq_meta);
@@ -212,7 +216,8 @@ static status_t ggml_unpack_to_s8_buffer(const void *weight, int64_t N,
         int64_t K, int ggml_type, void **owned_buffer, int8_t **out_s8,
         void **out_scales) {
     const size_t weight_bytes = static_cast<size_t>(N) * static_cast<size_t>(K);
-    const size_t scale_bytes = ggml_scale_bytes(N, K, /*use_bf16_scales=*/true);
+    const size_t scale_bytes = ggml_scale_bytes(
+            N, K, /*use_bf16_scales=*/true, ggml_group_size_for(ggml_type));
     const size_t canon_size = align_up(weight_bytes + scale_bytes);
 
     void *canon = aligned_alloc(64, canon_size);
@@ -221,15 +226,17 @@ static status_t ggml_unpack_to_s8_buffer(const void *weight, int64_t N,
         return status_t::failure;
     }
 
-    if (ggml_type == 8) {
-        // Q8_0: native s8 unpack directly into the canonical buffer.
+    if (ggml_type == 8 || ggml_type == 14) {
+        // Q8_0 and Q6_K both land on s8 with one scale per group, so they share
+        // this branch; they differ only in how many groups a row has, which the
+        // scale sizing above already accounts for.
         int8_t *w = nullptr;
         void *s = nullptr;
-        if (ggml_unpack_weight_buffer(
-                    weight, 8, /*use_bf16_scales=*/true, N, K, &w, &s, canon)
+        if (ggml_unpack_weight_buffer(weight, ggml_type,
+                    /*use_bf16_scales=*/true, N, K, &w, &s, canon)
                 != 0) {
             std::free(canon);
-            log_error("GGML Q8_0 unpack failed");
+            log_error("GGML unpack failed for ggml_type=", ggml_type);
             return status_t::failure;
         }
         *out_s8 = static_cast<int8_t *>(canon);
@@ -654,7 +661,17 @@ status_t unpack_ggml_weights_and_cache(const void *&weight, int N, int K,
                 dtype_info(params.dtypes.wei));
         return status_t::failure;
     }
-    const int ggml_type = (params.dtypes.wei == data_type_t::s4) ? 2 : 8;
+    if (params.packing.ggml_type_b != 0 && params.packing.ggml_type_b != 2
+            && params.packing.ggml_type_b != 8
+            && params.packing.ggml_type_b != 14) {
+        log_error("GGML unpack: unsupported ggml_type_b=",
+                params.packing.ggml_type_b,
+                " (supported: 2=Q4_0, 8=Q8_0, 14=Q6_K)");
+        return status_t::failure;
+    }
+    const int ggml_type = params.packing.ggml_type_b != 0
+            ? params.packing.ggml_type_b
+            : ((params.dtypes.wei == data_type_t::s4) ? 2 : 8);
 
     apilog_info("GGML unpack: N=", N, ", K=", K, ", ggml_type=", ggml_type,
             ", weight_address=", static_cast<const void *>(weight),
@@ -669,10 +686,13 @@ status_t unpack_ggml_weights_and_cache(const void *&weight, int N, int K,
 
     // Default: unpack + AOCL sym-quant reorder + cache (mem_format 'r').
     size_t reorder_size = 0;
-    if (ggml_reorder_size(N, K, trans, reorder_size) != status_t::success) {
+    if (ggml_reorder_size(N, K, trans, reorder_size,
+                ggml_group_size_for(ggml_type))
+            != status_t::success) {
         return status_t::failure;
     }
-    const size_t scale_bytes = ggml_scale_bytes(N, K, true);
+    const size_t scale_bytes = ggml_scale_bytes(
+            N, K, true, ggml_group_size_for(ggml_type));
     const size_t total_cache_bytes = align_up(reorder_size + scale_bytes);
 
     // Reordered GGML weight bytes depend only on the weight pointer, K, N,
@@ -717,7 +737,8 @@ status_t unpack_ggml_weights_and_cache(const void *&weight, int N, int K,
         }
 
         if (ggml_reorder_unpacked_weights(N, K, ldb, trans, unpacked_weights,
-                    static_cast<int8_t *>(new_cached_buffer))
+                    static_cast<int8_t *>(new_cached_buffer),
+                    ggml_group_size_for(ggml_type))
                 != status_t::success) {
             std::free(unpack_owned);
             std::free(new_cached_buffer);

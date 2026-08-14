@@ -151,8 +151,15 @@ struct matmul_batch_params_t {
  */
 struct pack_format {
     int pack_format_b; ///< 0 = unpacked (default), 1 = GGML packed weights
+    ///< GGML block type (ggml_type enum) when pack_format_b == 1.
+    ///< 0 keeps the legacy behaviour of inferring the type from dtypes.wei,
+    ///< which can only distinguish Q4_0 from Q8_0. The k-quants have no
+    ///< distinct weight dtype -- Q6_K unpacks to s8 exactly as Q8_0 does, and
+    ///< differs in group size, not element type -- so they can only be named
+    ///< here.
+    int ggml_type_b;
 
-    pack_format() : pack_format_b(0) {}
+    pack_format() : pack_format_b(0), ggml_type_b(0) {}
 };
 
 /**
