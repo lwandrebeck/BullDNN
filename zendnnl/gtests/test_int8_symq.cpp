@@ -56,6 +56,7 @@
 #include <vector>
 
 #include "lowoha_operators/matmul/lowoha_matmul.hpp"
+#include "gtest_utils.hpp"
 #include "lowoha_operators/matmul/matmul_native/common/kernel_cache.hpp"
 #include "lowoha_operators/matmul/matmul_native/gemm/kernel/int8/int8_symq_ukernel_128.hpp"
 #include "lowoha_operators/matmul/matmul_native/gemm/looper/int8_symq_entry_128.hpp"
@@ -819,6 +820,76 @@ TEST(Int8SymqLooper128Scales, PerTensorAgreesWithAnEquivalentPerTokenVector) {
             true, c_vector.data(), N, ws.data(), as_vector.data(), 1, 0, 2));
     for (size_t i = 0; i < c_scalar.size(); ++i)
         ASSERT_FLOAT_EQ(c_scalar[i], c_vector[i]) << "at " << i;
+}
+
+// The real thing: a GGML Q8_0 packed weight through matmul_direct, which is what
+// llama.cpp hands over. This is the case every other test in this file only
+// approximates, and it needs the library's own unpack to run first --
+// unpack_ggml_weights_and_cache() decodes the blocks, and on a host without
+// AVX-512 VNNI now asks for the raw s8 form this kernel can read rather than an
+// AOCL reorder it cannot.
+//
+// Scales are exact powers of two on purpose. Q8_0 stores its scale as fp16 and
+// the unpack rewrites it as bf16, so an arbitrary f32 scale is rounded twice
+// before the kernel sees it and the comparison would be measuring that instead
+// of the kernel. Powers of two survive both formats exactly.
+TEST_F(Int8SymqDispatch, GgmlQ8_0PackedWeightComputesEndToEnd) {
+    constexpr int kBlk = 32; // Q8_0 group size
+    constexpr size_t kBlkBytes = 34; // fp16 scale + 32 int8
+    const int M = 6, N = 64, K = 128;
+    const int groups = K / kBlk;
+
+    std::mt19937 rng(20260814);
+    // Weight rows are N: the GGML layout is N x K, i.e. transB.
+    std::vector<int8_t> wt(static_cast<size_t>(N) * K);
+    fill_s8(wt, rng, false);
+
+    // repack_weights_q8_0 wants scales column-major [groups x N], which is the
+    // group-major {G, N} layout the kernel wants too.
+    std::vector<float> wei_scales(static_cast<size_t>(groups) * N);
+    const float exact[4] = {0.03125f, 0.0625f, 0.125f, 0.25f};
+    for (size_t i = 0; i < wei_scales.size(); ++i) wei_scales[i] = exact[i % 4];
+
+    std::vector<uint8_t> packed(
+            static_cast<size_t>(N) * groups * kBlkBytes);
+    repack_weights_q8_0(wt.data(), wei_scales.data(), static_cast<int64_t>(N),
+            static_cast<int64_t>(K), packed.data());
+
+    std::vector<int8_t> A(static_cast<size_t>(M) * K);
+    fill_s8(A, rng, false);
+    // Per-group activation scales: more than one element, which is what
+    // ggml_is_sym_quant() requires.
+    std::vector<float> src_scales(static_cast<size_t>(M) * groups);
+    for (size_t i = 0; i < src_scales.size(); ++i)
+        src_scales[i] = exact[(i + 1) % 4];
+
+    std::vector<float> C = poisoned(static_cast<size_t>(M) * N);
+
+    matmul_params p;
+    p.dtypes.src = data_type_t::s8;
+    p.dtypes.wei = data_type_t::s8;
+    p.dtypes.dst = data_type_t::f32;
+    p.packing.pack_format_b = 1; // GGML packed
+    p.packing.ggml_type_b = 8; // Q8_0
+    p.quant_params.src_scale.buff = src_scales.data();
+    p.quant_params.src_scale.dt = data_type_t::f32;
+    p.quant_params.src_scale.dims = {M, groups};
+    p.lowoha_algo = matmul_algo_t::native_gemm;
+    p.num_threads = 2;
+    matmul_batch_params_t batch;
+
+    const status_t st = matmul_direct('r', false, /*transB=*/true, M, N, K, 1.0f,
+            A.data(), K, packed.data(), K, nullptr, 0.0f, C.data(), N,
+            /*is_weights_const=*/true, batch, p);
+    ASSERT_EQ(st, status_t::success);
+
+    std::vector<float> ref;
+    reference_gemm(M, N, K, kBlk, A.data(), K, wt.data(), K, /*transB=*/true,
+            wei_scales.data(), src_scales.data(), ref, groups, 1);
+    int nans = 0;
+    EXPECT_LT(worst_scaled_error(C, N, ref, N, M, N, &nans), kTolerance);
+    EXPECT_EQ(nans, 0) << "dst was never written -- the GGML call did not reach "
+                          "a kernel that computes";
 }
 
 // Granularities and options the adapter does not implement must be declined, not

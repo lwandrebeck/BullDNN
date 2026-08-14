@@ -20,6 +20,7 @@
 #include <sstream>
 #include <string>
 #include "common/zendnnl_global.hpp"
+#include "matmul_native/gemm/looper/int8_symq_entry_128.hpp"
 #include "matmul_native/common/cost_model.hpp"
 #include "matmul_native/common/kernel_cache.hpp"
 #include "matmul_native/native_matmul.hpp"
@@ -885,7 +886,21 @@ matmul_algo_t kernel_select(matmul_params &params, int Batch_A, int Batch_B,
                     || is_bf16_f32_per_token_sym);
 
     if (is_sym_quant && kernel != matmul_algo_t::aocl_dlp_blocked) {
-        kernel = matmul_algo_t::aocl_dlp_blocked;
+        // Sym-quant belongs to AOCL-DLP, except where AOCL-DLP cannot run it at
+        // all: without AVX-512 VNNI it refuses and returns without computing, so
+        // forcing it there converts a working native call into no output. Keep
+        // the caller's native algo when all three hold -- no VNNI, native asked
+        // for explicitly, and a shape the 128-bit symmetric per-group kernel
+        // expresses. On any host with VNNI, and for every caller that did not
+        // ask for native, this is exactly as it was.
+        const bool native_symq_can_run
+                = !native::detect_uarch().avx512vnni
+                && (kernel == matmul_algo_t::native_gemm
+                        || kernel == matmul_algo_t::native_brgemm)
+                && native::is_int8_symq_candidate(params, K, N);
+        if (!native_symq_can_run) {
+            kernel = matmul_algo_t::aocl_dlp_blocked;
+        }
     }
 
     const bool non_f32_quant_scale_src = params.quant_params.src_scale.buff
