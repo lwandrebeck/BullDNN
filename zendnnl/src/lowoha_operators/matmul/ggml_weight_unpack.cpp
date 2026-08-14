@@ -50,6 +50,34 @@ struct block_q4_0 {
     uint8_t qs[16];
 };
 
+// Q6_K, the first k-quant handled here. A super-block covers 256 weights and
+// carries sixteen sub-blocks of sixteen, each with its own signed 8-bit scale
+// on top of one fp16 super-block scale.
+//
+// It is the k-quant that fits this pipeline unchanged, because it is symmetric:
+// a weight is d * scales[j] * q with q in [-32, 31], with no min to subtract.
+// Q4_K and Q5_K are d * q - dmin * m and need a second term this path has no
+// way to express -- matmul_native has no weight zero-point at all -- so they
+// are not handled here.
+//
+// q is six bits, so it does not fit the s4 packing Q4_0 uses; the codes go out
+// as plain s8 like Q8_0, and only the group size differs.
+constexpr int kGgmlSuperBlock = 256;
+constexpr int kGgmlGroupSizeQ6K = 16;
+
+struct block_q6_K {
+    uint8_t ql[kGgmlSuperBlock / 2];      // low 4 bits          128 B
+    uint8_t qh[kGgmlSuperBlock / 4];      // high 2 bits          64 B
+    int8_t scales[kGgmlSuperBlock / 16];  // per sub-block scale  16 B
+    uint16_t d;                           // super-block scale     2 B
+};
+static_assert(sizeof(block_q6_K) == 210, "block_q6_K must match GGML's layout");
+
+// Weights per scale for a GGML type: 32 for the legacy quants, 16 for Q6_K.
+inline int ggml_group_size_for(int ggml_type) {
+    return ggml_type == 14 ? kGgmlGroupSizeQ6K : kGgmlGroupSize;
+}
+
 inline uint32_t fp32_to_bits(float f) {
     uint32_t bits;
     std::memcpy(&bits, &f, sizeof(f));
@@ -307,6 +335,13 @@ status_t validate_ggml_packed_inputs(const matmul_params &params,
 int64_t ggml_unpack_weight_buffer_size(
         int ggml_type, bool use_bf16_scales, int64_t N, int64_t K) {
     if (N <= 0 || K <= 0 || K % 32 != 0) return -1;
+    // Q6_K carries one scale per sixteen weights rather than per thirty-two,
+    // and its super-block is 256 wide, so K has to divide by that.
+    if (ggml_type == 14) {
+        if (K % kGgmlSuperBlock != 0) return -1;
+        const int64_t ng16 = K / kGgmlGroupSizeQ6K;
+        return N * K + N * ng16 * (use_bf16_scales ? 2 : 4);
+    }
     int64_t ng = K / 32;
     int64_t scale_bytes = N * ng * (use_bf16_scales ? 2 : 4);
     if (ggml_type == 8) return N * K + scale_bytes;
@@ -327,9 +362,81 @@ int ggml_unpack_weight_buffer(const void *weight_data, int ggml_type,
     const int64_t ng = K / 32;
     const int64_t num_blocks = N * ng;
 
-    const int64_t weight_bytes = (ggml_type == 8) ? N * K : N * (K / 2);
+    const int64_t weight_bytes
+            = (ggml_type == 8 || ggml_type == 14) ? N * K : N * (K / 2);
     *wei_ptr = static_cast<int8_t *>(buf);
     *scl_ptr = static_cast<void *>(static_cast<int8_t *>(buf) + weight_bytes);
+
+    // Q6_K: six-bit codes split across a low-nibble array and a high-two-bit
+    // array, one signed scale per sixteen weights.
+    //
+    // The code for element e of a super-block is assembled from ql[] and qh[]
+    // exactly as GGML's dequantize_row_q6_K does, then biased by -32 to land in
+    // [-32, 31]. Getting that assembly wrong yields plausible-looking weights
+    // that are simply the wrong numbers, so the unit test checks the decode
+    // against the reference formula rather than against itself.
+    //
+    // The scale for element e is scales[e / 16] within the super-block -- the
+    // reference reaches it as sc[is + 0], sc[is + 2], sc[is + 4], sc[is + 6]
+    // across four 32-wide strips with is = l / 16, which walks the sixteen
+    // sub-block scales in order and so collapses to e / 16.
+    if (ggml_type == 14) {
+        if (K % kGgmlSuperBlock != 0) return -1;
+        const int64_t nsb = K / kGgmlSuperBlock;          // super-blocks per row
+        const int64_t ng16 = K / kGgmlGroupSizeQ6K;       // scales per row
+        const size_t scale_bytes = static_cast<size_t>(N) * ng16
+                * (use_bf16_scales ? sizeof(uint16_t) : sizeof(float));
+
+        std::unique_ptr<int8_t[]> tmp_weights(new int8_t[N * K]);
+        std::unique_ptr<uint8_t[]> tmp_scales(new uint8_t[scale_bytes]);
+
+        auto *blocks = static_cast<const block_q6_K *>(weight_data);
+
+#pragma omp parallel for schedule(static)
+        for (int64_t row = 0; row < N; row++) {
+            for (int64_t sb = 0; sb < nsb; sb++) {
+                block_q6_K b;
+                std::memcpy(&b, &blocks[row * nsb + sb], sizeof(b));
+                const float d = fp16_to_fp32(b.d);
+
+                // Scales stay in the same group-major order the other types
+                // use: index g * N + row, so downstream indexing is unchanged
+                // and only the number of groups differs.
+                for (int j = 0; j < kGgmlSuperBlock / 16; ++j) {
+                    const int64_t g = sb * (kGgmlSuperBlock / 16) + j;
+                    write_scale(tmp_scales.get(), use_bf16_scales, g * N + row,
+                            d * static_cast<float>(b.scales[j]));
+                }
+
+                int8_t *dst = &tmp_weights[row * K + sb * kGgmlSuperBlock];
+                for (int n = 0; n < kGgmlSuperBlock; n += 128) {
+                    const uint8_t *ql = b.ql + (n / 2);
+                    const uint8_t *qh = b.qh + (n / 4);
+                    for (int l = 0; l < 32; ++l) {
+                        dst[n + l + 0] = static_cast<int8_t>(
+                                ((ql[l] & 0x0F) | (((qh[l] >> 0) & 3) << 4))
+                                - 32);
+                        dst[n + l + 32] = static_cast<int8_t>(
+                                ((ql[l + 32] & 0x0F)
+                                        | (((qh[l] >> 2) & 3) << 4))
+                                - 32);
+                        dst[n + l + 64] = static_cast<int8_t>(
+                                ((ql[l] >> 4) | (((qh[l] >> 4) & 3) << 4))
+                                - 32);
+                        dst[n + l + 96] = static_cast<int8_t>(
+                                ((ql[l + 32] >> 4) | (((qh[l] >> 6) & 3) << 4))
+                                - 32);
+                    }
+                }
+            }
+        }
+
+        uint8_t *raw_buf = static_cast<uint8_t *>(buf);
+        std::memcpy(raw_buf, tmp_weights.get(), static_cast<size_t>(N) * K);
+        std::memcpy(raw_buf + static_cast<size_t>(N) * K, tmp_scales.get(),
+                scale_bytes);
+        return 0;
+    }
 
     // Q8_0: copy int8 weights directly, one scale per group.
     if (ggml_type == 8) {
