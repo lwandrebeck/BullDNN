@@ -29,14 +29,26 @@
 set -u
 cd ~/BullDNN/build || exit 1
 
+# Set VALIDATE_RESUME_DIR to an existing logdir to continue a run that a reboot
+# or a lost box cut short: the driver appends rather than truncates, and phase 1
+# skips shards already recorded there. Written after a crash lost fourteen of
+# sixteen shards with no way to pick up from the two that had finished.
 STAMP=$(date +%Y%m%d_%H%M%S)
-LOGDIR="$HOME/logs/$STAMP"
+LOGDIR="${VALIDATE_RESUME_DIR:-$HOME/logs/$STAMP}"
 mkdir -p "$LOGDIR"
-exec > "$LOGDIR/driver.log" 2>&1
+exec >> "$LOGDIR/driver.log" 2>&1
+
+# This tree is synced file by file rather than cloned, so rev-parse finds no
+# repository and every log said "head unknown" -- useless for the one question an
+# unattended result has to answer later, which is what code produced it. The sync
+# writes the commit to .synced_head; git stays as the fallback for a checkout.
+HEAD_ID=$(cat ~/BullDNN/.synced_head 2>/dev/null \
+        || git -C ~/BullDNN rev-parse --short HEAD 2>/dev/null \
+        || echo unknown)
 
 echo "start $(date -Is) host=$(hostname)"
 echo "logdir $LOGDIR"
-echo "head $(git -C ~/BullDNN rev-parse --short HEAD 2>/dev/null || echo unknown)"
+echo "head $HEAD_ID"
 
 gflops() { awk -v m="$1" '$1==m{print $NF}' | tail -1; }
 
@@ -56,6 +68,10 @@ mkin() {
 echo "=== [1] FP32 correctness shards ==="
 for SH in 3 17 29 41 53 67 79 91 103 115 127 139 151 163 175 187; do
     LOG="$LOGDIR/shard_${SH}.log"
+    if grep -q "^shard=$SH rc=" "$LOGDIR/driver.log" 2>/dev/null; then
+        echo "skip shard=$SH, already recorded"
+        continue
+    fi
     T0=$(date +%s)
     GTEST_TOTAL_SHARDS=400 GTEST_SHARD_INDEX=$SH ZENDNNL_MATMUL_ALGO=10 \
         timeout 900 ./zendnnl/gtests/gtests \
