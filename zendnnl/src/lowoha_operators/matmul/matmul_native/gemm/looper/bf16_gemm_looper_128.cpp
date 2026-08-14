@@ -30,12 +30,12 @@
 //
 // Structure, chosen for the same reason the FP32 side looks like it does:
 // parallelise over column panels so each thread owns a disjoint slice of C and
-// no reduction is needed, then walk K blocks inside. Each thread packs its own
-// B strip, so nothing is shared but the read-only inputs.
+// no reduction is needed, then walk K blocks inside. Nothing is shared between
+// threads but read-only inputs: the packed B panels when the weights are
+// constant and so cached, or a private strip per thread when they are not.
 //
-// Two things differ from the AVX-512 looper by necessity. B is packed on the fly
-// with the scalar VNNI packer rather than taken from the prepacked cache, whose
-// fill path is not portable; and A is widened to FP32 per M-panel, because the
+// One thing differs from the AVX-512 looper by necessity. A is widened to FP32
+// once per call, because the
 // microkernel wants FP32 A -- widening it there would cost three operations per
 // row per k to build a value one FMA consumes. B stays BF16 all the way into
 // the register, which is the point: it is the operand streamed repeatedly
@@ -170,6 +170,45 @@ bool bf16_gemm_execute_128(const GemmDescriptor &desc, const UarchParams &uarch,
     const int b_stride = BF16PrepackedWeight::stride();
     const int n_panels = (N + panel_w - 1) / panel_w;
 
+    // ---- packed B, once per weight rather than once per call ---------------
+    // Every other looper here caches its packed weights and this one did not,
+    // on a comment of mine claiming the shared cache's fill path was not
+    // portable. It is not: BF16PrepackedWeightCache::get_or_prepack is plain
+    // scalar C++ with no AVX-512 in it, and the layout it produces is the one
+    // this file already asks for -- panels of NR_PACK columns, k-pairs at
+    // BF16PrepackedWeight::stride(), which is what b_stride above is set to.
+    //
+    // So a cached panel can be handed to the microkernel as it stands. Panel p
+    // at K offset pc begins at
+    //
+    //     data + p * k_pairs_total * b_stride + (pc / 2) * b_stride
+    //
+    // and the bytes are identical to what the on-the-fly packer writes, so
+    // results are unchanged rather than merely close.
+    //
+    // pc/2 is only a whole k-pair when KB is even. An odd KB would put a block
+    // boundary in the middle of a pair, which this layout cannot express, so
+    // that case keeps packing per call. The planner has no reason to choose an
+    // odd KB, but nothing forces it not to.
+    //
+    // is_weights_const is the framework's promise that the buffer will not be
+    // written behind us; without it, caching by pointer would serve stale
+    // weights. The gate matches the other loopers'.
+    static const int32_t s_weight_cache
+            = matmul_config_t::instance().get_weight_cache();
+    const bool can_cache = desc.is_weights_const && (s_weight_cache != 0)
+            && (KB % 2 == 0);
+    const BF16PrepackedWeight *prepacked_b = nullptr;
+    if (can_cache) {
+        const PrepackedWeightKey bk {weight, K, N, ldb, transB};
+        prepacked_b = BF16PrepackedWeightCache::instance().get_or_prepack(
+                bk, B);
+    }
+    // The cache pads K up to an even number of k-pairs; panel stride follows
+    // that padding, not K itself.
+    const size_t panel_pairs
+            = prepacked_b ? static_cast<size_t>(prepacked_b->K_padded) / 2 : 0;
+
     int nthreads = plan.num_threads > 0 ? plan.num_threads : 1;
     nthreads = std::min(nthreads, std::max(n_panels, 1));
 
@@ -218,8 +257,12 @@ bool bf16_gemm_execute_128(const GemmDescriptor &desc, const UarchParams &uarch,
 #endif
     {
         ThreadScratch s;
-        s.b_strip.assign(
-                static_cast<size_t>(k_pairs_kb) * b_stride + b_stride, 0);
+        // No strip to own when B comes from the cache: the panels are read-only
+        // and shared, so the threads read them in place.
+        if (prepacked_b == nullptr) {
+            s.b_strip.assign(
+                    static_cast<size_t>(k_pairs_kb) * b_stride + b_stride, 0);
+        }
         s.c_tile.assign(static_cast<size_t>(MR) * NR, 0.0f);
 
         const bf16_ukernel_128_fn_t hot = select_bf16_ukernel_128(MR, NR);
@@ -236,8 +279,17 @@ bool bf16_gemm_execute_128(const GemmDescriptor &desc, const UarchParams &uarch,
                 const float beta_k = (pc == 0) ? beta_eff : 1.0f;
                 const bool is_last_k = (pc + kb_act >= K);
 
-                pack_b_vnni_strip_scalar(B, ldb, transB, jc, nb_act, K, pc,
-                        kb_act, s.b_strip.data());
+                const uint16_t *b_strip;
+                if (prepacked_b != nullptr) {
+                    b_strip = prepacked_b->data
+                            + (static_cast<size_t>(p) * panel_pairs
+                                      + static_cast<size_t>(pc) / 2)
+                                    * b_stride;
+                } else {
+                    pack_b_vnni_strip_scalar(B, ldb, transB, jc, nb_act, K, pc,
+                            kb_act, s.b_strip.data());
+                    b_strip = s.b_strip.data();
+                }
 
                 for (int ic = 0; ic < M; ic += MB) {
                     const int mb_act = std::min(MB, M - ic);
@@ -257,7 +309,7 @@ bool bf16_gemm_execute_128(const GemmDescriptor &desc, const UarchParams &uarch,
                             // b_stride counts uint16 per k-pair row; jr columns
                             // in means jr*VNNI_PAIR uint16 in.
                             const uint16_t *b_tile
-                                    = s.b_strip.data() + jr * VNNI_PAIR;
+                                    = b_strip + jr * VNNI_PAIR;
 
                             // Bias and the activation ride along on the last K
                             // block, where the tile holds its final value.
