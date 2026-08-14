@@ -112,8 +112,9 @@ void pack_b_panel(const int8_t *B, int ldb, bool transB, int jc, int nb_act,
 
 bool int8_symq_execute_128(int M, int N, int K, int group_size,
         const int8_t *A, int lda, const int8_t *B, int ldb, bool transB,
-        float *C, int ldc, const float *wei_scale, float src_scale,
-        int nthreads, const INT8PrepackedWeight *prepacked) {
+        float *C, int ldc, const float *wei_scale, const float *src_scale,
+        int ss_row, int ss_grp, int nthreads,
+        const INT8PrepackedWeight *prepacked) {
 
     if (M <= 0 || N <= 0 || K <= 0) return false;
     // The microkernel flushes once per group and reads whole quads, so a K that
@@ -152,12 +153,25 @@ bool int8_symq_execute_128(int M, int N, int K, int group_size,
     // threads, which each own different columns of the same rows.
     const int m_tail = M % SYMQ_MR;
     std::vector<int8_t> a_pad;
+    // Row-indexed activation scales need the same padding as the rows they
+    // describe: the kernel reads MR of them, and only m_tail exist. ss_row
+    // elements per row covers per-token (1) and per-group (G) alike. The padding
+    // is zero, which is doubly safe -- the rows it scales are zero anyway.
+    std::vector<float> ss_pad;
     if (m_tail != 0) {
         a_pad.assign(static_cast<size_t>(SYMQ_MR) * K, 0);
         const int ic0 = M - m_tail;
         for (int m = 0; m < m_tail; ++m) {
             std::memcpy(a_pad.data() + static_cast<size_t>(m) * K,
                     A + static_cast<size_t>(ic0 + m) * lda, K);
+        }
+        if (ss_row != 0) {
+            ss_pad.assign(static_cast<size_t>(SYMQ_MR) * ss_row, 0.0f);
+            for (int m = 0; m < m_tail; ++m) {
+                std::memcpy(ss_pad.data() + static_cast<size_t>(m) * ss_row,
+                        src_scale + static_cast<size_t>(ic0 + m) * ss_row,
+                        sizeof(float) * ss_row);
+            }
         }
     }
 
@@ -205,20 +219,30 @@ bool int8_symq_execute_128(int M, int N, int K, int group_size,
                     // Scales are group-major over the full N, so the column
                     // offset goes into the pointer and the stride stays N.
                     const float *ws = wei_scale + jc + jr;
+                    // The activation scale is indexed by row, so the M offset
+                    // goes into the pointer; ss_row is 0 for a per-tensor scale
+                    // and the offset then correctly does nothing.
+                    const float *ss
+                            = src_scale + static_cast<size_t>(ic) * ss_row;
 
                     if (mr_act == SYMQ_MR && nr_act == SYMQ_NR) {
                         hot(a_tile, lda, b_tile, b_stride, c_tile, ldc, K,
-                                group_size, ws, N, src_scale);
+                                group_size, ws, N, ss, ss_row, ss_grp);
                         // mr_act < MR only ever happens on the last M panel,
                         // which is exactly the rows a_pad holds.
                     } else if (nr_act == SYMQ_NR && mr_act < SYMQ_MR
                             && m_tail != 0) {
                         // Short on rows only: run the vector kernel over the
-                        // zero-padded copy and keep the rows that exist.
+                        // zero-padded copy and keep the rows that exist. The
+                        // padded rows read scales past row M-1, so the kernel is
+                        // pointed at a padded scale copy too rather than off the
+                        // end of the caller's buffer.
                         std::memset(c_scratch.data(), 0,
                                 sizeof(float) * c_scratch.size());
                         hot(a_pad.data(), K, b_tile, b_stride, c_scratch.data(),
-                                SYMQ_NR, K, group_size, ws, N, src_scale);
+                                SYMQ_NR, K, group_size, ws, N,
+                                ss_row == 0 ? src_scale : ss_pad.data(), ss_row,
+                                ss_grp);
                         for (int m = 0; m < mr_act; ++m) {
                             std::memcpy(c_tile + static_cast<size_t>(m) * ldc,
                                     c_scratch.data()
@@ -228,7 +252,7 @@ bool int8_symq_execute_128(int M, int N, int K, int group_size,
                     } else {
                         int8_symq_tail_128(a_tile, lda, b_tile, b_stride,
                                 c_tile, ldc, K, group_size, mr_act, nr_act, ws,
-                                N, src_scale);
+                                N, ss, ss_row, ss_grp);
                     }
                 }
             }

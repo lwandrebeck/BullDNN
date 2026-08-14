@@ -249,30 +249,74 @@ bool int8_symq_try_execute_128(const GemmDescriptor &desc, const void *src,
         }
     }
 
-    if (!is_scalar_quant(qp.src_scale.dims)) {
-        log_info("INT8 symq: per-token source scale, declining");
-        return false;
-    }
-    float src_scale = 1.0f;
-    if (qp.src_scale.buff != nullptr) {
-        if (qp.src_scale.dt == data_type_t::f32) {
-            src_scale = *static_cast<const float *>(qp.src_scale.buff);
-        } else if (qp.src_scale.dt == data_type_t::bf16) {
-            src_scale = common::bfloat16_t::bf16_to_f32_val(
-                    static_cast<int16_t>(
-                            *static_cast<const uint16_t *>(qp.src_scale.buff)));
+    const int groups = wei_scale_groups(params, desc.N);
+    const int group_size = desc.K / groups;
+
+    // Activation scale granularity. The API allows {1,1} per-tensor, {M,1}
+    // per-token and {M,G} per-group, and the kernel takes all three because it
+    // flushes once per (row, group) regardless -- the finest of them. This
+    // matters more than it looks: the GGML path's own gate, ggml_is_sym_quant(),
+    // requires a source scale with more than one element, so a per-tensor-only
+    // kernel is one the GGML path can never reach.
+    int ss_row = 0, ss_grp = 0;
+    {
+        const auto &d = qp.src_scale.dims;
+        if (is_scalar_quant(d)) {
+            ss_row = 0;
+            ss_grp = 0;
+        } else if (d.size() == 2 && d[0] == desc.M && d[1] == 1) {
+            ss_row = 1;
+            ss_grp = 0;
+        } else if (d.size() == 2 && d[0] == desc.M && d[1] == groups) {
+            ss_row = groups;
+            ss_grp = 1;
         } else {
-            log_info("INT8 symq: unrecognised source scale dtype, declining");
+            log_info("INT8 symq: source scale is not per-tensor, per-token or "
+                     "per-group over this shape; declining");
             return false;
         }
     }
-    // alpha scales the product, and the source scale is applied to exactly the
-    // same product once per group, so folding it in costs nothing. beta is
-    // already required to be zero above.
-    src_scale *= desc.alpha;
+    const size_t n_src_scales = ss_row == 0
+            ? size_t(1)
+            : static_cast<size_t>(desc.M) * static_cast<size_t>(ss_row);
 
-    const int groups = wei_scale_groups(params, desc.N);
-    const int group_size = desc.K / groups;
+    // alpha scales the product and the activation scale multiplies exactly the
+    // same product, so it folds in. With more than one scale that means a scaled
+    // copy; the buffer is O(M*G), it is activation-side and changes every call
+    // anyway, and alpha != 1 is rare on this path. beta is already zero above.
+    const bool need_scaled_copy
+            = (desc.alpha != 1.0f) || qp.src_scale.dt == data_type_t::bf16;
+    std::vector<float> src_scale_buf;
+    const float *src_scale = nullptr;
+    float src_scale_one = desc.alpha;
+
+    if (qp.src_scale.buff == nullptr) {
+        src_scale = &src_scale_one; // no scale supplied: alpha alone
+        ss_row = 0;
+        ss_grp = 0;
+    } else if (qp.src_scale.dt == data_type_t::f32 && !need_scaled_copy) {
+        src_scale = static_cast<const float *>(qp.src_scale.buff);
+    } else if (qp.src_scale.dt == data_type_t::f32
+            || qp.src_scale.dt == data_type_t::bf16) {
+        src_scale_buf.resize(n_src_scales);
+        if (qp.src_scale.dt == data_type_t::f32) {
+            const float *raw = static_cast<const float *>(qp.src_scale.buff);
+            for (size_t i = 0; i < n_src_scales; ++i)
+                src_scale_buf[i] = raw[i] * desc.alpha;
+        } else {
+            const uint16_t *raw
+                    = static_cast<const uint16_t *>(qp.src_scale.buff);
+            for (size_t i = 0; i < n_src_scales; ++i) {
+                src_scale_buf[i] = common::bfloat16_t::bf16_to_f32_val(
+                                           static_cast<int16_t>(raw[i]))
+                        * desc.alpha;
+            }
+        }
+        src_scale = src_scale_buf.data();
+    } else {
+        log_info("INT8 symq: unrecognised source scale dtype, declining");
+        return false;
+    }
 
     if (qp.wei_scale.buff == nullptr) {
         log_info("INT8 symq: no weight scale, declining");
@@ -357,7 +401,7 @@ bool int8_symq_try_execute_128(const GemmDescriptor &desc, const void *src,
     const int nthreads = desc.num_threads > 0 ? desc.num_threads : 1;
     return int8_symq_execute_128(desc.M, desc.N, desc.K, group_size, A,
             desc.lda, B, desc.ldb, desc.transB, static_cast<float *>(dst),
-            desc.ldc, wei_scale, src_scale, nthreads, prepacked);
+            desc.ldc, wei_scale, src_scale, ss_row, ss_grp, nthreads, prepacked);
 }
 
 } // namespace native

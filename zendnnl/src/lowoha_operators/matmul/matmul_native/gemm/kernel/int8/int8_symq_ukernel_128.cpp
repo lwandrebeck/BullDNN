@@ -137,10 +137,14 @@ inline void pin_reg(Vec &v0, Vec &v1) {
             const int8_t *__restrict__ B_vnni, int b_stride,                   \
             float *__restrict__ C, int ldc, int k, int group_size,             \
             const float *__restrict__ wei_scale, int ws_stride,                \
-            float src_scale) {                                                 \
+            const float *__restrict__ src_scale, int ss_row, int ss_grp) {     \
         const int quads_per_group = group_size / SYMQ_VNNI_GRP;                \
         const int n_groups = k / group_size;                                   \
-        const __m128 v_src = _mm_set1_ps(src_scale);                           \
+        /* One scale for the whole tile is the common case, and keeping it a  */\
+        /* separate path means it emits exactly what it did before per-token  */\
+        /* existed -- the flush is 16% of a group at group_size 32.           */\
+        const bool src_uniform = (ss_row == 0 && ss_grp == 0);                 \
+        const __m128 v_src = _mm_set1_ps(src_scale[0]);                        \
                                                                                \
         for (int g = 0; g < n_groups; ++g) {                                   \
             /* s32 accumulators: four rows x two halves of four columns. */    \
@@ -179,16 +183,40 @@ inline void pin_reg(Vec &v0, Vec &v1) {
             /* Flush: one weight scale per column for this group. */           \
             const __m128 ws0 = _mm_loadu_ps(wei_scale + g * ws_stride);        \
             const __m128 ws1 = _mm_loadu_ps(wei_scale + g * ws_stride + 4);    \
-            const __m128 s0 = _mm_mul_ps(ws0, v_src);                          \
-            const __m128 s1 = _mm_mul_ps(ws1, v_src);                          \
-            for (int m = 0; m < SYMQ_MR; ++m) {                                \
-                float *c = C + m * ldc;                                        \
-                _mm_storeu_ps(c,                                               \
-                        _mm_add_ps(_mm_loadu_ps(c),                            \
-                                _mm_mul_ps(_mm_cvtepi32_ps(acc[m][0]), s0)));  \
-                _mm_storeu_ps(c + 4,                                           \
-                        _mm_add_ps(_mm_loadu_ps(c + 4),                        \
-                                _mm_mul_ps(_mm_cvtepi32_ps(acc[m][1]), s1)));  \
+            if (src_uniform) {                                                 \
+                const __m128 s0 = _mm_mul_ps(ws0, v_src);                      \
+                const __m128 s1 = _mm_mul_ps(ws1, v_src);                      \
+                for (int m = 0; m < SYMQ_MR; ++m) {                            \
+                    float *c = C + m * ldc;                                    \
+                    _mm_storeu_ps(c,                                           \
+                            _mm_add_ps(_mm_loadu_ps(c),                        \
+                                    _mm_mul_ps(_mm_cvtepi32_ps(acc[m][0]),     \
+                                            s0)));                             \
+                    _mm_storeu_ps(c + 4,                                       \
+                            _mm_add_ps(_mm_loadu_ps(c + 4),                    \
+                                    _mm_mul_ps(_mm_cvtepi32_ps(acc[m][1]),     \
+                                            s1)));                             \
+                }                                                              \
+            } else {                                                           \
+                /* One activation scale per row, and per group when the        */\
+                /* caller supplies {M, G}. Two extra multiplies and a          */\
+                /* broadcast per row per group, against group_size * NR        */\
+                /* multiply-adds.                                             */\
+                for (int m = 0; m < SYMQ_MR; ++m) {                            \
+                    const __m128 sv                                            \
+                            = _mm_set1_ps(src_scale[m * ss_row + g * ss_grp]); \
+                    const __m128 s0 = _mm_mul_ps(ws0, sv);                     \
+                    const __m128 s1 = _mm_mul_ps(ws1, sv);                     \
+                    float *c = C + m * ldc;                                    \
+                    _mm_storeu_ps(c,                                           \
+                            _mm_add_ps(_mm_loadu_ps(c),                        \
+                                    _mm_mul_ps(_mm_cvtepi32_ps(acc[m][0]),     \
+                                            s0)));                             \
+                    _mm_storeu_ps(c + 4,                                       \
+                            _mm_add_ps(_mm_loadu_ps(c + 4),                    \
+                                    _mm_mul_ps(_mm_cvtepi32_ps(acc[m][1]),     \
+                                            s1)));                             \
+                }                                                              \
             }                                                                  \
         }                                                                      \
     }
@@ -252,7 +280,8 @@ int8_symq_ukernel_128_fn_t select_int8_symq_ukernel_128() {
 void int8_symq_tail_128(const int8_t *__restrict__ A, int a_stride,
         const int8_t *__restrict__ B_vnni, int b_stride, float *__restrict__ C,
         int ldc, int k, int group_size, int mr_act, int nr_act,
-        const float *__restrict__ wei_scale, int ws_stride, float src_scale) {
+        const float *__restrict__ wei_scale, int ws_stride,
+        const float *__restrict__ src_scale, int ss_row, int ss_grp) {
 
     const int quads_per_group = group_size / SYMQ_VNNI_GRP;
     const int n_groups = k / group_size;
@@ -275,7 +304,7 @@ void int8_symq_tail_128(const int8_t *__restrict__ A, int a_stride,
                     }
                 }
                 sum += static_cast<float>(acc) * wei_scale[g * ws_stride + n]
-                        * src_scale;
+                        * src_scale[m * ss_row + g * ss_grp];
             }
             C[m * ldc + n] += sum;
         }

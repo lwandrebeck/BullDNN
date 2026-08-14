@@ -69,14 +69,20 @@ namespace {
 
 constexpr double kTolerance = 1e-6;
 
+// Named so the scalar-scale call sites have something to take the address of.
+constexpr float kOne = 1.0f;
+constexpr float kPointOne = 0.01f;
+
 // Reference. int64 accumulation, so unlike the kernel it cannot saturate even
 // if the contract were violated, and double for the scale sum. The group and
 // scale indexing is written out from the header's contract rather than borrowed
 // from the looper: an off-by-one in the group-major scale layout is the failure
 // most likely to look plausible, and sharing the indexing would hide it.
+// ss is indexed the way the kernel indexes it: ss[m * ss_row + g * ss_grp], so
+// one reference covers per-tensor, per-token and per-group activation scales.
 void reference_gemm(int M, int N, int K, int gs, const int8_t *A, int lda,
-        const int8_t *B, int ldb, bool transB, const float *ws, float ss,
-        std::vector<float> &out) {
+        const int8_t *B, int ldb, bool transB, const float *ws, const float *ss,
+        std::vector<float> &out, int ss_row = 0, int ss_grp = 0) {
     const int n_groups = K / gs;
     out.assign(static_cast<size_t>(M) * N, 0.0f);
     for (int m = 0; m < M; ++m) {
@@ -95,7 +101,8 @@ void reference_gemm(int M, int N, int K, int gs, const int8_t *A, int lda,
                 sum += static_cast<double>(acc)
                         * static_cast<double>(
                                 ws[static_cast<size_t>(g) * N + n])
-                        * static_cast<double>(ss);
+                        * static_cast<double>(
+                                ss[m * ss_row + g * ss_grp]);
             }
             out[static_cast<size_t>(m) * N + n] = static_cast<float>(sum);
         }
@@ -232,11 +239,11 @@ TEST(Int8SymqUkernel128, TileMatchesInt64Reference) {
         // caller seeds it; zero here is the seed the looper uses.
         std::vector<float> C(static_cast<size_t>(M) * N, 0.0f);
         hot(A.data(), c.K, packed.data(), N * SYMQ_VNNI_GRP, C.data(), N, c.K,
-                c.gs, ws.data(), N, ss);
+                c.gs, ws.data(), N, &ss, 0, 0);
 
         std::vector<float> ref;
         reference_gemm(M, N, c.K, c.gs, A.data(), c.K, B.data(), N,
-                /*transB=*/false, ws.data(), ss, ref);
+                /*transB=*/false, ws.data(), &ss, ref);
         int nans = 0;
         EXPECT_LT(worst_scaled_error(C, N, ref, N, M, N, &nans), kTolerance);
         EXPECT_EQ(nans, 0);
@@ -270,11 +277,11 @@ TEST(Int8SymqUkernel128, IsExactAtTheContractExtremes) {
         pack_b_vnni(B.data(), N, false, K, N, 0, N, packed);
         std::vector<float> C(static_cast<size_t>(M) * N, 0.0f);
         hot(A.data(), K, packed.data(), N * SYMQ_VNNI_GRP, C.data(), N, K, gs,
-                ws.data(), N, 1.0f);
+                ws.data(), N, &kOne, 0, 0);
 
         std::vector<float> ref;
         reference_gemm(M, N, K, gs, A.data(), K, B.data(), N, false, ws.data(),
-                1.0f, ref);
+                &kOne, ref);
         // Unit scales and integral sums: these values are representable
         // exactly in fp32, so anything but equality means saturation.
         for (int m = 0; m < M; ++m)
@@ -306,11 +313,11 @@ TEST(Int8SymqUkernel128, TailMatchesReferenceForEveryRaggedExtent) {
             pack_b_vnni(B.data(), N, false, K, N, 0, N, packed);
             std::vector<float> C(static_cast<size_t>(SYMQ_MR) * N, 0.0f);
             int8_symq_tail_128(A.data(), K, packed.data(), N * SYMQ_VNNI_GRP,
-                    C.data(), N, K, gs, mr, nr, ws.data(), N, ss);
+                    C.data(), N, K, gs, mr, nr, ws.data(), N, &ss, 0, 0);
 
             std::vector<float> ref;
             reference_gemm(SYMQ_MR, N, K, gs, A.data(), K, B.data(), N, false,
-                    ws.data(), ss, ref);
+                    ws.data(), &ss, ref);
             int nans = 0;
             // Only the mr x nr sub-block is claimed; the rest must be
             // untouched, which zero-seeded C makes checkable.
@@ -365,12 +372,12 @@ TEST_P(Int8SymqLooper128, MatchesInt64Reference) {
 
     std::vector<float> C = poisoned(static_cast<size_t>(s.M) * ldc);
     ASSERT_TRUE(int8_symq_execute_128(s.M, s.N, s.K, s.gs, A.data(), lda,
-            B.data(), ldb, s.transB, C.data(), ldc, ws.data(), ss, s.nthreads))
+            B.data(), ldb, s.transB, C.data(), ldc, ws.data(), &ss, 0, 0, s.nthreads))
             << "looper declined a shape it should express";
 
     std::vector<float> ref;
     reference_gemm(s.M, s.N, s.K, s.gs, A.data(), lda, B.data(), ldb, s.transB,
-            ws.data(), ss, ref);
+            ws.data(), &ss, ref);
     int nans = 0;
     const double err = worst_scaled_error(C, ldc, ref, s.N, s.M, s.N, &nans);
     EXPECT_EQ(nans, 0) << nans << " output elements were never written";
@@ -421,7 +428,7 @@ TEST(Int8SymqLooper128, DeclinesShapesItCannotExpress) {
         std::vector<float> C(64, -7.0f);
         EXPECT_FALSE(int8_symq_execute_128(b.M, b.N, b.K, b.gs, A.data(),
                 std::max(b.K, 1), B.data(), std::max(b.N, 1), false, C.data(),
-                8, ws.data(), 1.0f, 1));
+                8, ws.data(), &kOne, 0, 0, 1));
         for (float v : C) EXPECT_FLOAT_EQ(v, -7.0f) << "C was written";
     }
 }
@@ -443,12 +450,12 @@ TEST(Int8SymqLooper128, OverwritesRatherThanAccumulates) {
 
     std::vector<float> first(static_cast<size_t>(M) * N, 0.0f);
     ASSERT_TRUE(int8_symq_execute_128(M, N, K, gs, A.data(), K, B.data(), N,
-            false, first.data(), N, ws.data(), 0.01f, 2));
+            false, first.data(), N, ws.data(), &kPointOne, 0, 0, 2));
 
     // Same inputs into a buffer full of garbage must give the same answer.
     std::vector<float> second(static_cast<size_t>(M) * N, 12345.0f);
     ASSERT_TRUE(int8_symq_execute_128(M, N, K, gs, A.data(), K, B.data(), N,
-            false, second.data(), N, ws.data(), 0.01f, 2));
+            false, second.data(), N, ws.data(), &kPointOne, 0, 0, 2));
     for (size_t i = 0; i < first.size(); ++i)
         EXPECT_FLOAT_EQ(first[i], second[i]) << "at " << i;
 }
@@ -470,11 +477,11 @@ TEST(Int8SymqLooper128, HonoursLdcAndLeavesPaddingAlone) {
 
     std::vector<float> C(static_cast<size_t>(M) * ldc, -99.0f);
     ASSERT_TRUE(int8_symq_execute_128(M, N, K, gs, A.data(), K, B.data(), N,
-            false, C.data(), ldc, ws.data(), 0.01f, 2));
+            false, C.data(), ldc, ws.data(), &kPointOne, 0, 0, 2));
 
     std::vector<float> ref;
     reference_gemm(M, N, K, gs, A.data(), K, B.data(), N, false, ws.data(),
-            0.01f, ref);
+            &kPointOne, ref);
     int nans = 0;
     EXPECT_LT(worst_scaled_error(C, ldc, ref, N, M, N, &nans), kTolerance);
     EXPECT_EQ(nans, 0);
@@ -501,13 +508,13 @@ TEST(Int8SymqLooper128, IsInvariantInThreadCount) {
 
     std::vector<float> single = poisoned(static_cast<size_t>(M) * N);
     ASSERT_TRUE(int8_symq_execute_128(M, N, K, gs, A.data(), K, B.data(), K,
-            true, single.data(), N, ws.data(), 0.01f, 1));
+            true, single.data(), N, ws.data(), &kPointOne, 0, 0, 1));
 
     for (int nt : {2, 3, 4, 8}) {
         SCOPED_TRACE(testing::Message() << "nthreads=" << nt);
         std::vector<float> many = poisoned(static_cast<size_t>(M) * N);
         ASSERT_TRUE(int8_symq_execute_128(M, N, K, gs, A.data(), K, B.data(), K,
-                true, many.data(), N, ws.data(), 0.01f, nt));
+                true, many.data(), N, ws.data(), &kPointOne, 0, 0, nt));
         for (size_t i = 0; i < single.size(); ++i)
             ASSERT_FLOAT_EQ(single[i], many[i]) << "at " << i;
     }
@@ -566,6 +573,33 @@ struct SymqCall {
         fill_scales(ws, rng);
     }
 
+    // Per-token {M,1} and per-group {M,G} activation scales, which is what the
+    // GGML path actually supplies -- ggml_is_sym_quant() requires a source scale
+    // with more than one element, so a per-tensor-only kernel is unreachable
+    // from it. Filled always; make_params() selects which one it advertises.
+    std::vector<float> src_scales_token, src_scales_group;
+
+    void fill_vector_scales(std::mt19937 &rng) {
+        src_scales_token.resize(static_cast<size_t>(M));
+        src_scales_group.resize(static_cast<size_t>(M) * (K / gs));
+        fill_scales(src_scales_token, rng);
+        fill_scales(src_scales_group, rng);
+    }
+
+    matmul_params p_token() {
+        matmul_params p = make_params();
+        p.quant_params.src_scale.buff = src_scales_token.data();
+        p.quant_params.src_scale.dims = {M, 1};
+        return p;
+    }
+
+    matmul_params p_group() {
+        matmul_params p = make_params();
+        p.quant_params.src_scale.buff = src_scales_group.data();
+        p.quant_params.src_scale.dims = {M, K / gs};
+        return p;
+    }
+
     matmul_params make_params() {
         matmul_params p;
         p.dtypes.src = data_type_t::s8;
@@ -611,7 +645,7 @@ TEST_F(Int8SymqDispatch, GgmlShapedCallReachesTheKernelAndComputes) {
 
         std::vector<float> ref;
         reference_gemm(c.M, c.N, c.K, c.gs, c.A.data(), c.K, c.B.data(), c.K,
-                true, c.ws.data(), c.src_scale, ref);
+                true, c.ws.data(), &c.src_scale, ref);
         int nans = 0;
         // Poisoned C plus an exact-to-fp32 comparison: this fails both when the
         // call is declined and returns without computing (NaNs survive) and when
@@ -632,7 +666,7 @@ TEST_F(Int8SymqDispatch, RepeatedCallsOnAConstWeightAgreeExactly) {
     SymqCall c(64, 200, 256, 32, true, rng);
     std::vector<float> ref;
     reference_gemm(c.M, c.N, c.K, c.gs, c.A.data(), c.K, c.B.data(), c.K, true,
-            c.ws.data(), c.src_scale, ref);
+            c.ws.data(), &c.src_scale, ref);
 
     std::vector<float> first;
     for (int call = 0; call < 4; ++call) {
@@ -661,7 +695,7 @@ TEST_F(Int8SymqDispatch, DecodeShapeReachesTheKernel) {
     ASSERT_EQ(c.run(matmul_algo_t::native_gemm, 4), status_t::success);
     std::vector<float> ref;
     reference_gemm(1, c.N, c.K, c.gs, c.A.data(), c.K, c.B.data(), c.K, true,
-            c.ws.data(), c.src_scale, ref);
+            c.ws.data(), &c.src_scale, ref);
     int nans = 0;
     EXPECT_LT(worst_scaled_error(c.C, c.N, ref, c.N, 1, c.N, &nans), kTolerance);
     EXPECT_EQ(nans, 0);
@@ -688,7 +722,7 @@ TEST_F(Int8SymqDispatch, RefusesOperandsOutsideTheByteContract) {
 
         std::vector<float> ref;
         reference_gemm(c.M, c.N, c.K, c.gs, c.A.data(), c.K, c.B.data(), c.K,
-                true, c.ws.data(), c.src_scale, ref);
+                true, c.ws.data(), &c.src_scale, ref);
 
         c.run(matmul_algo_t::native_gemm);
         // Either the call was declined outright (dst still poisoned) or some
@@ -704,6 +738,89 @@ TEST_F(Int8SymqDispatch, RefusesOperandsOutsideTheByteContract) {
     }
 }
 
+// The granularity the GGML path actually supplies: ggml_is_sym_quant() requires
+// a source scale with more than one element, so a per-tensor-only kernel is
+// unreachable from it however well the per-tensor case works.
+//
+// Driven at the looper rather than through matmul_direct, and not for
+// convenience: validate_matmul_inputs() rejects a per-token source scale paired
+// with a per-group weight scale whenever the caller supplies the weight scale
+// itself (pack_format_b != 1), which is what a synthetic test does. A real GGML
+// call sets pack_format_b == 1 and the unpack populates the weight scale
+// afterwards, so the check is skipped there. Reproducing that from a gtest would
+// mean building a GGML-packed buffer; until there is one, the kernel contract is
+// what these cover.
+TEST(Int8SymqLooper128Scales, PerTokenAndPerGroupActivationScales) {
+    if (select_int8_symq_ukernel_128() == nullptr)
+        GTEST_SKIP() << "no 128-bit INT8 microkernel on this host";
+
+    std::mt19937 rng(9001);
+    // Ragged M included on purpose: a row-indexed scale plus an M that is not a
+    // multiple of MR is the combination that can read past the scale buffer,
+    // since the vector kernel reads MR rows' scales and only M % MR exist.
+    for (int M : {1, 2, 3, 5, 7, 12, 13, 64}) {
+        for (int which = 0; which < 2; ++which) {
+            const bool per_group = which == 1;
+            SCOPED_TRACE(testing::Message()
+                    << "M=" << M
+                    << (per_group ? " per-group {M,G}" : " per-token {M,1}"));
+            const int N = 72, K = 128, gs = 32;
+            const int groups = K / gs;
+            std::vector<int8_t> A(static_cast<size_t>(M) * K);
+            std::vector<int8_t> B(static_cast<size_t>(N) * K);
+            std::vector<float> ws(static_cast<size_t>(groups) * N);
+            std::vector<float> ss(static_cast<size_t>(M)
+                    * (per_group ? groups : 1));
+            fill_s8(A, rng, false);
+            fill_s8(B, rng, false);
+            fill_scales(ws, rng);
+            fill_scales(ss, rng);
+            const int ss_row = per_group ? groups : 1;
+            const int ss_grp = per_group ? 1 : 0;
+
+            std::vector<float> C = poisoned(static_cast<size_t>(M) * N);
+            ASSERT_TRUE(int8_symq_execute_128(M, N, K, gs, A.data(), K,
+                    B.data(), K, /*transB=*/true, C.data(), N, ws.data(),
+                    ss.data(), ss_row, ss_grp, /*nthreads=*/2));
+
+            std::vector<float> ref;
+            reference_gemm(M, N, K, gs, A.data(), K, B.data(), K, true,
+                    ws.data(), ss.data(), ref, ss_row, ss_grp);
+            int nans = 0;
+            EXPECT_LT(worst_scaled_error(C, N, ref, N, M, N, &nans), kTolerance);
+            EXPECT_EQ(nans, 0);
+        }
+    }
+}
+
+// A per-tensor scale must keep behaving exactly as it did before the strides
+// existed: same answer whether it arrives as {0,0} strides or as a per-token
+// vector whose entries happen to be equal.
+TEST(Int8SymqLooper128Scales, PerTensorAgreesWithAnEquivalentPerTokenVector) {
+    if (select_int8_symq_ukernel_128() == nullptr)
+        GTEST_SKIP() << "no 128-bit INT8 microkernel on this host";
+
+    std::mt19937 rng(77);
+    const int M = 9, N = 64, K = 128, gs = 32;
+    std::vector<int8_t> A(static_cast<size_t>(M) * K);
+    std::vector<int8_t> B(static_cast<size_t>(N) * K);
+    std::vector<float> ws(static_cast<size_t>(K / gs) * N);
+    fill_s8(A, rng, false);
+    fill_s8(B, rng, false);
+    fill_scales(ws, rng);
+    const float one_scale = 0.0137f;
+    std::vector<float> as_vector(static_cast<size_t>(M), one_scale);
+
+    std::vector<float> c_scalar = poisoned(static_cast<size_t>(M) * N);
+    std::vector<float> c_vector = poisoned(static_cast<size_t>(M) * N);
+    ASSERT_TRUE(int8_symq_execute_128(M, N, K, gs, A.data(), K, B.data(), K,
+            true, c_scalar.data(), N, ws.data(), &one_scale, 0, 0, 2));
+    ASSERT_TRUE(int8_symq_execute_128(M, N, K, gs, A.data(), K, B.data(), K,
+            true, c_vector.data(), N, ws.data(), as_vector.data(), 1, 0, 2));
+    for (size_t i = 0; i < c_scalar.size(); ++i)
+        ASSERT_FLOAT_EQ(c_scalar[i], c_vector[i]) << "at " << i;
+}
+
 // Granularities and options the adapter does not implement must be declined, not
 // approximated. Each of these would otherwise be silently wrong: a per-token
 // source scale applied as a scalar, a dropped bias, an ignored beta.
@@ -716,10 +833,11 @@ TEST_F(Int8SymqDispatch, DeclinesWhatItCannotExpress) {
     };
     std::vector<float> per_token(8, 0.01f);
     const Variant variants[] = {
-            {"per-token source scale",
+            {"source scale that is neither per-token nor per-group",
                     [](matmul_params &p, std::vector<float> &pt) {
+                        // {M, 3}: not 1 column, not one per weight group.
                         p.quant_params.src_scale.buff = pt.data();
-                        p.quant_params.src_scale.dims = {8, 1};
+                        p.quant_params.src_scale.dims = {8, 3};
                     }},
             {"weight scale that is not {groups, N}",
                     [](matmul_params &p, std::vector<float> &) {
@@ -771,8 +889,9 @@ TEST_F(Int8SymqDispatch, FoldsAlphaIntoTheSourceScale) {
             status_t::success);
 
     std::vector<float> ref;
+    const float scaled_alpha = c.src_scale * alpha;
     reference_gemm(c.M, c.N, c.K, c.gs, c.A.data(), c.K, c.B.data(), c.K, true,
-            c.ws.data(), c.src_scale * alpha, ref);
+            c.ws.data(), &scaled_alpha, ref);
     int nans = 0;
     EXPECT_LT(worst_scaled_error(c.C, c.N, ref, c.N, c.M, c.N, &nans),
             kTolerance);

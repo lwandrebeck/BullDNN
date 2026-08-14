@@ -36,6 +36,12 @@ namespace native {
 /// the work outright on a processor without AVX-512 VNNI, so there is no
 /// incumbent path to improve on -- only a non-functional one to replace.
 ///
+/// src_scale carries the activation scale at whichever granularity the caller
+/// has: ss_row and ss_grp index it as src_scale[m * ss_row + g * ss_grp], so
+/// {0,0} is per-tensor, {1,0} per-token, and {G,1} per-group. See the microkernel
+/// header; the kernel flushes once per (row, group), so none of the three costs
+/// more than the others.
+///
 /// A is s8 row-major M x K with leading dimension lda.
 /// B is s8; transB selects N x K (the GGML layout, ldb spanning K) over K x N.
 /// wei_scale is group-major: wei_scale[g * N + n], matching what the GGML
@@ -58,8 +64,9 @@ namespace native {
 /// cannot see.
 bool int8_symq_execute_128(int M, int N, int K, int group_size,
         const int8_t *A, int lda, const int8_t *B, int ldb, bool transB,
-        float *C, int ldc, const float *wei_scale, float src_scale,
-        int nthreads, const INT8PrepackedWeight *prepacked = nullptr);
+        float *C, int ldc, const float *wei_scale, const float *src_scale,
+        int ss_row, int ss_grp, int nthreads,
+        const INT8PrepackedWeight *prepacked = nullptr);
 
 } // namespace native
 } // namespace matmul

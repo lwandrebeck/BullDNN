@@ -77,11 +77,22 @@ constexpr int SYMQ_VNNI_GRP = 4;
 ///   k          number of K elements, must be a multiple of group_size
 ///   group_size K span of one weight scale; multiple of SYMQ_VNNI_GRP
 ///   wei_scale  one scale per (group, column): wei_scale[g * ws_stride + n]
-///   src_scale  one scale for the whole tile (per-tensor activation scale)
+///   src_scale  activation scale, indexed src_scale[m * ss_row + g * ss_grp].
+///              The strides express all three granularities the API allows
+///              without the kernel needing to know which it has:
+///                per-tensor {1,1}   ss_row = 0, ss_grp = 0
+///                per-token  {M,1}   ss_row = 1, ss_grp = 0
+///                per-group  {M,G}   ss_row = G, ss_grp = 1
+///              It costs nothing to support all three: the s32 accumulator is
+///              flushed once per (row, group) anyway, which is exactly the
+///              granularity of the finest of them. Both strides zero is kept as
+///              a distinct path so the per-tensor case emits what it did before
+///              per-token existed.
 using int8_symq_ukernel_128_fn_t = void (*)(const int8_t *__restrict__ A,
         int a_stride, const int8_t *__restrict__ B_vnni, int b_stride,
         float *__restrict__ C, int ldc, int k, int group_size,
-        const float *__restrict__ wei_scale, int ws_stride, float src_scale);
+        const float *__restrict__ wei_scale, int ws_stride,
+        const float *__restrict__ src_scale, int ss_row, int ss_grp);
 
 /// Microkernel for this host, or nullptr where no 128-bit path is available.
 /// Prefers the XOP flavour, which fuses the word-to-dword reduction and the
@@ -92,7 +103,8 @@ int8_symq_ukernel_128_fn_t select_int8_symq_ukernel_128();
 void int8_symq_tail_128(const int8_t *__restrict__ A, int a_stride,
         const int8_t *__restrict__ B_vnni, int b_stride, float *__restrict__ C,
         int ldc, int k, int group_size, int mr_act, int nr_act,
-        const float *__restrict__ wei_scale, int ws_stride, float src_scale);
+        const float *__restrict__ wei_scale, int ws_stride,
+        const float *__restrict__ src_scale, int ss_row, int ss_grp);
 
 } // namespace native
 } // namespace matmul
