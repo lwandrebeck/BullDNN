@@ -131,9 +131,14 @@ inline void pin_reg(Vec &v0, Vec &v1) {
 #endif
 }
 
-// The body is shared between the flavours; only reduce_accum() differs.
+// The body is shared between the flavours; only reduce_accum() differs. It is
+// also shared between row counts: kMR = SYMQ_MR is the general tile, kMR = 1 is
+// the decode kernel, and they differ only in how many rows of A each quad
+// broadcasts. Templating rather than duplicating keeps the sign trick, the
+// saturation contract and the flush in one place.
 #define SYMQ_UK128_BODY                                                        \
-    void ukernel(const int8_t *__restrict__ A, int a_stride,                   \
+    template <int kMR>                                                         \
+    void ukernel_mr(const int8_t *__restrict__ A, int a_stride,                \
             const int8_t *__restrict__ B_vnni, int b_stride,                   \
             float *__restrict__ C, int ldc, int k, int group_size,             \
             const float *__restrict__ wei_scale, int ws_stride,                \
@@ -148,8 +153,8 @@ inline void pin_reg(Vec &v0, Vec &v1) {
                                                                                \
         for (int g = 0; g < n_groups; ++g) {                                   \
             /* s32 accumulators: four rows x two halves of four columns. */    \
-            __m128i acc[SYMQ_MR][2];                                           \
-            for (int m = 0; m < SYMQ_MR; ++m) {                                \
+            __m128i acc[kMR][2];                                               \
+            for (int m = 0; m < kMR; ++m) {                                    \
                 acc[m][0] = _mm_setzero_si128();                               \
                 acc[m][1] = _mm_setzero_si128();                               \
             }                                                                  \
@@ -162,7 +167,7 @@ inline void pin_reg(Vec &v0, Vec &v1) {
                 const __m128i b1 = _mm_loadu_si128(                            \
                         reinterpret_cast<const __m128i *>(bq + 16));           \
                                                                                \
-                for (int m = 0; m < SYMQ_MR; ++m) {                            \
+                for (int m = 0; m < kMR; ++m) {                                \
                     int32_t a_quad;                                            \
                     std::memcpy(&a_quad,                                       \
                             A + m * a_stride + kq * SYMQ_VNNI_GRP, 4);         \
@@ -176,7 +181,7 @@ inline void pin_reg(Vec &v0, Vec &v1) {
                             acc[m][1]);                                        \
                 }                                                              \
                 /* Deny the scheduler the stack: see pin_reg above. */         \
-                for (int m = 0; m < SYMQ_MR; ++m)                              \
+                for (int m = 0; m < kMR; ++m)                                  \
                     pin_reg(acc[m][0], acc[m][1]);                             \
             }                                                                  \
                                                                                \
@@ -186,7 +191,7 @@ inline void pin_reg(Vec &v0, Vec &v1) {
             if (src_uniform) {                                                 \
                 const __m128 s0 = _mm_mul_ps(ws0, v_src);                      \
                 const __m128 s1 = _mm_mul_ps(ws1, v_src);                      \
-                for (int m = 0; m < SYMQ_MR; ++m) {                            \
+                for (int m = 0; m < kMR; ++m) {                                \
                     float *c = C + m * ldc;                                    \
                     _mm_storeu_ps(c,                                           \
                             _mm_add_ps(_mm_loadu_ps(c),                        \
@@ -202,7 +207,7 @@ inline void pin_reg(Vec &v0, Vec &v1) {
                 /* caller supplies {M, G}. Two extra multiplies and a          */\
                 /* broadcast per row per group, against group_size * NR        */\
                 /* multiply-adds.                                             */\
-                for (int m = 0; m < SYMQ_MR; ++m) {                            \
+                for (int m = 0; m < kMR; ++m) {                                \
                     const __m128 sv                                            \
                             = _mm_set1_ps(src_scale[m * ss_row + g * ss_grp]); \
                     const __m128 s0 = _mm_mul_ps(ws0, sv);                     \
@@ -219,6 +224,24 @@ inline void pin_reg(Vec &v0, Vec &v1) {
                 }                                                              \
             }                                                                  \
         }                                                                      \
+    }                                                                          \
+                                                                               \
+    void ukernel(const int8_t *__restrict__ A, int a_stride,                   \
+            const int8_t *__restrict__ B_vnni, int b_stride,                   \
+            float *__restrict__ C, int ldc, int k, int group_size,             \
+            const float *__restrict__ wei_scale, int ws_stride,                \
+            const float *__restrict__ src_scale, int ss_row, int ss_grp) {     \
+        ukernel_mr<SYMQ_MR>(A, a_stride, B_vnni, b_stride, C, ldc, k,           \
+                group_size, wei_scale, ws_stride, src_scale, ss_row, ss_grp);   \
+    }                                                                          \
+                                                                               \
+    void ukernel_m1(const int8_t *__restrict__ A, int a_stride,                \
+            const int8_t *__restrict__ B_vnni, int b_stride,                   \
+            float *__restrict__ C, int ldc, int k, int group_size,             \
+            const float *__restrict__ wei_scale, int ws_stride,                \
+            const float *__restrict__ src_scale, int ss_row, int ss_grp) {     \
+        ukernel_mr<1>(A, a_stride, B_vnni, b_stride, C, ldc, k, group_size,     \
+                wei_scale, ws_stride, src_scale, ss_row, ss_grp);               \
     }
 
 // ---- SSSE3/SSE4.1: every family 15h part, and everything since -------------
@@ -270,6 +293,23 @@ int8_symq_ukernel_128_fn_t select_int8_symq_ukernel_128() {
         if (!host_has_ssse3_sse41())
             return static_cast<int8_symq_ukernel_128_fn_t>(nullptr);
         return &uk_sse::ukernel;
+    }();
+    return s_fn;
+#else
+    return nullptr;
+#endif
+}
+
+int8_symq_ukernel_128_fn_t select_int8_symq_ukernel_128_m1() {
+#if defined(__x86_64__) || defined(__i386__)
+    static const int8_symq_ukernel_128_fn_t s_fn = [] {
+        const char *no_xop = std::getenv("ZENDNNL_NATIVE_SYMQ_NO_XOP");
+        const bool avoid_xop = no_xop != nullptr && no_xop[0] != '\0'
+                && std::strcmp(no_xop, "0") != 0;
+        if (!avoid_xop && host_has_xop()) return &uk_xop::ukernel_m1;
+        if (!host_has_ssse3_sse41())
+            return static_cast<int8_symq_ukernel_128_fn_t>(nullptr);
+        return &uk_sse::ukernel_m1;
     }();
     return s_fn;
 #else

@@ -7,6 +7,7 @@
 # stage: wired    = dispatch reached, B packed and operands scanned per call
 #        cached   = packed weight, contract verdict and widened scales cached
 #        mpad     = short M reaches the vector kernel instead of the scalar tail
+#        mr1      = one-row tiles use a kernel that broadcasts one row, not four
 # flavour: xop = VPMADCSWD reduction (family 15h only); sse = portable PMADDWD
 stage,flavour,threads,M,N,K,group_size,GOPS
 wired,xop,4,1,4096,4096,32,1.46
@@ -24,6 +25,16 @@ mpad,xop,4,1024,1024,1024,32,73.75
 mpad,xop,4,128,4096,4096,16,22.69
 mpad,xop,1,1,4096,4096,32,3.29
 mpad,xop,1,128,4096,4096,32,12.47
+# The decode rows are memory-bound from here: 11.7 GOPS at N=K=4096 is 16.8 MB of
+# packed weight streamed in 2.9 ms, about 5.9 GB/s, and the three shapes agree on
+# that figure while sitting far below the ~80 GOPS this kernel could issue.
+mr1,xop,4,1,4096,4096,32,11.67
+mr1,xop,4,1,11008,4096,32,13.80
+mr1,xop,4,1,4096,11008,32,9.87
+mr1,xop,4,128,4096,4096,32,38.93
+mr1,xop,4,512,4096,4096,32,40.56
+mr1,xop,4,1024,1024,1024,32,72.16
+mr1,xop,4,128,4096,4096,16,22.65
 # Hot loop alone, single thread, B pre-packed: the instrument for a change
 # confined to the microkernel. Both flavours, and both with and without the
 # accumulator pinning that commit ec0e805 added.

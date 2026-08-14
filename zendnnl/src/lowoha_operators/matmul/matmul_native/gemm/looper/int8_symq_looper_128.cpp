@@ -125,6 +125,12 @@ bool int8_symq_execute_128(int M, int N, int K, int group_size,
 
     const int8_symq_ukernel_128_fn_t hot = select_int8_symq_ukernel_128();
     if (hot == nullptr) return false;
+    // One-row tiles go to a kernel that broadcasts one row instead of four. The
+    // padded path below is still correct for them and was what they used before,
+    // but it computed four rows to keep one; this needs no padded A, no scratch C
+    // and no copy back.
+    const int8_symq_ukernel_128_fn_t hot_m1
+            = select_int8_symq_ukernel_128_m1();
 
     const int n_panels = (N + kPanelW - 1) / kPanelW;
     const int b_stride = kPanelW * SYMQ_VNNI_GRP;
@@ -227,6 +233,12 @@ bool int8_symq_execute_128(int M, int N, int K, int group_size,
 
                     if (mr_act == SYMQ_MR && nr_act == SYMQ_NR) {
                         hot(a_tile, lda, b_tile, b_stride, c_tile, ldc, K,
+                                group_size, ws, N, ss, ss_row, ss_grp);
+                    } else if (mr_act == 1 && nr_act == SYMQ_NR
+                            && hot_m1 != nullptr) {
+                        // The decode shape: straight at the real row, writing
+                        // straight into C.
+                        hot_m1(a_tile, lda, b_tile, b_stride, c_tile, ldc, K,
                                 group_size, ws, N, ss, ss_row, ss_grp);
                         // mr_act < MR only ever happens on the last M panel,
                         // which is exactly the rows a_pad holds.

@@ -99,6 +99,20 @@ using int8_symq_ukernel_128_fn_t = void (*)(const int8_t *__restrict__ A,
 /// accumulate into one instruction; family 15h is the only silicon with XOP.
 int8_symq_ukernel_128_fn_t select_int8_symq_ukernel_128();
 
+/// Single-row microkernel for this host, same signature and same contract, for
+/// the decode shape.
+///
+/// A one-row tile is not a special case for its own sake: the general kernel
+/// reads MR rows unconditionally, so reaching it at M=1 means computing four rows
+/// to keep one and throwing three quarters of the multiply-adds away. Per quad of
+/// K and eight columns this issues two B loads, one broadcast, one abs, two
+/// signs, two maddubs and two reductions -- about ten instructions against the
+/// thirty-four the four-row tile needs for the same one row of output.
+///
+/// Register pressure is trivial here (two accumulators), so nothing spills and
+/// the pinning the wide tile needs is harmless.
+int8_symq_ukernel_128_fn_t select_int8_symq_ukernel_128_m1();
+
 /// Edge tiles of any mr_act x nr_act, and any k. Scalar and always correct.
 void int8_symq_tail_128(const int8_t *__restrict__ A, int a_stride,
         const int8_t *__restrict__ B_vnni, int b_stride, float *__restrict__ C,
