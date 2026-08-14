@@ -68,6 +68,12 @@ void bf16_tail_kernel_128(const float *__restrict__ A_f32, int a_stride,
 void widen_bf16_panel_to_fp32(const uint16_t *__restrict__ src, int src_stride,
         float *__restrict__ dst, int dst_stride, int rows, int cols);
 
+// Bias plus one fused activation over an mr_count x nr_count tile of FP32 C.
+// Defined alongside the FP32 microkernels; declared here so the BF16 looper can
+// finish a ragged tile that the microkernel could not fuse for itself.
+void apply_bias_and_postop_tile(float *C, int ldc, int mr_count, int nr_count,
+        const float *bias, fused_postop_t fused_op);
+
 } // namespace native
 } // namespace matmul
 } // namespace lowoha

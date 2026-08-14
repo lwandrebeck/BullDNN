@@ -53,6 +53,7 @@
 
 #include "common/zendnnl_global.hpp"
 #include "lowoha_operators/matmul/matmul_native/common/bf16_packing.hpp"
+#include "lowoha_operators/matmul/matmul_native/common/native_utils.hpp"
 #include "lowoha_operators/matmul/matmul_native/common/postop.hpp"
 #include "lowoha_operators/matmul/matmul_native/gemm/kernel/bf16/bf16_gemm_ukernel_128.hpp"
 #include "lowoha_operators/matmul/matmul_native/gemm/planner/gemm_planner.hpp"
@@ -172,8 +173,32 @@ bool bf16_gemm_execute_128(const GemmDescriptor &desc, const UarchParams &uarch,
     int nthreads = plan.num_threads > 0 ? plan.num_threads : 1;
     nthreads = std::min(nthreads, std::max(n_panels, 1));
 
-    // Postops and bias are applied after the K loop, not fused into the
-    // microkernel: correctness first. Fusing is a later refinement.
+    // Fuse bias and one activation into the microkernel's epilogue where that is
+    // safe, rather than sweeping C afterwards.
+    //
+    // Measured on an A10-8770E at 4 threads, the separate sweep costs:
+    //
+    //   relu        2-3%     compare-and-max, cheap against M*N*K
+    //   alpha != 1  1-2%     one multiply per element
+    //   gelu_erf    20-22%   transcendental, and it re-reads all of C
+    //
+    // So the cheap cases do not justify fusing and the expensive ones clearly
+    // do; the win is keeping the tile in registers instead of streaming C a
+    // second time.
+    //
+    // Conditions, following the FP32 looper: alpha must be 1, or the ordering
+    // breaks -- the kernel would apply bias before the alpha scaling instead of
+    // after -- and the chain must contain at most one fusable activation and
+    // nothing else, since apply_postops_tile() would otherwise re-apply what the
+    // kernel already did.
+    fused_postop_t fused_candidate = fused_postop_t::none;
+    bool has_unfuseable = false;
+    const bool chain_fully_fusable
+            = scan_gemv_postops(params, &fused_candidate, &has_unfuseable);
+    const bool can_fuse = chain_fully_fusable && (alpha == 1.0f);
+    const fused_postop_t fused_op
+            = can_fuse ? fused_candidate : fused_postop_t::none;
+
     // ---- widen A once ------------------------------------------------------
     // The microkernel wants FP32 A. Widening it per column panel, which is where
     // this started, repeats the work n_panels times: sixteen at N=1024 with
@@ -209,6 +234,7 @@ bool bf16_gemm_execute_128(const GemmDescriptor &desc, const UarchParams &uarch,
             for (int pc = 0; pc < K; pc += KB) {
                 const int kb_act = std::min(KB, K - pc);
                 const float beta_k = (pc == 0) ? beta_eff : 1.0f;
+                const bool is_last_k = (pc + kb_act >= K);
 
                 pack_b_vnni_strip_scalar(B, ldb, transB, jc, nb_act, K, pc,
                         kb_act, s.b_strip.data());
@@ -233,23 +259,33 @@ bool bf16_gemm_execute_128(const GemmDescriptor &desc, const UarchParams &uarch,
                             const uint16_t *b_tile
                                     = s.b_strip.data() + jr * VNNI_PAIR;
 
+                            // Bias and the activation ride along on the last K
+                            // block, where the tile holds its final value.
+                            const bool fuse_now = can_fuse && is_last_k;
+                            const float *tile_bias
+                                    = (fuse_now && bias_f != nullptr)
+                                    ? (bias_f + jc + jr)
+                                    : nullptr;
+                            const fused_postop_t tile_op
+                                    = fuse_now ? fused_op : fused_postop_t::none;
+
                             if (hot == nullptr) {
                                 bf16_tail_kernel_128(a_panel, a_stride, b_tile,
                                         b_stride, c_tile, ldc_f, kb_act, mr_act,
-                                        nr_act, beta_k, nullptr,
-                                        fused_postop_t::none, nullptr, 0);
+                                        nr_act, beta_k, tile_bias, tile_op,
+                                        nullptr, 0);
                             } else if (mr_act == MR && nr_act == NR) {
                                 hot(a_panel, a_stride, b_tile, b_stride, c_tile,
-                                        ldc_f, kb_act, beta_k, nullptr,
-                                        fused_postop_t::none, nullptr, 0);
+                                        ldc_f, kb_act, beta_k, tile_bias,
+                                        tile_op, nullptr, 0);
                             } else {
                                 // Ragged edge: run the vector kernel over the
                                 // whole MR x NR tile into scratch, then keep the
                                 // live part. The padding contributes nothing --
-                                // the packer zero-fills B past nr_act and the A
-                                // rows past M are zero -- so this computes what
-                                // the scalar tail did, about fifteen times
-                                // faster.
+                                // the packer zero-fills B past nr_act and the
+                                // A rows past mr_act were just zeroed -- so this
+                                // computes the same values the scalar tail did,
+                                // roughly fifteen times faster.
                                 //
                                 // Worth the detour: with N=555 and NR=64 only
                                 // 7.7% of columns are ragged, and sending them
@@ -274,6 +310,15 @@ bool bf16_gemm_execute_128(const GemmDescriptor &desc, const UarchParams &uarch,
                                                     + srow[n];
                                     }
                                 }
+                                // The epilogue cannot ride along here: the
+                                // scratch is computed with beta 0, so bias and
+                                // the activation have to see the merged value,
+                                // not the bare product. Applied to the live
+                                // sub-tile only.
+                                if (fuse_now) {
+                                    apply_bias_and_postop_tile(c_tile, ldc_f,
+                                            mr_act, nr_act, tile_bias, tile_op);
+                                }
                             }
                         }
                     }
@@ -282,13 +327,16 @@ bool bf16_gemm_execute_128(const GemmDescriptor &desc, const UarchParams &uarch,
         }
     }
 
-    // ---- epilogue: alpha, bias, postops -----------------------------------
-    if (alpha != 1.0f) {
-        for (int m = 0; m < M; ++m)
-            for (int n = 0; n < N; ++n) C[m * ldc_f + n] *= alpha;
+    // ---- epilogue ---------------------------------------------------------
+    // Skipped entirely when the kernels already did it. Running
+    // apply_postops_tile() here as well would apply the activation twice.
+    if (!can_fuse) {
+        if (alpha != 1.0f) {
+            for (int m = 0; m < M; ++m)
+                for (int n = 0; n < N; ++n) C[m * ldc_f + n] *= alpha;
+        }
+        apply_postops_tile(C, ldc_f, M, N, 0, 0, bias_f, params.postop_);
     }
-
-    apply_postops_tile(C, ldc_f, M, N, 0, 0, bias_f, params.postop_);
 
     if (dst_is_bf16) {
         uint16_t *d = static_cast<uint16_t *>(dst);
