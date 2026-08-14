@@ -28,6 +28,12 @@
 //
 // A is used unpacked. It is read as dwords -- four consecutive K of one row are
 // one broadcast -- so a packed copy would buy nothing but a pass over M*K bytes.
+// The one exception is an M that is not a whole number of MR: the microkernel
+// always reads MR rows, so the last M panel is copied into a zero-padded MR-row
+// scratch and its results are taken from a scratch C tile. Without that, every
+// tile of an M=1 decode falls to the scalar tail -- mr_act is 1, the vector path
+// wants 4 -- and the whole shape runs at reference speed. Padding costs MR*K
+// bytes of copy per call against a pass over the entire weight.
 //
 // B is packed once per weight rather than once per call, through the INT8
 // prepacked-weight cache the BRGEMM path already uses. That cache's layout is
@@ -139,6 +145,22 @@ bool int8_symq_execute_128(int M, int N, int K, int group_size,
     for (int m = 0; m < M; ++m)
         std::memset(C + static_cast<size_t>(m) * ldc, 0, sizeof(float) * N);
 
+    // Zero-padded copy of the rows the last M panel is short of, so the vector
+    // kernel can be used there too. Zeros are inside the byte contract and
+    // contribute nothing to a dot product, and the rows they produce are dropped
+    // with the scratch C tile. Built once per call and shared read-only by the
+    // threads, which each own different columns of the same rows.
+    const int m_tail = M % SYMQ_MR;
+    std::vector<int8_t> a_pad;
+    if (m_tail != 0) {
+        a_pad.assign(static_cast<size_t>(SYMQ_MR) * K, 0);
+        const int ic0 = M - m_tail;
+        for (int m = 0; m < m_tail; ++m) {
+            std::memcpy(a_pad.data() + static_cast<size_t>(m) * K,
+                    A + static_cast<size_t>(ic0 + m) * lda, K);
+        }
+    }
+
 #if defined(_OPENMP)
 #pragma omp parallel num_threads(nt)
 #endif
@@ -148,8 +170,12 @@ bool int8_symq_execute_128(int M, int N, int K, int group_size,
         std::vector<int8_t> b_panel;
         if (prepacked == nullptr)
             b_panel.assign(static_cast<size_t>(n_quads) * b_stride, 0);
-        // Ragged tiles are finished by the scalar tail, which writes through to
-        // C directly, so no scratch tile is needed here.
+        // Scratch C for the padded M tail: the microkernel writes MR rows, and
+        // only mr_act of them belong to C. Column tails still go to the scalar
+        // tail, which writes through to C directly.
+        std::vector<float> c_scratch;
+        if (m_tail != 0)
+            c_scratch.assign(static_cast<size_t>(SYMQ_MR) * SYMQ_NR, 0.0f);
 
 #if defined(_OPENMP)
 #pragma omp for schedule(static)
@@ -183,6 +209,22 @@ bool int8_symq_execute_128(int M, int N, int K, int group_size,
                     if (mr_act == SYMQ_MR && nr_act == SYMQ_NR) {
                         hot(a_tile, lda, b_tile, b_stride, c_tile, ldc, K,
                                 group_size, ws, N, src_scale);
+                        // mr_act < MR only ever happens on the last M panel,
+                        // which is exactly the rows a_pad holds.
+                    } else if (nr_act == SYMQ_NR && mr_act < SYMQ_MR
+                            && m_tail != 0) {
+                        // Short on rows only: run the vector kernel over the
+                        // zero-padded copy and keep the rows that exist.
+                        std::memset(c_scratch.data(), 0,
+                                sizeof(float) * c_scratch.size());
+                        hot(a_pad.data(), K, b_tile, b_stride, c_scratch.data(),
+                                SYMQ_NR, K, group_size, ws, N, src_scale);
+                        for (int m = 0; m < mr_act; ++m) {
+                            std::memcpy(c_tile + static_cast<size_t>(m) * ldc,
+                                    c_scratch.data()
+                                            + static_cast<size_t>(m) * SYMQ_NR,
+                                    sizeof(float) * SYMQ_NR);
+                        }
                     } else {
                         int8_symq_tail_128(a_tile, lda, b_tile, b_stride,
                                 c_tile, ldc, K, group_size, mr_act, nr_act, ws,
