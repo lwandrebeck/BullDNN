@@ -892,6 +892,194 @@ TEST_F(Int8SymqDispatch, GgmlQ8_0PackedWeightComputesEndToEnd) {
                           "a kernel that computes";
 }
 
+// Q4_0 and Q6_K take the same route as Q8_0 above -- unpack to raw s8 with
+// per-group scales, then this kernel -- and are the other two types the unpack
+// decodes. Q4_0 is what most legacy GGUFs use; Q6_K is the one k-quant that fits,
+// being symmetric, and it differs in carrying one scale per sixteen weights
+// instead of per thirty-two.
+//
+// Pack Q6_K here rather than in gtest_utils because nothing else needs it yet.
+// The six-bit code is split across a low-nibble array and a high-two-bit array,
+// and this is the exact inverse of the assembly in ggml_weight_unpack.cpp: get it
+// wrong and the weights are plausible but wrong numbers, which is why the
+// reference below is built from the values fed in rather than from the blocks.
+namespace {
+
+constexpr int kQ6kSuper = 256;
+constexpr int kQ6kGroup = 16;
+
+struct BlockQ6K {
+    uint8_t ql[kQ6kSuper / 2];
+    uint8_t qh[kQ6kSuper / 4];
+    int8_t scales[kQ6kSuper / 16];
+    uint16_t d;
+};
+
+uint16_t f32_to_fp16_exact(float v) {
+    // Only used for exact powers of two, so no rounding logic is needed.
+    uint32_t bits;
+    std::memcpy(&bits, &v, 4);
+    const uint32_t sign = (bits >> 31) & 1;
+    const int exp = static_cast<int>((bits >> 23) & 0xFF) - 127;
+    const uint32_t mant = bits & 0x7FFFFF;
+    return static_cast<uint16_t>((sign << 15)
+            | (static_cast<uint32_t>(exp + 15) << 10) | (mant >> 13));
+}
+
+// codes are the biased six-bit values in [0, 63], row-major [N x K].
+void pack_q6_k(const int8_t *values, const int8_t *sub_scales, float d, int N,
+        int K, std::vector<uint8_t> &out) {
+    const int nsb = K / kQ6kSuper;
+    out.assign(static_cast<size_t>(N) * nsb * sizeof(BlockQ6K), 0);
+    auto *blocks = reinterpret_cast<BlockQ6K *>(out.data());
+    for (int row = 0; row < N; ++row) {
+        for (int sb = 0; sb < nsb; ++sb) {
+            BlockQ6K &b = blocks[row * nsb + sb];
+            b.d = f32_to_fp16_exact(d);
+            for (int j = 0; j < kQ6kSuper / 16; ++j)
+                b.scales[j] = sub_scales[j];
+            const int8_t *v
+                    = values + static_cast<size_t>(row) * K + sb * kQ6kSuper;
+            auto code = [&](int e) {
+                return static_cast<int>(v[e]) + 32; // [-32,31] -> [0,63]
+            };
+            for (int n = 0; n < kQ6kSuper; n += 128) {
+                uint8_t *ql = b.ql + (n / 2);
+                uint8_t *qh = b.qh + (n / 4);
+                for (int l = 0; l < 32; ++l) {
+                    const int c0 = code(n + l), c32 = code(n + l + 32);
+                    const int c64 = code(n + l + 64), c96 = code(n + l + 96);
+                    ql[l] = static_cast<uint8_t>((c0 & 0x0F) | ((c64 & 0x0F) << 4));
+                    ql[l + 32] = static_cast<uint8_t>(
+                            (c32 & 0x0F) | ((c96 & 0x0F) << 4));
+                    qh[l] = static_cast<uint8_t>((c0 >> 4) | ((c32 >> 4) << 2)
+                            | ((c64 >> 4) << 4) | ((c96 >> 4) << 6));
+                }
+            }
+        }
+    }
+}
+
+} // namespace
+
+TEST_F(Int8SymqDispatch, GgmlQ4_0PackedWeightComputesEndToEnd) {
+    constexpr int kBlk = 32;
+    constexpr size_t kBlkBytes = 18; // fp16 scale + 16 nibble bytes
+    const int M = 5, N = 64, K = 128;
+    const int groups = K / kBlk;
+
+    std::mt19937 rng(606);
+    // Q4_0 nibbles must round-trip losslessly, so values live in [-8, 7].
+    std::vector<int8_t> wt(static_cast<size_t>(N) * K);
+    std::uniform_int_distribution<int> d4(-8, 7);
+    for (auto &x : wt) x = static_cast<int8_t>(d4(rng));
+
+    std::vector<float> wei_scales(static_cast<size_t>(groups) * N);
+    const float exact[4] = {0.03125f, 0.0625f, 0.125f, 0.25f};
+    for (size_t i = 0; i < wei_scales.size(); ++i) wei_scales[i] = exact[i % 4];
+
+    std::vector<uint8_t> packed(static_cast<size_t>(N) * groups * kBlkBytes);
+    repack_weights_q4_0(wt.data(), wei_scales.data(), static_cast<int64_t>(N),
+            static_cast<int64_t>(K), packed.data());
+
+    std::vector<int8_t> A(static_cast<size_t>(M) * K);
+    fill_s8(A, rng, false);
+    std::vector<float> src_scales(static_cast<size_t>(M) * groups);
+    for (size_t i = 0; i < src_scales.size(); ++i)
+        src_scales[i] = exact[(i + 1) % 4];
+
+    std::vector<float> C = poisoned(static_cast<size_t>(M) * N);
+    matmul_params p;
+    p.dtypes.src = data_type_t::s8;
+    p.dtypes.wei = data_type_t::s4; // Q4_0 arrives as s4 and is widened
+    p.dtypes.dst = data_type_t::f32;
+    p.packing.pack_format_b = 1;
+    p.packing.ggml_type_b = 2; // Q4_0
+    p.quant_params.src_scale.buff = src_scales.data();
+    p.quant_params.src_scale.dt = data_type_t::f32;
+    p.quant_params.src_scale.dims = {M, groups};
+    p.lowoha_algo = matmul_algo_t::native_gemm;
+    p.num_threads = 2;
+    matmul_batch_params_t batch;
+
+    ASSERT_EQ(matmul_direct('r', false, true, M, N, K, 1.0f, A.data(), K,
+                      packed.data(), K, nullptr, 0.0f, C.data(), N, true, batch,
+                      p),
+            status_t::success);
+
+    std::vector<float> ref;
+    reference_gemm(M, N, K, kBlk, A.data(), K, wt.data(), K, true,
+            wei_scales.data(), src_scales.data(), ref, groups, 1);
+    int nans = 0;
+    EXPECT_LT(worst_scaled_error(C, N, ref, N, M, N, &nans), kTolerance);
+    EXPECT_EQ(nans, 0) << "dst was never written -- the Q4_0 call did not reach "
+                          "a kernel that computes";
+}
+
+TEST_F(Int8SymqDispatch, GgmlQ6_KPackedWeightComputesEndToEnd) {
+    const int M = 5, N = 64, K = kQ6kSuper; // K must be a whole super-block
+    const int groups = K / kQ6kGroup; // 16 scales per super-block
+
+    std::mt19937 rng(6006);
+    // Q6_K codes are six bits biased to [-32, 31].
+    std::vector<int8_t> wt(static_cast<size_t>(N) * K);
+    std::uniform_int_distribution<int> d6(-32, 31);
+    for (auto &x : wt) x = static_cast<int8_t>(d6(rng));
+
+    // The effective scale is d * scales[j]. Both factors are chosen so the
+    // product is exact in fp16 and bf16: d is a power of two and the sub-block
+    // scales are small integers.
+    const float d = 0.03125f; // 2^-5
+    std::vector<int8_t> sub_scales(kQ6kSuper / 16);
+    for (size_t j = 0; j < sub_scales.size(); ++j)
+        sub_scales[j] = static_cast<int8_t>(1 + (j % 4));
+
+    std::vector<uint8_t> packed;
+    pack_q6_k(wt.data(), sub_scales.data(), d, N, K, packed);
+
+    // Group-major {G, N} scales, the layout the unpack writes and the kernel
+    // reads. Every row of this weight shares one set of sub-block scales.
+    std::vector<float> wei_scales(static_cast<size_t>(groups) * N);
+    for (int g = 0; g < groups; ++g)
+        for (int n = 0; n < N; ++n)
+            wei_scales[static_cast<size_t>(g) * N + n]
+                    = d * static_cast<float>(sub_scales[g % sub_scales.size()]);
+
+    std::vector<int8_t> A(static_cast<size_t>(M) * K);
+    fill_s8(A, rng, false);
+    std::vector<float> src_scales(static_cast<size_t>(M) * groups);
+    const float exact[4] = {0.03125f, 0.0625f, 0.125f, 0.25f};
+    for (size_t i = 0; i < src_scales.size(); ++i)
+        src_scales[i] = exact[(i + 1) % 4];
+
+    std::vector<float> C = poisoned(static_cast<size_t>(M) * N);
+    matmul_params p;
+    p.dtypes.src = data_type_t::s8;
+    p.dtypes.wei = data_type_t::s8; // six-bit codes go out as s8
+    p.dtypes.dst = data_type_t::f32;
+    p.packing.pack_format_b = 1;
+    p.packing.ggml_type_b = 14; // Q6_K
+    p.quant_params.src_scale.buff = src_scales.data();
+    p.quant_params.src_scale.dt = data_type_t::f32;
+    p.quant_params.src_scale.dims = {M, groups};
+    p.lowoha_algo = matmul_algo_t::native_gemm;
+    p.num_threads = 2;
+    matmul_batch_params_t batch;
+
+    ASSERT_EQ(matmul_direct('r', false, true, M, N, K, 1.0f, A.data(), K,
+                      packed.data(), K, nullptr, 0.0f, C.data(), N, true, batch,
+                      p),
+            status_t::success);
+
+    std::vector<float> ref;
+    reference_gemm(M, N, K, kQ6kGroup, A.data(), K, wt.data(), K, true,
+            wei_scales.data(), src_scales.data(), ref, groups, 1);
+    int nans = 0;
+    EXPECT_LT(worst_scaled_error(C, N, ref, N, M, N, &nans), kTolerance);
+    EXPECT_EQ(nans, 0) << "dst was never written -- the Q6_K call did not reach "
+                          "a kernel that computes";
+}
+
 // Granularities and options the adapter does not implement must be declined, not
 // approximated. Each of these would otherwise be silently wrong: a per-token
 // source scale applied as a scalar, a dropped bias, an ignored beta.

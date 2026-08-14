@@ -617,7 +617,13 @@ static status_t unpack_ggml_raw_s8_and_cache(const void *&weight, int N, int K,
     params.quant_params.wei_scale.buff = static_cast<const void *>(
             static_cast<const uint8_t *>(cached_buffer) + weight_bytes);
     params.quant_params.wei_scale.dt = data_type_t::bf16;
-    const int64_t ng = static_cast<int64_t>(K) / 32;
+    // The group size follows the GGML type, not a constant: Q6_K carries one
+    // scale per sixteen weights where Q4_0 and Q8_0 carry one per thirty-two.
+    // Hardcoding 32 here declared half as many groups as the decode above
+    // actually wrote for Q6_K, so the dims disagreed with the buffer and every
+    // consumer downstream read the scales at the wrong stride.
+    const int64_t ng
+            = static_cast<int64_t>(K) / ggml_group_size_for(ggml_type);
     params.quant_params.wei_scale.dims = {ng, static_cast<int64_t>(N)};
     // Symmetric-int8 compute discriminator.  The unpacked weight is now a
     // plain per-group s8 matrix (identical to a caller-provided per-group s8
