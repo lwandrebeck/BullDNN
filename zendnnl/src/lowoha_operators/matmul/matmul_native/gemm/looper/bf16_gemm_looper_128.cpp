@@ -90,7 +90,6 @@ inline uint16_t f32_to_bf16_rne(float f) {
 // buffer keyed on the wrong shape is a worse bug than an allocation per call.
 struct ThreadScratch {
     std::vector<uint16_t> b_strip; // packed VNNI B for one panel and K block
-    std::vector<float> a_wide;     // FP32 A for one M panel and K block
 };
 
 } // namespace
@@ -173,8 +172,21 @@ bool bf16_gemm_execute_128(const GemmDescriptor &desc, const UarchParams &uarch,
     nthreads = std::min(nthreads, std::max(n_panels, 1));
 
     // Postops and bias are applied after the K loop, not fused into the
-    // microkernel: correctness first, and the epilogue is O(M*N) against
-    // O(M*N*K) of arithmetic. Fusing is a later refinement.
+    // microkernel: correctness first. Fusing is a later refinement.
+    // ---- widen A once ------------------------------------------------------
+    // The microkernel wants FP32 A. Widening it per column panel, which is where
+    // this started, repeats the work n_panels times: sixteen at N=1024 with
+    // 64-wide panels, or about 96 MB of traffic against a 55 ms GEMM. Doing it
+    // once costs M*K floats of scratch and turns that into one pass.
+    //
+    // Rows are padded up to a whole multiple of MR and left zeroed, so the
+    // vector kernel can always read MR rows even in the last M panel. Zeros
+    // contribute nothing to the tiles that are kept.
+    const int m_padded = ((M + MR - 1) / MR) * MR;
+    std::vector<float> a_wide(
+            static_cast<size_t>(m_padded) * static_cast<size_t>(K), 0.0f);
+    widen_bf16_panel_to_fp32(A, lda, a_wide.data(), K, M, K);
+    const int a_stride = K;
 #if defined(_OPENMP)
 #pragma omp parallel num_threads(nthreads)
 #endif
@@ -182,7 +194,6 @@ bool bf16_gemm_execute_128(const GemmDescriptor &desc, const UarchParams &uarch,
         ThreadScratch s;
         s.b_strip.assign(
                 static_cast<size_t>(k_pairs_kb) * b_stride + b_stride, 0);
-        s.a_wide.assign(static_cast<size_t>(MB) * KB + KB, 0.0f);
 
 #if defined(_OPENMP)
 #pragma omp for schedule(static)
@@ -201,15 +212,12 @@ bool bf16_gemm_execute_128(const GemmDescriptor &desc, const UarchParams &uarch,
                 for (int ic = 0; ic < M; ic += MB) {
                     const int mb_act = std::min(MB, M - ic);
 
-                    widen_bf16_panel_to_fp32(A + static_cast<size_t>(ic) * lda
-                                    + pc,
-                            lda, s.a_wide.data(), kb_act, mb_act, kb_act);
-
                     for (int ir = 0; ir < mb_act; ir += MR) {
                         const int mr_act = std::min(MR, mb_act - ir);
-                        const float *a_panel
-                                = s.a_wide.data() + static_cast<size_t>(ir)
-                                * kb_act;
+                        // Straight into the pre-widened A, at this row and this
+                        // K block. The padding rows past M are already zero.
+                        const float *a_panel = a_wide.data()
+                                + static_cast<size_t>(ic + ir) * a_stride + pc;
 
                         for (int jr = 0; jr < nb_act; jr += NR) {
                             const int nr_act = std::min(NR, nb_act - jr);
@@ -221,15 +229,16 @@ bool bf16_gemm_execute_128(const GemmDescriptor &desc, const UarchParams &uarch,
                             const uint16_t *b_tile
                                     = s.b_strip.data() + jr * VNNI_PAIR;
 
-                            auto uk = (mr_act == MR && nr_act == NR)
+                            const bf16_ukernel_128_fn_t uk
+                                    = (mr_act == MR && nr_act == NR)
                                     ? select_bf16_ukernel_128(MR, NR)
                                     : nullptr;
                             if (uk != nullptr) {
-                                uk(a_panel, kb_act, b_tile, b_stride, c_tile,
+                                uk(a_panel, a_stride, b_tile, b_stride, c_tile,
                                         ldc_f, kb_act, beta_k, nullptr,
                                         fused_postop_t::none, nullptr, 0);
                             } else {
-                                bf16_tail_kernel_128(a_panel, kb_act, b_tile,
+                                bf16_tail_kernel_128(a_panel, a_stride, b_tile,
                                         b_stride, c_tile, ldc_f, kb_act, mr_act,
                                         nr_act, beta_k, nullptr,
                                         fused_postop_t::none, nullptr, 0);
@@ -241,7 +250,7 @@ bool bf16_gemm_execute_128(const GemmDescriptor &desc, const UarchParams &uarch,
         }
     }
 
-    // ---- epilogue: alpha, bias, postops, then narrow if needed ------------
+    // ---- epilogue: alpha, bias, postops -----------------------------------
     if (alpha != 1.0f) {
         for (int m = 0; m < M; ++m)
             for (int n = 0; n < N; ++n) C[m * ldc_f + n] *= alpha;
