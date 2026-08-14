@@ -1,0 +1,68 @@
+# FP32 native GEMM (ALGO 10) driven through matmul_direct with the algo named
+# explicitly, best of 5-7 reps. Measured 2026-08-14 on both family 15h boxes with
+# one identical harness (scripts/fp32_flavour_ab.sh), so the two hosts are
+# comparable to each other here in a way they are not against
+# baseline_a10-8770e_excavator.csv, which used benchdnn through auto_tuner.
+#
+# The Piledriver box must have its governor pinned to `performance` first; see
+# int8_symq_fx-8370e_piledriver.csv.
+#
+# WHY THE FLAVOUR ROWS EXIST. The INT8 XOP result showed a per-flavour choice can
+# be microarchitecture-specific, so the FP32 kernel's two choices -- FMA3 over
+# FMA4, and the register pinning -- were re-measured on bdver2 rather than assumed
+# to carry over from bdver4. Both hold, in the same direction and by a similar or
+# larger margin. The FMA4 arm is built with -mno-fma as well: on a part with both
+# forms GCC lowers _mm_macc_ps to vfmadd231ps, so without that flag the "FMA4" arm
+# measures FMA3 and the comparison reads as a tie.
+host,uarch,section,variant,threads,M,K,N,GFLOPS
+fx-8370e,bdver2,flavour,fma3_shipped,8,512,512,512,133.22
+fx-8370e,bdver2,flavour,fma4,8,512,512,512,113.11
+fx-8370e,bdver2,flavour,mul_add,8,512,512,512,95.10
+fx-8370e,bdver2,flavour,fma3_unpinned,8,512,512,512,100.94
+fx-8370e,bdver2,flavour,fma3_shipped,8,2048,512,512,142.11
+fx-8370e,bdver2,flavour,fma4,8,2048,512,512,125.98
+fx-8370e,bdver2,flavour,mul_add,8,2048,512,512,98.29
+fx-8370e,bdver2,flavour,fma3_unpinned,8,2048,512,512,109.27
+fx-8370e,bdver2,flavour,fma3_shipped,8,1024,1024,1024,112.26
+fx-8370e,bdver2,flavour,fma4,8,1024,1024,1024,107.01
+fx-8370e,bdver2,flavour,mul_add,8,1024,1024,1024,80.47
+fx-8370e,bdver2,flavour,fma3_unpinned,8,1024,1024,1024,90.81
+fx-8370e,bdver2,flavour,fma3_shipped,8,512,2048,2048,105.97
+fx-8370e,bdver2,flavour,fma4,8,512,2048,2048,102.64
+fx-8370e,bdver2,flavour,mul_add,8,512,2048,2048,77.57
+fx-8370e,bdver2,flavour,fma3_unpinned,8,512,2048,2048,87.83
+# Thread sweeps, shipped flavour. Piledriver reaches 3.7-4.1x on 8 cores / 4
+# modules and the A10 2.3-2.5x on 4 cores / 2 modules, so FP32 tracks module count
+# as INT8 does. Two rows are anomalies rather than results, and are kept because
+# they are reproducible: 512^3 on bdver2 gains only 8% from 1 to 2 threads before
+# jumping 3x at 4, and the A10 *regresses* from 41.58 to 29.18 going 2 -> 4
+# threads at K=N=2048. Neither is thread placement -- OMP_PROC_BIND=spread changes
+# nothing -- and p.num_threads is confirmed to override OMP_NUM_THREADS, so the
+# counts are real. Unexplained; worth a look before trusting 2-thread figures.
+fx-8370e,bdver2,scaling,fma3_shipped,1,512,512,512,38.90
+fx-8370e,bdver2,scaling,fma3_shipped,2,512,512,512,43.28
+fx-8370e,bdver2,scaling,fma3_shipped,4,512,512,512,127.40
+fx-8370e,bdver2,scaling,fma3_shipped,8,512,512,512,120.73
+fx-8370e,bdver2,scaling,fma3_shipped,1,2048,512,512,38.85
+fx-8370e,bdver2,scaling,fma3_shipped,2,2048,512,512,73.41
+fx-8370e,bdver2,scaling,fma3_shipped,4,2048,512,512,123.44
+fx-8370e,bdver2,scaling,fma3_shipped,8,2048,512,512,142.15
+fx-8370e,bdver2,scaling,fma3_shipped,1,1024,1024,1024,27.39
+fx-8370e,bdver2,scaling,fma3_shipped,2,1024,1024,1024,51.93
+fx-8370e,bdver2,scaling,fma3_shipped,4,1024,1024,1024,88.50
+fx-8370e,bdver2,scaling,fma3_shipped,8,1024,1024,1024,112.19
+fx-8370e,bdver2,scaling,fma3_shipped,1,1,4096,4096,4.11
+fx-8370e,bdver2,scaling,fma3_shipped,8,1,4096,4096,11.43
+a10-8770e,bdver4,scaling,fma3_shipped,1,512,512,512,33.16
+a10-8770e,bdver4,scaling,fma3_shipped,2,512,512,512,54.65
+a10-8770e,bdver4,scaling,fma3_shipped,4,512,512,512,66.97
+a10-8770e,bdver4,scaling,fma3_shipped,1,2048,512,512,29.19
+a10-8770e,bdver4,scaling,fma3_shipped,2,2048,512,512,49.26
+a10-8770e,bdver4,scaling,fma3_shipped,4,2048,512,512,67.86
+a10-8770e,bdver4,scaling,fma3_shipped,1,1024,1024,1024,23.87
+a10-8770e,bdver4,scaling,fma3_shipped,2,1024,1024,1024,50.35
+a10-8770e,bdver4,scaling,fma3_shipped,4,1024,1024,1024,59.01
+a10-8770e,bdver4,scaling,fma3_shipped,2,512,2048,2048,41.58
+a10-8770e,bdver4,scaling,fma3_shipped,4,512,2048,2048,29.18
+a10-8770e,bdver4,scaling,fma3_shipped,1,1,4096,4096,2.89
+a10-8770e,bdver4,scaling,fma3_shipped,4,1,4096,4096,6.15

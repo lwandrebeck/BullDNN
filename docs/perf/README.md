@@ -12,6 +12,11 @@ compared against each other on identical shapes.
 | `baseline_a10-8770e_excavator.csv` | AMD PRO A10-8770E, 4 cores / 2 modules, 2.8 GHz max | Excavator (bdver4) |
 | `int8_symq_a10-8770e_excavator.csv` | same host, symmetric per-group INT8 | Excavator (bdver4) |
 | `int8_symq_fx-8370e_piledriver.csv` | AMD FX-8370E, 8 cores / 4 modules | Piledriver (bdver2) |
+| `fp32_flavours_and_scaling.csv` | both hosts, one harness | bdver4 and bdver2 |
+
+The harnesses that produced the last three files live in `scripts/`, with
+`scripts/README_perf_harnesses.md` covering how to build them and how to read a
+result on these particular machines.
 
 The Piledriver file is the first data from a second family 15h microarchitecture,
 and it disagrees with the Excavator one in a way worth knowing: XOP's fused
