@@ -57,6 +57,7 @@
 
 #include "lowoha_operators/matmul/lowoha_matmul.hpp"
 #include "gtest_utils.hpp"
+#include "lowoha_operators/matmul/ggml_weight_unpack.hpp"
 #include "lowoha_operators/matmul/matmul_native/common/kernel_cache.hpp"
 #include "lowoha_operators/matmul/matmul_native/gemm/kernel/int8/int8_symq_ukernel_128.hpp"
 #include "lowoha_operators/matmul/matmul_native/gemm/looper/int8_symq_entry_128.hpp"
@@ -548,8 +549,17 @@ protected:
             GTEST_SKIP() << "no 128-bit INT8 microkernel on this host";
         setenv("ZENDNNL_NATIVE_SYMQ_128", "1", 1);
         clear_all_weight_caches();
+        // The GGML unpack keeps its own cache, separate from the native weight
+        // caches and keyed the same way on the caller's pointer. Leaving it
+        // populated let a GGML test in test_matmul.cpp and a GGML test here alias
+        // each other's weights: this suite passed alone and failed when the two
+        // ran together, which is the most annoying shape a cache bug can take.
+        clear_ggml_weight_unpack_cache();
     }
-    void TearDown() override { clear_all_weight_caches(); }
+    void TearDown() override {
+        clear_all_weight_caches();
+        clear_ggml_weight_unpack_cache();
+    }
 };
 
 // Build the params a GGML per-group weight produces: s8 x s8 -> f32, a

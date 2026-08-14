@@ -35,6 +35,23 @@ mr1,xop,4,128,4096,4096,32,38.93
 mr1,xop,4,512,4096,4096,32,40.56
 mr1,xop,4,1024,1024,1024,32,72.16
 mr1,xop,4,128,4096,4096,16,22.65
+# K blocking to a 32 KB packed-panel slice, the shipped default from the kblock
+# commit onward, against the unblocked walk it replaced. Same binary, the "off"
+# rows taken with ZENDNNL_SYMQ_KBLOCK=0. 4 threads, bf16 scales, best of 7. The
+# prompt shapes roughly double and now match the square one; 1024^3 gives up 3%,
+# which is the honest cost of splitting K=1024 into two blocks and so visiting C
+# twice, and sits at this box's resolution limit.
+kblock_off,xop,4,128,4096,4096,32,35.15
+kblock_on,xop,4,128,4096,4096,32,72.80
+kblock_off,xop,4,512,4096,4096,32,39.30
+kblock_on,xop,4,512,4096,4096,32,72.21
+kblock_off,xop,4,128,4096,4096,16,22.62
+kblock_on,xop,4,128,4096,4096,16,62.85
+kblock_off,xop,4,1024,1024,1024,32,71.68
+kblock_on,xop,4,1024,1024,1024,32,69.27
+kblock_on,xop,4,1,4096,4096,32,14.35
+kblock_on,xop,4,1,11008,4096,32,15.41
+kblock_on,xop,4,1,4096,11008,32,13.96
 # Hot loop alone, single thread, B pre-packed: the instrument for a change
 # confined to the microkernel. Both flavours, and both with and without the
 # accumulator pinning that commit ec0e805 added.

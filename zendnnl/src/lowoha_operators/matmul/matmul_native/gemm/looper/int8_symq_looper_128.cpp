@@ -20,11 +20,12 @@
 // Same shape as the BF16 128-bit looper next door, for the same reasons:
 // parallelise over column panels so each thread owns a disjoint slice of C and
 // no reduction is needed, and pack B per panel into the layout the microkernel
-// reads. What differs is that K is not blocked. The microkernel already flushes
-// its s32 accumulators to fp32 once per weight-scale group, so a K block would
-// add a second, coarser flush over the top of one that has to happen anyway,
-// and would need C read back and re-accumulated at every block boundary.
-// Walking K straight through leaves exactly one pass over C.
+// reads. K is blocked, to keep the slice of the packed panel a thread is walking
+// inside L1 -- see the block-size comment below for why, and for what it is
+// worth. An earlier version of this file walked K straight through and argued
+// against blocking on the grounds that the microkernel already flushes once per
+// weight-scale group; true, but it was answering a question about redundant work
+// when the one that mattered was about footprint.
 //
 // A is used unpacked. It is read as dwords -- four consecutive K of one row are
 // one broadcast -- so a packed copy would buy nothing but a pass over M*K bytes.
@@ -53,6 +54,7 @@
 #include "lowoha_operators/matmul/matmul_native/gemm/looper/int8_symq_looper_128.hpp"
 
 #include <algorithm>
+#include <cstdlib>
 #include <cstring>
 #include <vector>
 
@@ -136,6 +138,54 @@ bool int8_symq_execute_128(int M, int N, int K, int group_size,
     const int b_stride = kPanelW * SYMQ_VNNI_GRP;
     const int n_quads = K / SYMQ_VNNI_GRP;
 
+    // K is blocked so the slice of the packed panel in play stays in L1.
+    //
+    // The first version of this looper walked K straight through, on the
+    // reasoning that the microkernel already flushes its accumulators once per
+    // weight-scale group and a K block would only add a coarser flush over the
+    // top. That reasoning was about redundant work and it was correct as far as
+    // it went; what it missed is footprint. A panel is (K/4) * 256 bytes, so at
+    // K=4096 a thread walks 256 KB of packed B per column panel, against 32 KB of
+    // L1d on Excavator, 16 KB on Piledriver, 1 MB of L2 shared by the two cores
+    // of a module, and no L3 anywhere on this family.
+    //
+    // Blocking K to a 32 KB slice is worth, measured on an idle A10-8770E at four
+    // threads and an FX-8370E at eight, best of five:
+    //
+    //     shape                     A10             FX-8370E
+    //     M=128  N=K=4096    36.2 -> 73.0     116.5 -> 136.3
+    //     M=512  N=K=4096    44.4 -> 72.6     118.4 -> 138.4
+    //     M=128  group 16    22.6 -> 63.2      89.4 -> 104.7
+    //     M=1    N=K=4096    11.3 -> 14.9      36.0 -> 37.2
+    //
+    // On the A10 that closes the gap to the square-1024 shape entirely (71.7),
+    // which is what first suggested footprint rather than arithmetic: same work
+    // per byte, a quarter of the panel.
+    //
+    // 512 elements rather than a per-microarchitecture size on purpose. 1024 is
+    // marginally better for group 32 and much worse for group 16 on Excavator
+    // (39.8 against 63.2), 256 is better for group 16 on Piledriver and worse for
+    // the square shape, and 2048 gives most of the gain back on both. 512 is
+    // within noise of the best everywhere measured, and one number that is never
+    // wrong beats two that are each right on one machine.
+    //
+    // ZENDNNL_SYMQ_KBLOCK overrides it for tuning; 0 restores the unblocked walk.
+    constexpr int kTargetPanelBytes = 32 * 1024;
+    static const int s_kblock_env = [] {
+        const char *v = std::getenv("ZENDNNL_SYMQ_KBLOCK");
+        return (v != nullptr && v[0] != '\0') ? std::atoi(v) : -1;
+    }();
+    int k_block = s_kblock_env >= 0
+            ? s_kblock_env
+            : (kTargetPanelBytes / b_stride) * SYMQ_VNNI_GRP;
+    if (k_block <= 0 || k_block > K) {
+        k_block = K;
+    } else {
+        // A group boundary inside a block has no expression in the microkernel.
+        k_block = (k_block / group_size) * group_size;
+        if (k_block <= 0) k_block = K;
+    }
+
     int nt = nthreads > 0 ? nthreads : 1;
     nt = std::min(nt, std::max(n_panels, 1));
 
@@ -212,34 +262,44 @@ bool int8_symq_execute_128(int M, int N, int K, int group_size,
                 panel_base = b_panel.data();
             }
 
+            // The microkernel accumulates into C, so K blocks compose with no
+            // extra flush and no re-scaling; the only cost is revisiting C once
+            // per block, which is M*N*4 bytes against a block's worth of
+            // arithmetic.
+            for (int kb = 0; kb < K; kb += k_block) {
+                const int kb_act = std::min(k_block, K - kb);
             for (int ic = 0; ic < M; ic += SYMQ_MR) {
                 const int mr_act = std::min(SYMQ_MR, M - ic);
 
                 for (int jr = 0; jr < nb_act; jr += SYMQ_NR) {
                     const int nr_act = std::min(SYMQ_NR, nb_act - jr);
-                    const int8_t *b_tile = panel_base + jr * SYMQ_VNNI_GRP;
+                    const int8_t *b_tile = panel_base + jr * SYMQ_VNNI_GRP
+                            + static_cast<size_t>(kb / SYMQ_VNNI_GRP)
+                                    * b_stride;
                     const int8_t *a_tile
-                            = A + static_cast<size_t>(ic) * lda;
+                            = A + static_cast<size_t>(ic) * lda + kb;
                     float *c_tile
                             = C + static_cast<size_t>(ic) * ldc + jc + jr;
                     // Scales are group-major over the full N, so the column
                     // offset goes into the pointer and the stride stays N.
-                    const float *ws = wei_scale + jc + jr;
+                    const float *ws = wei_scale + jc + jr
+                            + static_cast<size_t>(kb / group_size) * N;
                     // The activation scale is indexed by row, so the M offset
                     // goes into the pointer; ss_row is 0 for a per-tensor scale
                     // and the offset then correctly does nothing.
-                    const float *ss
-                            = src_scale + static_cast<size_t>(ic) * ss_row;
+                    const float *ss = src_scale
+                            + static_cast<size_t>(ic) * ss_row
+                            + static_cast<size_t>(kb / group_size) * ss_grp;
 
                     if (mr_act == SYMQ_MR && nr_act == SYMQ_NR) {
-                        hot(a_tile, lda, b_tile, b_stride, c_tile, ldc, K,
+                        hot(a_tile, lda, b_tile, b_stride, c_tile, ldc, kb_act,
                                 group_size, ws, N, ss, ss_row, ss_grp);
                     } else if (mr_act == 1 && nr_act == SYMQ_NR
                             && hot_m1 != nullptr) {
                         // The decode shape: straight at the real row, writing
                         // straight into C.
-                        hot_m1(a_tile, lda, b_tile, b_stride, c_tile, ldc, K,
-                                group_size, ws, N, ss, ss_row, ss_grp);
+                        hot_m1(a_tile, lda, b_tile, b_stride, c_tile, ldc,
+                                kb_act, group_size, ws, N, ss, ss_row, ss_grp);
                         // mr_act < MR only ever happens on the last M panel,
                         // which is exactly the rows a_pad holds.
                     } else if (nr_act == SYMQ_NR && mr_act < SYMQ_MR
@@ -251,22 +311,26 @@ bool int8_symq_execute_128(int M, int N, int K, int group_size,
                         // end of the caller's buffer.
                         std::memset(c_scratch.data(), 0,
                                 sizeof(float) * c_scratch.size());
-                        hot(a_pad.data(), K, b_tile, b_stride, c_scratch.data(),
-                                SYMQ_NR, K, group_size, ws, N,
+                        hot(a_pad.data() + kb, K, b_tile, b_stride,
+                                c_scratch.data(), SYMQ_NR, kb_act, group_size,
+                                ws, N,
                                 ss_row == 0 ? src_scale : ss_pad.data(), ss_row,
                                 ss_grp);
                         for (int m = 0; m < mr_act; ++m) {
-                            std::memcpy(c_tile + static_cast<size_t>(m) * ldc,
-                                    c_scratch.data()
-                                            + static_cast<size_t>(m) * SYMQ_NR,
-                                    sizeof(float) * SYMQ_NR);
+                            float *dst = c_tile + static_cast<size_t>(m) * ldc;
+                            const float *src = c_scratch.data()
+                                    + static_cast<size_t>(m) * SYMQ_NR;
+                            // Accumulate, not copy: with K blocked this tile is
+                            // visited once per block.
+                            for (int n = 0; n < SYMQ_NR; ++n) dst[n] += src[n];
                         }
                     } else {
                         int8_symq_tail_128(a_tile, lda, b_tile, b_stride,
-                                c_tile, ldc, K, group_size, mr_act, nr_act, ws,
-                                N, ss, ss_row, ss_grp);
+                                c_tile, ldc, kb_act, group_size, mr_act, nr_act,
+                                ws, N, ss, ss_row, ss_grp);
                     }
                 }
+            }
             }
         }
     }

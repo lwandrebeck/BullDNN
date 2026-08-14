@@ -34,3 +34,16 @@ looper,xop,1,512,4096,4096,32,23.46
 looper,xop,2,512,4096,4096,32,47.39
 looper,xop,4,512,4096,4096,32,77.81
 looper,xop,8,512,4096,4096,32,113.17
+# K blocking to a 32 KB packed-panel slice, 8 threads, bf16 scales, best of 5.
+# Smaller gain here than on Excavator (+17-19% against roughly 2x), consistent
+# with this part's 16 KB L1d: the block sized for Excavator is already twice it.
+# 256 suits group 16 slightly better on this box and the square shape slightly
+# worse, which is why the shipped default is one number rather than two.
+kblock_off,xop,8,128,4096,4096,32,116.45
+kblock_on,xop,8,128,4096,4096,32,136.25
+kblock_off,xop,8,512,4096,4096,32,118.37
+kblock_on,xop,8,512,4096,4096,32,138.43
+kblock_off,xop,8,128,4096,4096,16,89.36
+kblock_on,xop,8,128,4096,4096,16,104.72
+kblock_off,xop,8,1024,1024,1024,32,127.94
+kblock_on,xop,8,1024,1024,1024,32,125.36
