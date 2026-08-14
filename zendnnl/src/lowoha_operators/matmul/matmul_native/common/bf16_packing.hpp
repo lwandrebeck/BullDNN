@@ -53,11 +53,62 @@ inline void pack_a_bf16_block(const uint16_t *A_src, uint16_t *pack_buf, int ic,
     }
 }
 
-// On-the-fly VNNI strip pack: pack NR_PACK columns for a K-block
+// Scalar VNNI strip pack. Correct for any nr_act and either B orientation, and
+// carries no target attribute so hosts without AVX-512 can call it -- family
+// 15h has no BF16 arithmetic but still needs weights in this layout, since the
+// 128-bit microkernel widens from it in register.
+//
+// The layout, which the microkernels depend on: for k-pair kp and column n, the
+// two uint16 at d[n*VNNI_PAIR] and d[n*VNNI_PAIR+1] hold k=pc+2*kp and
+// k=pc+2*kp+1 respectively. Read as a dword that is k-even in the low half and
+// k-odd in the high half.
+inline void pack_b_vnni_strip_scalar(const uint16_t *B, int ldb, bool transB,
+        int col_start, int nr_act, int K, int pc, int kb, uint16_t *packed) {
+
+    const int kb_padded = (kb + 1) & ~1;
+    const int k_pairs = kb_padded / 2;
+    const int out_stride = NR_PACK * VNNI_PAIR;
+
+    for (int kp = 0; kp < k_pairs; ++kp) {
+        uint16_t *d = packed + kp * out_stride;
+        const int k0 = pc + kp * 2;
+        const int k1 = k0 + 1;
+        for (int n = 0; n < nr_act; ++n) {
+            uint16_t v0, v1;
+            if (!transB) {
+                v0 = (k0 < K) ? B[k0 * ldb + (col_start + n)] : 0;
+                v1 = (k1 < K) ? B[k1 * ldb + (col_start + n)] : 0;
+            } else {
+                v0 = (k0 < K) ? B[(col_start + n) * ldb + k0] : 0;
+                v1 = (k1 < K) ? B[(col_start + n) * ldb + k1] : 0;
+            }
+            d[n * VNNI_PAIR + 0] = v0;
+            d[n * VNNI_PAIR + 1] = v1;
+        }
+        // Zero the unused columns so the microkernel can read a whole NR_PACK
+        // strip without a bounds test.
+        for (int n = nr_act; n < NR_PACK; ++n) {
+            d[n * VNNI_PAIR + 0] = 0;
+            d[n * VNNI_PAIR + 1] = 0;
+        }
+    }
+}
+
+// On-the-fly VNNI strip pack: pack NR_PACK columns for a K-block.
+//
+// The ragged and transposed cases are exactly what pack_b_vnni_strip_scalar
+// does, so they delegate rather than keep a second copy in step with it. Only
+// the full-width, non-transposed case earns a vector path.
 __attribute__((target("avx512f,avx512bw"))) inline void pack_b_vnni_strip(
         const uint16_t *B, int ldb, bool transB, int col_start, int nr_act,
         int K, [[maybe_unused]] int K_padded, int pc, int kb,
         uint16_t *packed) {
+
+    if (transB || nr_act != NR_PACK) {
+        pack_b_vnni_strip_scalar(
+                B, ldb, transB, col_start, nr_act, K, pc, kb, packed);
+        return;
+    }
 
     const int kb_padded = (kb + 1) & ~1;
     const int k_pairs = kb_padded / 2;
@@ -68,44 +119,23 @@ __attribute__((target("avx512f,avx512bw"))) inline void pack_b_vnni_strip(
         const int k0 = pc + kp * 2;
         const int k1 = k0 + 1;
 
-        if (!transB && nr_act == NR_PACK) {
-            const uint16_t *row0
-                    = (k0 < K) ? B + k0 * ldb + col_start : nullptr;
-            const uint16_t *row1
-                    = (k1 < K) ? B + k1 * ldb + col_start : nullptr;
-            for (int n = 0; n < NR_PACK; n += 32) {
-                __m512i r0 = row0 ? _mm512_loadu_si512(row0 + n)
-                                  : _mm512_setzero_si512();
-                __m512i r1 = row1 ? _mm512_loadu_si512(row1 + n)
-                                  : _mm512_setzero_si512();
-                __m512i lo = _mm512_unpacklo_epi16(r0, r1);
-                __m512i hi = _mm512_unpackhi_epi16(r0, r1);
-                const __m512i idx_lo = _mm512_setr_epi32(
-                        0, 1, 2, 3, 16, 17, 18, 19, 4, 5, 6, 7, 20, 21, 22, 23);
-                const __m512i idx_hi = _mm512_setr_epi32(8, 9, 10, 11, 24, 25,
-                        26, 27, 12, 13, 14, 15, 28, 29, 30, 31);
-                _mm512_storeu_si512(d + n * VNNI_PAIR,
-                        _mm512_permutex2var_epi32(lo, idx_lo, hi));
-                _mm512_storeu_si512(d + (n + 16) * VNNI_PAIR,
-                        _mm512_permutex2var_epi32(lo, idx_hi, hi));
-            }
-        } else {
-            for (int n = 0; n < nr_act; ++n) {
-                uint16_t v0, v1;
-                if (!transB) {
-                    v0 = (k0 < K) ? B[k0 * ldb + (col_start + n)] : 0;
-                    v1 = (k1 < K) ? B[k1 * ldb + (col_start + n)] : 0;
-                } else {
-                    v0 = (k0 < K) ? B[(col_start + n) * ldb + k0] : 0;
-                    v1 = (k1 < K) ? B[(col_start + n) * ldb + k1] : 0;
-                }
-                d[n * VNNI_PAIR + 0] = v0;
-                d[n * VNNI_PAIR + 1] = v1;
-            }
-            for (int n = nr_act; n < NR_PACK; ++n) {
-                d[n * VNNI_PAIR + 0] = 0;
-                d[n * VNNI_PAIR + 1] = 0;
-            }
+        const uint16_t *row0 = (k0 < K) ? B + k0 * ldb + col_start : nullptr;
+        const uint16_t *row1 = (k1 < K) ? B + k1 * ldb + col_start : nullptr;
+        for (int n = 0; n < NR_PACK; n += 32) {
+            __m512i r0 = row0 ? _mm512_loadu_si512(row0 + n)
+                              : _mm512_setzero_si512();
+            __m512i r1 = row1 ? _mm512_loadu_si512(row1 + n)
+                              : _mm512_setzero_si512();
+            __m512i lo = _mm512_unpacklo_epi16(r0, r1);
+            __m512i hi = _mm512_unpackhi_epi16(r0, r1);
+            const __m512i idx_lo = _mm512_setr_epi32(
+                    0, 1, 2, 3, 16, 17, 18, 19, 4, 5, 6, 7, 20, 21, 22, 23);
+            const __m512i idx_hi = _mm512_setr_epi32(
+                    8, 9, 10, 11, 24, 25, 26, 27, 12, 13, 14, 15, 28, 29, 30, 31);
+            _mm512_storeu_si512(
+                    d + n * VNNI_PAIR, _mm512_permutex2var_epi32(lo, idx_lo, hi));
+            _mm512_storeu_si512(d + (n + 16) * VNNI_PAIR,
+                    _mm512_permutex2var_epi32(lo, idx_hi, hi));
         }
     }
 }
