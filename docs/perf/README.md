@@ -11,6 +11,14 @@ compared against each other on identical shapes.
 | --- | --- | --- |
 | `baseline_a10-8770e_excavator.csv` | AMD PRO A10-8770E, 4 cores / 2 modules, 2.8 GHz max | Excavator (bdver4) |
 | `int8_symq_a10-8770e_excavator.csv` | same host, symmetric per-group INT8 | Excavator (bdver4) |
+| `int8_symq_fx-8370e_piledriver.csv` | AMD FX-8370E, 8 cores / 4 modules | Piledriver (bdver2) |
+
+The Piledriver file is the first data from a second family 15h microarchitecture,
+and it disagrees with the Excavator one in a way worth knowing: XOP's fused
+reduction is worth 1.13-1.20x on bdver4 and nothing at all on bdver2. Treat
+per-flavour results as microarchitecture-specific until measured on both. That
+box also needs its governor pinned to `performance` before it can be measured at
+all — see the header of the file.
 
 Note on reading the INT8 file: this box resolves effects above roughly 10% and
 nothing below, and its means drift between batches, so the columns are best-of-N

@@ -1,0 +1,36 @@
+# Symmetric per-group INT8 on AMD FX-8370E (Piledriver/bdver2, 8 cores / 4
+# modules), measured 2026-08-14 with the governor pinned to `performance` (3.3-3.6
+# GHz) and the desktop's package/indexing daemons stopped. On the stock
+# `schedutil` governor this box idles at 1.4-1.8 GHz and identical code measured a
+# 3x spread between passes, so nothing here is comparable to a run taken without
+# pinning it first.
+#
+# Two results worth reading before the rows:
+#
+# 1. XOP buys nothing here, where it is worth 1.13-1.20x on Excavator. Best of 5
+#    passes x 9 reps put the XOP and portable flavours within 1.0-2.5% across all
+#    three configurations, in both directions. VPMADCSWD deletes eight PADDDs per
+#    quad and on bdver4 that shows up; on bdver2 it does not. The flavour is kept
+#    because it is not slower, but "XOP is a family 15h advantage" is an Excavator
+#    statement, not a family one.
+#
+# 2. INT8 GEMM scales 4.8x over 8 cores / 4 modules, against ~2x over 4 cores / 2
+#    modules on the A10. Roughly module-proportional, and the excess over 4x is
+#    explained by the single-thread baseline not being pipe-bound: one thread runs
+#    the looper at 25 GOPS while its own hot loop alone reaches 55, so the 1-thread
+#    figure is limited by packing and memory rather than by the shared FPU.
+section,flavour,threads,M,N,K,group_size,GOPS
+hotloop,xop,1,4,64,1024,32,55.21
+hotloop,portable,1,4,64,1024,32,54.65
+hotloop,xop,1,4,64,4096,32,51.61
+hotloop,portable,1,4,64,4096,32,50.65
+hotloop,xop,1,4,64,1024,16,39.85
+hotloop,portable,1,4,64,1024,16,38.88
+looper,xop,1,1024,1024,1024,32,25.10
+looper,xop,2,1024,1024,1024,32,49.49
+looper,xop,4,1024,1024,1024,32,76.41
+looper,xop,8,1024,1024,1024,32,119.47
+looper,xop,1,512,4096,4096,32,23.46
+looper,xop,2,512,4096,4096,32,47.39
+looper,xop,4,512,4096,4096,32,77.81
+looper,xop,8,512,4096,4096,32,113.17
