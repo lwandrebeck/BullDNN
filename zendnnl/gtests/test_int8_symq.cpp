@@ -59,6 +59,7 @@
 #include "gtest_utils.hpp"
 #include "lowoha_operators/matmul/ggml_weight_unpack.hpp"
 #include "lowoha_operators/matmul/matmul_native/common/kernel_cache.hpp"
+#include "lowoha_operators/matmul/matmul_native/gemm/kernel/int8/int8_kquant_ukernel_128.hpp"
 #include "lowoha_operators/matmul/matmul_native/gemm/kernel/int8/int8_symq_ukernel_128.hpp"
 #include "lowoha_operators/matmul/matmul_native/gemm/looper/int8_symq_entry_128.hpp"
 #include "lowoha_operators/matmul/matmul_native/gemm/looper/int8_symq_looper_128.hpp"
@@ -519,6 +520,319 @@ TEST(Int8SymqLooper128, IsInvariantInThreadCount) {
                 true, many.data(), N, ws.data(), &kPointOne, 0, 0, nt));
         for (size_t i = 0; i < single.size(); ++i)
             ASSERT_FLOAT_EQ(single[i], many[i]) << "at " << i;
+    }
+}
+
+// ============================================================================
+// Asymmetric per-group (GGML k-quant) microkernel.
+//
+// The reference below dequantises each weight the way GGML defines it,
+// w = D * q - M, and then multiplies. The kernel instead computes
+// sum(D * dot) - sum(M * rowsum), which is the same quantity rearranged so the
+// min term costs one multiply per group instead of one per element. Building the
+// reference from the factored form would make the test agree with the algebra
+// rather than check it, which is the whole risk in this kernel.
+// ============================================================================
+
+namespace {
+
+// out[k, n] semantics with a transposed (GGML) B: q is indexed [n][k].
+void reference_kquant(int M, int N, int K, int gs, const int8_t *A, int lda,
+        const uint8_t *q, int ldq, const float *D, const float *Min,
+        const float *ss, int ss_row, int ss_grp, std::vector<float> &out) {
+    const int n_groups = K / gs;
+    out.assign(static_cast<size_t>(M) * N, 0.0f);
+    for (int m = 0; m < M; ++m) {
+        for (int n = 0; n < N; ++n) {
+            double sum = 0.0;
+            for (int g = 0; g < n_groups; ++g) {
+                double gsum = 0.0;
+                for (int j = 0; j < gs; ++j) {
+                    const int k = g * gs + j;
+                    // Dequantise, then multiply -- the definition, not the
+                    // rearrangement the kernel uses.
+                    const double w
+                            = static_cast<double>(D[static_cast<size_t>(g) * N + n])
+                                    * static_cast<double>(
+                                            q[static_cast<size_t>(n) * ldq + k])
+                            - static_cast<double>(
+                                    Min[static_cast<size_t>(g) * N + n]);
+                    gsum += static_cast<double>(A[static_cast<size_t>(m) * lda + k])
+                            * w;
+                }
+                sum += gsum * static_cast<double>(ss[m * ss_row + g * ss_grp]);
+            }
+            out[static_cast<size_t>(m) * N + n] = static_cast<float>(sum);
+        }
+    }
+}
+
+// Pack unsigned codes into the VNNI layout the kernel reads.
+void pack_q_vnni(const uint8_t *q, int ldq, int K, int width, int N,
+        std::vector<uint8_t> &dst) {
+    const int n_quads = K / KQ_VNNI_GRP;
+    dst.assign(static_cast<size_t>(n_quads) * width * KQ_VNNI_GRP, 0);
+    for (int kq = 0; kq < n_quads; ++kq) {
+        for (int n = 0; n < width; ++n) {
+            if (n >= N) continue;
+            for (int j = 0; j < KQ_VNNI_GRP; ++j) {
+                const int k = kq * KQ_VNNI_GRP + j;
+                dst[static_cast<size_t>(kq) * width * KQ_VNNI_GRP
+                        + n * KQ_VNNI_GRP + j]
+                        = q[static_cast<size_t>(n) * ldq + k];
+            }
+        }
+    }
+}
+
+void fill_codes(std::vector<uint8_t> &v, std::mt19937 &rng, int max_code) {
+    std::uniform_int_distribution<int> d(0, max_code);
+    for (auto &x : v) x = static_cast<uint8_t>(d(rng));
+}
+
+} // namespace
+
+TEST(Int8KquantUkernel128, TileMatchesTheDequantiseThenMultiplyReference) {
+    const int8_kquant_ukernel_128_fn_t hot = select_int8_kquant_ukernel_128();
+    if (hot == nullptr) GTEST_SKIP() << "no 128-bit INT8 microkernel on this host";
+
+    // 15 is the Q4_K code ceiling, 31 the Q5_K one.
+    struct { int K, gs, max_code; const char *why; } cases[] = {
+            {32, 32, 15, "one group, Q4_K codes"},
+            {32, 32, 31, "one group, Q5_K codes"},
+            {256, 32, 15, "eight groups"},
+            {256, 16, 31, "group 16"},
+            {4096, 32, 15, "long K"},
+            {64, 64, 15, "group spans the tile"},
+    };
+
+    std::mt19937 rng(515);
+    for (const auto &c : cases) {
+        SCOPED_TRACE(testing::Message() << c.why << " K=" << c.K
+                                        << " gs=" << c.gs);
+        const int M = KQ_MR, N = KQ_NR, groups = c.K / c.gs;
+        std::vector<int8_t> A(static_cast<size_t>(M) * c.K);
+        std::vector<uint8_t> q(static_cast<size_t>(N) * c.K);
+        std::vector<float> D(static_cast<size_t>(groups) * N);
+        std::vector<float> Min(static_cast<size_t>(groups) * N);
+        fill_s8(A, rng, false);
+        fill_codes(q, rng, c.max_code);
+        fill_scales(D, rng);
+        fill_scales(Min, rng);
+        const float ss = 0.0137f;
+
+        std::vector<uint8_t> packed;
+        pack_q_vnni(q.data(), c.K, c.K, N, N, packed);
+        std::vector<int32_t> rs(static_cast<size_t>(M) * groups);
+        int8_kquant_row_sums(A.data(), c.K, M, c.K, c.gs, rs.data());
+
+        std::vector<float> C(static_cast<size_t>(M) * N, 0.0f);
+        hot(A.data(), c.K, packed.data(), N * KQ_VNNI_GRP, C.data(), N, c.K,
+                c.gs, D.data(), Min.data(), N, rs.data(), groups, &ss, 0, 0);
+
+        std::vector<float> ref;
+        reference_kquant(M, N, c.K, c.gs, A.data(), c.K, q.data(), c.K, D.data(),
+                Min.data(), &ss, 0, 0, ref);
+        int nans = 0;
+        EXPECT_LT(worst_scaled_error(C, N, ref, N, M, N, &nans), kTolerance);
+        EXPECT_EQ(nans, 0);
+    }
+}
+
+// The bound this kernel rests on: an unsigned code times a signed activation,
+// summed in pairs, reaches 2 * 31 * 128 = 7936 against the 16-bit limit. So every
+// s8 activation is admissible here including -128, which the symmetric kernel must
+// exclude. Drive both extremes and require exactness, not a tolerance: with unit
+// scales these sums are integers and representable.
+TEST(Int8KquantUkernel128, IsExactAtTheExtremesIncludingMinus128) {
+    const int8_kquant_ukernel_128_fn_t hot = select_int8_kquant_ukernel_128();
+    if (hot == nullptr) GTEST_SKIP() << "no 128-bit INT8 microkernel on this host";
+
+    const int M = KQ_MR, N = KQ_NR, K = 256, gs = 32, groups = K / gs;
+    for (int pattern = 0; pattern < 4; ++pattern) {
+        SCOPED_TRACE(testing::Message() << "pattern " << pattern);
+        std::vector<int8_t> A(static_cast<size_t>(M) * K);
+        std::vector<uint8_t> q(static_cast<size_t>(N) * K);
+        for (size_t i = 0; i < A.size(); ++i) {
+            const bool neg = (pattern & 1) ? (i % 2) == 0 : (i % 3) == 0;
+            A[i] = neg ? static_cast<int8_t>(-128) : static_cast<int8_t>(127);
+        }
+        for (size_t i = 0; i < q.size(); ++i)
+            q[i] = static_cast<uint8_t>((pattern & 2) ? 31 : 15);
+
+        std::vector<float> D(static_cast<size_t>(groups) * N, 1.0f);
+        std::vector<float> Min(static_cast<size_t>(groups) * N, 1.0f);
+        const float ss = 1.0f;
+
+        std::vector<uint8_t> packed;
+        pack_q_vnni(q.data(), K, K, N, N, packed);
+        std::vector<int32_t> rs(static_cast<size_t>(M) * groups);
+        int8_kquant_row_sums(A.data(), K, M, K, gs, rs.data());
+
+        std::vector<float> C(static_cast<size_t>(M) * N, 0.0f);
+        hot(A.data(), K, packed.data(), N * KQ_VNNI_GRP, C.data(), N, K, gs,
+                D.data(), Min.data(), N, rs.data(), groups, &ss, 0, 0);
+
+        std::vector<float> ref;
+        reference_kquant(M, N, K, gs, A.data(), K, q.data(), K, D.data(),
+                Min.data(), &ss, 0, 0, ref);
+        for (int m = 0; m < M; ++m)
+            for (int n = 0; n < N; ++n)
+                EXPECT_FLOAT_EQ(C[m * N + n], ref[m * N + n])
+                        << "at (" << m << "," << n << ")";
+    }
+}
+
+// A zero min must reduce this kernel to a plain per-group dot product, and a zero
+// code must leave only the min correction. Two degenerate cases that isolate the
+// two terms from each other.
+TEST(Int8KquantUkernel128, TermsIsolateWhenTheOtherIsZero) {
+    const int8_kquant_ukernel_128_fn_t hot = select_int8_kquant_ukernel_128();
+    if (hot == nullptr) GTEST_SKIP() << "no 128-bit INT8 microkernel on this host";
+
+    const int M = KQ_MR, N = KQ_NR, K = 128, gs = 32, groups = K / gs;
+    std::mt19937 rng(99);
+    for (int which = 0; which < 2; ++which) {
+        SCOPED_TRACE(which == 0 ? "min = 0, dot only" : "codes = 0, min only");
+        std::vector<int8_t> A(static_cast<size_t>(M) * K);
+        std::vector<uint8_t> q(static_cast<size_t>(N) * K);
+        fill_s8(A, rng, false);
+        if (which == 0)
+            fill_codes(q, rng, 15);
+        else
+            std::fill(q.begin(), q.end(), uint8_t {0});
+
+        std::vector<float> D(static_cast<size_t>(groups) * N);
+        std::vector<float> Min(static_cast<size_t>(groups) * N, 0.0f);
+        fill_scales(D, rng);
+        if (which == 1) fill_scales(Min, rng);
+        const float ss = 0.0137f;
+
+        std::vector<uint8_t> packed;
+        pack_q_vnni(q.data(), K, K, N, N, packed);
+        std::vector<int32_t> rs(static_cast<size_t>(M) * groups);
+        int8_kquant_row_sums(A.data(), K, M, K, gs, rs.data());
+
+        std::vector<float> C(static_cast<size_t>(M) * N, 0.0f);
+        hot(A.data(), K, packed.data(), N * KQ_VNNI_GRP, C.data(), N, K, gs,
+                D.data(), Min.data(), N, rs.data(), groups, &ss, 0, 0);
+
+        std::vector<float> ref;
+        reference_kquant(M, N, K, gs, A.data(), K, q.data(), K, D.data(),
+                Min.data(), &ss, 0, 0, ref);
+        int nans = 0;
+        EXPECT_LT(worst_scaled_error(C, N, ref, N, M, N, &nans), kTolerance);
+        EXPECT_EQ(nans, 0);
+    }
+}
+
+TEST(Int8KquantUkernel128, RowSumsMatchAScalarSum) {
+    const int M = 5, K = 96, gs = 32, groups = K / gs;
+    std::mt19937 rng(7);
+    std::vector<int8_t> A(static_cast<size_t>(M) * K);
+    fill_s8(A, rng, false);
+    std::vector<int32_t> rs(static_cast<size_t>(M) * groups);
+    int8_kquant_row_sums(A.data(), K, M, K, gs, rs.data());
+    for (int m = 0; m < M; ++m) {
+        for (int g = 0; g < groups; ++g) {
+            int32_t want = 0;
+            for (int j = 0; j < gs; ++j) want += A[m * K + g * gs + j];
+            EXPECT_EQ(rs[m * groups + g], want) << "m=" << m << " g=" << g;
+        }
+    }
+}
+
+// The single-row kernel must agree with the general one on the row they share, and
+// the scalar tail with both at every ragged extent.
+TEST(Int8KquantUkernel128, SingleRowAndTailAgreeWithTheTile) {
+    const int8_kquant_ukernel_128_fn_t hot = select_int8_kquant_ukernel_128();
+    const int8_kquant_ukernel_128_fn_t hot1
+            = select_int8_kquant_ukernel_128_m1();
+    if (hot == nullptr || hot1 == nullptr)
+        GTEST_SKIP() << "no 128-bit INT8 microkernel on this host";
+
+    const int N = KQ_NR, K = 128, gs = 32, groups = K / gs;
+    std::mt19937 rng(4242);
+    std::vector<int8_t> A(static_cast<size_t>(KQ_MR) * K);
+    std::vector<uint8_t> q(static_cast<size_t>(N) * K);
+    std::vector<float> D(static_cast<size_t>(groups) * N);
+    std::vector<float> Min(static_cast<size_t>(groups) * N);
+    fill_s8(A, rng, false);
+    fill_codes(q, rng, 15);
+    fill_scales(D, rng);
+    fill_scales(Min, rng);
+    const float ss = 0.0137f;
+
+    std::vector<uint8_t> packed;
+    pack_q_vnni(q.data(), K, K, N, N, packed);
+    std::vector<int32_t> rs(static_cast<size_t>(KQ_MR) * groups);
+    int8_kquant_row_sums(A.data(), K, KQ_MR, K, gs, rs.data());
+
+    std::vector<float> c_tile(static_cast<size_t>(KQ_MR) * N, 0.0f);
+    hot(A.data(), K, packed.data(), N * KQ_VNNI_GRP, c_tile.data(), N, K, gs,
+            D.data(), Min.data(), N, rs.data(), groups, &ss, 0, 0);
+
+    std::vector<float> c_one(N, 0.0f);
+    hot1(A.data(), K, packed.data(), N * KQ_VNNI_GRP, c_one.data(), N, K, gs,
+            D.data(), Min.data(), N, rs.data(), groups, &ss, 0, 0);
+    for (int n = 0; n < N; ++n)
+        EXPECT_FLOAT_EQ(c_one[n], c_tile[n]) << "one-row kernel differs at " << n;
+
+    for (int mr = 1; mr <= KQ_MR; ++mr) {
+        for (int nr = 1; nr <= KQ_NR; ++nr) {
+            SCOPED_TRACE(testing::Message() << "mr=" << mr << " nr=" << nr);
+            std::vector<float> c_tail(static_cast<size_t>(KQ_MR) * N, 0.0f);
+            int8_kquant_tail_128(A.data(), K, packed.data(), N * KQ_VNNI_GRP,
+                    c_tail.data(), N, K, gs, mr, nr, D.data(), Min.data(), N,
+                    rs.data(), groups, &ss, 0, 0);
+            for (int m = 0; m < mr; ++m)
+                for (int n = 0; n < nr; ++n)
+                    EXPECT_NEAR(c_tail[m * N + n], c_tile[m * N + n],
+                            1e-3 * std::fabs(c_tile[m * N + n]) + 1e-4);
+        }
+    }
+}
+
+// Per-token and per-group activation scales, the granularities the GGML path
+// supplies; the k-quant flush applies them exactly where the symmetric one does.
+TEST(Int8KquantUkernel128, PerTokenAndPerGroupActivationScales) {
+    const int8_kquant_ukernel_128_fn_t hot = select_int8_kquant_ukernel_128();
+    if (hot == nullptr) GTEST_SKIP() << "no 128-bit INT8 microkernel on this host";
+
+    const int M = KQ_MR, N = KQ_NR, K = 128, gs = 32, groups = K / gs;
+    std::mt19937 rng(31337);
+    for (int which = 0; which < 2; ++which) {
+        const bool per_group = which == 1;
+        SCOPED_TRACE(per_group ? "per-group {M,G}" : "per-token {M,1}");
+        std::vector<int8_t> A(static_cast<size_t>(M) * K);
+        std::vector<uint8_t> q(static_cast<size_t>(N) * K);
+        std::vector<float> D(static_cast<size_t>(groups) * N);
+        std::vector<float> Min(static_cast<size_t>(groups) * N);
+        std::vector<float> ss(static_cast<size_t>(M) * (per_group ? groups : 1));
+        fill_s8(A, rng, false);
+        fill_codes(q, rng, 15);
+        fill_scales(D, rng);
+        fill_scales(Min, rng);
+        fill_scales(ss, rng);
+        const int ss_row = per_group ? groups : 1;
+        const int ss_grp = per_group ? 1 : 0;
+
+        std::vector<uint8_t> packed;
+        pack_q_vnni(q.data(), K, K, N, N, packed);
+        std::vector<int32_t> rs(static_cast<size_t>(M) * groups);
+        int8_kquant_row_sums(A.data(), K, M, K, gs, rs.data());
+
+        std::vector<float> C(static_cast<size_t>(M) * N, 0.0f);
+        hot(A.data(), K, packed.data(), N * KQ_VNNI_GRP, C.data(), N, K, gs,
+                D.data(), Min.data(), N, rs.data(), groups, ss.data(), ss_row,
+                ss_grp);
+
+        std::vector<float> ref;
+        reference_kquant(M, N, K, gs, A.data(), K, q.data(), K, D.data(),
+                Min.data(), ss.data(), ss_row, ss_grp, ref);
+        int nans = 0;
+        EXPECT_LT(worst_scaled_error(C, N, ref, N, M, N, &nans), kTolerance);
+        EXPECT_EQ(nans, 0);
     }
 }
 
