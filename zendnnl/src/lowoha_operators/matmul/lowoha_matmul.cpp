@@ -23,6 +23,7 @@
 #include "lowoha_operators/matmul/backends/libxsmm/libxsmm_kernel.hpp"
 #include "lowoha_operators/matmul/backends/onednn/onednn_kernel.hpp"
 #include "lowoha_operators/matmul/quantization/reorder_quantization.hpp"
+#include "matmul_native/common/cost_model.hpp"
 #include "matmul_native/gemm/looper/int8_symq_entry_128.hpp"
 #include "matmul_native/native_matmul.hpp"
 #include "partitioning/bmm/looper/bmm_looper.hpp"
@@ -427,8 +428,22 @@ status_t matmul_direct(const char layout, const bool transA, const bool transB,
                     "per-group int8 matmul");
             return status_t::failure;
         }
-        status_t unpack_status = unpack_ggml_weights_and_cache(
-                exec_weight, N, K, ldb, transB ? 't' : 'n', exec_params);
+        // Ask for the raw s8 form rather than an AOCL sym-quant reorder on a
+        // host that cannot run AOCL's INT8 kernels at all. Without AVX-512 VNNI
+        // every INT8 algorithm resolves to AOCL-DLP, which refuses and returns
+        // without computing, so a reordered weight is of no use to anyone here;
+        // raw s8 is the one layout something can consume -- the native
+        // per-group INT8 kernel.
+        //
+        // Gated on the ISA rather than on the shape deliberately. Deciding by
+        // shape would mean predicting whether the native path will accept the
+        // call, here, before kernel_select() has run, and being wrong would hand
+        // AOCL a layout it did not ask for on hardware where it works. On a
+        // no-VNNI host there is nothing to break: if the native path declines
+        // too, the result is the same non-computation as before.
+        const bool prefer_raw_s8 = !native::detect_uarch().avx512vnni;
+        status_t unpack_status = unpack_ggml_weights_and_cache(exec_weight, N, K,
+                ldb, transB ? 't' : 'n', exec_params, prefer_raw_s8);
         if (unpack_status != status_t::success) { return unpack_status; }
     }
 
