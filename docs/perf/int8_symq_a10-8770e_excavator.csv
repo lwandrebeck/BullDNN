@@ -1,0 +1,38 @@
+# Symmetric per-group INT8 (native 128-bit XOP kernel) on AMD PRO A10-8770E.
+# Measured 2026-08-14 on an idle box, best of 7 repetitions after a warm call,
+# through matmul_direct with bf16 weight scales as the GGML unpack supplies them.
+# GOPS = 2*M*N*K/s. Packed-integer issue ceiling for this part is ~89 GOPS
+# (2 modules x 2 pipes x 2.79 GHz); anything above that did not run.
+#
+# stage: wired    = dispatch reached, B packed and operands scanned per call
+#        cached   = packed weight, contract verdict and widened scales cached
+#        mpad     = short M reaches the vector kernel instead of the scalar tail
+# flavour: xop = VPMADCSWD reduction (family 15h only); sse = portable PMADDWD
+stage,flavour,threads,M,N,K,group_size,GOPS
+wired,xop,4,1,4096,4096,32,1.46
+wired,xop,4,1,11008,4096,32,1.94
+wired,xop,4,1,4096,11008,32,1.07
+cached,xop,4,1,4096,4096,32,4.78
+cached,xop,4,1,11008,4096,32,7.51
+cached,xop,4,1,4096,11008,32,1.56
+mpad,xop,4,1,4096,4096,32,8.61
+mpad,xop,4,1,11008,4096,32,9.25
+mpad,xop,4,1,4096,11008,32,7.14
+mpad,xop,4,128,4096,4096,32,39.43
+mpad,xop,4,512,4096,4096,32,40.16
+mpad,xop,4,1024,1024,1024,32,73.75
+mpad,xop,4,128,4096,4096,16,22.69
+mpad,xop,1,1,4096,4096,32,3.29
+mpad,xop,1,128,4096,4096,32,12.47
+# Hot loop alone, single thread, B pre-packed: the instrument for a change
+# confined to the microkernel. Both flavours, and both with and without the
+# accumulator pinning that commit ec0e805 added.
+hotloop_unpinned,xop,1,4,64,1024,32,44.89
+hotloop_unpinned,xop,1,4,64,4096,32,42.92
+hotloop_unpinned,xop,1,4,64,1024,16,35.14
+hotloop_pinned,xop,1,4,64,1024,32,49.03
+hotloop_pinned,xop,1,4,64,4096,32,47.31
+hotloop_pinned,xop,1,4,64,1024,16,43.33
+hotloop_pinned,sse,1,4,64,1024,32,40.21
+hotloop_pinned,sse,1,4,64,4096,32,40.31
+hotloop_pinned,sse,1,4,64,1024,16,35.97

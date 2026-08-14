@@ -10,6 +10,13 @@ compared against each other on identical shapes.
 | File | Host | Microarchitecture |
 | --- | --- | --- |
 | `baseline_a10-8770e_excavator.csv` | AMD PRO A10-8770E, 4 cores / 2 modules, 2.8 GHz max | Excavator (bdver4) |
+| `int8_symq_a10-8770e_excavator.csv` | same host, symmetric per-group INT8 | Excavator (bdver4) |
+
+Note on reading the INT8 file: this box resolves effects above roughly 10% and
+nothing below, and its means drift between batches, so the columns are best-of-N
+rather than averages and the small differences in it are not results. The
+decode rows (M=1) moved by 4-7x across the three stages recorded there, which is
+well clear of that floor; the prompt and square rows did not move at all.
 
 Columns are `dtype,threads,M,KN,GFLOPS`, where `KN` is the value used for both
 K and N, and `GFLOPS` is what benchdnn reports. `FAIL` in the GFLOPS column
