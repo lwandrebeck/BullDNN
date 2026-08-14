@@ -1,0 +1,514 @@
+/*******************************************************************************
+ * Copyright (c) 2026 Advanced Micro Devices, Inc. All rights reserved.
+ *
+ * Licensed under the Apache License, Version 2.0 (the "License");
+ * you may not use this file except in compliance with the License.
+ * You may obtain a copy of the License at
+ *
+ *   http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software
+ * distributed under the License is distributed on an "AS IS" BASIS,
+ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ * See the License for the specific language governing permissions and
+ * limitations under the License.
+ ******************************************************************************/
+
+// ============================================================================
+// Symmetric per-group INT8 GEMM: microkernel, scalar tail, and looper.
+//
+// These call the native entry points directly rather than going through the
+// matmul API, because nothing dispatches to this path yet -- on family 15h
+// every INT8 algorithm resolves to AOCL-DLP, which declines without AVX-512
+// VNNI. A test driven through the public API would exercise the decline, not
+// the kernel.
+//
+// FLAVOURS. select_int8_symq_ukernel_128() prefers XOP and caches its choice in
+// a function-local static, so one process exercises exactly one flavour. Which
+// one is reported by the ReportsWhichFlavourRan test below, and the nightly
+// script runs this suite twice, the second time with
+// ZENDNNL_NATIVE_SYMQ_NO_XOP=1, so both are covered on family 15h. Do not add a
+// test that expects a particular flavour: only family 15h has XOP.
+//
+// TOLERANCE. Errors are scaled by max|reference| over the tensor, not by each
+// element's own magnitude. A C element is a sum of K/group_size signed group
+// terms, so elements routinely cancel to near zero while their absolute error
+// stays at the rounding of the terms that built them; a per-element relative
+// test reports 1e-3 on a kernel that is exact to fp32. Normalising by the
+// tensor's own scale is the usual GEMM criterion and still catches a
+// scale-indexing slip, which moves elements by their full magnitude. Cases with
+// positive-only data are included as well: those cannot cancel, so every
+// element carries its own weight there.
+// ============================================================================
+
+#include <gtest/gtest.h>
+
+#include <algorithm>
+#include <cctype>
+#include <cmath>
+#include <cstdint>
+#include <cstring>
+#include <limits>
+#include <random>
+#include <vector>
+
+#include "lowoha_operators/matmul/matmul_native/gemm/kernel/int8/int8_symq_ukernel_128.hpp"
+#include "lowoha_operators/matmul/matmul_native/gemm/looper/int8_symq_looper_128.hpp"
+
+namespace zendnnl {
+namespace lowoha {
+namespace matmul {
+namespace native {
+namespace {
+
+constexpr double kTolerance = 1e-6;
+
+// Reference. int64 accumulation, so unlike the kernel it cannot saturate even
+// if the contract were violated, and double for the scale sum. The group and
+// scale indexing is written out from the header's contract rather than borrowed
+// from the looper: an off-by-one in the group-major scale layout is the failure
+// most likely to look plausible, and sharing the indexing would hide it.
+void reference_gemm(int M, int N, int K, int gs, const int8_t *A, int lda,
+        const int8_t *B, int ldb, bool transB, const float *ws, float ss,
+        std::vector<float> &out) {
+    const int n_groups = K / gs;
+    out.assign(static_cast<size_t>(M) * N, 0.0f);
+    for (int m = 0; m < M; ++m) {
+        for (int n = 0; n < N; ++n) {
+            double sum = 0.0;
+            for (int g = 0; g < n_groups; ++g) {
+                int64_t acc = 0;
+                for (int j = 0; j < gs; ++j) {
+                    const int k = g * gs + j;
+                    const int64_t a = A[static_cast<size_t>(m) * lda + k];
+                    const int64_t b = transB
+                            ? B[static_cast<size_t>(n) * ldb + k]
+                            : B[static_cast<size_t>(k) * ldb + n];
+                    acc += a * b;
+                }
+                sum += static_cast<double>(acc)
+                        * static_cast<double>(
+                                ws[static_cast<size_t>(g) * N + n])
+                        * static_cast<double>(ss);
+            }
+            out[static_cast<size_t>(m) * N + n] = static_cast<float>(sum);
+        }
+    }
+}
+
+// Worst error over the compared extent, scaled by that extent's own magnitude;
+// see the tolerance note at the top. An unwritten element counts as an outright
+// failure rather than a large error.
+//
+// ld_got and ld_ref are separate from the extent on purpose: the tail kernel
+// claims only an mr x nr sub-block of a full-width tile, so the extent being
+// compared is narrower than the row stride of either buffer. Folding the two
+// together silently reads the wrong row for every m >= 1.
+double worst_scaled_error(const std::vector<float> &got, int ld_got,
+        const std::vector<float> &ref, int ld_ref, int M, int N,
+        int *out_nan_count) {
+    double max_abs = 0.0;
+    for (int m = 0; m < M; ++m) {
+        for (int n = 0; n < N; ++n) {
+            max_abs = std::max(max_abs,
+                    static_cast<double>(std::fabs(
+                            ref[static_cast<size_t>(m) * ld_ref + n])));
+        }
+    }
+    const double scale = std::max(max_abs, 1e-30);
+
+    double worst = 0.0;
+    int nans = 0;
+    for (int m = 0; m < M; ++m) {
+        for (int n = 0; n < N; ++n) {
+            const float g = got[static_cast<size_t>(m) * ld_got + n];
+            if (std::isnan(g)) {
+                ++nans;
+                continue;
+            }
+            const double e = std::fabs(static_cast<double>(g)
+                                     - static_cast<double>(ref[static_cast<size_t>(
+                                                                       m)
+                                                       * ld_ref
+                                               + n]))
+                    / scale;
+            worst = std::max(worst, e);
+        }
+    }
+    *out_nan_count = nans;
+    return worst;
+}
+
+// All bytes in [-127, 127]: the kernel's precondition. -128 is excluded because
+// PSIGNB cannot negate it and because a lane of two 128*128 products would
+// saturate -- both silently. Every GGML quantiser meets this bound.
+void fill_s8(std::vector<int8_t> &v, std::mt19937 &rng, bool positive_only) {
+    std::uniform_int_distribution<int> d(positive_only ? 1 : -127, 127);
+    for (auto &x : v) x = static_cast<int8_t>(d(rng));
+}
+
+void fill_scales(std::vector<float> &v, std::mt19937 &rng) {
+    std::uniform_real_distribution<float> d(0.002f, 0.05f);
+    for (auto &x : v) x = d(rng);
+}
+
+// Poison, so a path that fails to write an element cannot pass by leaving a
+// plausible value behind.
+std::vector<float> poisoned(size_t n) {
+    return std::vector<float>(n, std::numeric_limits<float>::quiet_NaN());
+}
+
+// Pack B into the VNNI layout the microkernel reads: for each group of four
+// consecutive K, `width` columns lie contiguously, four bytes each.
+void pack_b_vnni(const int8_t *B, int ldb, bool transB, int K, int width,
+        int col0, int N, std::vector<int8_t> &dst) {
+    const int n_quads = K / SYMQ_VNNI_GRP;
+    dst.assign(static_cast<size_t>(n_quads) * width * SYMQ_VNNI_GRP, 0);
+    for (int kq = 0; kq < n_quads; ++kq) {
+        for (int n = 0; n < width; ++n) {
+            for (int j = 0; j < SYMQ_VNNI_GRP; ++j) {
+                const int k = kq * SYMQ_VNNI_GRP + j;
+                const int col = col0 + n;
+                if (col >= N) continue;
+                dst[static_cast<size_t>(kq) * width * SYMQ_VNNI_GRP
+                        + n * SYMQ_VNNI_GRP + j]
+                        = transB ? B[static_cast<size_t>(col) * ldb + k]
+                                 : B[static_cast<size_t>(k) * ldb + col];
+            }
+        }
+    }
+}
+
+// ---------------------------------------------------------------- microkernel
+
+TEST(Int8SymqUkernel128, ReportsWhichFlavourRan) {
+    const int8_symq_ukernel_128_fn_t fn = select_int8_symq_ukernel_128();
+    if (fn == nullptr) GTEST_SKIP() << "no 128-bit INT8 microkernel on this host";
+    // Not an assertion: which flavour is correct depends on the host. Recorded
+    // so a log makes clear which one the rest of this suite exercised.
+    RecordProperty("ukernel_selected", "yes");
+    SUCCEED() << "a 128-bit INT8 microkernel was selected; set "
+                 "ZENDNNL_NATIVE_SYMQ_NO_XOP=1 to exercise the portable "
+                 "flavour on a host that has XOP";
+}
+
+// One MR x NR tile straight into the microkernel, across the group sizes GGML
+// produces (32 for Q4_0 and Q8_0, 16 for Q6_K), a group spanning the whole tile,
+// and a K long enough to flush many times.
+TEST(Int8SymqUkernel128, TileMatchesInt64Reference) {
+    const int8_symq_ukernel_128_fn_t hot = select_int8_symq_ukernel_128();
+    if (hot == nullptr) GTEST_SKIP() << "no 128-bit INT8 microkernel on this host";
+
+    struct { int K, gs; bool positive; } cases[] = {
+            {32, 32, false}, {64, 16, false}, {128, 32, false},
+            {128, 16, true}, {256, 64, false}, {4096, 32, false},
+            {4096, 16, false}, {32, 32, true},
+    };
+
+    std::mt19937 rng(20260814);
+    for (const auto &c : cases) {
+        SCOPED_TRACE(testing::Message() << "K=" << c.K << " gs=" << c.gs
+                                        << " positive=" << c.positive);
+        const int M = SYMQ_MR, N = SYMQ_NR;
+        const int n_groups = c.K / c.gs;
+        std::vector<int8_t> A(static_cast<size_t>(M) * c.K);
+        std::vector<int8_t> B(static_cast<size_t>(c.K) * N);
+        std::vector<float> ws(static_cast<size_t>(n_groups) * N);
+        fill_s8(A, rng, c.positive);
+        fill_s8(B, rng, c.positive);
+        fill_scales(ws, rng);
+        const float ss = 0.0137f;
+
+        std::vector<int8_t> packed;
+        pack_b_vnni(B.data(), N, /*transB=*/false, c.K, N, 0, N, packed);
+
+        // The microkernel accumulates into C rather than overwriting it, so the
+        // caller seeds it; zero here is the seed the looper uses.
+        std::vector<float> C(static_cast<size_t>(M) * N, 0.0f);
+        hot(A.data(), c.K, packed.data(), N * SYMQ_VNNI_GRP, C.data(), N, c.K,
+                c.gs, ws.data(), N, ss);
+
+        std::vector<float> ref;
+        reference_gemm(M, N, c.K, c.gs, A.data(), c.K, B.data(), N,
+                /*transB=*/false, ws.data(), ss, ref);
+        int nans = 0;
+        EXPECT_LT(worst_scaled_error(C, N, ref, N, M, N, &nans), kTolerance);
+        EXPECT_EQ(nans, 0);
+    }
+}
+
+// The contract's extremes, which is where this kernel was originally wrong: it
+// first claimed -128 was admissible. At +/-127 a PMADDUBSW lane reaches 32258
+// against the signed 16-bit limit of 32767, so the arithmetic must be exact;
+// at -128 it would saturate and PSIGNB would produce the wrong sign, both
+// silently. Driving every byte to the bound is what caught that.
+TEST(Int8SymqUkernel128, IsExactAtTheContractExtremes) {
+    const int8_symq_ukernel_128_fn_t hot = select_int8_symq_ukernel_128();
+    if (hot == nullptr) GTEST_SKIP() << "no 128-bit INT8 microkernel on this host";
+
+    const int M = SYMQ_MR, N = SYMQ_NR, K = 256, gs = 32;
+    for (int pattern = 0; pattern < 4; ++pattern) {
+        SCOPED_TRACE(testing::Message() << "sign pattern " << pattern);
+        std::vector<int8_t> A(static_cast<size_t>(M) * K);
+        std::vector<int8_t> B(static_cast<size_t>(K) * N);
+        // Every byte at +/-127, in four sign arrangements: all positive, all
+        // negative, and both mixed, so the sign trick is exercised in each
+        // direction on both operands.
+        for (size_t i = 0; i < A.size(); ++i)
+            A[i] = ((pattern & 1) && (i % 2)) ? -127 : 127;
+        for (size_t i = 0; i < B.size(); ++i)
+            B[i] = ((pattern & 2) && (i % 3)) ? -127 : 127;
+
+        std::vector<float> ws(static_cast<size_t>(K / gs) * N, 1.0f);
+        std::vector<int8_t> packed;
+        pack_b_vnni(B.data(), N, false, K, N, 0, N, packed);
+        std::vector<float> C(static_cast<size_t>(M) * N, 0.0f);
+        hot(A.data(), K, packed.data(), N * SYMQ_VNNI_GRP, C.data(), N, K, gs,
+                ws.data(), N, 1.0f);
+
+        std::vector<float> ref;
+        reference_gemm(M, N, K, gs, A.data(), K, B.data(), N, false, ws.data(),
+                1.0f, ref);
+        // Unit scales and integral sums: these values are representable
+        // exactly in fp32, so anything but equality means saturation.
+        for (int m = 0; m < M; ++m)
+            for (int n = 0; n < N; ++n)
+                EXPECT_FLOAT_EQ(C[m * N + n], ref[m * N + n])
+                        << "at (" << m << "," << n << ")";
+    }
+}
+
+// The scalar tail finishes ragged tiles, so it must agree with the reference at
+// every partial extent -- including nr_act below four, where the vector path
+// has no expression at all.
+TEST(Int8SymqUkernel128, TailMatchesReferenceForEveryRaggedExtent) {
+    const int K = 64, gs = 16;
+    std::mt19937 rng(99);
+    for (int mr = 1; mr <= SYMQ_MR; ++mr) {
+        for (int nr = 1; nr <= SYMQ_NR; ++nr) {
+            SCOPED_TRACE(testing::Message() << "mr_act=" << mr << " nr_act=" << nr);
+            const int N = SYMQ_NR;
+            std::vector<int8_t> A(static_cast<size_t>(SYMQ_MR) * K);
+            std::vector<int8_t> B(static_cast<size_t>(K) * N);
+            std::vector<float> ws(static_cast<size_t>(K / gs) * N);
+            fill_s8(A, rng, false);
+            fill_s8(B, rng, false);
+            fill_scales(ws, rng);
+            const float ss = 0.0137f;
+
+            std::vector<int8_t> packed;
+            pack_b_vnni(B.data(), N, false, K, N, 0, N, packed);
+            std::vector<float> C(static_cast<size_t>(SYMQ_MR) * N, 0.0f);
+            int8_symq_tail_128(A.data(), K, packed.data(), N * SYMQ_VNNI_GRP,
+                    C.data(), N, K, gs, mr, nr, ws.data(), N, ss);
+
+            std::vector<float> ref;
+            reference_gemm(SYMQ_MR, N, K, gs, A.data(), K, B.data(), N, false,
+                    ws.data(), ss, ref);
+            int nans = 0;
+            // Only the mr x nr sub-block is claimed; the rest must be
+            // untouched, which zero-seeded C makes checkable.
+            // ld_ref is the full tile width even though only mr x nr is claimed.
+            EXPECT_LT(worst_scaled_error(C, N, ref, N, mr, nr, &nans),
+                    kTolerance);
+            EXPECT_EQ(nans, 0);
+            for (int m = 0; m < SYMQ_MR; ++m) {
+                for (int n = 0; n < N; ++n) {
+                    if (m >= mr || n >= nr) {
+                        EXPECT_FLOAT_EQ(C[m * N + n], 0.0f)
+                                << "tail wrote outside its extent at (" << m
+                                << "," << n << ")";
+                    }
+                }
+            }
+        }
+    }
+}
+
+// --------------------------------------------------------------------- looper
+
+struct LooperShape {
+    int M, N, K, gs;
+    bool transB;
+    int nthreads;
+    bool positive;
+    const char *why;
+};
+
+class Int8SymqLooper128 : public ::testing::TestWithParam<LooperShape> {};
+
+TEST_P(Int8SymqLooper128, MatchesInt64Reference) {
+    if (select_int8_symq_ukernel_128() == nullptr)
+        GTEST_SKIP() << "no 128-bit INT8 microkernel on this host";
+
+    const LooperShape s = GetParam();
+    const int lda = s.K;
+    const int ldb = s.transB ? s.K : s.N;
+    const int ldc = s.N;
+    const int n_groups = s.K / s.gs;
+
+    std::mt19937 rng(4242);
+    std::vector<int8_t> A(static_cast<size_t>(s.M) * lda);
+    std::vector<int8_t> B(s.transB ? static_cast<size_t>(s.N) * ldb
+                                   : static_cast<size_t>(s.K) * ldb);
+    std::vector<float> ws(static_cast<size_t>(n_groups) * s.N);
+    fill_s8(A, rng, s.positive);
+    fill_s8(B, rng, s.positive);
+    fill_scales(ws, rng);
+    const float ss = 0.0137f;
+
+    std::vector<float> C = poisoned(static_cast<size_t>(s.M) * ldc);
+    ASSERT_TRUE(int8_symq_execute_128(s.M, s.N, s.K, s.gs, A.data(), lda,
+            B.data(), ldb, s.transB, C.data(), ldc, ws.data(), ss, s.nthreads))
+            << "looper declined a shape it should express";
+
+    std::vector<float> ref;
+    reference_gemm(s.M, s.N, s.K, s.gs, A.data(), lda, B.data(), ldb, s.transB,
+            ws.data(), ss, ref);
+    int nans = 0;
+    const double err = worst_scaled_error(C, ldc, ref, s.N, s.M, s.N, &nans);
+    EXPECT_EQ(nans, 0) << nans << " output elements were never written";
+    EXPECT_LT(err, kTolerance);
+}
+
+INSTANTIATE_TEST_SUITE_P(Shapes, Int8SymqLooper128,
+        ::testing::Values(
+                LooperShape {4, 8, 32, 32, false, 1, false, "one tile, one group"},
+                LooperShape {4, 8, 64, 16, false, 1, false, "Q6_K group size"},
+                LooperShape {1, 512, 512, 32, true, 4, false, "decode, GGML layout"},
+                LooperShape {7, 13, 96, 32, false, 1, false, "ragged M and N"},
+                LooperShape {5, 70, 128, 16, false, 2, false, "crosses panel tail"},
+                LooperShape {128, 256, 512, 32, true, 4, false, "prompt GEMM"},
+                LooperShape {3, 64, 32, 32, true, 1, false, "M below MR"},
+                LooperShape {4, 8, 4096, 32, false, 1, false, "long K"},
+                LooperShape {64, 64, 64, 64, false, 2, false, "group spans K"},
+                LooperShape {2, 9, 48, 16, true, 3, false, "odd everything"},
+                LooperShape {4, 65, 32, 32, false, 4, false, "N one past a panel"},
+                LooperShape {256, 32, 256, 32, false, 4, false, "tall M"},
+                LooperShape {68, 130, 256, 32, true, 4, true, "positive only"},
+                LooperShape {4, 8, 128, 16, false, 1, true, "positive, gs=16"}),
+        [](const ::testing::TestParamInfo<LooperShape> &i) {
+            // gtest requires alphanumerics and underscores only, and aborts the
+            // whole binary (not just this suite) if a name violates that.
+            std::string n(i.param.why);
+            for (char &c : n)
+                if (!std::isalnum(static_cast<unsigned char>(c))) c = '_';
+            return n;
+        });
+
+// Shapes the microkernel cannot express are refused rather than approximated,
+// so a caller can fall back. C must be left alone: a partially written output
+// would be worse than a refusal.
+TEST(Int8SymqLooper128, DeclinesShapesItCannotExpress) {
+    struct { int M, N, K, gs; const char *why; } bad[] = {
+            {1, 8, 30, 32, "K is not a whole number of groups"},
+            {1, 8, 32, 6, "group size splits a VNNI quad"},
+            {1, 8, 96, 0, "group size zero"},
+            {0, 8, 32, 32, "empty M"},
+            {1, 0, 32, 32, "empty N"},
+            {1, 8, 0, 32, "empty K"},
+    };
+    for (const auto &b : bad) {
+        SCOPED_TRACE(b.why);
+        std::vector<int8_t> A(256, 1), B(256, 1);
+        std::vector<float> ws(256, 1.0f);
+        std::vector<float> C(64, -7.0f);
+        EXPECT_FALSE(int8_symq_execute_128(b.M, b.N, b.K, b.gs, A.data(),
+                std::max(b.K, 1), B.data(), std::max(b.N, 1), false, C.data(),
+                8, ws.data(), 1.0f, 1));
+        for (float v : C) EXPECT_FLOAT_EQ(v, -7.0f) << "C was written";
+    }
+}
+
+// The looper overwrites C rather than accumulating (this path has no beta), so
+// a stale buffer must not survive into the result.
+TEST(Int8SymqLooper128, OverwritesRatherThanAccumulates) {
+    if (select_int8_symq_ukernel_128() == nullptr)
+        GTEST_SKIP() << "no 128-bit INT8 microkernel on this host";
+
+    const int M = 5, N = 70, K = 64, gs = 32;
+    std::mt19937 rng(7);
+    std::vector<int8_t> A(static_cast<size_t>(M) * K);
+    std::vector<int8_t> B(static_cast<size_t>(K) * N);
+    std::vector<float> ws(static_cast<size_t>(K / gs) * N);
+    fill_s8(A, rng, false);
+    fill_s8(B, rng, false);
+    fill_scales(ws, rng);
+
+    std::vector<float> first(static_cast<size_t>(M) * N, 0.0f);
+    ASSERT_TRUE(int8_symq_execute_128(M, N, K, gs, A.data(), K, B.data(), N,
+            false, first.data(), N, ws.data(), 0.01f, 2));
+
+    // Same inputs into a buffer full of garbage must give the same answer.
+    std::vector<float> second(static_cast<size_t>(M) * N, 12345.0f);
+    ASSERT_TRUE(int8_symq_execute_128(M, N, K, gs, A.data(), K, B.data(), N,
+            false, second.data(), N, ws.data(), 0.01f, 2));
+    for (size_t i = 0; i < first.size(); ++i)
+        EXPECT_FLOAT_EQ(first[i], second[i]) << "at " << i;
+}
+
+// C rows are addressed by ldc, which the looper must honour rather than
+// assuming a packed N -- the GGML caller hands it a slice of a wider buffer.
+TEST(Int8SymqLooper128, HonoursLdcAndLeavesPaddingAlone) {
+    if (select_int8_symq_ukernel_128() == nullptr)
+        GTEST_SKIP() << "no 128-bit INT8 microkernel on this host";
+
+    const int M = 9, N = 20, K = 64, gs = 32, ldc = 37;
+    std::mt19937 rng(11);
+    std::vector<int8_t> A(static_cast<size_t>(M) * K);
+    std::vector<int8_t> B(static_cast<size_t>(K) * N);
+    std::vector<float> ws(static_cast<size_t>(K / gs) * N);
+    fill_s8(A, rng, false);
+    fill_s8(B, rng, false);
+    fill_scales(ws, rng);
+
+    std::vector<float> C(static_cast<size_t>(M) * ldc, -99.0f);
+    ASSERT_TRUE(int8_symq_execute_128(M, N, K, gs, A.data(), K, B.data(), N,
+            false, C.data(), ldc, ws.data(), 0.01f, 2));
+
+    std::vector<float> ref;
+    reference_gemm(M, N, K, gs, A.data(), K, B.data(), N, false, ws.data(),
+            0.01f, ref);
+    int nans = 0;
+    EXPECT_LT(worst_scaled_error(C, ldc, ref, N, M, N, &nans), kTolerance);
+    EXPECT_EQ(nans, 0);
+    for (int m = 0; m < M; ++m)
+        for (int n = N; n < ldc; ++n)
+            EXPECT_FLOAT_EQ(C[static_cast<size_t>(m) * ldc + n], -99.0f)
+                    << "padding written at (" << m << "," << n << ")";
+}
+
+// Thread count must not change the answer: threads own disjoint column panels,
+// so any difference means the partitioning overlaps or leaves a gap.
+TEST(Int8SymqLooper128, IsInvariantInThreadCount) {
+    if (select_int8_symq_ukernel_128() == nullptr)
+        GTEST_SKIP() << "no 128-bit INT8 microkernel on this host";
+
+    const int M = 33, N = 200, K = 128, gs = 32;
+    std::mt19937 rng(5);
+    std::vector<int8_t> A(static_cast<size_t>(M) * K);
+    std::vector<int8_t> B(static_cast<size_t>(N) * K); // transB
+    std::vector<float> ws(static_cast<size_t>(K / gs) * N);
+    fill_s8(A, rng, false);
+    fill_s8(B, rng, false);
+    fill_scales(ws, rng);
+
+    std::vector<float> single = poisoned(static_cast<size_t>(M) * N);
+    ASSERT_TRUE(int8_symq_execute_128(M, N, K, gs, A.data(), K, B.data(), K,
+            true, single.data(), N, ws.data(), 0.01f, 1));
+
+    for (int nt : {2, 3, 4, 8}) {
+        SCOPED_TRACE(testing::Message() << "nthreads=" << nt);
+        std::vector<float> many = poisoned(static_cast<size_t>(M) * N);
+        ASSERT_TRUE(int8_symq_execute_128(M, N, K, gs, A.data(), K, B.data(), K,
+                true, many.data(), N, ws.data(), 0.01f, nt));
+        for (size_t i = 0; i < single.size(); ++i)
+            ASSERT_FLOAT_EQ(single[i], many[i]) << "at " << i;
+    }
+}
+
+} // namespace
+} // namespace native
+} // namespace matmul
+} // namespace lowoha
+} // namespace zendnnl

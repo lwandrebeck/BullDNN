@@ -60,6 +60,7 @@
 #                                    sdpa, normalization, embedding,
 #                                    embedding_bag,
 #                                    lru_cache, postop_cache, omp_api,
+#                                    int8_symq, int8_symq_no_xop,
 #                                    matmul_ai_primitive, matmul_ai_lowoha,
 #                                    embag_ai_primitive, embag_ai_lowoha,
 #                                    batchmatmul (opt-in only; ~38h)
@@ -150,6 +151,8 @@ OP_NAMES=(
   lru_cache
   postop_cache
   omp_api
+  int8_symq
+  int8_symq_no_xop
   matmul_ai_primitive
   matmul_ai_lowoha
   embag_ai_primitive
@@ -170,6 +173,14 @@ declare -A OP_FILTER=(
   [lru_cache]='LruCacheTryGet.*'
   [postop_cache]='*PostopCache*'
   [omp_api]='OmpApiTest.*'
+  # The symmetric per-group INT8 kernel has two flavours -- XOP and portable --
+  # and select_int8_symq_ukernel_128() caches its choice in a function-local
+  # static, so one process can only exercise one of them. Hence two ops over the
+  # same filter, the second forcing the portable path via OP_ENV. On family 15h
+  # (the only silicon with XOP) that covers both; elsewhere the two runs are
+  # identical, which costs under a second.
+  [int8_symq]='*Int8Symq*'
+  [int8_symq_no_xop]='*Int8Symq*'
   [matmul_ai_primitive]='AITests/TestMatmul*'
   [matmul_ai_lowoha]='AITests/TestMatmul*'
   [embag_ai_primitive]='AITests/TestEmbagAI*'
@@ -182,6 +193,13 @@ declare -A OP_FILTER=(
 #   *_lowoha    : --lowoha true   -> LOWOHA operator path
 # Both AI variants pin --ai_test_mode postsub so the curated parameter set is
 # deterministic and identical across the two kernel paths.
+
+# Per-op environment, prefixed to the command via env(1) so it appears verbatim
+# in the log header and in --dry-run output. Used where the behaviour under test
+# is selected by the library at runtime rather than by a test flag.
+declare -A OP_ENV=(
+  [int8_symq_no_xop]='ZENDNNL_NATIVE_SYMQ_NO_XOP=1'
+)
 declare -A OP_EXTRA=(
   [matmul_ai_primitive]='--ai_test_mode postsub --lowoha false'
   [matmul_ai_lowoha]='--ai_test_mode postsub --lowoha true'
@@ -486,7 +504,16 @@ for op in "${SELECTED[@]}"; do
   # (e.g. a `--gtest_filter=Foo/*` override). No OP_EXTRA value uses globs
   # today, but the safe pattern costs nothing.
   read -r -a op_extra <<< "${OP_EXTRA[$op]:-}"
-  cmd=("$BINARY" "--gtest_filter=$filter" "${COMMON_ARGS[@]}" "${op_extra[@]}")
+  # Per-op environment goes through env(1) rather than an exported variable, so
+  # it is scoped to this op and is visible in cmd_str (log header, --dry-run)
+  # instead of being invisible state.
+  read -r -a op_env <<< "${OP_ENV[$op]:-}"
+  if [[ ${#op_env[@]} -gt 0 ]]; then
+    cmd=(env "${op_env[@]}" "$BINARY" "--gtest_filter=$filter" \
+        "${COMMON_ARGS[@]}" "${op_extra[@]}")
+  else
+    cmd=("$BINARY" "--gtest_filter=$filter" "${COMMON_ARGS[@]}" "${op_extra[@]}")
+  fi
   cmd_str=$(printf '%q ' "${cmd[@]}")
   cmd_str=${cmd_str% }   # strip trailing space
 
