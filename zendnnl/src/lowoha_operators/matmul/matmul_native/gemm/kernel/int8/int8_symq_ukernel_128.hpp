@@ -58,6 +58,12 @@ namespace native {
 // lives in the caller's C tile rather than in registers: at MR*NR/4 registers
 // for the s32 accumulators there is no room for a second set, and the flush is
 // amortised over group_size K.
+// MR stays at 4 on measurement, not on principle. Eight s32 accumulators plus
+// the ones vector, the B pair and four rows of transients oversubscribe the
+// sixteen XMM registers, and 2x8 -- four accumulators -- clears the spill that
+// causes just as pinning does. It measured 13% slower all the same, because a
+// half-height tile walks the packed B panel twice as often; see the microkernel
+// source for the numbers.
 constexpr int SYMQ_MR = 4;
 constexpr int SYMQ_NR = 8;
 constexpr int SYMQ_VNNI_GRP = 4;

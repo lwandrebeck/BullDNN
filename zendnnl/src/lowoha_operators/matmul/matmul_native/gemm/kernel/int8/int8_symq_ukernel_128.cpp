@@ -90,6 +90,47 @@ bool host_has_xop() {
     return (ecx & (1u << 11)) != 0;
 }
 
+// Hold a pair of vectors in registers across the loop body. An empty asm with
+// "+x" read-write operands emits no instruction and only constrains register
+// allocation, which is the same device the fp32 kernel next door uses -- but
+// against a different problem, and the distinction is the whole reason this
+// comment exists.
+//
+// There, GCC was folding each B load back into every FMA that consumed it, and
+// pinning B stopped twelve loads per k becoming the bottleneck. Here nothing is
+// folded: B is loaded once per quad already, and pinning the B pair produces
+// byte-identical code. What the disassembly showed instead was plain register
+// oversubscription. Eight s32 accumulators, the ones vector and the B pair are
+// eleven live values before a single row is processed; GCC then unrolls the
+// four-row loop and interleaves all four rows' transients over the top, so two
+// accumulators end up on the stack. Per quad that cost four stores -- two of
+// them the same register written to two different slots -- three reloads, and
+// twenty register-to-register moves, against thirty-four instructions of actual
+// work.
+//
+// Pinning the accumulators instead of B removes the stack traffic outright (four
+// stores and three reloads to zero, twenty moves to fourteen) by denying the
+// scheduler the option: it must find an allocation that keeps them in registers,
+// and one exists, because the minimum live set is fourteen of sixteen.
+//
+// Measured on an A10-8770E, hot loop alone, single thread, best of four passes
+// of nine reps, against the same loop unpinned:
+//
+//     K=1024 group 32    44.9 -> 49.0 GOPS   +9.2%
+//     K=4096 group 32    42.9 -> 47.3 GOPS  +10.2%
+//     K=1024 group 16    35.1 -> 43.3 GOPS  +23.3%
+//
+// The gs=16 row gains most because it flushes twice as often, so it spends more
+// of its time in the part the spill was throttling. Pinning the B pair as well
+// changed nothing beyond noise, as its identical code generation predicts, so
+// only the accumulators are pinned.
+template <typename Vec>
+inline void pin_reg(Vec &v0, Vec &v1) {
+#if defined(__GNUC__)
+    asm("" : "+x"(v0), "+x"(v1));
+#endif
+}
+
 // The body is shared between the flavours; only reduce_accum() differs.
 #define SYMQ_UK128_BODY                                                        \
     void ukernel(const int8_t *__restrict__ A, int a_stride,                   \
@@ -130,6 +171,9 @@ bool host_has_xop() {
                             _mm_maddubs_epi16(a_abs, _mm_sign_epi8(b1, av)),   \
                             acc[m][1]);                                        \
                 }                                                              \
+                /* Deny the scheduler the stack: see pin_reg above. */         \
+                for (int m = 0; m < SYMQ_MR; ++m)                              \
+                    pin_reg(acc[m][0], acc[m][1]);                             \
             }                                                                  \
                                                                                \
             /* Flush: one weight scale per column for this group. */           \
