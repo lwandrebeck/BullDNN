@@ -33,6 +33,7 @@
 #include "lowoha_operators/matmul/matmul_native/gemm/looper/bf16_gemm_looper.hpp"
 #include "lowoha_operators/matmul/matmul_native/gemm/looper/bf16_gemm_looper_128.hpp"
 #include "lowoha_operators/matmul/matmul_native/gemm/looper/fp32_gemm_looper.hpp"
+#include "lowoha_operators/matmul/matmul_native/gemm/looper/int8_symq_entry_128.hpp"
 
 namespace zendnnl {
 namespace lowoha {
@@ -286,6 +287,41 @@ bool native_matmul_execute(matmul_algo_t kernel, char layout, bool transA,
         const char *v = std::getenv("ZENDNNL_NATIVE_BF16_128");
         return v != nullptr && v[0] != '\0' && std::strcmp(v, "0") != 0;
     }();
+
+    // Symmetric per-group INT8, which is the shape the GGML weight path
+    // produces. Placed here, ahead of the ALGO 10/11 split, for the same reason
+    // the BF16 128-bit block below is: both algos must reach it, and neither of
+    // the INT8 kernels further down can express a per-group weight scale -- the
+    // only one is avx512vnni and it carries a per-tensor or per-channel scale.
+    //
+    // On a host with VNNI the existing INT8 path is better and is left alone;
+    // ZENDNNL_NATIVE_SYMQ_128 forces this one anyway, which is the only way to
+    // compare the two on identical inputs, since family 15h cannot run the
+    // reference.
+    //
+    // A decline here is not a regression. Without this path every INT8
+    // algorithm resolves to AOCL-DLP, which refuses outright on a processor
+    // without AVX-512 VNNI and returns without computing, so the fallback is
+    // whatever was already happening.
+    static const bool s_force_symq_128 = [] {
+        const char *v = std::getenv("ZENDNNL_NATIVE_SYMQ_128");
+        return v != nullptr && v[0] != '\0' && std::strcmp(v, "0") != 0;
+    }();
+
+    if (is_int8_symq_candidate(params, K, N)
+            && (!detect_uarch().avx512vnni || s_force_symq_128)) {
+        GemmDescriptor sq_desc = make_desc(transA, transB, M, N, K, alpha, beta,
+                lda, ldb, ldc, is_weights_const, num_threads, params);
+        if (int8_symq_try_execute_128(
+                    sq_desc, src, weight, dst, bias, params)) {
+            return true;
+        }
+        log_info(
+                "Native kernel: per-group INT8 outside what the 128-bit "
+                "symmetric kernel expresses; declining so another backend can "
+                "run it");
+        return false;
+    }
 
     if (is_bf16 && (!detect_uarch().avx512bf16 || s_force_bf16_128)) {
         const UarchParams &u = detect_uarch();

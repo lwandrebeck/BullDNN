@@ -23,6 +23,7 @@
 #include "lowoha_operators/matmul/backends/libxsmm/libxsmm_kernel.hpp"
 #include "lowoha_operators/matmul/backends/onednn/onednn_kernel.hpp"
 #include "lowoha_operators/matmul/quantization/reorder_quantization.hpp"
+#include "matmul_native/gemm/looper/int8_symq_entry_128.hpp"
 #include "matmul_native/native_matmul.hpp"
 #include "partitioning/bmm/looper/bmm_looper.hpp"
 #include "partitioning/matmul/matmul_partitioner.hpp"
@@ -75,7 +76,13 @@ void matmul_kernel_wrapper(char layout, char transA, char transB, int M, int N,
                 && lowoha_param.dtypes.wei == data_type_t::bf16
                 && (lowoha_param.dtypes.dst == data_type_t::bf16
                         || lowoha_param.dtypes.dst == data_type_t::f32));
-        if (!is_fp32 && !is_bf16) {
+        // Symmetric per-group INT8 is the one INT8 shape the native side can
+        // take on this route: native_matmul_execute() has a 128-bit kernel for
+        // it, and on a host without AVX-512 VNNI it is the only INT8 kernel that
+        // runs at all. Every other INT8 granularity still belongs to DLP.
+        const bool is_int8_symq
+                = native::is_int8_symq_candidate(lowoha_param, K, N);
+        if (!is_fp32 && !is_bf16 && !is_int8_symq) {
             log_info(
                     "Native kernel: unsupported data type, falling back to "
                     "aocl_dlp");

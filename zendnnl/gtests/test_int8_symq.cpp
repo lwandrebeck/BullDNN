@@ -17,11 +17,12 @@
 // ============================================================================
 // Symmetric per-group INT8 GEMM: microkernel, scalar tail, and looper.
 //
-// These call the native entry points directly rather than going through the
-// matmul API, because nothing dispatches to this path yet -- on family 15h
-// every INT8 algorithm resolves to AOCL-DLP, which declines without AVX-512
-// VNNI. A test driven through the public API would exercise the decline, not
-// the kernel.
+// Most of these call the native entry points directly, one layer below the
+// matmul API, so a kernel or looper fault is not filtered through dispatch. The
+// Int8SymqDispatch suite at the bottom then drives the public API, covering what
+// direct calls cannot: that a per-group INT8 call actually arrives here rather
+// than at AOCL-DLP, which declines without AVX-512 VNNI and returns without
+// computing.
 //
 // FLAVOURS. select_int8_symq_ukernel_128() prefers XOP and caches its choice in
 // a function-local static, so one process exercises exactly one flavour. Which
@@ -47,12 +48,16 @@
 #include <cctype>
 #include <cmath>
 #include <cstdint>
+#include <cstdlib>
 #include <cstring>
+#include <functional>
 #include <limits>
 #include <random>
 #include <vector>
 
+#include "lowoha_operators/matmul/lowoha_matmul.hpp"
 #include "lowoha_operators/matmul/matmul_native/gemm/kernel/int8/int8_symq_ukernel_128.hpp"
+#include "lowoha_operators/matmul/matmul_native/gemm/looper/int8_symq_entry_128.hpp"
 #include "lowoha_operators/matmul/matmul_native/gemm/looper/int8_symq_looper_128.hpp"
 
 namespace zendnnl {
@@ -505,6 +510,218 @@ TEST(Int8SymqLooper128, IsInvariantInThreadCount) {
         for (size_t i = 0; i < single.size(); ++i)
             ASSERT_FLOAT_EQ(single[i], many[i]) << "at " << i;
     }
+}
+
+// ------------------------------------------------------------------ dispatch
+
+// Through the public matmul API rather than the kernel entry point, so these
+// cover the part the tests above cannot: that a per-group INT8 call actually
+// reaches this kernel instead of AOCL-DLP declining it, and that the adapter's
+// gates translate the call correctly. ZENDNNL_MATMUL_ALGO is not used -- the
+// dispatcher is asked for the native algo directly, the way a caller would.
+//
+// On a host WITH AVX-512 VNNI the existing INT8 path is preferred and these
+// would exercise that instead, so they force the 128-bit path with
+// ZENDNNL_NATIVE_SYMQ_128; that knob exists precisely because family 15h cannot
+// run the reference, so the two paths can only be compared elsewhere.
+class Int8SymqDispatch : public ::testing::Test {
+protected:
+    void SetUp() override {
+        if (select_int8_symq_ukernel_128() == nullptr)
+            GTEST_SKIP() << "no 128-bit INT8 microkernel on this host";
+        setenv("ZENDNNL_NATIVE_SYMQ_128", "1", 1);
+    }
+};
+
+// Build the params a GGML per-group weight produces: s8 x s8 -> f32, a
+// per-tensor source scale, and a {groups, N} weight scale.
+struct SymqCall {
+    int M, N, K, gs;
+    bool transB;
+    std::vector<int8_t> A, B;
+    std::vector<float> ws;
+    std::vector<float> C;
+    float src_scale = 0.0137f;
+
+    SymqCall(int m, int n, int k, int g, bool tb, std::mt19937 &rng)
+        : M(m), N(n), K(k), gs(g), transB(tb) {
+        A.resize(static_cast<size_t>(M) * K);
+        B.resize(static_cast<size_t>(N) * K);
+        ws.resize(static_cast<size_t>(K / gs) * N);
+        C.assign(static_cast<size_t>(M) * N,
+                std::numeric_limits<float>::quiet_NaN());
+        fill_s8(A, rng, false);
+        fill_s8(B, rng, false);
+        fill_scales(ws, rng);
+    }
+
+    matmul_params make_params() {
+        matmul_params p;
+        p.dtypes.src = data_type_t::s8;
+        p.dtypes.wei = data_type_t::s8;
+        p.dtypes.dst = data_type_t::f32;
+        p.quant_params.src_scale.buff = &src_scale;
+        p.quant_params.src_scale.dt = data_type_t::f32;
+        p.quant_params.src_scale.dims = {1};
+        p.quant_params.wei_scale.buff = ws.data();
+        p.quant_params.wei_scale.dt = data_type_t::f32;
+        p.quant_params.wei_scale.dims
+                = {static_cast<int64_t>(K / gs), static_cast<int64_t>(N)};
+        return p;
+    }
+
+    status_t run(matmul_algo_t algo, int nthreads = 4) {
+        matmul_params p = make_params();
+        p.lowoha_algo = algo;
+        p.num_threads = nthreads;
+        matmul_batch_params_t batch;
+        return matmul_direct('r', false, transB, M, N, K, 1.0f, A.data(), K,
+                B.data(), transB ? K : N, nullptr, 0.0f, C.data(), N, true,
+                batch, p);
+    }
+};
+
+TEST_F(Int8SymqDispatch, GgmlShapedCallReachesTheKernelAndComputes) {
+    std::mt19937 rng(31337);
+    for (matmul_algo_t algo :
+            {matmul_algo_t::native_gemm, matmul_algo_t::native_brgemm}) {
+        SCOPED_TRACE(testing::Message()
+                << "algo=" << static_cast<int>(algo));
+        // The transposed layout is the one the GGML unpack produces.
+        SymqCall c(128, 256, 512, 32, /*transB=*/true, rng);
+        ASSERT_EQ(c.run(algo), status_t::success);
+
+        std::vector<float> ref;
+        reference_gemm(c.M, c.N, c.K, c.gs, c.A.data(), c.K, c.B.data(), c.K,
+                true, c.ws.data(), c.src_scale, ref);
+        int nans = 0;
+        // Poisoned C plus an exact-to-fp32 comparison: this fails both when the
+        // call is declined and returns without computing (NaNs survive) and when
+        // it computes the wrong thing.
+        EXPECT_LT(worst_scaled_error(c.C, c.N, ref, c.N, c.M, c.N, &nans),
+                kTolerance);
+        EXPECT_EQ(nans, 0) << "dst was never written -- the call did not reach "
+                              "the kernel";
+    }
+}
+
+TEST_F(Int8SymqDispatch, DecodeShapeReachesTheKernel) {
+    std::mt19937 rng(4);
+    SymqCall c(1, 512, 512, 32, true, rng);
+    ASSERT_EQ(c.run(matmul_algo_t::native_gemm, 4), status_t::success);
+    std::vector<float> ref;
+    reference_gemm(1, c.N, c.K, c.gs, c.A.data(), c.K, c.B.data(), c.K, true,
+            c.ws.data(), c.src_scale, ref);
+    int nans = 0;
+    EXPECT_LT(worst_scaled_error(c.C, c.N, ref, c.N, 1, c.N, &nans), kTolerance);
+    EXPECT_EQ(nans, 0);
+}
+
+// -128 is outside the kernel's contract and fails silently inside it, so the
+// adapter must refuse the call rather than compute a plausible wrong answer.
+// The result is a fallback, not an error: on a host without VNNI that fallback
+// declines too, so what this asserts is that dst is not filled with garbage.
+TEST_F(Int8SymqDispatch, RefusesOperandsOutsideTheByteContract) {
+    std::mt19937 rng(5);
+    for (int which = 0; which < 2; ++which) {
+        SCOPED_TRACE(which == 0 ? "-128 in the source" : "-128 in the weight");
+        SymqCall c(8, 64, 128, 32, true, rng);
+        if (which == 0)
+            c.A[c.A.size() / 2] = static_cast<int8_t>(-128);
+        else
+            c.B[c.B.size() / 3] = static_cast<int8_t>(-128);
+
+        std::vector<float> ref;
+        reference_gemm(c.M, c.N, c.K, c.gs, c.A.data(), c.K, c.B.data(), c.K,
+                true, c.ws.data(), c.src_scale, ref);
+
+        c.run(matmul_algo_t::native_gemm);
+        // Either the call was declined outright (dst still poisoned) or some
+        // other backend computed it correctly. What must not happen is a
+        // confidently wrong answer from this kernel.
+        int nans = 0;
+        const double err
+                = worst_scaled_error(c.C, c.N, ref, c.N, c.M, c.N, &nans);
+        const bool declined = nans == c.M * c.N;
+        EXPECT_TRUE(declined || err < kTolerance)
+                << "computed a wrong answer for an out-of-contract operand: "
+                << "err=" << err << " nans=" << nans;
+    }
+}
+
+// Granularities and options the adapter does not implement must be declined, not
+// approximated. Each of these would otherwise be silently wrong: a per-token
+// source scale applied as a scalar, a dropped bias, an ignored beta.
+TEST_F(Int8SymqDispatch, DeclinesWhatItCannotExpress) {
+    std::mt19937 rng(6);
+
+    struct Variant {
+        const char *why;
+        std::function<void(matmul_params &, std::vector<float> &)> mutate;
+    };
+    std::vector<float> per_token(8, 0.01f);
+    const Variant variants[] = {
+            {"per-token source scale",
+                    [](matmul_params &p, std::vector<float> &pt) {
+                        p.quant_params.src_scale.buff = pt.data();
+                        p.quant_params.src_scale.dims = {8, 1};
+                    }},
+            {"weight scale that is not {groups, N}",
+                    [](matmul_params &p, std::vector<float> &) {
+                        p.quant_params.wei_scale.dims = {64};
+                    }},
+            {"non-zero source zero point",
+                    [](matmul_params &p, std::vector<float> &) {
+                        static int32_t zp = 3;
+                        p.quant_params.src_zp.buff = &zp;
+                        p.quant_params.src_zp.dt = data_type_t::s32;
+                        p.quant_params.src_zp.dims = {1};
+                    }},
+    };
+
+    for (const Variant &v : variants) {
+        SCOPED_TRACE(v.why);
+        SymqCall c(8, 64, 128, 32, true, rng);
+        matmul_params p = c.make_params();
+        v.mutate(p, per_token);
+        p.lowoha_algo = matmul_algo_t::native_gemm;
+        p.num_threads = 2;
+        matmul_batch_params_t batch;
+        matmul_direct('r', false, true, c.M, c.N, c.K, 1.0f, c.A.data(), c.K,
+                c.B.data(), c.K, nullptr, 0.0f, c.C.data(), c.N, true, batch, p);
+        // The 128-bit kernel must not have run: it would have overwritten every
+        // element of the poisoned dst.
+        bool any_nan = false;
+        for (float x : c.C)
+            if (std::isnan(x)) any_nan = true;
+        EXPECT_TRUE(any_nan)
+                << "the kernel computed a call it does not implement";
+    }
+}
+
+// alpha scales the product and the source scale multiplies the same product, so
+// the adapter folds one into the other. That is only correct if it lands on the
+// result exactly once.
+TEST_F(Int8SymqDispatch, FoldsAlphaIntoTheSourceScale) {
+    std::mt19937 rng(7);
+    SymqCall c(16, 64, 128, 32, true, rng);
+    const float alpha = 2.5f;
+    matmul_params p = c.make_params();
+    p.lowoha_algo = matmul_algo_t::native_gemm;
+    p.num_threads = 2;
+    matmul_batch_params_t batch;
+    ASSERT_EQ(matmul_direct('r', false, true, c.M, c.N, c.K, alpha, c.A.data(),
+                      c.K, c.B.data(), c.K, nullptr, 0.0f, c.C.data(), c.N, true,
+                      batch, p),
+            status_t::success);
+
+    std::vector<float> ref;
+    reference_gemm(c.M, c.N, c.K, c.gs, c.A.data(), c.K, c.B.data(), c.K, true,
+            c.ws.data(), c.src_scale * alpha, ref);
+    int nans = 0;
+    EXPECT_LT(worst_scaled_error(c.C, c.N, ref, c.N, c.M, c.N, &nans),
+            kTolerance);
+    EXPECT_EQ(nans, 0);
 }
 
 } // namespace
