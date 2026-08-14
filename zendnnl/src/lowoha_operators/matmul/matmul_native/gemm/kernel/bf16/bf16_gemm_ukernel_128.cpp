@@ -27,7 +27,10 @@
 // Per k-pair and eight-column group:
 //
 //   2 loads   B dwords, each 4 columns x 2 k
-//   3 ops     widen the even k (one shift) and the odd k (two shifts)
+//   3 ops     widen the even k and the odd k. Written as one shift and two
+//             shifts respectively; GCC turns the pair into a shift and a
+//             vpand against a materialised mask, so the count holds but the
+//             instructions are not the ones the source names.
 //   6 bcast   A, one per row, shared by both column halves
 //   12 FMA
 //
