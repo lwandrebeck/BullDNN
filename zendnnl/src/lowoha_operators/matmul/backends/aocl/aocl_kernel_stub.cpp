@@ -73,24 +73,11 @@ void clear_aocl_matmul_weight_caches() {
 // group_matmul_n_tile.cpp), so without stubs a ZENDNNL_DEPENDS_AOCLDLP=0
 // build fails to link.
 //
-// Note that cvt_s4_to_s8 is itself backend-agnostic — it only sign-extends
-// s4 nibbles to s8 and its own documentation describes it as shared with the
-// GGML Q4_0 unpack path — so the real fix upstream is to move it out of the
-// AOCL backend rather than stub it here. It is stubbed rather than
-// reimplemented on purpose: a second copy of weight-unpacking logic could
-// drift from the original and silently change quantized weights. Failing
-// loudly is preferable, and no AOCL-DLP-free path can consume the result
-// anyway (the s8 GEMM that would follow needs either AOCL-DLP or the
-// AVX-512 VNNI custom kernel).
-void cvt_s4_to_s8(const int8_t *, int8_t *, int, int, int, bool) {
-    apilog_error(
-            "W4A8/GGML s4->s8 upcast (cvt_s4_to_s8) invoked but ZenDNNL was "
-            "built without AOCL-DLP support (ZENDNNL_DEPENDS_AOCLDLP=0), "
-            "which is where that routine currently lives.");
-    EXCEPTION_WITH_LOC(
-            "W4A8/GGML s4->s8 upcast (cvt_s4_to_s8) invoked but ZenDNNL was "
-            "built without AOCL-DLP support (ZENDNNL_DEPENDS_AOCLDLP=0).");
-}
+// cvt_s4_to_s8 is no longer stubbed here. It was always backend-agnostic -- it
+// only sign-extends s4 nibbles -- and stubbing it meant a build without AOCL-DLP
+// threw when asked to unpack a GGML Q4_0 weight. It now lives in
+// matmul/quantization/s4_upcast.cpp, compiled unconditionally, so this build
+// configuration can unpack Q4_0 like any other.
 
 // Void, and its callers rely on the plain-s8 LRU actually being populated:
 // returning quietly would leave them pointing at unconverted s4 data, so

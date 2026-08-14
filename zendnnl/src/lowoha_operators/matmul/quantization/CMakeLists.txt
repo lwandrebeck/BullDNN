@@ -1,9 +1,11 @@
 # Reorder quantization
 set(sources
-    reorder_quantization.cpp)
+    reorder_quantization.cpp
+    s4_upcast.cpp)
 
 set(headers
-    reorder_quantization.hpp)
+    reorder_quantization.hpp
+    s4_upcast.hpp)
 
 if(ZENDNNL_LIB_BUILD_ARCHIVE)
   target_sources(zendnnl_archive

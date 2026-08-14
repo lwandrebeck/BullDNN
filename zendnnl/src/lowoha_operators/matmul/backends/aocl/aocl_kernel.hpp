@@ -19,6 +19,7 @@
 
 #include "common/float16.hpp"
 #include "lowoha_operators/matmul/lowoha_common.hpp"
+#include "lowoha_operators/matmul/quantization/s4_upcast.hpp"
 
 #if ZENDNNL_DEPENDS_AOCLDLP
 #include "aocl_dlp.h"
@@ -127,8 +128,8 @@ bool reorderAndCacheWeightsSymQuant(Key_matmul key, const void *weights,
  * @param ldb           Leading dimension of the packed source (in elements).
  * @param is_transposed true when the packed source is column-major (ba).
  */
-void cvt_s4_to_s8(const int8_t *weights, int8_t *wei_s8, int k, int n, int ldb,
-        bool is_transposed);
+// Declared in matmul/quantization/s4_upcast.hpp, which this header includes so
+// existing users of the AOCL header keep resolving the name.
 
 /** Clear AOCL matmul weight caches and zero-point compensation LRU cache. */
 void clear_aocl_matmul_weight_caches();

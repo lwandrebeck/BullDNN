@@ -134,25 +134,8 @@ void cvt_4bit_to_bf16(const int8_t *weights, bfloat16_t *wei_bf16, int k, int n,
 }
 
 // W4A8: widen packed s4 to K×N s8 (sign-extended nibble codes, no dequant).
-void cvt_s4_to_s8(const int8_t *weights, int8_t *wei_s8, int k, int n, int ldb,
-        bool is_transposed) {
-#pragma omp parallel for collapse(2)
-    for (int row = 0; row < k; ++row) {
-        for (int col = 0; col < n; ++col) {
-            // Packed s4 index (ab: row*ldb+col; ba: col*ldb+row).
-            size_t physical_idx = is_transposed
-                    ? (static_cast<size_t>(col) * ldb + row)
-                    : (static_cast<size_t>(row) * ldb + col);
-            size_t packed_byte_idx = physical_idx / 2;
-            bool is_low_nibble = (physical_idx % 2) == 0;
-
-            int8_t s8_value = extract_4bit_nibble(
-                    weights[packed_byte_idx], is_low_nibble, data_type_t::s4);
-            size_t out_idx = static_cast<size_t>(row) * n + col;
-            wei_s8[out_idx] = s8_value;
-        }
-    }
-}
+// cvt_s4_to_s8 now lives in matmul/quantization/s4_upcast.cpp: it is shared with
+// the GGML Q4_0 unpack, which must work in builds without AOCL-DLP.
 
 // W4A8 AOCL sym-quant derives its source group size from the source-scale
 // buffer shape. Normalize compact per-tensor/per-token shapes before reorder.
