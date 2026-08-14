@@ -833,6 +833,17 @@ TEST_F(Int8SymqDispatch, DeclinesWhatItCannotExpress) {
     };
     std::vector<float> per_token(8, 0.01f);
     const Variant variants[] = {
+            {"an AOCL-reordered weight buffer",
+                    [](matmul_params &p, std::vector<float> &) {
+                        // What the GGML unpack hands back today: same dtypes,
+                        // same {G, N} scale, blocked layout. Reading it as
+                        // row-major would be silent garbage.
+                        p.mem_format_b = 'r';
+                    }},
+            {"a still-packed GGML weight",
+                    [](matmul_params &p, std::vector<float> &) {
+                        p.packing.pack_format_b = 1;
+                    }},
             {"source scale that is neither per-token nor per-group",
                     [](matmul_params &p, std::vector<float> &pt) {
                         // {M, 3}: not 1 column, not one per weight group.

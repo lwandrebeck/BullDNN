@@ -197,6 +197,24 @@ bool is_int8_symq_candidate(const matmul_params &params, int K, int N) {
     if (params.dtypes.src != data_type_t::s8
             || params.dtypes.wei != data_type_t::s8)
         return false;
+    // The weight must be a plain row-major (or transposed) s8 matrix. Two other
+    // layouts reach this point wearing the same dtypes and the same {G, N}
+    // weight scale, and reading either as row-major would be silent garbage
+    // rather than a decline:
+    //
+    //   mem_format_b == 'r'    an AOCL sym-quant blocked buffer. The GGML path
+    //                          produces exactly this today --
+    //                          unpack_ggml_weights_and_cache() reorders for
+    //                          AOCL unless its skip_reorder argument is set,
+    //                          and the single-matmul caller does not set it.
+    //   pack_format_b == 1     still GGML block-quantised, not yet unpacked.
+    //
+    // So a GGML call currently declines here instead of arriving. Making it
+    // arrive means asking the unpack for the raw-s8 form when this path will
+    // handle the shape, which is a change to the unpack's caller and belongs
+    // with the test that proves it end to end.
+    if (params.mem_format_b != 'n') return false;
+    if (params.packing.pack_format_b != 0) return false;
     const int groups = wei_scale_groups(params, N);
     if (groups == 0 || K % groups != 0) return false;
     const int group_size = K / groups;
