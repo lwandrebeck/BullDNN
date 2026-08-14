@@ -63,6 +63,7 @@
 #include "common/zendnnl_global.hpp"
 
 #include <cstdint>
+#include <cstdlib>
 #include <cstring>
 
 #if defined(__x86_64__) || defined(__i386__)
@@ -152,10 +153,20 @@ inline __m128 fmadd128(__m128 a, __m128 b, __m128 acc) {
 bf16_ukernel_128_fn_t select_bf16_ukernel_128(int MR, int NR) {
     // Both flavours are compiled whatever the build baseline, so the choice is
     // made here. FMA3 where available; FMA4 covers Bulldozer.
+    // ZENDNNL_NATIVE_BF16_FMA4 forces the FMA4 flavour on a host that has both.
+    // Without it the FMA4 build is unreachable on every machine that can run it:
+    // family 15h from Piledriver on prefers FMA3, and no Zen or Intel part has
+    // FMA4 at all, so the only silicon that would take the branch is Bulldozer.
+    // This exists so the code can be executed and checked somewhere rather than
+    // shipped on the strength of having compiled.
     enum class Flavour { none, fma3, fma4 };
     static const Flavour s_flavour = [] {
         auto &pinfo = zendnnl::common::zendnnl_platform_info();
         if (!pinfo.get_avx_status()) return Flavour::none;
+        const char *force = std::getenv("ZENDNNL_NATIVE_BF16_FMA4");
+        const bool want_fma4 = force != nullptr && force[0] != '\0'
+                && std::strcmp(force, "0") != 0;
+        if (want_fma4 && host_has_fma4()) return Flavour::fma4;
         if (pinfo.get_fma_status()) return Flavour::fma3;
         if (host_has_fma4()) return Flavour::fma4;
         return Flavour::none;
