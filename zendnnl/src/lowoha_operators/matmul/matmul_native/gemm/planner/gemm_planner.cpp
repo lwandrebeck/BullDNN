@@ -139,6 +139,44 @@ int native_pack_a_override() {
     return s_ov;
 }
 
+// Single source of truth for whether the FP32 GEMM packs A.
+//
+// The planner sizes MB differently depending on the answer and the looper acts
+// on it, so the two must not decide separately. When they did -- the skip
+// living only in the looper while the planner still read the lda threshold --
+// MB was sized for a packed block that was then never built, and K=8192 ran at
+// 29.7 GFLOPS against 48.3 for a consistent no-pack plan. Worse than either
+// consistent choice.
+//
+// Order matters: transA has no alternative, an explicit override beats policy,
+// and the remaining tests are the cases where packing cannot repay its copy.
+bool native_pack_a_fp32(
+        bool transA, int lda, int M, int K, int KB, int l2_bytes) {
+    // The microkernel needs row-major A; packing is how a transposed A gets it.
+    if (transA) return true;
+
+    const int ov = native_pack_a_override();
+    if (ov >= 0) return ov == 1;
+
+    // Default policy: pack once the row stride passes the L1 stride prefetcher
+    // limit. The 4096 is documented as a Zen4/5 property.
+    if (static_cast<long long>(lda) * static_cast<int>(sizeof(float)) <= 4096)
+        return false;
+
+    // A is already resident, so packing only adds a copy.
+    if (static_cast<long long>(M) * K * static_cast<int>(sizeof(float))
+            <= l2_bytes)
+        return false;
+
+    // Split K. Both loop nests carry pc inside the j dimension, so a packed
+    // block is rebuilt once per j tile however it is cached, and the copy
+    // dominates. Measured on an A10-8770E at M=N=1024: not packing is 30-44%
+    // faster for K >= 4096, where K splits into two or more blocks.
+    if (KB > 0 && KB < K) return false;
+
+    return true;
+}
+
 static int choose_even_kb(int K, int kb_max) {
     if (kb_max >= K) return K;
     int n_blocks = (K + kb_max - 1) / kb_max;
@@ -303,12 +341,8 @@ FP32GemmPlan plan_fp32_gemm(const GemmDescriptor &desc,
     plan.NB = std::min(plan.NB, N);
 
     {
-        const int pack_ov = native_pack_a_override();
-        bool will_pack_a = desc.transA
-                || (pack_ov >= 0
-                                ? pack_ov == 1
-                                : (desc.lda * static_cast<int>(sizeof(float))
-                                        > 4096));
+        const bool will_pack_a = native_pack_a_fp32(desc.transA, desc.lda, M, K,
+                plan.KB, uarch.l2_bytes);
         int mb_cap = 0;
         if (will_pack_a) {
             int b_lines_per_krow = ((plan.NR + 15) / 16) * 64;

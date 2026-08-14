@@ -151,13 +151,10 @@ static void native_thread_loop(const GemmDescriptor &desc,
     // Pack controls (read once from singleton, cached across calls).
     // Auto-enable A packing when row stride exceeds L1 stride prefetcher
     // limit (~4KB on Zen4/5). For lda=3584 FP32: 14KB stride → pack.
-    // transA always packs (the microkernel needs row-major A); the lda
-    // threshold is overridable, see native_pack_a_override().
-    const int pack_a_ov = native_pack_a_override();
-    const bool do_pack_a = transA
-            || (pack_a_ov >= 0
-                            ? pack_a_ov == 1
-                            : (lda * static_cast<int>(sizeof(float)) > 4096));
+    // Decided by native_pack_a_fp32() so this and the MB the planner chose
+    // rest on the same answer -- see the note there.
+    const bool do_pack_a
+            = native_pack_a_fp32(transA, lda, M, K, KB, uarch.l2_bytes);
 
     // Without AVX-512 this used to be nullptr, sending every full tile to
     // scalar_microkernel(). select_ukernel_128() supplies a 128-bit FMA4/AVX
@@ -344,29 +341,10 @@ static void native_thread_loop(const GemmDescriptor &desc,
         // K-blocks for its tiles, eliminating inter-K-block barriers.
         const int active_threads = std::min(num_threads, total_2d_tiles);
 
-        // Skip packing when A already fits L2, and when K is split into more
-        // than one block.
-        //
-        // The second case follows from the tile-outer, K-inner order above. A
-        // packed block is identified by (ic, pc), but pc cycles inside each
-        // tile, so the single-block cache below holds the last pc of the
-        // previous tile and misses on every jc step -- A gets repacked
-        // jc_tiles times again, which is the cost the cache was added to
-        // remove. Measured on an A10-8770E at M=N=1024, forcing packing on,
-        // the recovery tracks the K-block count exactly: +39% and +101% with
-        // one block (K=1025, 2048), then +46%, +8%, +7% with two, four and
-        // eight (K=4096, 8192, 16384), where not packing is 30-44% faster
-        // outright. Holding one entry per pc would need MB*K*elem of buffer,
-        // 3.9 MB at K=16384, so declining to pack is the cheaper answer.
-        //
-        // transA still packs regardless: the microkernel needs row-major A and
-        // has no alternative there.
-        const bool a_fits_l2 = static_cast<size_t>(M) * K * sizeof(float)
-                <= static_cast<size_t>(uarch.l2_bytes);
-        const bool k_is_split = KB < K;
-        const bool skip_pack_a
-                = do_pack_a && !transA && (a_fits_l2 || k_is_split);
-        const bool actual_pack_a = do_pack_a && !skip_pack_a;
+        // native_pack_a_fp32() has already declined the cases packing cannot
+        // repay (A resident in L2, or K split so a packed block is rebuilt per
+        // j tile), and the planner sized MB from the same answer.
+        const bool actual_pack_a = do_pack_a;
 
 #pragma omp parallel num_threads(active_threads)
         {
