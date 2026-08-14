@@ -50,7 +50,32 @@ echo "start $(date -Is) host=$(hostname)"
 echo "logdir $LOGDIR"
 echo "head $HEAD_ID"
 
-gflops() { awk -v m="$1" '$1==m{print $NF}' | tail -1; }
+# Throughput for row M, or "impossible" when the harness reports a figure the
+# hardware cannot produce.
+#
+# This guard exists because benchdnn reported 524774 GFLOPS for an INT8 GEMM on
+# this box. AOCL-DLP had declined the work outright -- "AVX512_VNNI ISA not
+# supported by processor" -- so the kernel returned immediately, the timer saw
+# 0.004 ms for a 2.1 GFLOP problem, and the arithmetic produced a number five
+# thousand times past the machine's ceiling. The refusal goes to stderr; the CSV
+# records a triumph. Nothing marks the row as invalid, so a sweep that trusts
+# $NF will silently write fiction, and every INT8 row on any pre-AVX-512 host
+# will do the same.
+#
+# The ceiling is deliberately loose: measured FP32 peak here is 89.6 GFLOPS and
+# INT8 could plausibly reach a few times that, so 2000 catches only the
+# didn't-run case and never a real result. Override with GFLOPS_CEILING.
+gflops() {
+    local v
+    v=$(awk -v m="$1" '$1==m{print $NF}' | tail -1)
+    if [ -n "$v" ] \
+            && awk -v x="$v" -v c="${GFLOPS_CEILING:-2000}" \
+                    'BEGIN{exit !(x+0 > c+0)}'; then
+        echo "IMPOSSIBLE($v)"
+        return
+    fi
+    echo "$v"
+}
 
 # dtype algo M K N iters warmup postop outfile
 mkin() {
