@@ -1,9 +1,11 @@
 # BF16 GEMM microkernels
 set(sources
-    bf16_gemm_ukernel.cpp)
+    bf16_gemm_ukernel.cpp
+    bf16_gemm_ukernel_128.cpp)
 
 set(headers
-    bf16_gemm_ukernel.hpp)
+    bf16_gemm_ukernel.hpp
+    bf16_gemm_ukernel_128.hpp)
 
 if(ZENDNNL_LIB_BUILD_ARCHIVE)
   target_sources(zendnnl_archive

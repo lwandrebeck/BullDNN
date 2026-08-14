@@ -17,6 +17,9 @@
 #include "lowoha_operators/matmul/matmul_native/native_matmul.hpp"
 #include "common/data_types.hpp"
 #include "common/zendnnl_global.hpp"
+#include <cstdlib>
+#include <cstring>
+
 #include "lowoha_operators/matmul/matmul_native/brgemm/kernel/bf16/bf16_gemv_narrow.hpp"
 #include "lowoha_operators/matmul/matmul_native/brgemm/looper/bf16_brgemm_looper.hpp"
 #include "lowoha_operators/matmul/matmul_native/brgemm/looper/bf16_gemv_direct.hpp"
@@ -28,6 +31,7 @@
 #include "lowoha_operators/matmul/matmul_native/common/kernel_cache.hpp"
 #include "lowoha_operators/matmul/matmul_native/common/native_utils.hpp"
 #include "lowoha_operators/matmul/matmul_native/gemm/looper/bf16_gemm_looper.hpp"
+#include "lowoha_operators/matmul/matmul_native/gemm/looper/bf16_gemm_looper_128.hpp"
 #include "lowoha_operators/matmul/matmul_native/gemm/looper/fp32_gemm_looper.hpp"
 
 namespace zendnnl {
@@ -262,13 +266,38 @@ bool native_matmul_execute(matmul_algo_t kernel, char layout, bool transA,
     // "completed" and reported a timing) and returns garbage for the values it
     // did write.
     //
-    // Decline instead, exactly as the INT8 path below does when AVX512-VNNI is
-    // missing. Returning false lets the caller choose another backend rather
-    // than reporting success on a buffer that was never correctly computed.
-    if (is_bf16 && !detect_uarch().avx512bf16) {
+    // There is now a portable path for such hosts: bf16_gemm_execute_128()
+    // widens B from BF16 in register and multiplies in FP32, which is the only
+    // thing available where the ISA has no BF16 arithmetic. It must be called
+    // instead of bf16_gemm_execute() rather than after it, because that
+    // function's translation unit is compiled wholesale for AVX-512 and
+    // entering it here would be the illegal instruction this guard exists to
+    // avoid.
+    //
+    // It still declines when the planner asks for a tile shape it has no
+    // microkernel for, and the caller then picks another backend as before.
+    // ZENDNNL_NATIVE_BF16_128 forces the portable path on hardware that would
+    // otherwise take the avx512bf16 one. Without it this code is unreachable on
+    // any machine that can also run the AVX-512 kernels, so there would be no
+    // way to compare the two implementations on identical inputs -- which is
+    // the only comparison that can prove the portable path right, since family
+    // 15h cannot run the reference.
+    static const bool s_force_bf16_128 = [] {
+        const char *v = std::getenv("ZENDNNL_NATIVE_BF16_128");
+        return v != nullptr && v[0] != '\0' && std::strcmp(v, "0") != 0;
+    }();
+
+    if (is_bf16 && (!detect_uarch().avx512bf16 || s_force_bf16_128)) {
+        const UarchParams &u = detect_uarch();
+        GemmDescriptor bf_desc = make_desc(transA, transB, M, N, K, alpha, beta,
+                lda, ldb, ldc, is_weights_const, num_threads, params);
+        if (bf16_gemm_execute_128(bf_desc, u, src, weight, dst, bias, params)) {
+            return true;
+        }
         log_info(
-                "Native kernel: BF16 requires AVX512-BF16, which this host "
-                "does not have; declining so another backend can run it");
+                "Native kernel: BF16 without AVX512-BF16 and no 128-bit "
+                "microkernel for this shape; declining so another backend can "
+                "run it");
         return false;
     }
 
