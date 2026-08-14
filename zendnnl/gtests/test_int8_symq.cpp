@@ -56,6 +56,7 @@
 #include <vector>
 
 #include "lowoha_operators/matmul/lowoha_matmul.hpp"
+#include "lowoha_operators/matmul/matmul_native/common/kernel_cache.hpp"
 #include "lowoha_operators/matmul/matmul_native/gemm/kernel/int8/int8_symq_ukernel_128.hpp"
 #include "lowoha_operators/matmul/matmul_native/gemm/looper/int8_symq_entry_128.hpp"
 #include "lowoha_operators/matmul/matmul_native/gemm/looper/int8_symq_looper_128.hpp"
@@ -524,13 +525,23 @@ TEST(Int8SymqLooper128, IsInvariantInThreadCount) {
 // would exercise that instead, so they force the 128-bit path with
 // ZENDNNL_NATIVE_SYMQ_128; that knob exists precisely because family 15h cannot
 // run the reference, so the two paths can only be compared elsewhere.
+// The packed-weight cache is keyed on the caller's weight pointer under the
+// is_weights_const promise, which a test violates as soon as it frees one weight
+// and allocates another: the new buffer can land at the same address with the
+// same shape, and the cache then serves the previous weight's panels. That is a
+// property of every pointer-keyed weight cache in this tree, not of this path,
+// and clear_all_weight_caches() is the sanctioned answer -- its own comment names
+// "between test cases or model swap" as the use. Tests that need two weights at
+// once keep both alive instead.
 class Int8SymqDispatch : public ::testing::Test {
 protected:
     void SetUp() override {
         if (select_int8_symq_ukernel_128() == nullptr)
             GTEST_SKIP() << "no 128-bit INT8 microkernel on this host";
         setenv("ZENDNNL_NATIVE_SYMQ_128", "1", 1);
+        clear_all_weight_caches();
     }
+    void TearDown() override { clear_all_weight_caches(); }
 };
 
 // Build the params a GGML per-group weight produces: s8 x s8 -> f32, a
@@ -583,13 +594,20 @@ struct SymqCall {
 
 TEST_F(Int8SymqDispatch, GgmlShapedCallReachesTheKernelAndComputes) {
     std::mt19937 rng(31337);
-    for (matmul_algo_t algo :
-            {matmul_algo_t::native_gemm, matmul_algo_t::native_brgemm}) {
+    const matmul_algo_t algos[]
+            = {matmul_algo_t::native_gemm, matmul_algo_t::native_brgemm};
+    // Both calls constructed up front and kept alive: two distinct weights must
+    // have two distinct addresses for the weight cache to tell them apart.
+    // The transposed layout is the one the GGML unpack produces.
+    std::vector<SymqCall> calls;
+    for (size_t i = 0; i < 2; ++i)
+        calls.emplace_back(128, 256, 512, 32, /*transB=*/true, rng);
+
+    for (size_t i = 0; i < 2; ++i) {
         SCOPED_TRACE(testing::Message()
-                << "algo=" << static_cast<int>(algo));
-        // The transposed layout is the one the GGML unpack produces.
-        SymqCall c(128, 256, 512, 32, /*transB=*/true, rng);
-        ASSERT_EQ(c.run(algo), status_t::success);
+                << "algo=" << static_cast<int>(algos[i]));
+        SymqCall &c = calls[i];
+        ASSERT_EQ(c.run(algos[i]), status_t::success);
 
         std::vector<float> ref;
         reference_gemm(c.M, c.N, c.K, c.gs, c.A.data(), c.K, c.B.data(), c.K,
@@ -602,6 +620,38 @@ TEST_F(Int8SymqDispatch, GgmlShapedCallReachesTheKernelAndComputes) {
                 kTolerance);
         EXPECT_EQ(nans, 0) << "dst was never written -- the call did not reach "
                               "the kernel";
+    }
+}
+
+// The second and later calls on a const weight read a packed copy from the
+// cache instead of packing again. Those bytes are supposed to be identical to
+// what the per-call packer produces, so every call must agree with the reference
+// and with the first call exactly -- not merely closely.
+TEST_F(Int8SymqDispatch, RepeatedCallsOnAConstWeightAgreeExactly) {
+    std::mt19937 rng(808);
+    SymqCall c(64, 200, 256, 32, true, rng);
+    std::vector<float> ref;
+    reference_gemm(c.M, c.N, c.K, c.gs, c.A.data(), c.K, c.B.data(), c.K, true,
+            c.ws.data(), c.src_scale, ref);
+
+    std::vector<float> first;
+    for (int call = 0; call < 4; ++call) {
+        SCOPED_TRACE(testing::Message() << "call " << call);
+        std::fill(c.C.begin(), c.C.end(),
+                std::numeric_limits<float>::quiet_NaN());
+        ASSERT_EQ(c.run(matmul_algo_t::native_gemm), status_t::success);
+        int nans = 0;
+        EXPECT_LT(worst_scaled_error(c.C, c.N, ref, c.N, c.M, c.N, &nans),
+                kTolerance);
+        EXPECT_EQ(nans, 0);
+        if (call == 0)
+            first = c.C;
+        else
+            for (size_t i = 0; i < first.size(); ++i)
+                ASSERT_FLOAT_EQ(first[i], c.C[i])
+                        << "cached packed weight disagrees with the first call "
+                           "at "
+                        << i;
     }
 }
 
@@ -623,9 +673,14 @@ TEST_F(Int8SymqDispatch, DecodeShapeReachesTheKernel) {
 // declines too, so what this asserts is that dst is not filled with garbage.
 TEST_F(Int8SymqDispatch, RefusesOperandsOutsideTheByteContract) {
     std::mt19937 rng(5);
+    // Kept alive together, so the second weight cannot inherit the first's
+    // address and with it the first's in-contract verdict.
+    std::vector<SymqCall> calls;
+    for (int i = 0; i < 2; ++i) calls.emplace_back(8, 64, 128, 32, true, rng);
+
     for (int which = 0; which < 2; ++which) {
         SCOPED_TRACE(which == 0 ? "-128 in the source" : "-128 in the weight");
-        SymqCall c(8, 64, 128, 32, true, rng);
+        SymqCall &c = calls[which];
         if (which == 0)
             c.A[c.A.size() / 2] = static_cast<int8_t>(-128);
         else

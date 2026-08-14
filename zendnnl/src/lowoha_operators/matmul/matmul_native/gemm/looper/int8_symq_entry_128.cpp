@@ -50,28 +50,39 @@
 //                       of two 128*128 products saturates. So it is checked
 //                       rather than assumed.
 //
-// The byte scan is O(M*K + N*K) against O(M*N*K) of arithmetic, so it is
-// asymptotically free for a GEMM -- but not for the M=1 decode shape, where it
-// lands on the same order as the work itself. That is the same problem the
-// per-call weight packing has, and it wants the same answer: a cached verdict
-// alongside the cached packed weight. Left for the change that adds the cache,
-// so a correctness failure here cannot be confused with a caching bug.
+// The weight-side work -- the byte scan and, when the GGML unpack hands over
+// bf16, widening the per-group scales -- is O(N*K) and O(groups*N) against
+// O(M*N*K) of arithmetic. That is asymptotically free for a GEMM and emphatically
+// not free at M=1, where one row of A is read against the whole of B and those
+// passes cost more than the multiply-adds. Both are facts about the weight rather
+// than the call, so both are computed once and cached under the same
+// is_weights_const promise the packed-weight cache relies on.
+//
+// The source is scanned every call, because it is the activation: it changes, and
+// at M*K bytes it is small.
 // ============================================================================
 
 #include "lowoha_operators/matmul/matmul_native/gemm/looper/int8_symq_entry_128.hpp"
 
 #include <cstdint>
+#include <memory>
+#include <mutex>
+#include <unordered_map>
 #include <vector>
 
 #include "common/bfloat16.hpp"
 #include "common/zendnnl_global.hpp"
+#include "lowoha_operators/matmul/matmul_native/common/kernel_cache.hpp"
 #include "lowoha_operators/matmul/matmul_native/gemm/kernel/int8/int8_symq_ukernel_128.hpp"
 #include "lowoha_operators/matmul/matmul_native/gemm/looper/int8_symq_looper_128.hpp"
+#include "operators/matmul/matmul_config.hpp"
 
 namespace zendnnl {
 namespace lowoha {
 namespace matmul {
 namespace native {
+
+using zendnnl::ops::matmul_config_t;
 
 namespace {
 
@@ -115,6 +126,69 @@ bool rows_within_contract(const int8_t *p, int rows, int ld, int len) {
             return false;
     }
     return true;
+}
+
+// ---------------------------------------------------------------------------
+// What is true of a weight rather than of a call: whether it honours the byte
+// contract, and its per-group scales as f32. Both are O(weight) work repeated
+// per call otherwise, which at M=1 costs more than the arithmetic.
+//
+// Keyed on the PACKED buffer's address, not the caller's weight pointer, and
+// that choice is load-bearing. The packed buffer belongs to the prepacked-weight
+// cache: it is allocated there, lives as long as the entry, and holds exactly
+// the bytes the microkernel will read. A verdict attached to it therefore cannot
+// describe different bytes than the ones used.
+//
+// Keying on the caller's pointer instead is unsound in a way that is easy to
+// miss and was caught here by the dispatch tests. A weight can be freed and a
+// different weight of the same shape allocated at the same address; the key then
+// matches and the verdict is served for the wrong bytes. For the packed data
+// that yields a wrong answer, which is the risk the whole family of
+// pointer-keyed weight caches in this tree already takes under
+// is_weights_const. For the -128 check it would be worse than wrong: a safety
+// gate silently skipped. Attaching it to the packed buffer removes that second
+// failure entirely -- the verdict and the bytes share one lifetime.
+//
+// The scales ride along under the same key. In the path this exists for they are
+// literally part of the same allocation: unpack_ggml_raw_s8_and_cache() writes
+// [ s8 weight | bf16 scales ] into one buffer, so weight and scales share a
+// lifetime by construction. The source pointer is recorded and compared anyway,
+// so a weight arriving with a different scale buffer re-widens rather than
+// reading a stale one.
+struct SymqWeightFacts {
+    bool in_contract = false;
+    const void *scale_src = nullptr;
+    std::vector<float> widened_scales; // empty when the caller gave f32
+};
+
+SymqWeightFacts *lookup_weight_facts(
+        const void *packed, const void *scale_src, bool *out_is_new) {
+    static std::unordered_map<const void *, std::unique_ptr<SymqWeightFacts>>
+            s_cache;
+    static std::mutex s_mutex;
+
+    std::lock_guard<std::mutex> lock(s_mutex);
+    auto it = s_cache.find(packed);
+    if (it != s_cache.end() && it->second->scale_src == scale_src) {
+        *out_is_new = false;
+        return it->second.get();
+    }
+    auto facts = std::make_unique<SymqWeightFacts>();
+    facts->scale_src = scale_src;
+    SymqWeightFacts *raw = facts.get();
+    s_cache[packed] = std::move(facts);
+    *out_is_new = true;
+    return raw;
+}
+
+void widen_bf16_scales(
+        const void *src, size_t n, std::vector<float> &out) {
+    const uint16_t *raw = static_cast<const uint16_t *>(src);
+    out.resize(n);
+    for (size_t i = 0; i < n; ++i) {
+        out[i] = common::bfloat16_t::bf16_to_f32_val(
+                static_cast<int16_t>(raw[i]));
+    }
 }
 
 } // namespace
@@ -205,41 +279,77 @@ bool int8_symq_try_execute_128(const GemmDescriptor &desc, const void *src,
         return false;
     }
 
-    // The GGML unpack hands back bf16 scales; a caller supplying its own
-    // per-group weight may hand back f32. Widen once per call for the former.
-    // This is a pass over groups*N values, which is small against the GEMM but
-    // not against an M=1 decode -- another reason the caching change wants to
-    // cover the scales as well as the packed weight.
-    const float *wei_scale = nullptr;
-    std::vector<float> wei_scale_f32;
-    if (qp.wei_scale.dt == data_type_t::f32) {
-        wei_scale = static_cast<const float *>(qp.wei_scale.buff);
-    } else if (qp.wei_scale.dt == data_type_t::bf16) {
-        const uint16_t *raw = static_cast<const uint16_t *>(qp.wei_scale.buff);
-        const size_t n = static_cast<size_t>(groups) * desc.N;
-        wei_scale_f32.resize(n);
-        for (size_t i = 0; i < n; ++i) {
-            wei_scale_f32[i] = common::bfloat16_t::bf16_to_f32_val(
-                    static_cast<int16_t>(raw[i]));
-        }
-        wei_scale = wei_scale_f32.data();
-    } else {
+    if (qp.wei_scale.dt != data_type_t::f32
+            && qp.wei_scale.dt != data_type_t::bf16) {
         log_info("INT8 symq: unrecognised weight scale dtype, declining");
         return false;
     }
 
-    // ---- the kernel's byte contract ---------------------------------------
+    // ---- weight-side facts, once per weight where that is allowed ----------
     const int8_t *A = static_cast<const int8_t *>(src);
     const int8_t *B = static_cast<const int8_t *>(weight);
-    if (!rows_within_contract(A, desc.M, desc.lda, desc.K)) {
-        log_info("INT8 symq: source contains -128, outside the kernel's "
-                 "contract; declining");
-        return false;
-    }
     const int b_rows = desc.transB ? desc.N : desc.K;
     const int b_len = desc.transB ? desc.K : desc.N;
-    if (!rows_within_contract(B, b_rows, desc.ldb, b_len)) {
-        log_info("INT8 symq: weight contains -128, outside the kernel's "
+    const size_t n_scales = static_cast<size_t>(groups) * desc.N;
+
+    static const int32_t s_weight_cache
+            = matmul_config_t::instance().get_weight_cache();
+    const bool can_cache = desc.is_weights_const && (s_weight_cache != 0);
+
+    const float *wei_scale = nullptr;
+    std::vector<float> scratch_scales;
+    const INT8PrepackedWeight *prepacked = nullptr;
+
+    if (can_cache) {
+        const PrepackedWeightKey key {
+                weight, desc.K, desc.N, desc.ldb, desc.transB};
+        prepacked = INT8PrepackedWeightCache::instance().get_or_prepack(key, B);
+    }
+
+    if (prepacked != nullptr) {
+        // The packed buffer is the authority: scan it rather than the caller's
+        // B, so the verdict describes the bytes the microkernel will read. Its
+        // zero padding is inside the contract, so it cannot cause a refusal.
+        bool is_new = false;
+        SymqWeightFacts *facts = lookup_weight_facts(
+                prepacked->data, qp.wei_scale.buff, &is_new);
+        if (is_new) {
+            const size_t packed_len = static_cast<size_t>(prepacked->n_panels)
+                    * (prepacked->K_padded / SYMQ_VNNI_GRP)
+                    * INT8PrepackedWeight::stride();
+            facts->in_contract
+                    = bytes_within_contract(prepacked->data, packed_len);
+            if (qp.wei_scale.dt == data_type_t::bf16) {
+                widen_bf16_scales(qp.wei_scale.buff, n_scales,
+                        facts->widened_scales);
+            }
+        }
+        if (!facts->in_contract) {
+            log_info("INT8 symq: weight contains -128, outside the kernel's "
+                     "contract; declining");
+            return false;
+        }
+        wei_scale = facts->widened_scales.empty()
+                ? static_cast<const float *>(qp.wei_scale.buff)
+                : facts->widened_scales.data();
+    } else {
+        if (!rows_within_contract(B, b_rows, desc.ldb, b_len)) {
+            log_info("INT8 symq: weight contains -128, outside the kernel's "
+                     "contract; declining");
+            return false;
+        }
+        if (qp.wei_scale.dt == data_type_t::bf16) {
+            widen_bf16_scales(qp.wei_scale.buff, n_scales, scratch_scales);
+            wei_scale = scratch_scales.data();
+        } else {
+            wei_scale = static_cast<const float *>(qp.wei_scale.buff);
+        }
+    }
+
+    // The source is the activation: it changes every call, so it is checked
+    // every call. At M*K bytes that is negligible beside the arithmetic.
+    if (!rows_within_contract(A, desc.M, desc.lda, desc.K)) {
+        log_info("INT8 symq: source contains -128, outside the kernel's "
                  "contract; declining");
         return false;
     }
@@ -247,7 +357,7 @@ bool int8_symq_try_execute_128(const GemmDescriptor &desc, const void *src,
     const int nthreads = desc.num_threads > 0 ? desc.num_threads : 1;
     return int8_symq_execute_128(desc.M, desc.N, desc.K, group_size, A,
             desc.lda, B, desc.ldb, desc.transB, static_cast<float *>(dst),
-            desc.ldc, wei_scale, src_scale, nthreads);
+            desc.ldc, wei_scale, src_scale, nthreads, prepacked);
 }
 
 } // namespace native

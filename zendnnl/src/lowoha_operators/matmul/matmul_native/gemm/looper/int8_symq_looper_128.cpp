@@ -29,11 +29,19 @@
 // A is used unpacked. It is read as dwords -- four consecutive K of one row are
 // one broadcast -- so a packed copy would buy nothing but a pass over M*K bytes.
 //
-// B is packed per panel per call. A prepacked-weight cache belongs here for the
-// same reasons it does in the BF16 path, and is deliberately left out of this
-// first version: with no working INT8 path on this hardware to compare against,
-// the first job is a correct end-to-end number, and adding a cache at the same
-// time would make a correctness failure ambiguous between the two changes.
+// B is packed once per weight rather than once per call, through the INT8
+// prepacked-weight cache the BRGEMM path already uses. That cache's layout is
+// this kernel's layout and not merely a compatible one: NR_PACK is 64, matching
+// the panel width chosen below, INT8_VNNI_GRP is 4, and its packer lays out
+// panel-major quads with columns past N and K past the end zero-filled -- byte
+// for byte what pack_b_panel() writes. So a cached panel goes to the microkernel
+// as it stands and the results are identical rather than close. K_padded never
+// differs from K here, because this path already requires K to be a whole number
+// of groups and a group to be a whole number of quads.
+//
+// is_weights_const is the caller's promise that the buffer will not be written
+// behind us; without it, caching by pointer would serve stale weights. The gate
+// matches the other loopers'.
 // ============================================================================
 
 #include "lowoha_operators/matmul/matmul_native/gemm/looper/int8_symq_looper_128.hpp"
@@ -59,8 +67,13 @@ namespace {
 // then the packing loop runs once per eight columns and its overhead dominates;
 // sixty-four amortises it over eight microkernel calls while keeping a panel's
 // packed B (K * 64 bytes) small enough to stay resident while the M loop walks
-// over it.
+// over it. It is also NR_PACK, which is what lets the shared prepacked-weight
+// cache be read in place -- keep the two equal.
 constexpr int kPanelW = 64;
+static_assert(kPanelW == NR_PACK,
+        "panel width must match the prepacked-weight cache's NR_PACK");
+static_assert(SYMQ_VNNI_GRP == INT8_VNNI_GRP,
+        "VNNI quad must match the prepacked-weight cache's group");
 
 // Pack one panel of B into VNNI quads: for each group of four consecutive K,
 // the panel's columns lie contiguously, four bytes each.
@@ -94,7 +107,7 @@ void pack_b_panel(const int8_t *B, int ldb, bool transB, int jc, int nb_act,
 bool int8_symq_execute_128(int M, int N, int K, int group_size,
         const int8_t *A, int lda, const int8_t *B, int ldb, bool transB,
         float *C, int ldc, const float *wei_scale, float src_scale,
-        int nthreads) {
+        int nthreads, const INT8PrepackedWeight *prepacked) {
 
     if (M <= 0 || N <= 0 || K <= 0) return false;
     // The microkernel flushes once per group and reads whole quads, so a K that
@@ -113,6 +126,14 @@ bool int8_symq_execute_128(int M, int N, int K, int group_size,
     int nt = nthreads > 0 ? nthreads : 1;
     nt = std::min(nt, std::max(n_panels, 1));
 
+    // A prepacked weight must describe this problem; anything else would read
+    // the wrong bytes rather than merely miss the optimisation.
+    if (prepacked != nullptr
+            && (prepacked->K != K || prepacked->N != N
+                    || prepacked->K_padded != K)) {
+        return false;
+    }
+
     // One pass over C: the microkernel accumulates into it, so it starts at
     // zero rather than being read.
     for (int m = 0; m < M; ++m)
@@ -122,8 +143,11 @@ bool int8_symq_execute_128(int M, int N, int K, int group_size,
 #pragma omp parallel num_threads(nt)
 #endif
     {
-        std::vector<int8_t> b_panel(
-                static_cast<size_t>(n_quads) * b_stride, 0);
+        // No strip to own when B comes from the cache: those panels are
+        // read-only and shared, so the threads read them in place.
+        std::vector<int8_t> b_panel;
+        if (prepacked == nullptr)
+            b_panel.assign(static_cast<size_t>(n_quads) * b_stride, 0);
         // Ragged tiles are finished by the scalar tail, which writes through to
         // C directly, so no scratch tile is needed here.
 
@@ -134,15 +158,20 @@ bool int8_symq_execute_128(int M, int N, int K, int group_size,
             const int jc = p * kPanelW;
             const int nb_act = std::min(kPanelW, N - jc);
 
-            pack_b_panel(B, ldb, transB, jc, nb_act, N, K, b_panel.data());
+            const int8_t *panel_base;
+            if (prepacked != nullptr) {
+                panel_base = prepacked->get_panel(/*kq=*/0, p);
+            } else {
+                pack_b_panel(B, ldb, transB, jc, nb_act, N, K, b_panel.data());
+                panel_base = b_panel.data();
+            }
 
             for (int ic = 0; ic < M; ic += SYMQ_MR) {
                 const int mr_act = std::min(SYMQ_MR, M - ic);
 
                 for (int jr = 0; jr < nb_act; jr += SYMQ_NR) {
                     const int nr_act = std::min(SYMQ_NR, nb_act - jr);
-                    const int8_t *b_tile
-                            = b_panel.data() + jr * SYMQ_VNNI_GRP;
+                    const int8_t *b_tile = panel_base + jr * SYMQ_VNNI_GRP;
                     const int8_t *a_tile
                             = A + static_cast<size_t>(ic) * lda;
                     float *c_tile

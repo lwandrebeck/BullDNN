@@ -19,6 +19,8 @@
 
 #include <cstdint>
 
+#include "lowoha_operators/matmul/matmul_native/common/kernel_cache.hpp"
+
 namespace zendnnl {
 namespace lowoha {
 namespace matmul {
@@ -45,10 +47,19 @@ namespace native {
 /// that is not a multiple of the VNNI quad -- so the caller can fall back.
 /// All A and B bytes must lie in [-127, 127]; see the microkernel header for
 /// why -128 is excluded and why every GGML quantiser satisfies this.
+/// prepacked, when given, is B already in the microkernel's VNNI panel layout,
+/// from the shared INT8 prepacked-weight cache. The bytes are identical to what
+/// this looper's own packer produces, so the result is unchanged rather than
+/// merely close, and the per-call pass over B disappears. Pass nullptr to pack
+/// per call, which is always correct.
+///
+/// Deciding whether caching is permitted is the caller's job, not this one's:
+/// it depends on the framework's is_weights_const promise, which this layer
+/// cannot see.
 bool int8_symq_execute_128(int M, int N, int K, int group_size,
         const int8_t *A, int lda, const int8_t *B, int ldb, bool transB,
         float *C, int ldc, const float *wei_scale, float src_scale,
-        int nthreads);
+        int nthreads, const INT8PrepackedWeight *prepacked = nullptr);
 
 } // namespace native
 } // namespace matmul
