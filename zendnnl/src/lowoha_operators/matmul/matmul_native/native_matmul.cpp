@@ -33,6 +33,7 @@
 #include "lowoha_operators/matmul/matmul_native/gemm/looper/bf16_gemm_looper.hpp"
 #include "lowoha_operators/matmul/matmul_native/gemm/looper/bf16_gemm_looper_128.hpp"
 #include "lowoha_operators/matmul/matmul_native/gemm/looper/fp32_gemm_looper.hpp"
+#include "lowoha_operators/matmul/matmul_native/gemm/looper/int8_kquant_entry_128.hpp"
 #include "lowoha_operators/matmul/matmul_native/gemm/looper/int8_symq_entry_128.hpp"
 
 namespace zendnnl {
@@ -307,6 +308,25 @@ bool native_matmul_execute(matmul_algo_t kernel, char layout, bool transA,
         const char *v = std::getenv("ZENDNNL_NATIVE_SYMQ_128");
         return v != nullptr && v[0] != '\0' && std::strcmp(v, "0") != 0;
     }();
+
+    // Asymmetric per-group INT8 -- the GGML k-quants -- takes the same route and
+    // the same ISA gate. Its predicate is disjoint from the symmetric one by
+    // weight dtype (u8 against s8), so the order of these two blocks carries no
+    // meaning and neither can shadow the other.
+    if (is_int8_kquant_candidate(params, K, N)
+            && (!detect_uarch().avx512vnni || s_force_symq_128)) {
+        GemmDescriptor kq_desc = make_desc(transA, transB, M, N, K, alpha, beta,
+                lda, ldb, ldc, is_weights_const, num_threads, params);
+        if (int8_kquant_try_execute_128(
+                    kq_desc, src, weight, dst, bias, params)) {
+            return true;
+        }
+        log_info(
+                "Native kernel: per-group INT8 k-quant outside what the 128-bit "
+                "asymmetric kernel expresses; declining so another backend can "
+                "run it");
+        return false;
+    }
 
     if (is_int8_symq_candidate(params, K, N)
             && (!detect_uarch().avx512vnni || s_force_symq_128)) {

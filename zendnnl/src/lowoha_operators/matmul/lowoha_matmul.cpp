@@ -24,6 +24,7 @@
 #include "lowoha_operators/matmul/backends/onednn/onednn_kernel.hpp"
 #include "lowoha_operators/matmul/quantization/reorder_quantization.hpp"
 #include "matmul_native/common/cost_model.hpp"
+#include "matmul_native/gemm/looper/int8_kquant_entry_128.hpp"
 #include "matmul_native/gemm/looper/int8_symq_entry_128.hpp"
 #include "matmul_native/native_matmul.hpp"
 #include "partitioning/bmm/looper/bmm_looper.hpp"
@@ -82,7 +83,8 @@ void matmul_kernel_wrapper(char layout, char transA, char transB, int M, int N,
         // it, and on a host without AVX-512 VNNI it is the only INT8 kernel that
         // runs at all. Every other INT8 granularity still belongs to DLP.
         const bool is_int8_symq
-                = native::is_int8_symq_candidate(lowoha_param, K, N);
+                = native::is_int8_symq_candidate(lowoha_param, K, N)
+                || native::is_int8_kquant_candidate(lowoha_param, K, N);
         if (!is_fp32 && !is_bf16 && !is_int8_symq) {
             log_info(
                     "Native kernel: unsupported data type, falling back to "
@@ -259,9 +261,12 @@ void execute_selected_algo(const char layout, const bool transA,
                 && params.dtypes.wei == data_type_t::bf16
                 && (params.dtypes.dst == data_type_t::bf16
                         || params.dtypes.dst == data_type_t::f32));
+        // wei == u8 is a decoded GGML k-quant: unsigned codes with the min
+        // carried alongside the scale. See is_int8_kquant_candidate.
         const bool is_int8 = ((params.dtypes.src == data_type_t::u8
                                       || params.dtypes.src == data_type_t::s8)
-                && params.dtypes.wei == data_type_t::s8
+                && (params.dtypes.wei == data_type_t::s8
+                        || params.dtypes.wei == data_type_t::u8)
                 && (params.dtypes.dst == data_type_t::f32
                         || params.dtypes.dst == data_type_t::bf16
                         || params.dtypes.dst == data_type_t::s8

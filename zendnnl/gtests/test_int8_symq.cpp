@@ -61,6 +61,7 @@
 #include "lowoha_operators/matmul/matmul_native/common/kernel_cache.hpp"
 #include "lowoha_operators/matmul/matmul_native/gemm/kernel/int8/int8_kquant_ukernel_128.hpp"
 #include "lowoha_operators/matmul/matmul_native/gemm/kernel/int8/int8_symq_ukernel_128.hpp"
+#include "lowoha_operators/matmul/matmul_native/gemm/looper/int8_kquant_entry_128.hpp"
 #include "lowoha_operators/matmul/matmul_native/gemm/looper/int8_kquant_looper_128.hpp"
 #include "lowoha_operators/matmul/matmul_native/gemm/looper/int8_symq_entry_128.hpp"
 #include "lowoha_operators/matmul/matmul_native/gemm/looper/int8_symq_looper_128.hpp"
@@ -1234,6 +1235,119 @@ TEST(GgmlKquantUnpackExtra, SymmetricPathRefusesADecodedKquant) {
     EXPECT_FALSE(native::is_int8_symq_candidate(p, K, N))
             << "the symmetric kernel accepted a k-quant; it would compute it "
                "with the min term silently dropped";
+}
+
+// ---- Q4_K / Q5_K end to end ------------------------------------------------
+//
+// A GGML k-quant weight through matmul_direct: unpack, dispatch, kernel. This is
+// the case every other k-quant test only approximates, and the reason the whole
+// asymmetric path exists -- most GGUFs in circulation are Q4_K.
+
+class Int8KquantDispatch : public ::testing::TestWithParam<int> {
+protected:
+    void SetUp() override {
+        if (select_int8_kquant_ukernel_128() == nullptr)
+            GTEST_SKIP() << "no 128-bit INT8 microkernel on this host";
+        setenv("ZENDNNL_NATIVE_SYMQ_128", "1", 1);
+        clear_all_weight_caches();
+        clear_ggml_weight_unpack_cache();
+    }
+    void TearDown() override {
+        clear_all_weight_caches();
+        clear_ggml_weight_unpack_cache();
+    }
+};
+
+TEST_P(Int8KquantDispatch, PackedWeightComputesEndToEnd) {
+    const int type = GetParam();
+    const int M = 6, N = 64, K = 512;
+    const int groups = K / kKsub;
+
+    std::mt19937 rng(type == 12 ? 4120 : 4130);
+    KquantSource src = build_kquant(type, N, K, rng);
+
+    std::vector<int8_t> A(static_cast<size_t>(M) * K);
+    fill_s8(A, rng, false);
+    // Per-group activation scales: more than one element, which is what
+    // ggml_is_sym_quant requires of a GGML call.
+    std::vector<float> ss(static_cast<size_t>(M) * groups);
+    const float exact[4] = {0.03125f, 0.0625f, 0.125f, 0.25f};
+    for (size_t i = 0; i < ss.size(); ++i) ss[i] = exact[(i + 1) % 4];
+
+    std::vector<float> C = poisoned(static_cast<size_t>(M) * N);
+
+    matmul_params p;
+    p.dtypes.src = data_type_t::s8;
+    p.dtypes.wei = (type == 12) ? data_type_t::s4 : data_type_t::s8;
+    p.dtypes.dst = data_type_t::f32;
+    p.packing.pack_format_b = 1;
+    p.packing.ggml_type_b = type;
+    p.quant_params.src_scale.buff = ss.data();
+    p.quant_params.src_scale.dt = data_type_t::f32;
+    p.quant_params.src_scale.dims = {M, groups};
+    p.lowoha_algo = matmul_algo_t::native_gemm;
+    p.num_threads = 2;
+    matmul_batch_params_t batch;
+
+    ASSERT_EQ(matmul_direct('r', false, /*transB=*/true, M, N, K, 1.0f, A.data(),
+                      K, src.blocks.data(), K, nullptr, 0.0f, C.data(), N,
+                      /*is_weights_const=*/true, batch, p),
+            status_t::success);
+
+    // Reference from the codes and scales the packer started with, dequantising
+    // the GGML way and then multiplying.
+    std::vector<float> ref;
+    reference_kquant(M, N, K, kKsub, A.data(), K, src.codes.data(), K,
+            src.D.data(), src.Min.data(), ss.data(), groups, 1, ref);
+    int nans = 0;
+    EXPECT_LT(worst_scaled_error(C, N, ref, N, M, N, &nans), kTolerance);
+    EXPECT_EQ(nans, 0) << "dst was never written -- the k-quant call did not "
+                          "reach a kernel that computes";
+}
+
+INSTANTIATE_TEST_SUITE_P(Types, Int8KquantDispatch, ::testing::Values(12, 13),
+        [](const ::testing::TestParamInfo<int> &i) {
+            return i.param == 12 ? std::string("Q4_K") : std::string("Q5_K");
+        });
+
+// The decode shape, which is where a k-quant model spends most of its time, and
+// the one that routes to the one-row microkernel.
+TEST_P(Int8KquantDispatch, DecodeShapeReachesTheKernel) {
+    const int type = GetParam();
+    const int M = 1, N = 128, K = 512;
+    const int groups = K / kKsub;
+    std::mt19937 rng(type);
+    KquantSource src = build_kquant(type, N, K, rng);
+
+    std::vector<int8_t> A(static_cast<size_t>(M) * K);
+    fill_s8(A, rng, false);
+    std::vector<float> ss(static_cast<size_t>(M) * groups, 0.0625f);
+    std::vector<float> C = poisoned(static_cast<size_t>(M) * N);
+
+    matmul_params p;
+    p.dtypes.src = data_type_t::s8;
+    p.dtypes.wei = (type == 12) ? data_type_t::s4 : data_type_t::s8;
+    p.dtypes.dst = data_type_t::f32;
+    p.packing.pack_format_b = 1;
+    p.packing.ggml_type_b = type;
+    p.quant_params.src_scale.buff = ss.data();
+    p.quant_params.src_scale.dt = data_type_t::f32;
+    p.quant_params.src_scale.dims = {M, groups};
+    p.lowoha_algo = matmul_algo_t::native_gemm;
+    p.num_threads = 4;
+    matmul_batch_params_t batch;
+
+    ASSERT_EQ(matmul_direct('r', false, true, M, N, K, 1.0f, A.data(), K,
+                      src.blocks.data(), K, nullptr, 0.0f, C.data(), N, true,
+                      batch, p),
+            status_t::success);
+
+    std::vector<float> ref;
+    reference_kquant(M, N, K, kKsub, A.data(), K, src.codes.data(), K,
+            src.D.data(), src.Min.data(), ss.data(), groups, 1, ref);
+    int nans = 0;
+    EXPECT_LT(worst_scaled_error(C, N, ref, N, M, N, &nans), kTolerance);
+    EXPECT_EQ(nans, 0);
 }
 
 // ------------------------------------------------------------------ dispatch

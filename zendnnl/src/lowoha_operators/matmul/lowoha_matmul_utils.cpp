@@ -20,6 +20,7 @@
 #include <sstream>
 #include <string>
 #include "common/zendnnl_global.hpp"
+#include "matmul_native/gemm/looper/int8_kquant_entry_128.hpp"
 #include "matmul_native/gemm/looper/int8_symq_entry_128.hpp"
 #include "matmul_native/common/cost_model.hpp"
 #include "matmul_native/common/kernel_cache.hpp"
@@ -897,7 +898,8 @@ matmul_algo_t kernel_select(matmul_params &params, int Batch_A, int Batch_B,
                 = !native::detect_uarch().avx512vnni
                 && (kernel == matmul_algo_t::native_gemm
                         || kernel == matmul_algo_t::native_brgemm)
-                && native::is_int8_symq_candidate(params, K, N);
+                && (native::is_int8_symq_candidate(params, K, N)
+                        || native::is_int8_kquant_candidate(params, K, N));
         if (!native_symq_can_run) {
             kernel = matmul_algo_t::aocl_dlp_blocked;
         }
