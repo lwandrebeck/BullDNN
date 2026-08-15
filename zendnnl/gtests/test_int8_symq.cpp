@@ -2214,6 +2214,150 @@ TEST_F(Int8SymqDispatch, AcceptsAOneDimensionalPerTokenScale) {
     }
 }
 
+// llama.cpp's test-backend-ops finds this shape wrong through the GGML path --
+// MUL_MAT(type_a=q4_K, m=16, k=256), relative error 1.1 to 2.5 against a 5e-4
+// tolerance, and erratically: n=1 and n=7 pass, n=2..6 and n=8,9 fail. It is not
+// the weight cache (ZENDNNL_MATMUL_WEIGHT_CACHE=0 gives the same failures) and
+// it does not show at model shapes, which is why perplexity never caught it.
+//
+// K=256 is exactly ONE k-quant super-block, the smallest legal weight, and every
+// other test here uses two or more. M sweeps the same range the failure does, so
+// if the fault is in the kernel rather than in the GGML unpack above it, it
+// reproduces here against the dequantise-then-multiply reference.
+TEST_P(Int8KquantDispatch, SingleSuperBlockAcrossTheFailingRowCounts) {
+    const int type = GetParam();
+    const int N = 16, K = 256;    // one super-block, eight 32-wide scale groups
+    const int groups = K / kKsub;
+
+    for (int M = 1; M <= 9; ++M) {
+        SCOPED_TRACE("M=" + std::to_string(M));
+        // Each iteration frees the previous weight and allocates a new one,
+        // which malloc will happily place at the same address -- and the GGML
+        // unpack cache is keyed on exactly that address. Without this clear the
+        // test measures the cache, not the kernel. Note that
+        // ZENDNNL_MATMUL_WEIGHT_CACHE=0 does NOT cover this cache; it is a
+        // separate one with its own clear.
+        clear_ggml_weight_unpack_cache();
+        clear_all_weight_caches();
+        std::mt19937 rng(type * 1000 + M);
+        KquantSource src = build_kquant(type, N, K, rng);
+
+        std::vector<int8_t> A(static_cast<size_t>(M) * K);
+        fill_s8(A, rng, false);
+        std::vector<float> ss(static_cast<size_t>(M) * groups);
+        const float exact[4] = {0.03125f, 0.0625f, 0.125f, 0.25f};
+        for (size_t i = 0; i < ss.size(); ++i) ss[i] = exact[(i + 1) % 4];
+
+        std::vector<float> C = poisoned(static_cast<size_t>(M) * N);
+
+        matmul_params p;
+        p.dtypes.src = data_type_t::s8;
+        p.dtypes.wei = (type == 12) ? data_type_t::s4 : data_type_t::s8;
+        p.dtypes.dst = data_type_t::f32;
+        p.packing.pack_format_b = 1;
+        p.packing.ggml_type_b = type;
+        p.quant_params.src_scale.buff = ss.data();
+        p.quant_params.src_scale.dt = data_type_t::f32;
+        p.quant_params.src_scale.dims = {M, groups};
+        p.lowoha_algo = matmul_algo_t::native_gemm;
+        p.num_threads = 2;
+        matmul_batch_params_t batch;
+
+        ASSERT_EQ(matmul_direct('r', false, /*transB=*/true, M, N, K, 1.0f,
+                          A.data(), K, src.blocks.data(), K, nullptr, 0.0f,
+                          C.data(), N, /*is_weights_const=*/true, batch, p),
+                status_t::success);
+
+        std::vector<float> ref;
+        reference_kquant(M, N, K, kKsub, A.data(), K, src.codes.data(), K,
+                src.D.data(), src.Min.data(), ss.data(), groups, 1, ref);
+        int nans = 0;
+        EXPECT_LT(worst_scaled_error(C, N, ref, N, M, N, &nans), kTolerance);
+        EXPECT_EQ(nans, 0) << "dst never written";
+    }
+}
+
+// The GGML Q8_0 path AS LLAMA.CPP ACTUALLY CALLS IT: f32 activations handed
+// straight over, with the library doing the quantisation. Every other Q8_0 test
+// here pre-quantises to s8 and supplies its own src_scale, which is a different
+// path -- and the one that was covered while the real one was not.
+//
+// test-backend-ops finds this returning an UNTOUCHED destination on a host with
+// AOCL-DLP compiled in: relative error 58 to 102, and a "GFLOPS" figure of 669
+// that is really just an empty result timed. AOCL-DLP cannot run per-group INT8
+// without AVX-512 VNNI, so whichever gate should have routed this to the native
+// kernel did not fire.
+TEST_F(Int8SymqDispatch, GgmlQ8_0WithF32ActivationsComputes) {
+    const int M = 6, N = 64, K = 256;
+    const int groups = K / 32;
+    std::mt19937 rng(9001);
+
+    // GGML-packed Q8_0 weights, plus the s8 codes and scales they decode to, so
+    // the answer can be checked rather than merely be non-NaN.
+    std::vector<int8_t> q(static_cast<size_t>(N) * K);
+    fill_s8(q, rng, false);
+    std::vector<float> ws(static_cast<size_t>(groups) * N);
+    const float exact[4] = {0.03125f, 0.0625f, 0.125f, 0.25f};
+    for (size_t i = 0; i < ws.size(); ++i) ws[i] = exact[i % 4];
+    std::vector<uint8_t> blocks(static_cast<size_t>(N) * groups * 34);
+    repack_weights_q8_0(q.data(), ws.data(), static_cast<int64_t>(N),
+            static_cast<int64_t>(K), blocks.data());
+
+    // f32 activations -- the thing under test.
+    std::vector<float> A_f32(static_cast<size_t>(M) * K);
+    std::uniform_real_distribution<float> dist(-1.0f, 1.0f);
+    for (auto &v : A_f32) v = dist(rng);
+
+    std::vector<float> C = poisoned(static_cast<size_t>(M) * N);
+
+    matmul_params p;
+    p.dtypes.src = data_type_t::f32; // NOT s8: the library must quantise
+    p.dtypes.wei = data_type_t::s8;
+    p.dtypes.dst = data_type_t::f32;
+    p.packing.pack_format_b = 1;
+    p.packing.ggml_type_b = 8; // Q8_0
+    // Exactly what ggml-zendnn.cpp sets for this case: dynamic quantisation to
+    // s8, no scale buffer (the library fills it), and a bf16 scale dtype.
+    p.dtypes.compute = data_type_t::s8;
+    p.dynamic_quant = true;
+    p.quant_params.src_scale.buff = nullptr;
+    p.quant_params.src_scale.dt = data_type_t::bf16;
+    p.quant_params.src_scale.dims = {M, groups};
+    p.num_threads = 2;
+    matmul_batch_params_t batch;
+
+    ASSERT_EQ(matmul_direct('r', false, /*transB=*/true, M, N, K, 1.0f,
+                      A_f32.data(), K, blocks.data(), K, nullptr, 0.0f, C.data(),
+                      N, /*is_weights_const=*/true, batch, p),
+            status_t::success);
+
+    int nans = 0;
+    for (float x : C)
+        if (std::isnan(x)) ++nans;
+    ASSERT_EQ(nans, 0) << "destination never written -- the call reached a "
+                          "backend that returns without computing";
+
+    // Reference straight from the decoded codes and scales, quantising A the
+    // same way the library must: absmax/127 per row-group.
+    std::vector<float> ref(static_cast<size_t>(M) * N, 0.0f);
+    for (int m = 0; m < M; ++m) {
+        for (int n = 0; n < N; ++n) {
+            double acc = 0.0;
+            for (int g = 0; g < groups; ++g) {
+                for (int j = 0; j < 32; ++j) {
+                    const int k = g * 32 + j;
+                    acc += static_cast<double>(A_f32[m * K + k])
+                            * static_cast<double>(q[n * K + k])
+                            * static_cast<double>(ws[g * N + n]);
+                }
+            }
+            ref[static_cast<size_t>(m) * N + n] = static_cast<float>(acc);
+        }
+    }
+    // Loose: the library quantises A to 8 bits, the reference does not.
+    EXPECT_LT(worst_scaled_error(C, N, ref, N, M, N, &nans), 0.05f);
+}
+
 // The k-quant adapter shares the epilogue rather than having its own, so one
 // case that exercises beta and bias together is enough to prove it is wired to
 // it -- the arithmetic is covered above.

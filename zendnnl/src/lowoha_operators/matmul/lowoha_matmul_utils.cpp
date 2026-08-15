@@ -904,6 +904,18 @@ matmul_algo_t kernel_select(matmul_params &params, int Batch_A, int Batch_B,
         kernel = matmul_algo_t::native_gemm;
     }
 
+    // Whether the native per-group INT8 path is the one that will actually run.
+    // Several rules below force AOCL-DLP for INT8 shapes on grounds that predate
+    // there being any other INT8 implementation. On a host without AVX-512 VNNI
+    // AOCL-DLP returns without computing, so each of them can silently undo the
+    // choice made just above and hand back an untouched destination. They are
+    // therefore gated on this rather than left to fight over `kernel`.
+    const bool native_int8_selected = !native::detect_uarch().avx512vnni
+            && (kernel == matmul_algo_t::native_gemm
+                    || kernel == matmul_algo_t::native_brgemm)
+            && (native::is_int8_symq_candidate(params, K, N)
+                    || native::is_int8_kquant_candidate(params, K, N));
+
     if (is_sym_quant && kernel != matmul_algo_t::aocl_dlp_blocked) {
         // Sym-quant belongs to AOCL-DLP, except where AOCL-DLP cannot run it at
         // all: without AVX-512 VNNI it refuses and returns without computing, so
@@ -912,22 +924,20 @@ matmul_algo_t kernel_select(matmul_params &params, int Batch_A, int Batch_B,
         // for explicitly, and a shape the 128-bit symmetric per-group kernel
         // expresses. On any host with VNNI, and for every caller that did not
         // ask for native, this is exactly as it was.
-        const bool native_symq_can_run
-                = !native::detect_uarch().avx512vnni
-                && (kernel == matmul_algo_t::native_gemm
-                        || kernel == matmul_algo_t::native_brgemm)
-                && (native::is_int8_symq_candidate(params, K, N)
-                        || native::is_int8_kquant_candidate(params, K, N));
-        if (!native_symq_can_run) {
-            kernel = matmul_algo_t::aocl_dlp_blocked;
-        }
+        if (!native_int8_selected) { kernel = matmul_algo_t::aocl_dlp_blocked; }
     }
 
     const bool non_f32_quant_scale_src = params.quant_params.src_scale.buff
             && params.quant_params.src_scale.dt != data_type_t::f32;
     const bool is_int8_quant_matmul = params.dtypes.wei == data_type_t::s8
             && params.quant_params.src_scale.buff;
-    if (is_int8_quant_matmul && non_f32_quant_scale_src
+    // A bf16 source scale used to mean "AOCL-DLP, since nothing else consumes
+    // one". The native per-group kernels do -- the adapter widens bf16 scales on
+    // the way in -- and on a no-VNNI host AOCL-DLP cannot run this shape at all,
+    // so forcing it here is how llama.cpp's Q8_0 came to hand back an untouched
+    // destination: dt is bf16 there, and this rule fired thirty lines after the
+    // routing that had just chosen native.
+    if (is_int8_quant_matmul && non_f32_quant_scale_src && !native_int8_selected
             && (kernel != matmul_algo_t::aocl_dlp
                     && kernel != matmul_algo_t::aocl_dlp_blocked)) {
         kernel = matmul_algo_t::aocl_dlp_blocked;
