@@ -114,8 +114,31 @@ a10-8770e,BF16,cpu+bulldnn-algo-aocl-dlp-blocked,0,37.56,
 a10-8770e,Q4_K_M,cpu,0,86.92,7.51
 a10-8770e,Q4_K_M,cpu+bulldnn-kquant-kernels,0,87.99,7.82
 #
-# i.e. prompt is unchanged (+1.2%, inside noise) and generation is +4%, with the
-# fork's tg32 the more repeatable of the two (7.81-7.83 against 7.31-7.83).
+# READ THE TWO ROWS ABOVE AS A NULL RESULT, NOT AS +1.2%/+4%. The dispatch
+# counter, run afterwards with the SAME flags (-p 128 -n 32 -t 4 -ngl 0),
+# reports an empty table: zero ops accepted, zero rejected, zero executed, for
+# every weight type. Under this invocation the ggml-zendnn backend is never
+# asked to do anything, so both arms are the same code and the difference
+# between them is the box, not the fork.
+#
+# The cause is registration, not the kernels. ZenDNN registers as its own
+# DEVICE, and `llama-bench --list-devices` shows it with 0 MiB:
+#
+#   Vulkan0: AMD Radeon R7 Graphics (RADV CARRIZO) (50176 MiB, 50162 MiB free)
+#   ZenDNN:  ZenDNN: AMD optimized primitives backend for GGML (0 MiB, 0 MiB free)
+#
+# A device with no buffer never has weights placed on it, so the scheduler never
+# routes an op to it. -ngl 0 puts the weights in the plain CPU backend and -ngl
+# 99 puts them on Vulkan; neither is ZenDNN. Selecting it explicitly
+# (-dev ZenDNN -ngl 99) does deliver ops, but they arrive as f16 -- the
+# attention matmuls -- and all 1120 are rejected, with the Q4_K weight matmuls
+# still going elsewhere. So there is currently NO llama-bench invocation on this
+# box that measures the fork.
+#
+# This does not touch the thermal finding above, which was measured with one
+# binary against itself. It does mean the fork-vs-stock comparison is still
+# unmade here, and that "flat" in these rows carries no information about the
+# kernels either way.
 #
 # An interleaved-and-bracketed run had already made this visible before the
 # cooldown test proved it: one pass read baseline 42.87 / bulldnn 81.28 /
@@ -126,3 +149,26 @@ a10-8770e,Q4_K_M,cpu+bulldnn-kquant-kernels,0,87.99,7.82
 # The FX box never showed any of it (141-148 every pass) because it is a 95W
 # desktop part with headroom. Two family 15h boxes, only one of them able to
 # sustain a load, and the same kernels on both.
+#
+# ---------------------------------------------------------------------------
+# A10 BF16 and Q8_0, re-measured 2026-08-15 under the cooled alternating
+# protocol, three pairs each. ALSO A NULL RESULT for the same reason as Q4_K
+# above -- the dispatch counter is empty for both, so the "with" arm is the
+# "without" arm carrying a different filename. Recorded because the STOCK
+# numbers are worth having and because they retire two older claims.
+a10-8770e,BF16,cpu-stock,0,71.38,2.607
+a10-8770e,BF16,cpu+bulldnn-NOT-DISPATCHED,0,71.00,2.610
+a10-8770e,Q8_0,cpu-stock,0,85.29,6.20
+a10-8770e,Q8_0,cpu+bulldnn-NOT-DISPATCHED,0,85.95,6.27
+#
+# Two older rows do not survive these:
+#
+# 1. The BF16 pair at 68.64 / 62.19 read as a 9% regression from this fork. Both
+#    arms now measure ~71 cooled, and neither dispatches, so there was never a
+#    regression to explain -- the AOCL-DLP story told for it above was fitted to
+#    thermal noise.
+# 2. The Q8_0 pair at 76.74 / 87.88 pp and 1.44 / 6.39 tg read as a 4.4x
+#    generation speedup. Stock Q8_0 generation measures 6.20 here, not 1.44, so
+#    what was recorded as this fork's gain is a baseline that was wrong by 4.3x.
+#    The FX box's 1.57 -> 11.82 for the same quantisation deserves the same
+#    scepticism and has not been re-checked.
