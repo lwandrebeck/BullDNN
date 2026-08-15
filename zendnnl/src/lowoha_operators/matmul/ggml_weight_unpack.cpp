@@ -203,6 +203,159 @@ status_t ggml_reorder_unpacked_weights(int N, int K, int ldb, char trans,
 #endif
 }
 
+// ---------------------------------------------------------------------------
+// Q4_K and Q5_K: the asymmetric k-quants.
+//
+// A super-block covers 256 weights in eight sub-blocks of thirty-two, and unlike
+// every other type handled here a weight carries a min as well as a scale:
+//
+//     w = d * sc[j] * q  -  dmin * m[j]
+//
+// with q UNSIGNED -- four bits for Q4_K, five for Q5_K, the fifth living in a
+// separate high-bit array. sc[j] and m[j] are six-bit values packed twelve bytes
+// to a super-block by the interleaving get_scale_min_k4() undoes; d and dmin are
+// fp16 super-block scales.
+//
+// This is the form matmul_native could not express, having no weight zero point.
+// It is expressible after all once the min term is split out of the inner
+// product: see int8_kquant_ukernel_128.hpp for the algebra. What that costs here
+// is a second scale array, so the unpacked layout gains one.
+//
+// The unpacked buffer is
+//
+//     [ u8 codes (N*K) | D ({K/32, N} f32) | 64 bytes | M ({K/32, N} f32) ]
+//
+// and the padding between D and M is not cosmetic. D and M are read together in
+// the flush, one element of each per (group, column), and K/32 * N * 4 is a power
+// of two for every realistic shape -- 2 MB at N=4096. Two streams exactly that
+// far apart share cache sets; on Piledriver, whose L1d is 16 KB 4-way, that costs
+// twenty percent, while Excavator's 8-way 32 KB L1d shows nothing at all. One
+// cache line of displacement makes a single allocation the fastest arrangement
+// measured, ahead of giving D and M separate allocations. docs/perf carries the
+// numbers.
+//
+// Codes are unsigned, so the unpacked weight dtype is advertised as u8. That is
+// also what stops the symmetric INT8 path from taking these weights: it requires
+// s8, so a k-quant cannot be silently computed with its min dropped.
+
+constexpr int kGgmlKquantSuper = 256;
+constexpr int kGgmlKquantSub = 32; // weights per (scale, min) pair
+// One cache line, in floats. See above: this is load-bearing.
+constexpr int kKquantScalePadFloats = 16;
+
+struct block_q4_K {
+    uint16_t d;
+    uint16_t dmin;
+    uint8_t scales[12];
+    uint8_t qs[kGgmlKquantSuper / 2];
+};
+static_assert(sizeof(block_q4_K) == 144, "block_q4_K must match GGML's layout");
+
+struct block_q5_K {
+    uint16_t d;
+    uint16_t dmin;
+    uint8_t scales[12];
+    uint8_t qh[kGgmlKquantSuper / 8];
+    uint8_t qs[kGgmlKquantSuper / 2];
+};
+static_assert(sizeof(block_q5_K) == 176, "block_q5_K must match GGML's layout");
+
+// Six-bit scales and mins, eight of each packed into twelve bytes. Transcribed
+// from GGML's get_scale_min_k4; the first four pairs sit in the low six bits of
+// their own byte, the last four are split across the top two bits of the first
+// eight and the nibbles of the last four.
+inline void ggml_get_scale_min_k4(
+        int j, const uint8_t *q, uint8_t *d, uint8_t *m) {
+    if (j < 4) {
+        *d = q[j] & 63;
+        *m = q[j + 4] & 63;
+    } else {
+        *d = (q[j + 4] & 0xF) | ((q[j - 4] >> 6) << 4);
+        *m = (q[j + 4] >> 4) | ((q[j - 0] >> 6) << 4);
+    }
+}
+
+/// Decode a Q4_K (ggml_type 12) or Q5_K (13) weight into unsigned codes plus the
+/// group-major D and M arrays. Codes come out N x K row-major; scales are indexed
+/// [g * N + row], the same group-major order every other type here produces, so
+/// nothing downstream has to learn a second convention.
+int ggml_unpack_kquant(const void *weight_data, int ggml_type, int64_t N,
+        int64_t K, uint8_t *codes_out, float *d_out, float *m_out) {
+    if (ggml_type != 12 && ggml_type != 13) return -1;
+    if (K % kGgmlKquantSuper != 0) return -1;
+
+    const int64_t nsb = K / kGgmlKquantSuper; // super-blocks per row
+    const int64_t n_sub = kGgmlKquantSuper / kGgmlKquantSub; // eight
+
+#pragma omp parallel for schedule(static)
+    for (int64_t row = 0; row < N; ++row) {
+        for (int64_t sb = 0; sb < nsb; ++sb) {
+            // Both block copies live to the end of the iteration, so pointers
+            // into whichever was filled stay valid. Copied rather than read in
+            // place because the source need not be aligned for these structs.
+            block_q4_K b4 {};
+            block_q5_K b5 {};
+            const uint8_t *scales = nullptr;
+            const uint8_t *ql = nullptr;
+            const uint8_t *qh = nullptr;
+            float d = 0.0f, dmin = 0.0f;
+
+            if (ggml_type == 12) {
+                std::memcpy(&b4,
+                        static_cast<const block_q4_K *>(weight_data)
+                                + row * nsb + sb,
+                        sizeof(b4));
+                d = fp16_to_fp32(b4.d);
+                dmin = fp16_to_fp32(b4.dmin);
+                scales = b4.scales;
+                ql = b4.qs;
+            } else {
+                std::memcpy(&b5,
+                        static_cast<const block_q5_K *>(weight_data)
+                                + row * nsb + sb,
+                        sizeof(b5));
+                d = fp16_to_fp32(b5.d);
+                dmin = fp16_to_fp32(b5.dmin);
+                scales = b5.scales;
+                ql = b5.qs;
+                qh = b5.qh;
+            }
+
+            // One (D, M) pair per sub-block, in the shared group-major order.
+            for (int64_t j = 0; j < n_sub; ++j) {
+                uint8_t sc = 0, mn = 0;
+                ggml_get_scale_min_k4(static_cast<int>(j), scales, &sc, &mn);
+                const int64_t g = sb * n_sub + j;
+                d_out[g * N + row] = d * static_cast<float>(sc);
+                m_out[g * N + row] = dmin * static_cast<float>(mn);
+            }
+
+            // Codes. Each 64-element chunk shares 32 bytes of low nibbles: the
+            // first sub-block takes the low halves, the second the high ones.
+            // Q5_K adds a fifth bit from qh, whose mask advances by two bits per
+            // chunk -- exactly GGML's u1/u2 walk.
+            uint8_t *dst = codes_out + row * K + sb * kGgmlKquantSuper;
+            uint8_t u1 = 1, u2 = 2;
+            for (int64_t c = 0; c < kGgmlKquantSuper / 64; ++c) {
+                const uint8_t *chunk = ql + c * 32;
+                for (int l = 0; l < 32; ++l) {
+                    uint8_t lo = chunk[l] & 0x0F;
+                    uint8_t hi = chunk[l] >> 4;
+                    if (ggml_type == 13) {
+                        if (qh[l] & u1) lo = static_cast<uint8_t>(lo + 16);
+                        if (qh[l] & u2) hi = static_cast<uint8_t>(hi + 16);
+                    }
+                    dst[c * 64 + l] = lo;
+                    dst[c * 64 + 32 + l] = hi;
+                }
+                u1 = static_cast<uint8_t>(u1 << 2);
+                u2 = static_cast<uint8_t>(u2 << 2);
+            }
+        }
+    }
+    return 0;
+}
+
 // Unpack a GGML block-quantized weight into a freshly-allocated buffer laid out
 // as [ s8 weights (N*K) | bf16 scales ({K/32, N}) ] — byte-for-byte what a
 // Q8_0 unpack of the same logical weight produces.  Q8_0 (ggml_type 8) unpacks
@@ -643,6 +796,88 @@ static status_t unpack_ggml_raw_s8_and_cache(const void *&weight, int N, int K,
     return status_t::success;
 }
 
+// Q4_K / Q5_K unpack + cache. Hands back unsigned codes with D and M in one
+// padded allocation; see the decode above for the layout and why the padding is
+// there. Cached under the native_gemm key marker like the raw-s8 path, so a
+// k-quant entry cannot alias an AOCL-reordered one for the same weight.
+static status_t unpack_ggml_kquant_and_cache(const void *&weight, int N, int K,
+        int ldb, char trans, matmul_params &params, int ggml_type) {
+    const size_t code_bytes = static_cast<size_t>(N) * static_cast<size_t>(K);
+    const int64_t groups = static_cast<int64_t>(K) / kGgmlKquantSub;
+    const size_t scale_elems = static_cast<size_t>(groups) * N;
+    // [ codes | D | pad | M ]
+    const size_t d_off = align_up(code_bytes);
+    const size_t m_off_floats = scale_elems + kKquantScalePadFloats;
+    const size_t total = d_off + (m_off_floats + scale_elems) * sizeof(float);
+
+    Key_matmul cache_key(trans == 't', static_cast<unsigned int>(K),
+            static_cast<unsigned int>(N), static_cast<unsigned int>(ldb), weight,
+            static_cast<uint32_t>(matmul_algo_t::native_gemm));
+
+    lru_cache_t<Key_matmul, void *> &weight_cache
+            = get_ggml_reordered_weight_cache();
+    std::mutex &cache_mutex = get_ggml_reordered_weight_cache_mutex();
+
+    void *cached_buffer = nullptr;
+    {
+        std::lock_guard<std::mutex> lock(cache_mutex);
+        if (weight_cache.try_get(cache_key, cached_buffer)) {
+            apilog_info("GGML k-quant unpack cache hit: N=", N, ", K=", K);
+        }
+    }
+
+    if (!cached_buffer) {
+        apilog_info("GGML k-quant unpack cache miss: N=", N, ", K=", K,
+                ", ggml_type=", ggml_type);
+        void *owned = aligned_alloc(64, align_up(total));
+        if (!owned) {
+            log_error("GGML k-quant unpack: allocation failed");
+            return status_t::failure;
+        }
+        uint8_t *base = static_cast<uint8_t *>(owned);
+        float *d_ptr = reinterpret_cast<float *>(base + d_off);
+        float *m_ptr = d_ptr + m_off_floats;
+        if (ggml_unpack_kquant(weight, ggml_type, N, K, base, d_ptr, m_ptr)
+                != 0) {
+            std::free(owned);
+            log_error("GGML k-quant unpack failed for ggml_type=", ggml_type,
+                    " (K must be a whole number of 256-weight super-blocks)");
+            return status_t::failure;
+        }
+        {
+            std::lock_guard<std::mutex> lock(cache_mutex);
+            if (weight_cache.try_get(cache_key, cached_buffer)) {
+                std::free(owned); // another thread filled it first
+            } else {
+                weight_cache.add(cache_key, owned);
+                cached_buffer = owned;
+            }
+        }
+    }
+
+    weight = cached_buffer;
+    params.mem_format_b = 'n';
+    params.packing.pack_format_b = 0;
+    // Unsigned codes. This is also the discriminator that keeps the symmetric
+    // INT8 path away: it requires s8, so a k-quant cannot be taken for a
+    // symmetric per-group weight and computed with its min dropped.
+    params.dtypes.wei = data_type_t::u8;
+    params.dtypes.compute = data_type_t::s8;
+    params.quant_params.wei_scale.buff = static_cast<const void *>(
+            static_cast<const uint8_t *>(cached_buffer) + d_off);
+    params.quant_params.wei_scale.dt = data_type_t::f32;
+    // {2G, N}: D in the first G rows, M in the last G -- but M begins at a padded
+    // offset, so only the k-quant adapter may take these dims literally. It is
+    // the one that reads them.
+    params.quant_params.wei_scale.dims
+            = {2 * groups, static_cast<int64_t>(N)};
+
+    apilog_info("GGML k-quant unpack output: codes=", code_bytes,
+            " bytes, groups=", groups, ", scales=f32 {2G,N} padded, "
+            "mem_format=n, wei=u8");
+    return status_t::success;
+}
+
 status_t unpack_ggml_weights_and_cache(const void *&weight, int N, int K,
         int ldb, char trans, matmul_params &params, bool skip_reorder) {
     // Infer the GGML block format from the weight dtype (contract:
@@ -669,10 +904,12 @@ status_t unpack_ggml_weights_and_cache(const void *&weight, int N, int K,
     }
     if (params.packing.ggml_type_b != 0 && params.packing.ggml_type_b != 2
             && params.packing.ggml_type_b != 8
+            && params.packing.ggml_type_b != 12
+            && params.packing.ggml_type_b != 13
             && params.packing.ggml_type_b != 14) {
         log_error("GGML unpack: unsupported ggml_type_b=",
                 params.packing.ggml_type_b,
-                " (supported: 2=Q4_0, 8=Q8_0, 14=Q6_K)");
+                " (supported: 2=Q4_0, 8=Q8_0, 12=Q4_K, 13=Q5_K, 14=Q6_K)");
         return status_t::failure;
     }
     const int ggml_type = params.packing.ggml_type_b != 0
@@ -682,6 +919,16 @@ status_t unpack_ggml_weights_and_cache(const void *&weight, int N, int K,
     apilog_info("GGML unpack: N=", N, ", K=", K, ", ggml_type=", ggml_type,
             ", weight_address=", static_cast<const void *>(weight),
             ", skip_reorder=", (skip_reorder ? 1 : 0));
+
+    // Q4_K and Q5_K are asymmetric and have no symmetric form to reorder into:
+    // AOCL's sym-quant path cannot represent the min, so there is no
+    // skip_reorder choice to make here. They always come back as codes plus D
+    // and M for the native k-quant kernel, and if that kernel declines the call
+    // there is nothing else on this hardware that could have run it anyway.
+    if (ggml_type == 12 || ggml_type == 13) {
+        return unpack_ggml_kquant_and_cache(
+                weight, N, K, ldb, trans, params, ggml_type);
+    }
 
     // N-tile per-group DLP path: keep the weight raw so `do_tile` reorders it
     // per N-tile, instead of pre-reordering the full weight for AOCL here.

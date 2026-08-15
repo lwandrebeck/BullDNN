@@ -1015,6 +1015,227 @@ TEST(Int8KquantLooper128Extra, OneBufferAndTwoBuffersAgreeExactly) {
         ASSERT_FLOAT_EQ(c_joint[i], c_split[i]) << "at " << i;
 }
 
+// ---- Q4_K / Q5_K unpack ----------------------------------------------------
+//
+// Builds real GGML super-blocks, runs them through the library's unpack via
+// matmul_direct's entry point, and checks the decoded codes and scales against
+// GGML's own dequantisation formula. The packers here are the inverse of
+// get_scale_min_k4 and of the nibble/high-bit walk, written from the format
+// rather than from the library's decoder, so a shared misreading cannot cancel
+// out.
+
+namespace {
+
+constexpr int kKsuper = 256;
+constexpr int kKsub = 32;
+
+uint16_t f32_to_fp16_pow2(float v) {
+    uint32_t bits;
+    std::memcpy(&bits, &v, 4);
+    const uint32_t sign = (bits >> 31) & 1;
+    const int exp = static_cast<int>((bits >> 23) & 0xFF) - 127;
+    const uint32_t mant = bits & 0x7FFFFF;
+    return static_cast<uint16_t>(
+            (sign << 15) | (static_cast<uint32_t>(exp + 15) << 10) | (mant >> 13));
+}
+
+// Inverse of get_scale_min_k4: pack eight six-bit scales and eight six-bit mins
+// into twelve bytes.
+void pack_scales_mins_k4(const uint8_t *sc, const uint8_t *mn, uint8_t *out) {
+    std::memset(out, 0, 12);
+    for (int j = 0; j < 4; ++j) {
+        out[j] = static_cast<uint8_t>(sc[j] & 63);
+        out[j + 4] = static_cast<uint8_t>(mn[j] & 63);
+    }
+    for (int j = 4; j < 8; ++j) {
+        // low four bits of sc[j] and mn[j] go in the last four bytes...
+        out[j + 4] = static_cast<uint8_t>((sc[j] & 0xF) | ((mn[j] & 0xF) << 4));
+        // ...and their top two bits ride in the top two bits of earlier bytes.
+        out[j - 4] = static_cast<uint8_t>(out[j - 4] | ((sc[j] >> 4) << 6));
+        out[j - 0] = static_cast<uint8_t>(out[j - 0] | ((mn[j] >> 4) << 6));
+    }
+}
+
+struct KquantSource {
+    std::vector<uint8_t> blocks;   // packed GGML blocks, N rows
+    std::vector<uint8_t> codes;    // expected codes, N x K
+    std::vector<float> D, Min;     // expected scales, group-major {G, N}
+};
+
+// Build N x K of Q4_K (type 12) or Q5_K (13). Scales are exact powers of two and
+// the six-bit factors are small integers, so d * sc survives fp16 exactly and the
+// comparison measures decoding rather than rounding.
+KquantSource build_kquant(int type, int N, int K, std::mt19937 &rng) {
+    const int nsb = K / kKsuper;
+    const int groups = K / kKsub;
+    const size_t block_bytes = (type == 12) ? 144u : 176u;
+    const int max_code = (type == 12) ? 15 : 31;
+
+    KquantSource src;
+    src.blocks.assign(static_cast<size_t>(N) * nsb * block_bytes, 0);
+    src.codes.assign(static_cast<size_t>(N) * K, 0);
+    src.D.assign(static_cast<size_t>(groups) * N, 0.0f);
+    src.Min.assign(static_cast<size_t>(groups) * N, 0.0f);
+
+    std::uniform_int_distribution<int> dcode(0, max_code);
+    std::uniform_int_distribution<int> dsix(1, 40);
+    const float exact[4] = {0.03125f, 0.0625f, 0.125f, 0.25f};
+
+    for (int n = 0; n < N; ++n) {
+        for (int sb = 0; sb < nsb; ++sb) {
+            const float d = exact[(n + sb) % 4];
+            const float dmin = exact[(n + sb + 1) % 4];
+            uint8_t sc[8], mn[8];
+            for (int j = 0; j < 8; ++j) {
+                sc[j] = static_cast<uint8_t>(dsix(rng));
+                mn[j] = static_cast<uint8_t>(dsix(rng));
+                const int g = sb * 8 + j;
+                src.D[static_cast<size_t>(g) * N + n] = d * sc[j];
+                src.Min[static_cast<size_t>(g) * N + n] = dmin * mn[j];
+            }
+
+            uint8_t codes[kKsuper];
+            for (int e = 0; e < kKsuper; ++e)
+                codes[e] = static_cast<uint8_t>(dcode(rng));
+            std::memcpy(&src.codes[static_cast<size_t>(n) * K + sb * kKsuper],
+                    codes, kKsuper);
+
+            uint8_t *blk = &src.blocks[(static_cast<size_t>(n) * nsb + sb)
+                    * block_bytes];
+            const uint16_t d16 = f32_to_fp16_pow2(d);
+            const uint16_t dm16 = f32_to_fp16_pow2(dmin);
+            std::memcpy(blk, &d16, 2);
+            std::memcpy(blk + 2, &dm16, 2);
+            pack_scales_mins_k4(sc, mn, blk + 4);
+
+            uint8_t *ql = blk + (type == 12 ? 16 : 48);
+            uint8_t *qh = (type == 13) ? blk + 16 : nullptr;
+            if (qh) std::memset(qh, 0, 32);
+            uint8_t u1 = 1, u2 = 2;
+            for (int c = 0; c < kKsuper / 64; ++c) {
+                for (int l = 0; l < 32; ++l) {
+                    const uint8_t lo = codes[c * 64 + l];
+                    const uint8_t hi = codes[c * 64 + 32 + l];
+                    ql[c * 32 + l] = static_cast<uint8_t>(
+                            (lo & 0x0F) | ((hi & 0x0F) << 4));
+                    if (qh) {
+                        if (lo >= 16) qh[l] = static_cast<uint8_t>(qh[l] | u1);
+                        if (hi >= 16) qh[l] = static_cast<uint8_t>(qh[l] | u2);
+                    }
+                }
+                u1 = static_cast<uint8_t>(u1 << 2);
+                u2 = static_cast<uint8_t>(u2 << 2);
+            }
+        }
+    }
+    return src;
+}
+
+} // namespace
+
+class GgmlKquantUnpack : public ::testing::TestWithParam<int> {
+protected:
+    void SetUp() override {
+        clear_all_weight_caches();
+        clear_ggml_weight_unpack_cache();
+    }
+    void TearDown() override {
+        clear_all_weight_caches();
+        clear_ggml_weight_unpack_cache();
+    }
+};
+
+// The unpack is reached through matmul_direct, so this also proves a Q4_K/Q5_K
+// call gets past ggml_is_sym_quant and the type validation. The matmul itself is
+// expected to decline for now -- no dispatch exists yet -- which is why the
+// status is not asserted; what is asserted is that the weight was decoded.
+TEST_P(GgmlKquantUnpack, DecodesCodesAndScalesLikeGgml) {
+    const int type = GetParam();
+    const int N = 8, K = 512;
+    const int groups = K / kKsub;
+    std::mt19937 rng(type == 12 ? 1212 : 1313);
+    KquantSource src = build_kquant(type, N, K, rng);
+
+    // Drive the library's unpack directly: it is the entry point matmul_direct
+    // uses, and calling it here keeps the test on the decode rather than on
+    // whatever dispatch does afterwards.
+    const void *weight = src.blocks.data();
+    matmul_params p;
+    p.dtypes.src = data_type_t::s8;
+    p.dtypes.wei = (type == 12) ? data_type_t::s4 : data_type_t::s8;
+    p.dtypes.dst = data_type_t::f32;
+    p.packing.pack_format_b = 1;
+    p.packing.ggml_type_b = type;
+    std::vector<float> src_scales(static_cast<size_t>(4) * groups, 0.01f);
+    p.quant_params.src_scale.buff = src_scales.data();
+    p.quant_params.src_scale.dt = data_type_t::f32;
+    p.quant_params.src_scale.dims = {4, groups};
+
+    ASSERT_EQ(unpack_ggml_weights_and_cache(weight, N, K, K, 't', p),
+            status_t::success);
+
+    // Codes come back unsigned and row-major N x K.
+    EXPECT_EQ(p.dtypes.wei, data_type_t::u8)
+            << "codes must be advertised unsigned, which is also what keeps the "
+               "symmetric path away";
+    EXPECT_EQ(p.mem_format_b, 'n');
+    EXPECT_EQ(p.packing.pack_format_b, 0);
+    ASSERT_EQ(p.quant_params.wei_scale.dims.size(), 2u);
+    EXPECT_EQ(p.quant_params.wei_scale.dims[0], 2 * groups);
+    EXPECT_EQ(p.quant_params.wei_scale.dims[1], N);
+    EXPECT_EQ(p.quant_params.wei_scale.dt, data_type_t::f32);
+
+    const uint8_t *codes = static_cast<const uint8_t *>(weight);
+    for (int n = 0; n < N; ++n)
+        for (int k = 0; k < K; ++k)
+            ASSERT_EQ(codes[static_cast<size_t>(n) * K + k],
+                    src.codes[static_cast<size_t>(n) * K + k])
+                    << "code at (" << n << "," << k << ")";
+
+    // D at the start of the scale region, M one cache line past its end.
+    const float *D = static_cast<const float *>(p.quant_params.wei_scale.buff);
+    const float *Min = D + static_cast<size_t>(groups) * N + 16;
+    for (int g = 0; g < groups; ++g) {
+        for (int n = 0; n < N; ++n) {
+            const size_t i = static_cast<size_t>(g) * N + n;
+            EXPECT_FLOAT_EQ(D[i], src.D[i]) << "D at g=" << g << " n=" << n;
+            EXPECT_FLOAT_EQ(Min[i], src.Min[i]) << "M at g=" << g << " n=" << n;
+        }
+    }
+}
+
+INSTANTIATE_TEST_SUITE_P(Types, GgmlKquantUnpack, ::testing::Values(12, 13),
+        [](const ::testing::TestParamInfo<int> &i) {
+            return i.param == 12 ? std::string("Q4_K") : std::string("Q5_K");
+        });
+
+// A decoded k-quant must be refused by the symmetric path rather than computed
+// with its min dropped: {2G, N} reads as a valid symmetric per-group scale of
+// group size K/(2G), so the u8 dtype is the only thing standing between a Q4_K
+// weight and a confidently wrong answer.
+TEST(GgmlKquantUnpackExtra, SymmetricPathRefusesADecodedKquant) {
+    const int N = 8, K = 512, groups = K / kKsub;
+    std::mt19937 rng(77);
+    KquantSource src = build_kquant(12, N, K, rng);
+    const void *weight = src.blocks.data();
+    matmul_params p;
+    p.dtypes.src = data_type_t::s8;
+    p.dtypes.wei = data_type_t::s4;
+    p.dtypes.dst = data_type_t::f32;
+    p.packing.pack_format_b = 1;
+    p.packing.ggml_type_b = 12;
+    std::vector<float> ss(static_cast<size_t>(4) * groups, 0.01f);
+    p.quant_params.src_scale.buff = ss.data();
+    p.quant_params.src_scale.dt = data_type_t::f32;
+    p.quant_params.src_scale.dims = {4, groups};
+    ASSERT_EQ(unpack_ggml_weights_and_cache(weight, N, K, K, 't', p),
+            status_t::success);
+
+    EXPECT_FALSE(native::is_int8_symq_candidate(p, K, N))
+            << "the symmetric kernel accepted a k-quant; it would compute it "
+               "with the min term silently dropped";
+}
+
 // ------------------------------------------------------------------ dispatch
 
 // Through the public matmul API rather than the kernel entry point, so these
