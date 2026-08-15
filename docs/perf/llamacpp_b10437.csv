@@ -16,6 +16,23 @@
 # selects AOCL-DLP, which on this family is about half the speed of ggml's own
 # backend. The FX box, built without AOCL-DLP, is stable. An earlier reading of
 # 35.4 for that cell was noise from a single pass and should be ignored.
+# TWO CORRECTIONS, both material:
+#
+# 1. The rows below were taken against an install tree dated 23 July, which
+#    contained NONE of this fork's INT8 work (0 matching symbols against 35 in a
+#    current build) -- `make install` had never been re-run. Re-measuring Q8_0 on
+#    the FX with a current library gives 115.32 / 11.82 against 114.56 / 11.83,
+#    i.e. identical. So the llama.cpp gains below are real but come from
+#    elsewhere in the library, NOT from the native INT8 kernels; those are still
+#    unreached from llama.cpp.
+#
+# 2. Q4_K, which is what people actually run, is far faster than Q8_0 in stock
+#    ggml on these parts: 145.72 / 15.14 against 108.79 / 1.57. The dramatic Q8_0
+#    speedup is therefore mostly "ggml's Q8_0 path is pathological without AVX2",
+#    and for a realistic model this fork currently adds about 1%.
+fx-8370e,Q8_0,cpu+bulldnn-current-lib,0,115.32,11.82
+fx-8370e,Q4_K_M,cpu,0,145.72,15.14
+fx-8370e,Q4_K_M,cpu+bulldnn,0,147.46,15.35
 host,precision,config,ngl,pp128,tg32
 fx-8370e,Q8_0,cpu,0,108.79,1.57
 fx-8370e,Q8_0,cpu+bulldnn,0,114.56,11.83
