@@ -886,6 +886,24 @@ matmul_algo_t kernel_select(matmul_params &params, int Batch_A, int Batch_B,
             && (params.dtypes.src == data_type_t::s8
                     || is_bf16_f32_per_token_sym);
 
+    // A per-group INT8 shape on a host without AVX-512 VNNI has exactly one
+    // implementation: the native 128-bit kernels. AOCL-DLP refuses such a call
+    // and returns without computing, so leaving the choice to the default algo
+    // -- which is aocl_dlp_blocked, and which no caller who did not name an algo
+    // has any way to override -- means the work is silently not done. A caller
+    // that never asks for anything, such as llama.cpp's ZenDNN backend, hits
+    // exactly that. Prefer native here rather than fail.
+    if (!native::detect_uarch().avx512vnni
+            && (native::is_int8_symq_candidate(params, K, N)
+                    || native::is_int8_kquant_candidate(params, K, N))
+            && kernel != matmul_algo_t::native_gemm
+            && kernel != matmul_algo_t::native_brgemm) {
+        log_info(
+                "Per-group INT8 without AVX-512 VNNI: routing to native_gemm, "
+                "which is the only kernel that can run it here");
+        kernel = matmul_algo_t::native_gemm;
+    }
+
     if (is_sym_quant && kernel != matmul_algo_t::aocl_dlp_blocked) {
         // Sym-quant belongs to AOCL-DLP, except where AOCL-DLP cannot run it at
         // all: without AVX-512 VNNI it refuses and returns without computing, so

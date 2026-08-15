@@ -32,7 +32,15 @@
 #    and for a realistic model this fork currently adds about 1%.
 fx-8370e,Q8_0,cpu+bulldnn-current-lib,0,115.32,11.82
 fx-8370e,Q4_K_M,cpu,0,145.72,15.14
-fx-8370e,Q4_K_M,cpu+bulldnn,0,147.46,15.35
+# The row below is from a Q4_K passthrough that ABORTED under llama-perplexity --
+# llama-bench never validates output, so it benchmarked a broken path. Kept as a
+# warning, not as a result.
+fx-8370e,Q4_K_M,cpu+bulldnn-passthrough-BROKEN,0,147.46,15.35
+# Q4_K genuinely reaching the k-quant kernels (patch 0002 plus the kernel_select
+# fix), verified by perplexity 1.0040 against 1.0041 and by the dispatch counter
+# reporting 168 executed, 0 rejected. 3 reps.
+fx-8370e,Q4_K_M,cpu,0,146.92,15.19
+fx-8370e,Q4_K_M,cpu+bulldnn-kquant-kernels,0,147.90,16.01
 host,precision,config,ngl,pp128,tg32
 fx-8370e,Q8_0,cpu,0,108.79,1.57
 fx-8370e,Q8_0,cpu+bulldnn,0,114.56,11.83
