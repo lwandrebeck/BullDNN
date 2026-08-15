@@ -61,6 +61,7 @@
 #include "lowoha_operators/matmul/matmul_native/common/kernel_cache.hpp"
 #include "lowoha_operators/matmul/matmul_native/gemm/kernel/int8/int8_kquant_ukernel_128.hpp"
 #include "lowoha_operators/matmul/matmul_native/gemm/kernel/int8/int8_symq_ukernel_128.hpp"
+#include "lowoha_operators/matmul/matmul_native/gemm/looper/int8_kquant_looper_128.hpp"
 #include "lowoha_operators/matmul/matmul_native/gemm/looper/int8_symq_entry_128.hpp"
 #include "lowoha_operators/matmul/matmul_native/gemm/looper/int8_symq_looper_128.hpp"
 
@@ -834,6 +835,184 @@ TEST(Int8KquantUkernel128, PerTokenAndPerGroupActivationScales) {
         EXPECT_LT(worst_scaled_error(C, N, ref, N, M, N, &nans), kTolerance);
         EXPECT_EQ(nans, 0);
     }
+}
+
+// ---- k-quant looper --------------------------------------------------------
+
+namespace {
+
+struct KqShape {
+    int M, N, K, gs;
+    bool transB;
+    int nthreads;
+    int max_code;
+    int ss_kind; // 0 per-tensor, 1 per-token {M,1}, 2 per-group {M,G}
+    const char *why;
+};
+
+} // namespace
+
+class Int8KquantLooper128 : public ::testing::TestWithParam<KqShape> {};
+
+TEST_P(Int8KquantLooper128, MatchesTheDequantiseThenMultiplyReference) {
+    if (select_int8_kquant_ukernel_128() == nullptr)
+        GTEST_SKIP() << "no 128-bit INT8 microkernel on this host";
+
+    const KqShape s = GetParam();
+    const int lda = s.K;
+    const int ldq = s.transB ? s.K : s.N;
+    const int ldc = s.N;
+    const int groups = s.K / s.gs;
+
+    std::mt19937 rng(20260815);
+    std::vector<int8_t> A(static_cast<size_t>(s.M) * lda);
+    std::vector<uint8_t> q(s.transB ? static_cast<size_t>(s.N) * ldq
+                                    : static_cast<size_t>(s.K) * ldq);
+    std::vector<float> D(static_cast<size_t>(groups) * s.N);
+    std::vector<float> Min(static_cast<size_t>(groups) * s.N);
+    fill_s8(A, rng, false);
+    fill_codes(q, rng, s.max_code);
+    fill_scales(D, rng);
+    fill_scales(Min, rng);
+
+    const int ss_row = s.ss_kind == 0 ? 0 : (s.ss_kind == 1 ? 1 : groups);
+    const int ss_grp = s.ss_kind == 2 ? 1 : 0;
+    std::vector<float> ss(s.ss_kind == 0
+                    ? size_t {1}
+                    : static_cast<size_t>(s.M) * (s.ss_kind == 1 ? 1 : groups));
+    fill_scales(ss, rng);
+
+    std::vector<float> C = poisoned(static_cast<size_t>(s.M) * ldc);
+    ASSERT_TRUE(int8_kquant_execute_128(s.M, s.N, s.K, s.gs, A.data(), lda,
+            q.data(), ldq, s.transB, C.data(), ldc, D.data(), Min.data(),
+            ss.data(), ss_row, ss_grp, s.nthreads));
+
+    // The reference indexes q as [n][k]; transpose when the caller gave K x N so
+    // one reference serves both layouts.
+    std::vector<uint8_t> q_nk(static_cast<size_t>(s.N) * s.K);
+    for (int n = 0; n < s.N; ++n)
+        for (int k = 0; k < s.K; ++k)
+            q_nk[static_cast<size_t>(n) * s.K + k] = s.transB
+                    ? q[static_cast<size_t>(n) * ldq + k]
+                    : q[static_cast<size_t>(k) * ldq + n];
+
+    std::vector<float> ref;
+    reference_kquant(s.M, s.N, s.K, s.gs, A.data(), lda, q_nk.data(), s.K,
+            D.data(), Min.data(), ss.data(), ss_row, ss_grp, ref);
+    int nans = 0;
+    const double err = worst_scaled_error(C, ldc, ref, s.N, s.M, s.N, &nans);
+    EXPECT_EQ(nans, 0) << nans << " output elements were never written";
+    EXPECT_LT(err, kTolerance);
+}
+
+// K=4096 and K=2048 exercise the K blocking, which splits the group loop; the min
+// correction is applied per group inside it, so an off-by-one in a block's group
+// offset shows up in those rows and nowhere else. Ragged M exercises the padded
+// path, which must pad the row sums and the per-token scales alongside A.
+INSTANTIATE_TEST_SUITE_P(Shapes, Int8KquantLooper128,
+        ::testing::Values(
+                KqShape {4, 8, 32, 32, false, 1, 15, 0, "one tile one group"},
+                KqShape {4, 8, 256, 32, false, 1, 31, 0, "Q5_K codes"},
+                KqShape {1, 512, 512, 32, true, 4, 15, 0, "decode GGML layout"},
+                KqShape {7, 13, 96, 32, false, 1, 15, 0, "ragged M and N"},
+                KqShape {5, 70, 128, 16, false, 2, 15, 0, "crosses panel tail"},
+                KqShape {128, 256, 512, 32, true, 4, 15, 0, "prompt GEMM"},
+                KqShape {3, 64, 32, 32, true, 1, 15, 0, "M below MR"},
+                KqShape {4, 8, 4096, 32, false, 1, 15, 0, "long K blocked"},
+                KqShape {64, 64, 64, 64, false, 2, 15, 0, "group spans K"},
+                KqShape {2, 9, 48, 16, true, 3, 31, 0, "odd everything"},
+                KqShape {4, 65, 32, 32, false, 4, 15, 0, "N past a panel"},
+                KqShape {33, 72, 2048, 32, true, 4, 15, 1, "per token ragged M"},
+                KqShape {12, 128, 512, 32, true, 4, 15, 2, "per group scales"},
+                KqShape {1, 128, 2048, 32, true, 2, 31, 1, "decode per token"}),
+        [](const ::testing::TestParamInfo<KqShape> &i) {
+            std::string n(i.param.why);
+            for (char &c : n)
+                if (!std::isalnum(static_cast<unsigned char>(c))) c = '_';
+            return n;
+        });
+
+TEST(Int8KquantLooper128Extra, DeclinesShapesItCannotExpress) {
+    std::vector<int8_t> A(256, 1);
+    std::vector<uint8_t> q(256, 1);
+    std::vector<float> D(256, 1.0f), Min(256, 0.0f), C(64, -7.0f);
+    const float ss = 1.0f;
+    struct { int K, gs; const char *why; } bad[] = {
+            {30, 32, "K is not a whole number of groups"},
+            {32, 6, "group size splits a VNNI quad"},
+            {32, 0, "group size zero"},
+    };
+    for (const auto &b : bad) {
+        SCOPED_TRACE(b.why);
+        EXPECT_FALSE(int8_kquant_execute_128(1, 8, b.K, b.gs, A.data(),
+                std::max(b.K, 1), q.data(), 8, false, C.data(), 8, D.data(),
+                Min.data(), &ss, 0, 0, 1));
+        for (float v : C) EXPECT_FLOAT_EQ(v, -7.0f) << "C was written";
+    }
+}
+
+TEST(Int8KquantLooper128Extra, IsInvariantInThreadCount) {
+    if (select_int8_kquant_ukernel_128() == nullptr)
+        GTEST_SKIP() << "no 128-bit INT8 microkernel on this host";
+
+    const int M = 33, N = 200, K = 256, gs = 32, groups = K / gs;
+    std::mt19937 rng(5);
+    std::vector<int8_t> A(static_cast<size_t>(M) * K);
+    std::vector<uint8_t> q(static_cast<size_t>(N) * K);
+    std::vector<float> D(static_cast<size_t>(groups) * N);
+    std::vector<float> Min(static_cast<size_t>(groups) * N);
+    fill_s8(A, rng, false);
+    fill_codes(q, rng, 31);
+    fill_scales(D, rng);
+    fill_scales(Min, rng);
+    const float ss = 0.01f;
+
+    std::vector<float> single = poisoned(static_cast<size_t>(M) * N);
+    ASSERT_TRUE(int8_kquant_execute_128(M, N, K, gs, A.data(), K, q.data(), K,
+            true, single.data(), N, D.data(), Min.data(), &ss, 0, 0, 1));
+    for (int nt : {2, 3, 4, 8}) {
+        SCOPED_TRACE(testing::Message() << "nthreads=" << nt);
+        std::vector<float> many = poisoned(static_cast<size_t>(M) * N);
+        ASSERT_TRUE(int8_kquant_execute_128(M, N, K, gs, A.data(), K, q.data(),
+                K, true, many.data(), N, D.data(), Min.data(), &ss, 0, 0, nt));
+        for (size_t i = 0; i < single.size(); ++i)
+            ASSERT_FLOAT_EQ(single[i], many[i]) << "at " << i;
+    }
+}
+
+// The looper must not care whether D and M come from one allocation or two: the
+// two candidate ways of carrying the min through matmul_params differ only in
+// that, and if the answers ever differed the benchmark comparing them would be
+// measuring a bug.
+TEST(Int8KquantLooper128Extra, OneBufferAndTwoBuffersAgreeExactly) {
+    if (select_int8_kquant_ukernel_128() == nullptr)
+        GTEST_SKIP() << "no 128-bit INT8 microkernel on this host";
+
+    const int M = 16, N = 128, K = 512, gs = 32, groups = K / gs;
+    std::mt19937 rng(808);
+    std::vector<int8_t> A(static_cast<size_t>(M) * K);
+    std::vector<uint8_t> q(static_cast<size_t>(N) * K);
+    fill_s8(A, rng, false);
+    fill_codes(q, rng, 15);
+
+    // One allocation: D in the first groups*N floats, M in the next -- the
+    // {2G, N} wei_scale layout.
+    std::vector<float> joint(static_cast<size_t>(2) * groups * N);
+    fill_scales(joint, rng);
+    // Two allocations holding the same values -- the separate-wei_zp layout.
+    std::vector<float> D(joint.begin(), joint.begin() + groups * N);
+    std::vector<float> Min(joint.begin() + groups * N, joint.end());
+    const float ss = 0.0137f;
+
+    std::vector<float> c_joint = poisoned(static_cast<size_t>(M) * N);
+    std::vector<float> c_split = poisoned(static_cast<size_t>(M) * N);
+    ASSERT_TRUE(int8_kquant_execute_128(M, N, K, gs, A.data(), K, q.data(), K,
+            true, c_joint.data(), N, joint.data(), joint.data() + groups * N,
+            &ss, 0, 0, 4));
+    ASSERT_TRUE(int8_kquant_execute_128(M, N, K, gs, A.data(), K, q.data(), K,
+            true, c_split.data(), N, D.data(), Min.data(), &ss, 0, 0, 4));
+    for (size_t i = 0; i < c_joint.size(); ++i)
+        ASSERT_FLOAT_EQ(c_joint[i], c_split[i]) << "at " << i;
 }
 
 // ------------------------------------------------------------------ dispatch

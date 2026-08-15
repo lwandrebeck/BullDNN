@@ -1,0 +1,51 @@
+# Where to put the k-quant min term, measured rather than argued.
+#
+# Q4_K/Q5_K weights need a per-group scale D and a per-group min M. Two ways of
+# carrying M through matmul_params were on the table -- appended to wei_scale as
+# {2G, N}, or in wei_zp as its own {G, N} array -- and they reach the same
+# microkernel through the same two pointers, so the only thing that can differ is
+# where D and M sit in memory. A third arrangement was added once the first
+# results came in.
+#
+#   joint      M immediately after D in one allocation  (the wei_scale encoding)
+#   split      D and M in two separate allocations       (the wei_zp encoding)
+#   joint_pad  one allocation, M displaced by one cache line (16 floats)
+#
+# Measured 2026-08-15, best of 3 passes x 5 reps with the arms interleaved inside
+# each pass; per-arm best-to-min spread was under 3% on every row that matters.
+#
+# THE RESULT. joint_pad > split > joint on Piledriver by 8-10% per step, and all
+# three are equal on Excavator. groups*N*4 is a power of two for every realistic
+# shape -- 2 MB at N=4096, 128 KB at 1024^3 -- so in the unpadded joint layout the
+# D and M streams land on the same cache sets. Piledriver's L1d is 16 KB 4-way and
+# suffers; Excavator's is 32 KB 8-way and does not. One cache line of padding
+# turns the worst arrangement into the best, because a single allocation also
+# keeps the two streams on one page stream.
+#
+# So: carry M in wei_scale, and pad the offset. The encoding that is easiest on
+# the API is also the fastest, provided the trap is avoided.
+host,uarch,threads,shape,M,N,K,layout,GOPS
+fx-8370e,bdver2,8,prompt-128,128,4096,4096,joint,117.09
+fx-8370e,bdver2,8,prompt-128,128,4096,4096,split,129.95
+fx-8370e,bdver2,8,prompt-128,128,4096,4096,joint_pad,140.88
+fx-8370e,bdver2,8,prompt-512,512,4096,4096,joint,128.32
+fx-8370e,bdver2,8,prompt-512,512,4096,4096,split,143.89
+fx-8370e,bdver2,8,prompt-512,512,4096,4096,joint_pad,157.39
+fx-8370e,bdver2,8,square-1024,1024,1024,1024,joint,123.51
+fx-8370e,bdver2,8,square-1024,1024,1024,1024,split,136.07
+fx-8370e,bdver2,8,square-1024,1024,1024,1024,joint_pad,146.63
+fx-8370e,bdver2,8,decode-qkv,1,4096,4096,joint,6.81
+fx-8370e,bdver2,8,decode-qkv,1,4096,4096,split,6.94
+fx-8370e,bdver2,8,decode-qkv,1,4096,4096,joint_pad,6.95
+a10-8770e,bdver4,4,prompt-128,128,4096,4096,joint,63.19
+a10-8770e,bdver4,4,prompt-128,128,4096,4096,split,63.99
+a10-8770e,bdver4,4,prompt-128,128,4096,4096,joint_pad,64.09
+a10-8770e,bdver4,4,prompt-512,512,4096,4096,joint,70.26
+a10-8770e,bdver4,4,prompt-512,512,4096,4096,split,70.11
+a10-8770e,bdver4,4,prompt-512,512,4096,4096,joint_pad,69.95
+a10-8770e,bdver4,4,square-1024,1024,1024,1024,joint,69.52
+a10-8770e,bdver4,4,square-1024,1024,1024,1024,split,69.59
+a10-8770e,bdver4,4,square-1024,1024,1024,1024,joint_pad,69.32
+a10-8770e,bdver4,4,decode-qkv,1,4096,4096,joint,3.36
+a10-8770e,bdver4,4,decode-qkv,1,4096,4096,split,3.39
+a10-8770e,bdver4,4,decode-qkv,1,4096,4096,joint_pad,3.38

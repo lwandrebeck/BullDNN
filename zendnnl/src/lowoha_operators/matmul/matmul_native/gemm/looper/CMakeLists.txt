@@ -4,6 +4,7 @@ set(sources
     bf16_gemm_looper_128.cpp
     int8_symq_looper_128.cpp
     int8_symq_entry_128.cpp
+    int8_kquant_looper_128.cpp
   fp32_gemm_looper.cpp)
 
 set(headers
@@ -11,6 +12,7 @@ set(headers
     bf16_gemm_looper_128.hpp
     int8_symq_looper_128.hpp
     int8_symq_entry_128.hpp
+    int8_kquant_looper_128.hpp
   fp32_gemm_looper.hpp)
 
 if(ZENDNNL_LIB_BUILD_ARCHIVE)
