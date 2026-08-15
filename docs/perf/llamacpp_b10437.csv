@@ -1,0 +1,49 @@
+# llama.cpp b10437 (16d222f) with and without this fork, measured 2026-08-15.
+#
+# "with BullDNN" is -DGGML_ZENDNN=ON -DZENDNN_ROOT=<BullDNN>/build/install: b10437
+# ships a ggml-zendnn backend that calls zendnnl::lowoha::matmul::matmul_direct,
+# which is this fork's own API, so no new backend was needed. Three CMake defects
+# had to be patched first; see patches/llama.cpp/.
+#
+# Model: qwen2.5-coder-1.5B, requantised locally from the Q8_0 release with
+# llama-quantize --allow-requantize. llama-bench -p 128 -n 32, 2-3 reps.
+# A10-8770E: 4 threads, Radeon R7 (RADV CARRIZO) iGPU. AOCL-DLP compiled IN.
+# FX-8370E:  8 threads, Radeon RX 560 (RADV POLARIS11). AOCL-DLP compiled OUT,
+#            governor pinned to performance, desktop stopped.
+#
+# READ THE BF16 ROWS WITH CARE. On the A10 the BullDNN arm is erratic (spreads of
+# 6-9 t/s against 0.7 for the baseline) because the dispatcher intermittently
+# selects AOCL-DLP, which on this family is about half the speed of ggml's own
+# backend. The FX box, built without AOCL-DLP, is stable. An earlier reading of
+# 35.4 for that cell was noise from a single pass and should be ignored.
+host,precision,config,ngl,pp128,tg32
+fx-8370e,Q8_0,cpu,0,108.79,1.57
+fx-8370e,Q8_0,cpu+bulldnn,0,114.56,11.83
+fx-8370e,Q8_0,vulkan,99,417.55,51.25
+fx-8370e,Q8_0,vulkan+bulldnn,99,414.28,48.33
+fx-8370e,Q8_0,vulkan+cpu,14,219.19,10.74
+fx-8370e,Q8_0,vulkan+cpu+bulldnn,14,217.95,16.89
+fx-8370e,F32,cpu,0,37.47,3.72
+fx-8370e,F32,cpu+bulldnn,0,37.75,3.72
+fx-8370e,F16,cpu,0,65.89,6.56
+fx-8370e,F16,cpu+bulldnn,0,66.34,6.57
+fx-8370e,BF16,cpu,0,67.94,6.05
+fx-8370e,BF16,cpu+bulldnn,0,68.18,6.02
+a10-8770e,Q8_0,cpu,0,76.74,1.44
+a10-8770e,Q8_0,cpu+bulldnn,0,87.88,6.39
+a10-8770e,Q8_0,vulkan,99,112.87,8.55
+a10-8770e,Q8_0,vulkan+bulldnn,99,108.10,9.19
+a10-8770e,Q8_0,vulkan+cpu,14,66.74,2.22
+a10-8770e,Q8_0,vulkan+cpu+bulldnn,14,92.26,8.38
+a10-8770e,F16,cpu,0,66.31,3.47
+a10-8770e,F16,cpu+bulldnn,0,65.03,3.62
+a10-8770e,BF16,cpu,0,68.64,2.65
+a10-8770e,BF16,cpu+bulldnn,0,62.19,2.56
+# BF16 dispatch experiment on the A10, pp128 only, 3 reps per pass, two passes.
+# This is what identifies AOCL-DLP as the cause of the variance above.
+a10-8770e,BF16,cpu+bulldnn-algo-default,0,69.33,
+a10-8770e,BF16,cpu+bulldnn-algo-default,0,50.43,
+a10-8770e,BF16,cpu+bulldnn-algo-native-gemm,0,60.13,
+a10-8770e,BF16,cpu+bulldnn-algo-native-gemm,0,60.21,
+a10-8770e,BF16,cpu+bulldnn-algo-aocl-dlp-blocked,0,51.85,
+a10-8770e,BF16,cpu+bulldnn-algo-aocl-dlp-blocked,0,37.56,

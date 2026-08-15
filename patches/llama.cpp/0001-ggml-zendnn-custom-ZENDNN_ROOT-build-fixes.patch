@@ -1,0 +1,56 @@
+diff --git a/ggml/src/ggml-zendnn/CMakeLists.txt b/ggml/src/ggml-zendnn/CMakeLists.txt
+index 87d721f..df10397 100644
+--- a/ggml/src/ggml-zendnn/CMakeLists.txt
++++ b/ggml/src/ggml-zendnn/CMakeLists.txt
+@@ -5,7 +5,22 @@ if (NOT DEFINED ZENDNN_ROOT OR ZENDNN_ROOT STREQUAL "")
+     set(ZENDNN_ROOT "$ENV{ZENDNN_ROOT}")
+ endif()
+ 
+-if (BUILD_SHARED_LIBS)
++# Which ZenDNN library to link is a property of the ZenDNN install, not of
++# llama.cpp's own BUILD_SHARED_LIBS. With a custom ZENDNN_ROOT built archive-only
++# (ZENDNNL_LIB_BUILD_SHARED=OFF), the original test picks -lzendnnl and fails to
++# link. Detect what is actually there and fall back to the old behaviour when
++# ZenDNN is going to be downloaded and built by us below.
++if (ZENDNN_ROOT AND NOT ZENDNN_ROOT STREQUAL "" AND NOT ZENDNN_ROOT STREQUAL "OFF")
++    if (EXISTS ${ZENDNN_ROOT}/zendnnl/lib/libzendnnl.so)
++        set(ZENDNN_SHARED_LIB ON)
++        set(ZENDNN_ARCHIVE_LIB OFF)
++    elseif (EXISTS ${ZENDNN_ROOT}/zendnnl/lib/libzendnnl_archive.a)
++        set(ZENDNN_SHARED_LIB OFF)
++        set(ZENDNN_ARCHIVE_LIB ON)
++    else()
++        message(FATAL_ERROR "No ZenDNN library found under ${ZENDNN_ROOT}/zendnnl/lib")
++    endif()
++elseif (BUILD_SHARED_LIBS)
+     set(ZENDNN_SHARED_LIB ON)
+     set(ZENDNN_ARCHIVE_LIB OFF)
+ else()
+@@ -67,7 +82,8 @@ target_include_directories(ggml-zendnn PRIVATE
+     ${ZENDNN_ROOT}/deps/aoclutils/include
+     ${ZENDNN_ROOT}/deps/aocldlp/include
+     ${ZENDNN_ROOT}/deps/onednn/include
+-    ${ZENDNN_ROOT}/deps/libxsmm/include)
++    ${ZENDNN_ROOT}/deps/libxsmm/include
++    ${ZENDNN_ROOT}/deps/fbgemm/include)
+ 
+ if (ZENDNN_SHARED_LIB)
+     target_link_directories(ggml-zendnn PRIVATE ${ZENDNN_ROOT}/zendnnl/lib)
+@@ -77,13 +93,16 @@ elseif (ZENDNN_ARCHIVE_LIB)
+         ${ZENDNN_ROOT}/zendnnl/lib/libzendnnl_archive.a
+         ${ZENDNN_ROOT}/deps/aoclutils/${CMAKE_INSTALL_LIBDIR}/libaoclutils.a
+         ${ZENDNN_ROOT}/deps/aoclutils/${CMAKE_INSTALL_LIBDIR}/libau_cpuid.a
+-        ${ZENDNN_ROOT}/deps/aocldlp/lib/libaocl-dlp.a
+         ${ZENDNN_ROOT}/deps/onednn/${CMAKE_INSTALL_LIBDIR}/libdnnl.a
+         ${ZENDNN_ROOT}/deps/libxsmm/lib/libxsmm.a
+         ${ZENDNN_ROOT}/deps/libxsmm/lib/libxsmmext.a
+         ${ZENDNN_ROOT}/deps/libxsmm/lib/libxsmmnoblas.a)
+ endif()
+ 
++if (EXISTS ${ZENDNN_ROOT}/deps/aocldlp/lib/libaocl-dlp.a)
++    target_link_libraries(ggml-zendnn PRIVATE ${ZENDNN_ROOT}/deps/aocldlp/lib/libaocl-dlp.a)
++endif()
++
+ target_link_libraries(ggml-zendnn PRIVATE m pthread)
+ 
+ if (GGML_OPENMP)
