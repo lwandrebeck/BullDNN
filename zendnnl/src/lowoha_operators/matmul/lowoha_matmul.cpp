@@ -424,6 +424,23 @@ status_t matmul_direct(const char layout, const bool transA, const bool transB,
         return status_t::failure;
     }
 
+    // Decode shape, still-packed k-quant weight: multiply straight out of the
+    // GGML blocks and skip the unpack entirely. This has to sit HERE, before the
+    // unpack, because the unpack is the thing it exists to avoid -- it expands a
+    // 4.5-bit weight to a byte per weight, and at one row of activations that
+    // doubles the bytes read for a weight that is read exactly once and never
+    // reused. Nothing downstream can undo that; only not doing it can.
+    //
+    // After the source quantisation above, so the activations are s8 and their
+    // scales are filled in. A false return has touched nothing.
+    if (exec_params.packing.pack_format_b == 1 && M == 1 && bias == nullptr
+            && beta == 0.0f && exec_params.postop_.empty()
+            && !native::detect_uarch().avx512vnni
+            && native::int8_kquant_gemv_try_execute_128(M, N, K, transB,
+                    exec_src, weight, dst, alpha, exec_params, num_threads)) {
+        return status_t::success;
+    }
+
     // GGML unpack mutates weight pointer and exec_params mem_format / wei_scale.
     const void *exec_weight = weight;
     if (exec_params.packing.pack_format_b == 1) {

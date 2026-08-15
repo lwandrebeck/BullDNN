@@ -43,6 +43,17 @@ bool is_int8_kquant_candidate(const matmul_params &params, int K, int N);
 /// not done at all -- AOCL-DLP refuses every INT8 kernel without AVX-512 VNNI --
 /// so declining costs nothing that was working, while a wrong acceptance is the
 /// only way this path can do harm.
+/// Decode-shape route for a STILL-PACKED GGML k-quant weight: one row of
+/// activations multiplied straight out of the blocks, with no unpack and no
+/// panel pack. Must be offered the weight BEFORE the GGML unpack runs, which is
+/// the whole point -- the unpack is what this exists to avoid.
+///
+/// Returns false, having touched nothing, for anything it does not express;
+/// the caller then proceeds to the ordinary unpack-and-GEMM path.
+bool int8_kquant_gemv_try_execute_128(int M, int N, int K, bool transB,
+        const void *src, const void *weight, void *dst, float alpha,
+        const matmul_params &params, int nthreads);
+
 bool int8_kquant_try_execute_128(const GemmDescriptor &desc, const void *src,
         const void *weight, void *dst, const void *bias,
         const matmul_params &params);

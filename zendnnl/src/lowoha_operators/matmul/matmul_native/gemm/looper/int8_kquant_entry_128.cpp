@@ -37,12 +37,14 @@
 #include "lowoha_operators/matmul/matmul_native/gemm/looper/int8_kquant_entry_128.hpp"
 
 #include <cstdint>
+#include <cstdlib>
 #include <vector>
 
 #include "common/bfloat16.hpp"
 #include "common/zendnnl_global.hpp"
 #include "lowoha_operators/matmul/matmul_native/common/kernel_cache.hpp"
 #include "lowoha_operators/matmul/matmul_native/gemm/kernel/int8/int8_kquant_ukernel_128.hpp"
+#include "lowoha_operators/matmul/matmul_native/gemm/kernel/int8/int8_q4k_gemv_128.hpp"
 #include "operators/matmul/matmul_config.hpp"
 #include "lowoha_operators/matmul/matmul_native/gemm/looper/int8_epilogue_128.hpp"
 #include "lowoha_operators/matmul/matmul_native/gemm/looper/int8_kquant_looper_128.hpp"
@@ -91,6 +93,80 @@ bool is_int8_kquant_candidate(const matmul_params &params, int K, int N) {
     if (groups == 0) return false;
     const int group_size = K / groups;
     return group_size % KQ_VNNI_GRP == 0;
+}
+
+bool int8_kquant_gemv_try_execute_128(int M, int N, int K, bool transB,
+        const void *src, const void *weight, void *dst, float alpha,
+        const matmul_params &params, int nthreads) {
+
+    // A kill switch, so that "the GEMV is what made the difference" can be
+    // measured on one binary rather than inferred from two. Without it the only
+    // way to attribute a number to this kernel is to rebuild without it, and two
+    // builds measured minutes apart on a box that thermally throttles is exactly
+    // how this project has previously fooled itself.
+    static const bool s_enabled = [] {
+        const char *e = std::getenv("ZENDNNL_NATIVE_Q4K_GEMV");
+        return e == nullptr || std::atoi(e) != 0;
+    }();
+    if (!s_enabled) return false;
+
+    const int ggml_type = params.packing.ggml_type_b;
+    if (!int8_q4k_gemv_supported(M, N, K, ggml_type)) return false;
+    // GGML stores a weight as N rows of K, which reaches here as transB.
+    if (!transB) return false;
+    if (params.dtypes.src != data_type_t::s8) return false;
+    if (params.dtypes.dst != data_type_t::f32) return false;
+    if (params.quant_params.src_zp.buff != nullptr) return false;
+
+    const auto &qp = params.quant_params;
+    if (qp.src_scale.buff == nullptr) return false;
+
+    // Per-tensor, or one scale per 32-wide group -- the layout GGML's q8_K
+    // activations produce. {1, G} and {G} are the same thing at one row.
+    const int n_groups = K / Q4K_SUB;
+    int ss_grp = 0;
+    {
+        size_t nelems = 1;
+        for (int64_t d : qp.src_scale.dims) nelems *= static_cast<size_t>(d);
+        if (nelems == 1) {
+            ss_grp = 0;
+        } else if (nelems == static_cast<size_t>(n_groups)) {
+            ss_grp = 1;
+        } else {
+            return false;
+        }
+    }
+
+    // The kernel takes f32 scales; llama.cpp supplies bf16. At one row this is
+    // K/32 values, so widening is free beside the N*K multiply-adds.
+    const size_t n_scales = ss_grp ? static_cast<size_t>(n_groups) : 1;
+    std::vector<float> scale_buf;
+    const float *ss = nullptr;
+    if (qp.src_scale.dt == data_type_t::f32 && alpha == 1.0f) {
+        ss = static_cast<const float *>(qp.src_scale.buff);
+    } else if (qp.src_scale.dt == data_type_t::f32
+            || qp.src_scale.dt == data_type_t::bf16) {
+        scale_buf.resize(n_scales);
+        if (qp.src_scale.dt == data_type_t::f32) {
+            const float *raw = static_cast<const float *>(qp.src_scale.buff);
+            for (size_t i = 0; i < n_scales; ++i) scale_buf[i] = raw[i] * alpha;
+        } else {
+            const uint16_t *raw
+                    = static_cast<const uint16_t *>(qp.src_scale.buff);
+            for (size_t i = 0; i < n_scales; ++i) {
+                scale_buf[i] = common::bfloat16_t::bf16_to_f32_val(
+                                       static_cast<int16_t>(raw[i]))
+                        * alpha;
+            }
+        }
+        ss = scale_buf.data();
+    } else {
+        return false;
+    }
+
+    return int8_q4k_gemv_128(N, K, ggml_type,
+            static_cast<const int8_t *>(src), weight,
+            static_cast<float *>(dst), ss, ss_grp, nthreads);
 }
 
 bool int8_kquant_try_execute_128(const GemmDescriptor &desc, const void *src,

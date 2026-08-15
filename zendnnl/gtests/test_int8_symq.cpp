@@ -60,6 +60,7 @@
 #include "lowoha_operators/matmul/ggml_weight_unpack.hpp"
 #include "lowoha_operators/matmul/matmul_native/common/kernel_cache.hpp"
 #include "lowoha_operators/matmul/matmul_native/gemm/kernel/int8/int8_kquant_ukernel_128.hpp"
+#include "lowoha_operators/matmul/matmul_native/gemm/kernel/int8/int8_q4k_gemv_128.hpp"
 #include "lowoha_operators/matmul/matmul_native/gemm/kernel/int8/int8_symq_ukernel_128.hpp"
 #include "lowoha_operators/matmul/matmul_native/gemm/looper/int8_kquant_entry_128.hpp"
 #include "lowoha_operators/matmul/matmul_native/gemm/looper/int8_kquant_looper_128.hpp"
@@ -2356,6 +2357,94 @@ TEST_F(Int8SymqDispatch, GgmlQ8_0WithF32ActivationsComputes) {
     }
     // Loose: the library quantises A to 8 bits, the reference does not.
     EXPECT_LT(worst_scaled_error(C, N, ref, N, M, N, &nans), 0.05f);
+}
+
+// The decode GEMV reads GGML's packed blocks directly instead of going through
+// the unpack. Same arithmetic as the k-quant looper, so it is held to the same
+// reference -- dequantise, then multiply -- and to the looper itself, which is
+// the comparison that matters: two independent routes to one answer.
+TEST_P(Int8KquantDispatch, DecodeGemvMatchesTheReferenceAndTheLooper) {
+    const int type = GetParam();
+    const int groups_per_sb = 8;
+
+    struct Shape {
+        int N, K;
+        const char *why;
+    };
+    const Shape shapes[] = {
+            {64, 256, "one super-block"},
+            {8, 512, "narrow, two super-blocks"},
+            {128, 1024, "wider than a panel"},
+            {33, 768, "ragged N"},
+    };
+
+    for (const Shape &sh : shapes) {
+        SCOPED_TRACE(std::string(sh.why));
+        clear_ggml_weight_unpack_cache();
+        clear_all_weight_caches();
+
+        std::mt19937 rng(type * 77 + sh.N + sh.K);
+        KquantSource src = build_kquant(type, sh.N, sh.K, rng);
+
+        const int n_groups = sh.K / kKsub;
+        std::vector<int8_t> A(static_cast<size_t>(sh.K));
+        fill_s8(A, rng, false);
+        std::vector<float> ss(static_cast<size_t>(n_groups));
+        const float exact[4] = {0.03125f, 0.0625f, 0.125f, 0.25f};
+        for (size_t i = 0; i < ss.size(); ++i) ss[i] = exact[(i + 1) % 4];
+        ASSERT_EQ(n_groups % groups_per_sb, 0);
+
+        std::vector<float> C = poisoned(static_cast<size_t>(sh.N));
+        ASSERT_TRUE(int8_q4k_gemv_128(sh.N, sh.K, type, A.data(),
+                src.blocks.data(), C.data(), ss.data(), /*ss_grp=*/1,
+                /*nthreads=*/2));
+
+        std::vector<float> ref;
+        reference_kquant(1, sh.N, sh.K, kKsub, A.data(), sh.K,
+                src.codes.data(), sh.K, src.D.data(), src.Min.data(), ss.data(),
+                /*ss_row=*/0, /*ss_grp=*/1, ref);
+        int nans = 0;
+        EXPECT_LT(worst_scaled_error(C, sh.N, ref, sh.N, 1, sh.N, &nans),
+                kTolerance);
+        EXPECT_EQ(nans, 0) << "dst never written";
+    }
+}
+
+// A per-tensor activation scale takes the other branch of the flush, and a
+// kernel that ignored ss_grp would still pass the per-group test above by
+// reading index 0 every time only if the scales happened to be equal. They are
+// not, so this pins it.
+TEST_P(Int8KquantDispatch, DecodeGemvHonoursAPerTensorScale) {
+    const int type = GetParam();
+    const int N = 64, K = 512;
+    clear_ggml_weight_unpack_cache();
+    clear_all_weight_caches();
+
+    std::mt19937 rng(type * 31 + 5);
+    KquantSource src = build_kquant(type, N, K, rng);
+    std::vector<int8_t> A(static_cast<size_t>(K));
+    fill_s8(A, rng, false);
+    const float one_scale = 0.0625f;
+
+    std::vector<float> C = poisoned(static_cast<size_t>(N));
+    ASSERT_TRUE(int8_q4k_gemv_128(N, K, type, A.data(), src.blocks.data(),
+            C.data(), &one_scale, /*ss_grp=*/0, /*nthreads=*/1));
+
+    std::vector<float> flat(static_cast<size_t>(K / kKsub), one_scale);
+    std::vector<float> ref;
+    reference_kquant(1, N, K, kKsub, A.data(), K, src.codes.data(), K,
+            src.D.data(), src.Min.data(), flat.data(), 0, 1, ref);
+    int nans = 0;
+    EXPECT_LT(worst_scaled_error(C, N, ref, N, 1, N, &nans), kTolerance);
+    EXPECT_EQ(nans, 0);
+}
+
+TEST(Int8Q4KGemvGate, DeclinesWhatItDoesNotExpress) {
+    EXPECT_FALSE(int8_q4k_gemv_supported(2, 64, 256, 12)) << "M>1 is the GEMM's";
+    EXPECT_FALSE(int8_q4k_gemv_supported(1, 64, 128, 12)) << "K not whole blocks";
+    EXPECT_FALSE(int8_q4k_gemv_supported(1, 64, 256, 8)) << "Q8_0 is not a k-quant";
+    EXPECT_TRUE(int8_q4k_gemv_supported(1, 64, 256, 12));
+    EXPECT_TRUE(int8_q4k_gemv_supported(1, 64, 512, 13));
 }
 
 // The k-quant adapter shares the epilogue rather than having its own, so one
