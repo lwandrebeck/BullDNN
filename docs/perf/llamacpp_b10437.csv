@@ -72,3 +72,34 @@ a10-8770e,BF16,cpu+bulldnn-algo-native-gemm,0,60.13,
 a10-8770e,BF16,cpu+bulldnn-algo-native-gemm,0,60.21,
 a10-8770e,BF16,cpu+bulldnn-algo-aocl-dlp-blocked,0,51.85,
 a10-8770e,BF16,cpu+bulldnn-algo-aocl-dlp-blocked,0,37.56,
+#
+# ---------------------------------------------------------------------------
+# A10 Q4_K, re-measured 2026-08-15 against a CURRENT install tree (29 k-quant
+# symbols present, patch 0002 applied, llama rebuilt). Correctness is settled:
+# perplexity 1.0090 baseline against 1.0091 with, and the dispatch counter says
+# `q4_K 1174 accepted, 0 rejected, 166 executed`, so the kernels do run.
+#
+# Prompt throughput with BullDNN on is UNRESOLVED and worse. 4 threads, 3 reps:
+a10-8770e,Q4_K_M,cpu,0,86.57,7.81
+a10-8770e,Q4_K_M,cpu+bulldnn-kquant-kernels,0,41.22,7.81
+#
+# That is not noise: the BullDNN arm is BIMODAL, sitting at either ~83 or ~33-41
+# with a spread inside each mode of well under 1 t/s, while the baseline arm is
+# stable. Two hypotheses were tested and BOTH are refuted:
+#
+#   forced algorithm    default p1 83.54+-1.20, p2 41.20+-0.89
+#                       algo10  p1 85.51+-0.31, p2 38.99+-6.06
+#                       -- both modes appear whether or not the algo is named.
+#   thread placement    no-bind p1 83.71+-1.25  spread p1 82.42+-0.25
+#                       no-bind p2 33.32+-0.05  spread p2 81.86+-0.34
+#                       no-bind p3 40.45+-0.16  spread p3 33.02+-0.05
+#                       -- OMP_PROC_BIND=spread OMP_PLACES=cores recovered pass
+#                       2 and then collapsed itself in pass 3, so placement is
+#                       not the explanation either.
+#
+# Whatever selects the mode is chosen once per process and holds for that
+# process's whole run. Not yet identified. Until it is, do not quote an A10 Q4_K
+# prompt number in either direction -- a single pass can be made to say 83 or 33
+# with no change to the binary. The FX box shows nothing like this (141-148
+# across every pass), which is itself the strongest clue: it is the A10 or its
+# software stack, not the k-quant kernels, which are the same code on both.
