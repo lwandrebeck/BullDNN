@@ -41,7 +41,9 @@
 
 #include "common/bfloat16.hpp"
 #include "common/zendnnl_global.hpp"
+#include "lowoha_operators/matmul/matmul_native/common/kernel_cache.hpp"
 #include "lowoha_operators/matmul/matmul_native/gemm/kernel/int8/int8_kquant_ukernel_128.hpp"
+#include "operators/matmul/matmul_config.hpp"
 #include "lowoha_operators/matmul/matmul_native/gemm/looper/int8_epilogue_128.hpp"
 #include "lowoha_operators/matmul/matmul_native/gemm/looper/int8_kquant_looper_128.hpp"
 
@@ -206,12 +208,29 @@ bool int8_kquant_try_execute_128(const GemmDescriptor &desc, const void *src,
         return false;
     }
 
+    // Pack the codes once per weight rather than once per call. This is the
+    // whole of the decode deficit: at one token the looper packed the entire
+    // weight to serve a single row, which is a GEMM's preparation for a GEMV's
+    // work, and measured a tenth of ggml's rate for it. The cache stores int8_t
+    // and these codes are unsigned; the packer only moves bytes and the
+    // microkernel reads them back through PMADDUBSW's unsigned operand, so this
+    // is a reinterpretation rather than a conversion.
+    static const int32_t s_weight_cache
+            = matmul_config_t::instance().get_weight_cache();
+    const INT8PrepackedWeight *prepacked = nullptr;
+    if (desc.is_weights_const && s_weight_cache != 0) {
+        const PrepackedWeightKey key {
+                weight, desc.K, desc.N, desc.ldb, desc.transB};
+        prepacked = INT8PrepackedWeightCache::instance().get_or_prepack(
+                key, reinterpret_cast<const int8_t *>(weight));
+    }
+
     const int nthreads = desc.num_threads > 0 ? desc.num_threads : 1;
     if (!int8_kquant_execute_128(desc.M, desc.N, desc.K, group_size,
                 static_cast<const int8_t *>(src), desc.lda,
                 static_cast<const uint8_t *>(weight), desc.ldb, desc.transB,
                 epi.C, epi.ldc, D, Mn, src_scale, ss_row, ss_grp, nthreads,
-                desc.beta))
+                desc.beta, prepacked))
         return false;
     int8_epilogue_finish(epi, desc, dst, params);
     return true;

@@ -19,6 +19,8 @@
 
 #include <cstdint>
 
+#include "lowoha_operators/matmul/matmul_native/common/kernel_cache.hpp"
+
 namespace zendnnl {
 namespace lowoha {
 namespace matmul {
@@ -59,7 +61,7 @@ bool int8_kquant_execute_128(int M, int N, int K, int group_size,
         const int8_t *A, int lda, const uint8_t *B, int ldb, bool transB,
         float *C, int ldc, const float *wei_scale, const float *wei_min,
         const float *src_scale, int ss_row, int ss_grp, int nthreads,
-        float beta = 0.0f);
+        float beta = 0.0f, const INT8PrepackedWeight *prepacked = nullptr);
 
 } // namespace native
 } // namespace matmul

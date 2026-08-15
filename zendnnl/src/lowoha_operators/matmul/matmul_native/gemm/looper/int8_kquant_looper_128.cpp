@@ -35,11 +35,20 @@
 // against M*N*K multiply-adds. Building it inside the panel loop would repeat it
 // once per column panel, which at N=4096 is sixty-four times.
 //
-// B is packed per panel per call. The symmetric path shares the INT8 prepacked
-// weight cache for this and the same would work here, the codes being bytes like
-// any other; it is left out of this first version deliberately, exactly as it was
-// there, so that a correctness failure cannot be ambiguous between the kernel and
-// a cache.
+// B comes from the shared INT8 prepacked weight cache when the caller offers one,
+// and is packed per panel per call otherwise. The first version deliberately did
+// not take the cache, so that a correctness failure could not be ambiguous
+// between the kernel and a cache; the kernel is settled now, and the per-call
+// pack was the whole of the decode deficit. At one token it packed the entire
+// weight -- tens of megabytes of shuffling -- to serve a single row of
+// activations, which is a GEMM's preparation for a GEMV's work. ggml, which
+// never packs, was ten times faster there and a third slower at 512 tokens.
+//
+// The cache stores int8_t and these codes are unsigned, which is a
+// reinterpretation and not a conversion: the packer moves bytes, and the
+// microkernel reads them back through PMADDUBSW's unsigned operand. Same
+// geometry as the symmetric path, kPanelW by KQ_VNNI_GRP, so the same panels
+// serve both.
 // ============================================================================
 
 #include "lowoha_operators/matmul/matmul_native/gemm/looper/int8_kquant_looper_128.hpp"
@@ -94,7 +103,7 @@ bool int8_kquant_execute_128(int M, int N, int K, int group_size,
         const int8_t *A, int lda, const uint8_t *B, int ldb, bool transB,
         float *C, int ldc, const float *wei_scale, const float *wei_min,
         const float *src_scale, int ss_row, int ss_grp, int nthreads,
-        float beta) {
+        float beta, const INT8PrepackedWeight *prepacked) {
 
     if (M <= 0 || N <= 0 || K <= 0) return false;
     if (group_size <= 0 || group_size % KQ_VNNI_GRP != 0) return false;
@@ -173,12 +182,23 @@ bool int8_kquant_execute_128(int M, int N, int K, int group_size,
         }
     }
 
+    // A prepacked weight must describe this problem; anything else would be read
+    // as though it did. K_padded must equal K because this path does not pad K.
+    if (prepacked != nullptr
+            && (prepacked->K != K || prepacked->N != N
+                    || prepacked->K_padded != K)) {
+        prepacked = nullptr;
+    }
+
 #if defined(_OPENMP)
 #pragma omp parallel num_threads(nt)
 #endif
     {
-        std::vector<uint8_t> b_panel(
-                static_cast<size_t>(n_quads) * b_stride, 0);
+        // Nothing to own when B comes from the cache: those panels are read-only
+        // and shared, so the threads read them where they lie.
+        std::vector<uint8_t> b_panel;
+        if (prepacked == nullptr)
+            b_panel.assign(static_cast<size_t>(n_quads) * b_stride, 0);
         std::vector<float> c_scratch;
         if (m_tail != 0)
             c_scratch.assign(static_cast<size_t>(KQ_MR) * KQ_NR, 0.0f);
@@ -190,7 +210,14 @@ bool int8_kquant_execute_128(int M, int N, int K, int group_size,
             const int jc = p * kPanelW;
             const int nb_act = std::min(kPanelW, N - jc);
 
-            pack_q_panel(B, ldb, transB, jc, nb_act, N, K, b_panel.data());
+            const uint8_t *panel_base;
+            if (prepacked != nullptr) {
+                panel_base = reinterpret_cast<const uint8_t *>(
+                        prepacked->get_panel(/*kq=*/0, p));
+            } else {
+                pack_q_panel(B, ldb, transB, jc, nb_act, N, K, b_panel.data());
+                panel_base = b_panel.data();
+            }
 
             for (int kb = 0; kb < K; kb += k_block) {
                 const int kb_act = std::min(k_block, K - kb);
@@ -201,7 +228,7 @@ bool int8_kquant_execute_128(int M, int N, int K, int group_size,
 
                     for (int jr = 0; jr < nb_act; jr += KQ_NR) {
                         const int nr_act = std::min(KQ_NR, nb_act - jr);
-                        const uint8_t *b_tile = b_panel.data()
+                        const uint8_t *b_tile = panel_base
                                 + jr * KQ_VNNI_GRP
                                 + static_cast<size_t>(kb / KQ_VNNI_GRP)
                                         * b_stride;
