@@ -41,7 +41,19 @@ link line and resolves `lib/` vs `lib64/` per dependency, so copy it from there.
 * **Pin the governor before measuring on the FX-8370E.** On stock `schedutil` it
   idles at 1.4–1.8 GHz and identical code measured a 3x spread between passes.
   `sudo cpupower frequency-set -g performance`, and stop `packagekit` and
-  `gnome-software`. The A10's clock is flat and needs nothing.
+  `gnome-software`.
+* **Idle the A10-8770E before every pass, and alternate the arms.** It is a 35W
+  part that cannot hold a 4-thread SIMD load: the same binary measures 40.11 t/s
+  hot and 84.36 t/s after five minutes idle. A back-to-back A/B therefore hands
+  the first arm the cold run and manufactures a 2x difference — which is exactly
+  what happened, see the retraction in `docs/perf/llamacpp_b10437.csv`. Use
+  `a10_cooled_ab.sh`. Lowering the thread count does not help; 2, 3 and 4 all
+  collapse. (An earlier version of this file claimed the A10's clock is flat and
+  needs nothing. It is not and it does.)
+* **A 2x effect that changes sign when you reorder the arms is an ordering
+  artefact.** Check that before believing any large result: one bracketed pass
+  read baseline 42.87 / fork 81.28 / baseline 39.94, which is the same magnitude
+  pointing the other way.
 * Both boxes resolve effects above roughly 10% and nothing below, so these
   harnesses report **best-of-N and the worst rep**, never a mean. If a row's own
   best exceeds its own min by more than ~10%, it cannot adjudicate a few-percent

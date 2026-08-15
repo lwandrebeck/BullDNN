@@ -79,27 +79,50 @@ a10-8770e,BF16,cpu+bulldnn-algo-aocl-dlp-blocked,0,37.56,
 # perplexity 1.0090 baseline against 1.0091 with, and the dispatch counter says
 # `q4_K 1174 accepted, 0 rejected, 166 executed`, so the kernels do run.
 #
-# Prompt throughput with BullDNN on is UNRESOLVED and worse. 4 threads, 3 reps:
-a10-8770e,Q4_K_M,cpu,0,86.57,7.81
-a10-8770e,Q4_K_M,cpu+bulldnn-kquant-kernels,0,41.22,7.81
+# RETRACTED, and the retraction is the point. These two rows were read as a 2x
+# prompt REGRESSION from enabling this fork:
 #
-# That is not noise: the BullDNN arm is BIMODAL, sitting at either ~83 or ~33-41
-# with a spread inside each mode of well under 1 t/s, while the baseline arm is
-# stable. Two hypotheses were tested and BOTH are refuted:
+#   a10-8770e,Q4_K_M,cpu,0,86.57,7.81
+#   a10-8770e,Q4_K_M,cpu+bulldnn-kquant-kernels,0,41.22,7.81
 #
-#   forced algorithm    default p1 83.54+-1.20, p2 41.20+-0.89
-#                       algo10  p1 85.51+-0.31, p2 38.99+-6.06
-#                       -- both modes appear whether or not the algo is named.
-#   thread placement    no-bind p1 83.71+-1.25  spread p1 82.42+-0.25
-#                       no-bind p2 33.32+-0.05  spread p2 81.86+-0.34
-#                       no-bind p3 40.45+-0.16  spread p3 33.02+-0.05
-#                       -- OMP_PROC_BIND=spread OMP_PLACES=cores recovered pass
-#                       2 and then collapsed itself in pass 3, so placement is
-#                       not the explanation either.
+# There is no regression. The A10-8770E is a 35W part that cannot hold a
+# 4-thread SIMD load, and the two arms were measured BACK TO BACK: the baseline
+# got the cold run and this fork got the hot one. Same binary, nothing else
+# changed:
 #
-# Whatever selects the mode is chosen once per process and holds for that
-# process's whole run. Not yet identified. Until it is, do not quote an A10 Q4_K
-# prompt number in either direction -- a single pass can be made to say 83 or 33
-# with no change to the binary. The FX box shows nothing like this (141-148
-# across every pass), which is itself the strongest clue: it is the A10 or its
-# software stack, not the k-quant kernels, which are the same code on both.
+#   hot, straight off a batch      40.11 t/s   22.4e9 instructions   69.9 C
+#   after 5 minutes idle           84.36 t/s   13.8e9 instructions   47.8 C
+#
+# The effect is 2x while the clock only drops ~9%, because ggml's barriers
+# spin-wait: throttling is not symmetric across the two modules, threads stop
+# arriving together, and the early ones burn PAUSE loops. Retired instructions
+# nearly double for BIT-IDENTICAL page-faults and cache-misses -- same memory
+# work, invented compute. Thread count does not save it (2, 3 and 4 all
+# collapse) and neither does affinity.
+#
+# What made this look like a property of the fork rather than of the heatsink is
+# that the fork's arm was always second. Measured properly -- 150s idle before
+# every pass, arms alternating, three pairs:
+#
+#   run  arm       pp128   tg32
+#   1a   baseline  87.51   7.31
+#   1b   bulldnn   88.07   7.83
+#   2a   baseline  88.28   7.40
+#   2b   bulldnn   87.59   7.82
+#   3a   baseline  84.96   7.83
+#   3b   bulldnn   88.31   7.81
+a10-8770e,Q4_K_M,cpu,0,86.92,7.51
+a10-8770e,Q4_K_M,cpu+bulldnn-kquant-kernels,0,87.99,7.82
+#
+# i.e. prompt is unchanged (+1.2%, inside noise) and generation is +4%, with the
+# fork's tg32 the more repeatable of the two (7.81-7.83 against 7.31-7.83).
+#
+# An interleaved-and-bracketed run had already made this visible before the
+# cooldown test proved it: one pass read baseline 42.87 / bulldnn 81.28 /
+# baseline 39.94 -- this fork twice as FAST as the two baselines around it. A
+# 2x effect that changes sign with ordering is an ordering artefact, and that
+# should have been the first thing checked.
+#
+# The FX box never showed any of it (141-148 every pass) because it is a 95W
+# desktop part with headroom. Two family 15h boxes, only one of them able to
+# sustain a load, and the same kernels on both.
