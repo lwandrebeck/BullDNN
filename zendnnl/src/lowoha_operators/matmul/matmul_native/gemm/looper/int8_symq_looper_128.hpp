@@ -46,7 +46,9 @@ namespace native {
 /// B is s8; transB selects N x K (the GGML layout, ldb spanning K) over K x N.
 /// wei_scale is group-major: wei_scale[g * N + n], matching what the GGML
 /// unpack writes, so no rearrangement is needed between them.
-/// C is fp32 M x N, overwritten (this path has no beta).
+/// C is fp32 M x N. beta scales what is already there:
+/// C = beta * C + the product. beta = 0 overwrites, which is the common case
+/// and the only one that avoids reading C at all.
 ///
 /// Returns false without touching C when the shape is outside what the
 /// microkernel can express -- K not a whole number of groups, or a group size
@@ -66,7 +68,7 @@ bool int8_symq_execute_128(int M, int N, int K, int group_size,
         const int8_t *A, int lda, const int8_t *B, int ldb, bool transB,
         float *C, int ldc, const float *wei_scale, const float *src_scale,
         int ss_row, int ss_grp, int nthreads,
-        const INT8PrepackedWeight *prepacked = nullptr);
+        const INT8PrepackedWeight *prepacked = nullptr, float beta = 0.0f);
 
 } // namespace native
 } // namespace matmul

@@ -93,7 +93,8 @@ void pack_q_panel(const uint8_t *B, int ldb, bool transB, int jc, int nb_act,
 bool int8_kquant_execute_128(int M, int N, int K, int group_size,
         const int8_t *A, int lda, const uint8_t *B, int ldb, bool transB,
         float *C, int ldc, const float *wei_scale, const float *wei_min,
-        const float *src_scale, int ss_row, int ss_grp, int nthreads) {
+        const float *src_scale, int ss_row, int ss_grp, int nthreads,
+        float beta) {
 
     if (M <= 0 || N <= 0 || K <= 0) return false;
     if (group_size <= 0 || group_size % KQ_VNNI_GRP != 0) return false;
@@ -129,8 +130,14 @@ bool int8_kquant_execute_128(int M, int N, int K, int group_size,
     nt = std::min(nt, std::max(n_panels, 1));
 
     // One pass over C: the microkernel accumulates into it.
-    for (int m = 0; m < M; ++m)
-        std::memset(C + static_cast<size_t>(m) * ldc, 0, sizeof(float) * N);
+    for (int m = 0; m < M; ++m) {
+        float *row = C + static_cast<size_t>(m) * ldc;
+        if (beta == 0.0f) {
+            std::memset(row, 0, sizeof(float) * N);
+        } else if (beta != 1.0f) {
+            for (int n = 0; n < N; ++n) row[n] *= beta;
+        }
+    }
 
     // Row sums, once per call. Independent of the column and of the K block, so
     // building them here rather than in the panel loop saves n_panels passes.

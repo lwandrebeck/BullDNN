@@ -116,7 +116,7 @@ bool int8_symq_execute_128(int M, int N, int K, int group_size,
         const int8_t *A, int lda, const int8_t *B, int ldb, bool transB,
         float *C, int ldc, const float *wei_scale, const float *src_scale,
         int ss_row, int ss_grp, int nthreads,
-        const INT8PrepackedWeight *prepacked) {
+        const INT8PrepackedWeight *prepacked, float beta) {
 
     if (M <= 0 || N <= 0 || K <= 0) return false;
     // The microkernel flushes once per group and reads whole quads, so a K that
@@ -197,10 +197,17 @@ bool int8_symq_execute_128(int M, int N, int K, int group_size,
         return false;
     }
 
-    // One pass over C: the microkernel accumulates into it, so it starts at
-    // zero rather than being read.
-    for (int m = 0; m < M; ++m)
-        std::memset(C + static_cast<size_t>(m) * ldc, 0, sizeof(float) * N);
+    // The microkernel accumulates into C, so C must hold the starting value:
+    // zero for the ordinary case, or beta * C when the caller asked for it. Only
+    // beta == 0 avoids reading C at all, which is why it stays the fast path.
+    for (int m = 0; m < M; ++m) {
+        float *row = C + static_cast<size_t>(m) * ldc;
+        if (beta == 0.0f) {
+            std::memset(row, 0, sizeof(float) * N);
+        } else if (beta != 1.0f) {
+            for (int n = 0; n < N; ++n) row[n] *= beta;
+        }
+    }
 
     // Zero-padded copy of the rows the last M panel is short of, so the vector
     // kernel can be used there too. Zeros are inside the byte contract and

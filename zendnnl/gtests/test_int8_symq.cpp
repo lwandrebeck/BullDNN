@@ -2006,6 +2006,269 @@ TEST_F(Int8SymqDispatch, FoldsAlphaIntoTheSourceScale) {
     EXPECT_EQ(nans, 0);
 }
 
+
+// ===========================================================================
+// The four cases both INT8 adapters used to decline outright: beta, bias,
+// post-ops and a bf16 destination. They are shared code (int8_epilogue_128), so
+// the symmetric path carries most of the coverage and the k-quant path checks
+// that it is wired to the same thing.
+// ===========================================================================
+
+// beta scales what is already in C. The kernel accumulates into C, so this is
+// the one of the four the looper has to do itself, and the one that can go wrong
+// silently: a looper that keeps memsetting would give an answer that is correct
+// except for the term that was asked for.
+TEST_F(Int8SymqDispatch, ScalesTheExistingDestinationByBeta) {
+    std::mt19937 rng(881);
+    SymqCall c(8, 64, 128, 32, true, rng);
+    const float beta = 0.5f;
+
+    // Seed C with something that survives the multiply exactly.
+    std::vector<float> seed(static_cast<size_t>(c.M) * c.N);
+    for (size_t i = 0; i < seed.size(); ++i)
+        seed[i] = static_cast<float>((i % 17)) - 8.0f;
+    c.C = seed;
+
+    matmul_params p = c.make_params();
+    p.lowoha_algo = matmul_algo_t::native_gemm;
+    p.num_threads = 2;
+    matmul_batch_params_t batch;
+    ASSERT_EQ(matmul_direct('r', false, true, c.M, c.N, c.K, 1.0f, c.A.data(),
+                      c.K, c.B.data(), c.K, nullptr, beta, c.C.data(), c.N, true,
+                      batch, p),
+            status_t::success);
+
+    std::vector<float> ref;
+    reference_gemm(c.M, c.N, c.K, c.gs, c.A.data(), c.K, c.B.data(), c.K, true,
+            c.ws.data(), &c.src_scale, ref);
+    for (size_t i = 0; i < ref.size(); ++i) ref[i] += beta * seed[i];
+
+    int nans = 0;
+    EXPECT_LT(worst_scaled_error(c.C, c.N, ref, c.N, c.M, c.N, &nans),
+            kTolerance);
+    EXPECT_EQ(nans, 0);
+}
+
+// beta == 1 is its own path in the looper -- it skips the scaling multiply
+// rather than doing it -- so it is checked rather than assumed to follow from
+// beta == 0.5 working.
+TEST_F(Int8SymqDispatch, BetaOneAccumulatesOntoTheDestination) {
+    std::mt19937 rng(882);
+    SymqCall c(4, 64, 128, 32, true, rng);
+    std::vector<float> seed(static_cast<size_t>(c.M) * c.N);
+    for (size_t i = 0; i < seed.size(); ++i) seed[i] = 0.25f * ((i % 9) - 4);
+    c.C = seed;
+
+    matmul_params p = c.make_params();
+    p.lowoha_algo = matmul_algo_t::native_gemm;
+    p.num_threads = 2;
+    matmul_batch_params_t batch;
+    ASSERT_EQ(matmul_direct('r', false, true, c.M, c.N, c.K, 1.0f, c.A.data(),
+                      c.K, c.B.data(), c.K, nullptr, 1.0f, c.C.data(), c.N, true,
+                      batch, p),
+            status_t::success);
+
+    std::vector<float> ref;
+    reference_gemm(c.M, c.N, c.K, c.gs, c.A.data(), c.K, c.B.data(), c.K, true,
+            c.ws.data(), &c.src_scale, ref);
+    for (size_t i = 0; i < ref.size(); ++i) ref[i] += seed[i];
+    int nans = 0;
+    EXPECT_LT(worst_scaled_error(c.C, c.N, ref, c.N, c.M, c.N, &nans),
+            kTolerance);
+    EXPECT_EQ(nans, 0);
+}
+
+// Bias then ReLU, in that order. Ordering is the thing worth pinning: applying
+// the activation before the bias gives a plausible-looking wrong answer, and
+// with a bias large enough to flip signs the two differ everywhere.
+TEST_F(Int8SymqDispatch, AppliesBiasThenReluInThatOrder) {
+    std::mt19937 rng(883);
+    SymqCall c(8, 64, 128, 32, true, rng);
+
+    std::vector<float> ref;
+    reference_gemm(c.M, c.N, c.K, c.gs, c.A.data(), c.K, c.B.data(), c.K, true,
+            c.ws.data(), &c.src_scale, ref);
+
+    // A bias per column, sized so it changes the sign of a good share of the
+    // result -- otherwise ReLU-before-bias and bias-before-ReLU agree and the
+    // test proves nothing.
+    float mag = 0.0f;
+    for (float v : ref) mag = std::max(mag, std::abs(v));
+    std::vector<float> bias(c.N);
+    for (int n = 0; n < c.N; ++n)
+        bias[n] = ((n % 2) ? 0.5f : -0.5f) * mag;
+
+    matmul_params p = c.make_params();
+    matmul_post_op relu;
+    relu.po_type = ops::post_op_type_t::relu; // alpha 0 is the pure form
+    p.postop_.push_back(relu);
+    p.lowoha_algo = matmul_algo_t::native_gemm;
+    p.num_threads = 2;
+    matmul_batch_params_t batch;
+    ASSERT_EQ(matmul_direct('r', false, true, c.M, c.N, c.K, 1.0f, c.A.data(),
+                      c.K, c.B.data(), c.K, bias.data(), 0.0f, c.C.data(), c.N,
+                      true, batch, p),
+            status_t::success);
+
+    for (int m = 0; m < c.M; ++m)
+        for (int n = 0; n < c.N; ++n) {
+            float &v = ref[static_cast<size_t>(m) * c.N + n];
+            v = std::max(v + bias[n], 0.0f);
+        }
+    int nans = 0;
+    EXPECT_LT(worst_scaled_error(c.C, c.N, ref, c.N, c.M, c.N, &nans),
+            kTolerance);
+    EXPECT_EQ(nans, 0);
+}
+
+// A bf16 destination goes through an fp32 scratch and a narrowing sweep. The
+// tolerance is bf16's, not the kernel's: 8 mantissa bits is about 2^-8.
+TEST_F(Int8SymqDispatch, WritesABf16Destination) {
+    std::mt19937 rng(884);
+    SymqCall c(8, 64, 128, 32, true, rng);
+    std::vector<uint16_t> dst(static_cast<size_t>(c.M) * c.N, 0x7FC0); // NaN
+
+    matmul_params p = c.make_params();
+    p.dtypes.dst = data_type_t::bf16;
+    p.lowoha_algo = matmul_algo_t::native_gemm;
+    p.num_threads = 2;
+    matmul_batch_params_t batch;
+    ASSERT_EQ(matmul_direct('r', false, true, c.M, c.N, c.K, 1.0f, c.A.data(),
+                      c.K, c.B.data(), c.K, nullptr, 0.0f, dst.data(), c.N, true,
+                      batch, p),
+            status_t::success);
+
+    std::vector<float> got(dst.size());
+    for (size_t i = 0; i < dst.size(); ++i)
+        got[i] = common::bfloat16_t::bf16_to_f32_val(
+                static_cast<int16_t>(dst[i]));
+
+    std::vector<float> ref;
+    reference_gemm(c.M, c.N, c.K, c.gs, c.A.data(), c.K, c.B.data(), c.K, true,
+            c.ws.data(), &c.src_scale, ref);
+    int nans = 0;
+    EXPECT_LT(worst_scaled_error(got, c.N, ref, c.N, c.M, c.N, &nans), 1.0f / 128.0f);
+    EXPECT_EQ(nans, 0) << "dst was never written";
+}
+
+// apply_postops_tile() ends both its switches in `default: break;`. softmax,
+// pooling and mish are in the enum and in neither switch, so accepting one would
+// drop it in silence and return the un-activated product -- a wrong answer that
+// looks entirely reasonable. The adapter must decline instead.
+TEST_F(Int8SymqDispatch, DeclinesAPostOpTheEpilogueWouldSilentlyDrop) {
+    std::mt19937 rng(885);
+    const ops::post_op_type_t dropped[]
+            = {ops::post_op_type_t::mish, ops::post_op_type_t::softmax};
+    for (ops::post_op_type_t t : dropped) {
+        SymqCall c(8, 64, 128, 32, true, rng);
+        matmul_params p = c.make_params();
+        matmul_post_op po;
+        po.po_type = t;
+        p.postop_.push_back(po);
+        p.lowoha_algo = matmul_algo_t::native_gemm;
+        p.num_threads = 2;
+        matmul_batch_params_t batch;
+        matmul_direct('r', false, true, c.M, c.N, c.K, 1.0f, c.A.data(), c.K,
+                c.B.data(), c.K, nullptr, 0.0f, c.C.data(), c.N, true, batch, p);
+        bool any_nan = false;
+        for (float x : c.C)
+            if (std::isnan(x)) any_nan = true;
+        EXPECT_TRUE(any_nan) << "ran a call whose post-op it would have dropped";
+    }
+}
+
+// {M} and {M, 1} are the same per-token scale written two ways. The second used
+// to be accepted and the first declined, which is a decline over notation.
+//
+// One group, not the usual 32-wide grouping, because the API validator upstream
+// requires the source and weight group counts to match and per-token is one
+// group: a per-token source scale is only legal against a per-channel {1, N}
+// weight scale. That is a deliberate rule rather than an oversight, so the test
+// is written inside it instead of against it.
+TEST_F(Int8SymqDispatch, AcceptsAOneDimensionalPerTokenScale) {
+    std::mt19937 rng(886);
+    SymqCall c(8, 64, 128, /*gs=*/128, true, rng);
+    c.fill_vector_scales(rng);
+
+    std::vector<float> got[2];
+    for (int form = 0; form < 2; ++form) {
+        c.C.assign(static_cast<size_t>(c.M) * c.N,
+                std::numeric_limits<float>::quiet_NaN());
+        matmul_params p = c.make_params();
+        p.quant_params.src_scale.buff = c.src_scales_token.data();
+        p.quant_params.src_scale.dims = form == 0
+                ? std::vector<int64_t>{c.M, 1}
+                : std::vector<int64_t>{c.M};
+        p.lowoha_algo = matmul_algo_t::native_gemm;
+        p.num_threads = 2;
+        matmul_batch_params_t batch;
+        ASSERT_EQ(matmul_direct('r', false, true, c.M, c.N, c.K, 1.0f,
+                          c.A.data(), c.K, c.B.data(), c.K, nullptr, 0.0f,
+                          c.C.data(), c.N, true, batch, p),
+                status_t::success);
+        got[form] = c.C;
+    }
+    for (size_t i = 0; i < got[0].size(); ++i) {
+        ASSERT_FALSE(std::isnan(got[1][i])) << "the 1-D form did not compute";
+        EXPECT_EQ(got[0][i], got[1][i]) << "at " << i;
+    }
+}
+
+// The k-quant adapter shares the epilogue rather than having its own, so one
+// case that exercises beta and bias together is enough to prove it is wired to
+// it -- the arithmetic is covered above.
+TEST_P(Int8KquantDispatch, HonoursBetaAndBias) {
+    const int type = GetParam();
+    const int M = 6, N = 64, K = 512;
+    const int groups = K / kKsub;
+
+    std::mt19937 rng(type == 12 ? 5120 : 5130);
+    KquantSource src = build_kquant(type, N, K, rng);
+    std::vector<int8_t> A(static_cast<size_t>(M) * K);
+    fill_s8(A, rng, false);
+    std::vector<float> ss(static_cast<size_t>(M) * groups);
+    const float exact[4] = {0.03125f, 0.0625f, 0.125f, 0.25f};
+    for (size_t i = 0; i < ss.size(); ++i) ss[i] = exact[(i + 1) % 4];
+
+    std::vector<float> ref;
+    reference_kquant(M, N, K, kKsub, A.data(), K, src.codes.data(), K,
+            src.D.data(), src.Min.data(), ss.data(), groups, 1, ref);
+
+    const float beta = 0.25f;
+    std::vector<float> seed(static_cast<size_t>(M) * N);
+    for (size_t i = 0; i < seed.size(); ++i) seed[i] = 0.5f * ((i % 7) - 3);
+    std::vector<float> bias(N);
+    for (int n = 0; n < N; ++n) bias[n] = 0.125f * ((n % 5) - 2);
+    std::vector<float> C = seed;
+
+    matmul_params p;
+    p.dtypes.src = data_type_t::s8;
+    p.dtypes.wei = (type == 12) ? data_type_t::s4 : data_type_t::s8;
+    p.dtypes.dst = data_type_t::f32;
+    p.packing.pack_format_b = 1;
+    p.packing.ggml_type_b = type;
+    p.quant_params.src_scale.buff = ss.data();
+    p.quant_params.src_scale.dt = data_type_t::f32;
+    p.quant_params.src_scale.dims = {M, groups};
+    p.lowoha_algo = matmul_algo_t::native_gemm;
+    p.num_threads = 2;
+    matmul_batch_params_t batch;
+
+    ASSERT_EQ(matmul_direct('r', false, true, M, N, K, 1.0f, A.data(), K,
+                      src.blocks.data(), K, bias.data(), beta, C.data(), N, true,
+                      batch, p),
+            status_t::success);
+
+    for (int m = 0; m < M; ++m)
+        for (int n = 0; n < N; ++n) {
+            const size_t i = static_cast<size_t>(m) * N + n;
+            ref[i] += beta * seed[i] + bias[n];
+        }
+    int nans = 0;
+    EXPECT_LT(worst_scaled_error(C, N, ref, N, M, N, &nans), kTolerance);
+    EXPECT_EQ(nans, 0);
+}
+
 } // namespace
 } // namespace native
 } // namespace matmul

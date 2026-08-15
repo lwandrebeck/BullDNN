@@ -42,6 +42,7 @@
 #include "common/bfloat16.hpp"
 #include "common/zendnnl_global.hpp"
 #include "lowoha_operators/matmul/matmul_native/gemm/kernel/int8/int8_kquant_ukernel_128.hpp"
+#include "lowoha_operators/matmul/matmul_native/gemm/looper/int8_epilogue_128.hpp"
 #include "lowoha_operators/matmul/matmul_native/gemm/looper/int8_kquant_looper_128.hpp"
 
 namespace zendnnl {
@@ -58,13 +59,6 @@ bool is_scalar_quant(const std::vector<int64_t> &dims) {
     for (int64_t d : dims)
         if (d > 1) return false;
     return true;
-}
-
-bool has_any_postop(const matmul_params &params) {
-    for (size_t i = 0; i < params.postop_.size(); ++i) {
-        if (params.postop_[i].po_type != post_op_type_t::none) return true;
-    }
-    return false;
 }
 
 // The scale region is {2G, N}: G rows of D, then G rows of M. Returns G, or 0
@@ -105,20 +99,10 @@ bool int8_kquant_try_execute_128(const GemmDescriptor &desc, const void *src,
     if (desc.M <= 0 || desc.N <= 0 || desc.K <= 0) return false;
     if (!is_int8_kquant_candidate(params, desc.K, desc.N)) return false;
 
-    if (desc.dst_dt != data_type_t::f32) {
-        log_info("INT8 k-quant: only an f32 destination is implemented, "
-                 "declining");
+    // Shared with the symmetric path: destination dtype, beta, bias, post-ops.
+    Int8Epilogue epi;
+    if (!int8_epilogue_prepare(epi, desc, dst, bias, params, "INT8 k-quant"))
         return false;
-    }
-    if (desc.beta != 0.0f) {
-        log_info("INT8 k-quant: beta != 0 needs C read back, declining");
-        return false;
-    }
-    if (bias != nullptr || has_any_postop(params)) {
-        log_info("INT8 k-quant: bias and post-ops are not applied here, "
-                 "declining");
-        return false;
-    }
 
     const auto &qp = params.quant_params;
     if (qp.src_zp.buff != nullptr) {
@@ -167,7 +151,11 @@ bool int8_kquant_try_execute_128(const GemmDescriptor &desc, const void *src,
         if (is_scalar_quant(d)) {
             ss_row = 0;
             ss_grp = 0;
-        } else if (d.size() == 2 && d[0] == desc.M && d[1] == 1) {
+        } else if ((d.size() == 2 && d[0] == desc.M && d[1] == 1)
+                || (d.size() == 1 && d[0] == desc.M)) {
+            // {M, 1} and the 1-D {M} that some callers write instead are the
+            // same per-token layout; declining the second for being written
+            // differently would be a decline over notation.
             ss_row = 1;
             ss_grp = 0;
         } else if (d.size() == 2 && d[0] == desc.M && d[1] == groups) {
@@ -219,11 +207,14 @@ bool int8_kquant_try_execute_128(const GemmDescriptor &desc, const void *src,
     }
 
     const int nthreads = desc.num_threads > 0 ? desc.num_threads : 1;
-    return int8_kquant_execute_128(desc.M, desc.N, desc.K, group_size,
-            static_cast<const int8_t *>(src), desc.lda,
-            static_cast<const uint8_t *>(weight), desc.ldb, desc.transB,
-            static_cast<float *>(dst), desc.ldc, D, Mn, src_scale, ss_row,
-            ss_grp, nthreads);
+    if (!int8_kquant_execute_128(desc.M, desc.N, desc.K, group_size,
+                static_cast<const int8_t *>(src), desc.lda,
+                static_cast<const uint8_t *>(weight), desc.ldb, desc.transB,
+                epi.C, epi.ldc, D, Mn, src_scale, ss_row, ss_grp, nthreads,
+                desc.beta))
+        return false;
+    int8_epilogue_finish(epi, desc, dst, params);
+    return true;
 }
 
 } // namespace native

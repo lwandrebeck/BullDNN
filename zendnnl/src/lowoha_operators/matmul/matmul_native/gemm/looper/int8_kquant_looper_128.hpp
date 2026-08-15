@@ -48,7 +48,9 @@ namespace native {
 /// 8-way 32 KB L1d, shows none of this. See docs/perf.
 /// src_scale is indexed src_scale[m * ss_row + g * ss_grp]: {0,0} per-tensor,
 /// {1,0} per-token, {G,1} per-group.
-/// C is fp32 M x N, overwritten (this path has no beta).
+/// C is fp32 M x N. beta scales what is already there:
+/// C = beta * C + the product. beta = 0 overwrites, which is the common case
+/// and the only one that avoids reading C at all.
 ///
 /// Returns false without touching C when the shape is outside what the
 /// microkernel expresses -- K not a whole number of groups, or a group size that
@@ -56,7 +58,8 @@ namespace native {
 bool int8_kquant_execute_128(int M, int N, int K, int group_size,
         const int8_t *A, int lda, const uint8_t *B, int ldb, bool transB,
         float *C, int ldc, const float *wei_scale, const float *wei_min,
-        const float *src_scale, int ss_row, int ss_grp, int nthreads);
+        const float *src_scale, int ss_row, int ss_grp, int nthreads,
+        float beta = 0.0f);
 
 } // namespace native
 } // namespace matmul

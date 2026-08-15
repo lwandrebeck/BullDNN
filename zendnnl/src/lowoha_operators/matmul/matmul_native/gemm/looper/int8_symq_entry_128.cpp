@@ -31,16 +31,23 @@
 //                       reach 64770 there, past the signed 16-bit limit, which
 //                       is exactly why this kernel is cheap and why it may not
 //                       be pointed at that case.
-//   dst f32             the looper writes fp32. A bf16 dst would need a
-//                       narrowing sweep over C, which belongs with post-op
-//                       support rather than bolted on here.
-//   beta == 0           the looper makes one pass over C and overwrites it.
-//                       beta != 0 needs C read back and scaled first.
-//   no bias, no post-op nothing here applies them, and silently dropping a
-//                       post-op is the worst available outcome.
+//   dst f32 or bf16     the looper writes fp32; a bf16 dst goes through a
+//                       scratch and a narrowing sweep. Anything else declines.
+//                       (int8_epilogue_128)
+//   post-op implemented apply_postops_tile() ends in `default: break;`, so a
+//                       post-op it does not implement would be dropped in
+//                       silence. The three that are -- softmax, pooling, mish --
+//                       decline instead. (int8_epilogue_128)
 //   src zp zero         a source zero point makes the product asymmetric again.
-//   src scale scalar    per-token source scales would need one scale per row in
-//                       the flush, which the microkernel has no argument for.
+//                       Correcting for it is possible -- subtract zp times the
+//                       weight column sums, the same shape of correction the
+//                       k-quant path already does for its min term -- but no
+//                       caller here produces one, so it is declined rather than
+//                       written blind.
+//   src scale layout    per-tensor, per-token ({M,1} or {M}) and per-group
+//                       ({M,G}) are taken; the kernel flushes once per (row,
+//                       group) and so expresses all three. Anything else is a
+//                       layout nothing in tree produces.
 //   wei scale {G, N}    the per-group layout the GGML unpack writes. G must
 //                       divide K, and K/G must be a multiple of the VNNI quad.
 //   bytes in [-127,127] the kernel's precondition. Every GGML quantiser and the
@@ -73,6 +80,7 @@
 #include "common/bfloat16.hpp"
 #include "common/zendnnl_global.hpp"
 #include "lowoha_operators/matmul/matmul_native/common/kernel_cache.hpp"
+#include "lowoha_operators/matmul/matmul_native/gemm/looper/int8_epilogue_128.hpp"
 #include "lowoha_operators/matmul/matmul_native/gemm/kernel/int8/int8_symq_ukernel_128.hpp"
 #include "lowoha_operators/matmul/matmul_native/gemm/looper/int8_symq_looper_128.hpp"
 #include "operators/matmul/matmul_config.hpp"
@@ -102,13 +110,6 @@ int wei_scale_groups(const matmul_params &params, int N) {
     const int64_t g = dims[0];
     if (g <= 0 || g > INT32_MAX) return 0;
     return static_cast<int>(g);
-}
-
-bool has_any_postop(const matmul_params &params) {
-    for (size_t i = 0; i < params.postop_.size(); ++i) {
-        if (params.postop_[i].po_type != post_op_type_t::none) return true;
-    }
-    return false;
 }
 
 // -128 breaks the kernel silently, so the contract is verified rather than
@@ -229,18 +230,14 @@ bool int8_symq_try_execute_128(const GemmDescriptor &desc, const void *src,
     if (desc.M <= 0 || desc.N <= 0 || desc.K <= 0) return false;
 
     if (!is_int8_symq_candidate(params, desc.K, desc.N)) return false;
-    if (desc.dst_dt != data_type_t::f32) {
-        log_info("INT8 symq: only an f32 destination is implemented, declining");
+
+    // Destination dtype, beta, bias and post-ops are all shared with the
+    // k-quant path and all handled in int8_epilogue_128. It declines anything it
+    // cannot honour exactly -- notably a post-op the applier would drop in
+    // silence -- so a false here is still a decline, not a partial answer.
+    Int8Epilogue epi;
+    if (!int8_epilogue_prepare(epi, desc, dst, bias, params, "INT8 symq"))
         return false;
-    }
-    if (desc.beta != 0.0f) {
-        log_info("INT8 symq: beta != 0 needs C read back, declining");
-        return false;
-    }
-    if (bias != nullptr || has_any_postop(params)) {
-        log_info("INT8 symq: bias and post-ops are not applied here, declining");
-        return false;
-    }
 
     // ---- quantisation -----------------------------------------------------
     const auto &qp = params.quant_params;
@@ -282,7 +279,11 @@ bool int8_symq_try_execute_128(const GemmDescriptor &desc, const void *src,
         if (is_scalar_quant(d)) {
             ss_row = 0;
             ss_grp = 0;
-        } else if (d.size() == 2 && d[0] == desc.M && d[1] == 1) {
+        } else if ((d.size() == 2 && d[0] == desc.M && d[1] == 1)
+                || (d.size() == 1 && d[0] == desc.M)) {
+            // {M, 1} and the 1-D {M} that some callers write instead are the
+            // same per-token layout; declining the second for being written
+            // differently would be a decline over notation.
             ss_row = 1;
             ss_grp = 0;
         } else if (d.size() == 2 && d[0] == desc.M && d[1] == groups) {
@@ -417,9 +418,12 @@ bool int8_symq_try_execute_128(const GemmDescriptor &desc, const void *src,
     }
 
     const int nthreads = desc.num_threads > 0 ? desc.num_threads : 1;
-    return int8_symq_execute_128(desc.M, desc.N, desc.K, group_size, A,
-            desc.lda, B, desc.ldb, desc.transB, static_cast<float *>(dst),
-            desc.ldc, wei_scale, src_scale, ss_row, ss_grp, nthreads, prepacked);
+    if (!int8_symq_execute_128(desc.M, desc.N, desc.K, group_size, A, desc.lda,
+                B, desc.ldb, desc.transB, epi.C, epi.ldc, wei_scale, src_scale,
+                ss_row, ss_grp, nthreads, prepacked, desc.beta))
+        return false;
+    int8_epilogue_finish(epi, desc, dst, params);
+    return true;
 }
 
 } // namespace native
