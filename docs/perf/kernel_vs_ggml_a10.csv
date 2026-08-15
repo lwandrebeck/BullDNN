@@ -1,0 +1,72 @@
+# This fork's kernels against ggml's own, measured 2026-08-15 on the A10-8770E
+# (Excavator/bdver4, 4 threads) with llama.cpp b10437's `test-backend-ops perf`.
+#
+# WHY THIS FILE EXISTS. Every llama.cpp end-to-end number taken before it was
+# worthless: the ggml-zendnn backend rejects any matmul with a token count <= 128
+# (its adaptive fallback), so `llama-bench -p 128` sits exactly on the reject
+# boundary and token generation, at one token, can never dispatch at all. The
+# dispatch counter reported an empty table for every run. test-backend-ops calls
+# a backend DIRECTLY, so it measures the kernels rather than the scheduler.
+#
+# Run with GGML_ZENDNN_ADAPTIVE_FALLBACK=0 to defeat that gate. Shape is a
+# Llama-style FFN: weights m=4096 x k=14336, n = token count.
+#
+# THE HEADLINE. This fork wins the GEMM regime and loses the GEMV regime badly:
+type,n_tokens,ggml_cpu_gflops,bulldnn_gflops,ratio,correctness
+q4_K,1,28.83,2.74,0.10,OK
+q4_K,8,46.87,19.46,0.42,OK
+q4_K,512,48.43,64.05,1.32,OK
+#
+# The 1.32x at n=512 is real and verified: `test-backend-ops test` on the same
+# m=4096 shapes reports OK against the CPU backend, so it is a win on correct
+# output. n=1 and n=8 are correct too, just slow.
+#
+# WHY DECODE IS 10x SLOWER, since "our optimised code loses to generic code by
+# 10x" is not a credible claim and is not what is happening. int8_kquant_looper
+# packs B into panels ONCE PER CALL -- its own header comment says so, the
+# prepacked weight cache having been left out of the first version deliberately
+# so that a correctness failure could not be ambiguous between kernel and cache.
+# At n=1 that packs the whole 4096x14336 weight matrix, about 59 MB of shuffling,
+# to serve a single row of activations. The pack costs roughly what the multiply
+# costs and amortises over nothing. ggml never packs: it streams Q4_K blocks
+# straight into vec_dot, which is optimal for one row.
+#
+# So this is a GEMM design meeting a GEMV shape, not an ISA deficit. It also
+# reproduces a much earlier in-tree measurement exactly -- 2.5 GOPS at M=1
+# against 73.7 at 1024^3 -- which was recorded as "decode is pack-bound by ~10x"
+# and never connected to the llama.cpp figures.
+#
+# THE FIX, and its ceiling. Sharing the INT8 prepacked weight cache (already
+# written, already used by the symmetric path, and llama.cpp passes
+# is_weights_const=true) removes the per-call pack. But decode then becomes
+# bandwidth-bound reading our unpacked form: 59 MB of u8 codes plus ~15 MB of
+# scales against ggml's 33 MB of packed Q4_K. Estimate ~0.5x of ggml, not
+# parity. Matching ggml at decode needs a GEMV kernel multiplying straight out
+# of the 4-bit packed form, decoding on the fly. That is a new kernel.
+#
+# TWO CORRECTNESS FAILURES FOUND ON THE WAY, both more important than any
+# number above, and both invisible in normal use because the adaptive fallback
+# hides the shapes that trigger them:
+#
+# 1. Q8_0 through this backend DOES NOT COMPUTE on this host. It reports 669
+#    GFLOPS at n=1 and 828 at n=512 -- impossible on a part whose real ceiling is
+#    tens of GFLOPS -- because the op returns without touching the output.
+#    `test-backend-ops test` confirms: ERR 58 to 102 against a 5e-4 tolerance.
+#    Silently wrong output, not slow output.
+q8_0,1,15.98,,,FAIL-not-computed
+q8_0,512,39.78,,,FAIL-not-computed
+#
+# 2. Q4_K is WRONG at k=256, one super-block: ERR 1.1 to 2.5, and erratically --
+#    n=1 and n=7 pass, n=2..6 and n=8,9 fail. Not the weight cache; disabling it
+#    with ZENDNNL_MATMUL_WEIGHT_CACHE=0 gives the same 32 failures. Correct at
+#    the m=4096 model shapes, so perplexity never saw it.
+#
+# BF16 is skipped by the backend entirely, so there is no comparison to make.
+# ggml's own BF16 figures, for reference: 8.33 GFLOPS at n=1, 28.59 at n=512.
+bf16,1,8.33,,,SKIPPED-by-backend
+bf16,512,28.59,,,SKIPPED-by-backend
+#
+# One more defect, found by disabling the fallback: the backend's type gate
+# claims types the library cannot execute. q5_1 is accepted, fails with
+# "GGML packed weights are supported only for sym-quant per-group int8 matmul",
+# and aborts the process. Normally masked by the size gate.
