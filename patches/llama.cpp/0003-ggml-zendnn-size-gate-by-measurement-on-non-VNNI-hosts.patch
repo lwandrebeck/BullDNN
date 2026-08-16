@@ -1,37 +1,59 @@
-Subject: [PATCH] ggml-zendnn: set the size gate from measurement on non-VNNI hosts
+Subject: [PATCH] ggml-zendnn: choose by measurement, and only where this fork wins
 
 The adaptive fallback declines any matmul with 128 tokens or fewer. That is
-a reasonable rule where AOCL-DLP does the work, and it was a correct one for
-BullDNN too when it was written -- the native decode path then ran at a tenth
-of ggml's rate.
+right where AOCL-DLP does the work. Where BullDNN's native kernels do it the
+answer is not one rule -- it depends on what else could have run the op, and
+the honest version of that needed both target parts and all five
+configurations to find.
 
-It is no longer correct. The decode GEMV reads GGML's packed blocks directly
-and now beats ggml, and the GEMM beats it from four tokens up. Under the old
-rule none of that is reachable: token generation is one token and never
-dispatches, and llama-bench's pp128 misses the threshold by one.
+Measured end to end, qwen2.5-1.5B Q4_K_M, prompt(512) / generation(128),
+stock ggml against this fork:
 
-Measured on an FX-8370E (bdver2, no AVX2, so ggml is on SSSE3 as well),
-m=4096 k=14336, ggml against native, two passes each:
+    FX-8370E  (bdver2, no AVX2)   cpu      1.36x / 1.06x
+    A10-8770E (bdver4, AVX2)      cpu      0.98x / 0.86x
+    FX-8370E                      hybrid   0.27x / 1.03x
+    A10-8770E                     hybrid   0.33x / 0.99x
 
-    tokens    1      2      4      8      512
-    q4_K   1.16x  0.65x  1.02x  1.12x   1.55x
-    q5_K   1.28x  0.87x  1.21x  1.70x   2.15x
+Three rules follow, and each is there because a measurement demanded it:
 
-So two and three tokens are the only counts worth declining: too many rows
-for the GEMV, which handles one, and the GEMM pads M to its tile of four and
-throws half the work away. Everything else is at least par.
+1. AVX2 hosts decline everything. The CPU win is a NO-AVX2 result: without
+   AVX2 ggml is confined to SSSE3 like these 128-bit kernels and they beat
+   it; with AVX2 ggml is ahead and taking the op loses. Excavator has AVX2,
+   Bulldozer/Piledriver/Steamroller do not.
 
-The rule is applied only where BullDNN's native kernels are what runs, which
-is decided by AVX-512 VNNI: with it the work goes to AOCL-DLP and the
-original gate is untouched, without it the measured rule applies. So this
-changes nothing on any Zen part.
+2. With a GPU present, keep only decode. A GPU is ~4x faster at prompt sizes
+   and llama.cpp sends prompt matmuls to it REGARDLESS of -ngl: at ngl=0,
+   every layer CPU-resident, stock measured 257 t/s against 52 for this fork.
+   So "the model does not fit in VRAM" is not a case for taking that work --
+   residency is not what decides who runs it. Generation is the exception and
+   is kept: it is memory-bound, the GPU has no advantage (hybrid tg measured
+   1.03x and 0.99x), and the decode GEMV is ahead.
+
+3. Two and three tokens decline. Too many rows for the one-row GEMV, and the
+   GEMM pads M to its tile of four and throws half the work away (0.65x).
+
+GGML_ZENDNN_IGNORE_GPU=1 exists because supports_op cannot tell "a GPU is in
+this machine" from "a GPU is being used for this run" -- it sees registered
+devices, not the scheduler's backend set, so a -dev none run on a
+GPU-equipped box is indistinguishable from a hybrid one. Without the override
+such a run keeps only decode and gives up the prompt win (44.62 -> 33.05 on
+the FX). Set it when benchmarking or deploying CPU-only on a machine that has
+a GPU.
+
+Verified on one binary, FX-8370E:
+
+    cpu-only, IGNORE_GPU=1    pp512  44.62   (stock 32.68)   1.37x
+    hybrid,   no override     pp512 315.15   (stock 314.40)  1.00x
+
+i.e. the win is kept where it is real and the 3.6x hybrid regression is gone.
+Nothing changes on a VNNI host.
 
 --- a/ggml/src/ggml-zendnn/ggml-zendnn.cpp
 +++ b/ggml/src/ggml-zendnn/ggml-zendnn.cpp
-@@ -759,6 +759,14 @@
+@@ -759,6 +759,49 @@
      GGML_UNUSED(max_tensor_size);
  }
-
+ 
 +// AVX-512 VNNI decides WHO runs a per-group INT8 matmul: with it, AOCL-DLP;
 +// without it, BullDNN's native 128-bit kernels. The two have different
 +// crossovers, so the size gate below has to know which one it is talking about.
@@ -40,41 +62,95 @@ changes nothing on any Zen part.
 +    return v;
 +}
 +
++// Is there a GPU device registered that would otherwise take this op? Prompt
++// matmuls go to it whatever -ngl says -- llama.cpp schedules ops independently
++// of where the weights live -- and it is roughly four times faster at them than
++// any CPU kernel here. Accepting such an op does not make it faster; it moves it
++// to the slower machine.
++static bool ggml_zendnn_gpu_present() {
++    static const bool present = [] {
++        // GGML_ZENDNN_IGNORE_GPU=1 says "there is a GPU in this machine but it
++        // is not being used for this run". supports_op cannot tell the two
++        // apart: it sees the registered devices, not the scheduler's backend
++        // set, so a -dev none run on a GPU-equipped box looks identical to a
++        // hybrid one from here. Without the override such a run keeps only
++        // decode and gives up the prompt win -- on the FX, 44.53 t/s becomes
++        // 33.05. With it, CPU-only gets the full 1.36x back.
++        const char *ignore = std::getenv("GGML_ZENDNN_IGNORE_GPU");
++        if (ignore != nullptr && std::atoi(ignore) != 0) return false;
++        for (size_t i = 0; i < ggml_backend_dev_count(); ++i) {
++            if (ggml_backend_dev_type(ggml_backend_dev_get(i))
++                    == GGML_BACKEND_DEVICE_TYPE_GPU) {
++                return true;
++            }
++        }
++        return false;
++    }();
++    return present;
++}
++
++// AVX2 decides whether ggml's own kernels are strong. Without it (Bulldozer,
++// Piledriver, Steamroller) ggml is confined to SSSE3 and these 128-bit kernels
++// beat it; with it (Excavator) they do not.
++static bool ggml_zendnn_host_has_avx2() {
++    static const bool v = __builtin_cpu_supports("avx2");
++    return v;
++}
++
  static bool ggml_zendnn_adaptive_fallback_enabled() {
      static const bool enabled = std::getenv("GGML_ZENDNN_ADAPTIVE_FALLBACK") == nullptr ||
                                  std::atoi(std::getenv("GGML_ZENDNN_ADAPTIVE_FALLBACK")) != 0;
-@@ -794,7 +802,33 @@
+@@ -794,7 +837,52 @@
                  const int64_t K = inputs->ne[0];
                  const int64_t N = (inputs->ne[1]*inputs->ne[2]*inputs->ne[3]);
                  const int64_t M = weights->ne[1];
 -                if(K <= 256 || N <= 128 || M <= 96) {
 +
-+                // The N > 128 rule assumes ZenDNN loses below a large batch.
-+                // That holds where AOCL-DLP does the work, but on a host
-+                // without AVX-512 VNNI the work is done by BullDNN's native
-+                // 128-bit kernels, whose crossover is elsewhere. Measured on an
-+                // FX-8370E (bdver2, no AVX2, so ggml is on SSSE3 too),
-+                // m=4096 k=14336, ggml against native, two passes each:
++                // The N > 128 rule assumes ZenDNN loses below a large batch,
++                // which holds where AOCL-DLP does the work. Where BullDNN's
++                // native kernels do it the answer is different, and it is not
++                // one rule -- it depends on what else could have run the op.
++                // Measured end to end, qwen2.5-1.5B Q4_K_M, prompt(512) and
++                // generation(128), stock ggml against this fork:
 +                //
-+                //     tokens    1      2      4      8      512
-+                //     q4_K   1.16x  0.65x  1.02x  1.12x   1.55x
-+                //     q5_K   1.28x  0.87x  1.21x  1.70x   2.15x
++                //   FX-8370E  (bdver2, no AVX2)  cpu     1.36x / 1.06x
++                //   A10-8770E (bdver4, AVX2)     cpu     0.98x / 0.86x
++                //   FX-8370E                     hybrid  0.27x / 1.03x
++                //   A10-8770E                    hybrid  0.33x / 0.99x
 +                //
-+                // One token goes to the decode GEMV, which reads the packed
-+                // blocks directly and beats ggml. Four and above go to the GEMM
-+                // and are at least par. Two and three fall between: too many
-+                // rows for the GEMV, and the GEMM pads M to its tile of four and
-+                // discards half the work. So those are the only token counts
-+                // worth declining here -- N > 128 would throw away every gain
-+                // above, decode included.
++                // Two things follow. First, the CPU win is a NO-AVX2 result:
++                // without AVX2 ggml is on SSSE3 like these kernels and they beat
++                // it; with AVX2 it is ahead and accepting the op loses. Second, a
++                // GPU beats both at prompt sizes by about 4x, and llama.cpp sends
++                // prompt matmuls to it regardless of -ngl -- at ngl=0, with every
++                // layer CPU-resident, stock still measured 257 t/s against 52 for
++                // this fork. So "the model does not fit in VRAM" is not a case for
++                // taking that work: residency is not what decides who runs it.
++                //
++                // Generation is the exception and stays worth taking. It is
++                // memory-bound, the GPU has no advantage there (hybrid tg is
++                // 1.03x and 0.99x above), and the decode GEMV is ahead on the
++                // parts without AVX2.
 +                if (!ggml_zendnn_host_has_avx512vnni()) {
 +                    if (K <= 256 || M <= 96) {
 +                        return false;
 +                    }
++                    if (ggml_zendnn_host_has_avx2()) {
++                        return false; // ggml's own kernels are the better choice
++                    }
++                    // Two and three tokens are the GEMV/GEMM gap: too many rows
++                    // for the one-row kernel, and the GEMM pads M to its tile of
++                    // four and throws half the work away.
 +                    if (N == 2 || N == 3) {
 +                        return false;
 +                    }
++                    // With a GPU in the machine, leave prompt-sized work to it
++                    // and keep only decode.
++                    if (ggml_zendnn_gpu_present() && N > 1) {
++                        return false;
++                    }
++                    // otherwise fall through to the per-type check below
 +                } else if (K <= 256 || N <= 128 || M <= 96) {
                      return false;
                  }
-
+ 

@@ -1,0 +1,71 @@
+# The five-configuration matrix on BOTH target parts, 2026-08-16,
+# qwen2.5-coder-1.5B Q4_K_M. Produced by scripts/bench_matrix.sh, which verifies
+# engagement per row instead of assuming it.
+#
+# FX-8370E: bdver2, NO AVX2, 8 threads, RX 560 (4096 MiB, discrete).
+# A10-8770E: bdver4, HAS AVX2, 4 threads, R7 iGPU (uma, 50176 MiB reported
+#            because it shares system RAM -- so on that box a model always
+#            "fits" and hybrid offload is a much weaker idea).
+host,config,pp512,tg128,executed,verdict
+fx-8370e,cpu,32.66,15.18,0,ok
+fx-8370e,cpu+bulldnn,44.53,16.02,43680,ok
+fx-8370e,vulkan,421.22,56.72,0,ok
+fx-8370e,vulkan+cpu,313.78,23.15,0,ok
+fx-8370e,vulkan+cpu+bulldnn,86.05,23.47,23660,ok
+a10-8770e,cpu,20.91,8.45,0,ok
+a10-8770e,cpu+bulldnn,20.42,7.25,43680,ok
+a10-8770e,vulkan,117.32,16.96,0,ok
+a10-8770e,vulkan+cpu,90.57,10.55,0,ok
+a10-8770e,vulkan+cpu+bulldnn,30.31,10.42,23660,ok
+#
+# THE TWO PARTS DISAGREE, and that is the headline:
+#
+#                     FX (no AVX2)        A10 (AVX2)
+#   cpu prompt        1.36x               0.98x
+#   cpu generation    1.06x               0.86x
+#   hybrid prompt     0.27x               0.33x
+#   hybrid generation 1.03x               0.99x
+#
+# The CPU win is a NO-AVX2 result. Without AVX2 ggml is confined to SSSE3 like
+# these 128-bit kernels and they beat it; with AVX2 ggml is ahead. Excavator has
+# AVX2; Bulldozer, Piledriver and Steamroller do not.
+#
+# Hybrid loses on both, for a different reason: a GPU is ~4x faster at prompt
+# sizes, and accepting the op moves it to the slower machine.
+#
+# DOES A MODEL TOO LARGE FOR VRAM CHANGE THE HYBRID ANSWER? No, and the ngl
+# sweep is why. Stock, FX, same model, prompt(512):
+#
+#     ngl    0      4      8     14     20     99
+#     stock  257.67 268.39 285.39 312.84 345.66 412.23
+#     +fork   51.99  55.63  64.55  85.51 127.41 409.85
+#
+# At ngl=0 every layer is CPU-RESIDENT and stock still reaches 257 t/s, because
+# llama.cpp sends prompt matmuls to the GPU regardless of where the weights
+# live. Residency is not what decides who runs the op, so "it does not fit in
+# VRAM" does not create a regime where the CPU must do prompt work. At ngl=99
+# nothing dispatches (executed 0) and the arms converge, as they should.
+#
+# Caveat, stated because it was not tested: this is the low-ngl PROXY for a
+# too-large model, not a too-large model. A 7B Q4_K would have settled it
+# directly, but this fork's unpack roughly triples resident size (4.4 GB model
+# -> ~14 GB) and would swap on a 15 GB box. That memory inflation is itself a
+# limit worth knowing before pointing this at a large model.
+#
+# WHAT THE ROWS ABOVE MEASURE is the gate BEFORE patch 0003 was corrected. With
+# the corrected gate the FX reads 44.62 CPU-only (GGML_ZENDNN_IGNORE_GPU=1) and
+# 315.15 hybrid against stock's 314.40 -- the win kept where it is real, the
+# 3.6x hybrid regression gone, and AVX2 hosts declining entirely.
+#
+# ---------------------------------------------------------------------------
+# HOW TO READ THE VERDICT COLUMN. Four different failures have produced
+# plausible-looking numbers in this project, none of which announced itself:
+#
+#   VOID:bulldnn-never-ran        the arm named "+bulldnn" did not run it
+#   VOID:bulldnn-ran-in-baseline  the control was contaminated
+#   VOID:implied-NNNGFLOPS...     a CPU-only arm exceeded what a CPU can do,
+#                                 i.e. the GPU computed it
+#
+# The A10 run exercised the first of those live: -dev none reported 0 executed,
+# was marked VOID, and the harness retried with -dev ZenDNN, which engages there
+# but is not needed on the FX. Same sources, md5-identical, on both machines.
