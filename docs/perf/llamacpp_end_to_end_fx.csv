@@ -1,0 +1,59 @@
+# llama.cpp b10437 end to end on the FX-8370E (bdver2, 8 threads, governor
+# pinned, desktop removed), qwen2.5-coder-1.5B, measured 2026-08-16.
+#
+# THE FIRST VALID END-TO-END NUMBERS THIS FORK HAS PRODUCED. Every earlier
+# attempt was void for a different reason: a stale install tree, then thermal
+# artefacts on the A10, then a dispatch gate that rejected every shape
+# llama-bench measures, and finally the trap below.
+#
+# ---------------------------------------------------------------------------
+# READ THIS BEFORE COMPARING ANY llama.cpp NUMBER.
+#
+# A Vulkan-enabled build runs the large prompt matmuls ON THE GPU even at
+# -ngl 0. Same box, same binary, same model:
+#
+#     stock, Vulkan present, -ngl 0     pp512 = 259.04 t/s
+#     stock, -dev none                  pp512 =  32.65 t/s
+#
+# -ngl 0 controls weight offload, not op scheduling. The 259 is the RX 560.
+#
+# This matters because when BullDNN's supports_op accepts an op, the scheduler
+# hands it to ZenDNN on the CPU instead of the GPU -- so the fork appears to
+# cause a 5x pp512 REGRESSION (259 -> 52) when what it really did was take the
+# work back from a GPU that was quietly doing it.
+#
+# The check that catches it: divide. 2 x params x tokens / seconds. 259 t/s on
+# a 1.54B model is ~800 GFLOPS, and an 8-core Piledriver peaks near 100. If a
+# CPU figure is physically impossible, something else computed it.
+#
+# So both arms below use -dev none, and ZenDNN still runs under it -- it
+# registers as a CPU-side backend rather than a device, which the executed
+# column proves.
+# ---------------------------------------------------------------------------
+#
+# CPU against CPU, two passes each, agreeing to 0.2%:
+model,arm,pp512,tg128,q4k_or_q5k_executed
+qwen2.5-1.5B-Q4_K_M,stock-ggml,32.65,15.29,0
+qwen2.5-1.5B-Q4_K_M,+bulldnn,44.40,16.17,43680
+qwen2.5-1.5B-Q5_K_M,stock-ggml,24.46,12.83,0
+qwen2.5-1.5B-Q5_K_M,+bulldnn,44.42,13.55,43680
+#
+#   Q4_K   prompt 1.36x   generation 1.06x
+#   Q5_K   prompt 1.82x   generation 1.06x
+#
+# The executed column is not decoration. It is the difference between "this
+# fork made no measurable difference" and "this fork never ran", which look
+# identical from llama-bench and which this project has confused before.
+#
+# WHY GENERATION MOVES SO LITTLE (1.06x) when the decode GEMV measures 1.16x
+# against ggml in isolation: generation is memory-bound on the weights, most of
+# a forward pass is not matmul, and only q4_K/q5_K tensors dispatch here. A 16%
+# kernel win on part of the work is a 6% end-to-end win. That is the expected
+# shape of the result, not a disappointment.
+#
+# WHY PROMPT MOVES MORE for Q5_K than Q4_K: ggml's Q5_K prompt path is the
+# weaker of its two (24.46 against 32.65) while this fork runs both at the same
+# 44.4, so the same kernel earns a larger multiple against a slower baseline.
+#
+# The dispatch gate that makes any of this reachable is patch 0003. Note that
+# it is deliberately NOT opened for 2 and 3 tokens; see the patch.

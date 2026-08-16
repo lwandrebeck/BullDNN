@@ -21,7 +21,12 @@ MDIM=${MDIM:-4096}   # weight rows, i.e. output columns
 KDIM=${KDIM:-14336}  # reduction extent
 TYPES=${TYPES:-q4_K q5_K}
 NS=${NS:-1 8 512}    # token counts
-TEMP=/sys/class/hwmon/hwmon1/temp1_input
+# hwmon indices are not stable across reboots -- k10temp was hwmon1 one boot and
+# hwmon2 the next -- so find it by name rather than by number.
+TEMP=$(for h in /sys/class/hwmon/hwmon*; do
+    [ "$(cat "$h/name" 2>/dev/null)" = "k10temp" ] && echo "$h/temp1_input" && break
+done)
+TEMP=${TEMP:-/dev/null}
 
 gov() { sudo -n cpupower frequency-set -g "$1" >/dev/null 2>&1; }
 

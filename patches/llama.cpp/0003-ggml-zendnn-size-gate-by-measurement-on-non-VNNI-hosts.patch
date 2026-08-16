@@ -1,0 +1,80 @@
+Subject: [PATCH] ggml-zendnn: set the size gate from measurement on non-VNNI hosts
+
+The adaptive fallback declines any matmul with 128 tokens or fewer. That is
+a reasonable rule where AOCL-DLP does the work, and it was a correct one for
+BullDNN too when it was written -- the native decode path then ran at a tenth
+of ggml's rate.
+
+It is no longer correct. The decode GEMV reads GGML's packed blocks directly
+and now beats ggml, and the GEMM beats it from four tokens up. Under the old
+rule none of that is reachable: token generation is one token and never
+dispatches, and llama-bench's pp128 misses the threshold by one.
+
+Measured on an FX-8370E (bdver2, no AVX2, so ggml is on SSSE3 as well),
+m=4096 k=14336, ggml against native, two passes each:
+
+    tokens    1      2      4      8      512
+    q4_K   1.16x  0.65x  1.02x  1.12x   1.55x
+    q5_K   1.28x  0.87x  1.21x  1.70x   2.15x
+
+So two and three tokens are the only counts worth declining: too many rows
+for the GEMV, which handles one, and the GEMM pads M to its tile of four and
+throws half the work away. Everything else is at least par.
+
+The rule is applied only where BullDNN's native kernels are what runs, which
+is decided by AVX-512 VNNI: with it the work goes to AOCL-DLP and the
+original gate is untouched, without it the measured rule applies. So this
+changes nothing on any Zen part.
+
+--- a/ggml/src/ggml-zendnn/ggml-zendnn.cpp
++++ b/ggml/src/ggml-zendnn/ggml-zendnn.cpp
+@@ -759,6 +759,14 @@
+     GGML_UNUSED(max_tensor_size);
+ }
+
++// AVX-512 VNNI decides WHO runs a per-group INT8 matmul: with it, AOCL-DLP;
++// without it, BullDNN's native 128-bit kernels. The two have different
++// crossovers, so the size gate below has to know which one it is talking about.
++static bool ggml_zendnn_host_has_avx512vnni() {
++    static const bool v = __builtin_cpu_supports("avx512vnni");
++    return v;
++}
++
+ static bool ggml_zendnn_adaptive_fallback_enabled() {
+     static const bool enabled = std::getenv("GGML_ZENDNN_ADAPTIVE_FALLBACK") == nullptr ||
+                                 std::atoi(std::getenv("GGML_ZENDNN_ADAPTIVE_FALLBACK")) != 0;
+@@ -794,7 +802,33 @@
+                 const int64_t K = inputs->ne[0];
+                 const int64_t N = (inputs->ne[1]*inputs->ne[2]*inputs->ne[3]);
+                 const int64_t M = weights->ne[1];
+-                if(K <= 256 || N <= 128 || M <= 96) {
++
++                // The N > 128 rule assumes ZenDNN loses below a large batch.
++                // That holds where AOCL-DLP does the work, but on a host
++                // without AVX-512 VNNI the work is done by BullDNN's native
++                // 128-bit kernels, whose crossover is elsewhere. Measured on an
++                // FX-8370E (bdver2, no AVX2, so ggml is on SSSE3 too),
++                // m=4096 k=14336, ggml against native, two passes each:
++                //
++                //     tokens    1      2      4      8      512
++                //     q4_K   1.16x  0.65x  1.02x  1.12x   1.55x
++                //     q5_K   1.28x  0.87x  1.21x  1.70x   2.15x
++                //
++                // One token goes to the decode GEMV, which reads the packed
++                // blocks directly and beats ggml. Four and above go to the GEMM
++                // and are at least par. Two and three fall between: too many
++                // rows for the GEMV, and the GEMM pads M to its tile of four and
++                // discards half the work. So those are the only token counts
++                // worth declining here -- N > 128 would throw away every gain
++                // above, decode included.
++                if (!ggml_zendnn_host_has_avx512vnni()) {
++                    if (K <= 256 || M <= 96) {
++                        return false;
++                    }
++                    if (N == 2 || N == 3) {
++                        return false;
++                    }
++                } else if (K <= 256 || N <= 128 || M <= 96) {
+                     return false;
+                 }
+

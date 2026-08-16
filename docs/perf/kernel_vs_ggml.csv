@@ -1,0 +1,65 @@
+# This fork's k-quant kernels against ggml's own, measured 2026-08-16 with
+# llama.cpp b10437's `test-backend-ops perf`, which calls a backend DIRECTLY and
+# so measures kernels rather than the scheduler.
+#
+# Shape is a Llama-style FFN: weights m=4096 x k=14336, n = token count.
+# Ratios are ours/ggml, so above 1.0 is this fork ahead.
+#
+# READ THE TWO HOSTS SEPARATELY. The FX has no AVX2, so ggml is on SSSE3 there
+# and the comparison is like for like. The A10 has AVX2 and ggml uses it, while
+# these kernels are 128-bit throughout -- which is most of why the A10 margins
+# are thinner. The A10 also throttles ~2x under sustained load, so every A10
+# number here was taken after a powersave-governor cooldown; the FX holds a
+# steady clock and needs none.
+host,type,n_tokens,ggml_gflops,bulldnn_gflops,ratio
+fx-8370e,q4_K,1,54.0,62.8,1.16
+fx-8370e,q4_K,2,69.6,45.3,0.65
+fx-8370e,q4_K,4,79.5,80.7,1.02
+fx-8370e,q4_K,8,85.2,95.5,1.12
+fx-8370e,q4_K,512,86.7,134.0,1.55
+fx-8370e,q5_K,1,39.8,51.0,1.28
+fx-8370e,q5_K,2,51.7,45.2,0.87
+fx-8370e,q5_K,4,57.2,69.3,1.21
+fx-8370e,q5_K,8,60.6,103.3,1.70
+fx-8370e,q5_K,512,62.3,133.6,2.15
+a10-8770e,q4_K,1,28.88,32.02,1.11
+#
+# THE HOLE AT TWO AND THREE TOKENS is structural, not noise: reproducible to
+# 0.1% across passes. One token goes to the decode GEMV; four and up go to the
+# GEMM. Two and three fall between -- too many rows for the GEMV, which handles
+# one, and the GEMM pads M to its tile of four and discards half the work. The
+# dispatch gate declines exactly those two counts (patch 0003) rather than
+# pretending they are fine. Fixing it properly means a GEMV that takes two to
+# four activation rows against one nibble decode, which is the obvious next
+# kernel.
+#
+# HOW DECODE WAS WON, since it was 0.10x of ggml when first measured and the
+# reason was not the instruction set. Three changes, in order of size:
+#
+#  1. Share the prepacked weight cache with the k-quant looper. The looper
+#     packed B into panels once per CALL; at one token that packs the whole
+#     weight to serve a single row. 0.10x -> ~0.44x.
+#  2. Multiply straight out of the packed GGML blocks (the decode GEMV), so the
+#     unpack to one byte per weight never happens. Removes half the bytes read.
+#  3. One horizontal reduction per ROW instead of eight per super-block. This
+#     was the largest single win by far -- eight shuffle/add latency chains per
+#     256 weights, costing more than the arithmetic they reduced. 32.30 -> 63.12
+#     GFLOPS on the FX, a straight doubling.
+#
+# The lesson is (3): the kernel was 1.67x slower than ggml on IDENTICAL ISA, so
+# it was never an ISA problem. Reaching for wider or fancier instructions before
+# checking the structure would have been wasted effort.
+#
+# XOP, WHICH IS THE FAMILY 15h-SPECIFIC PART. VPSHLB folds the high-nibble
+# shift and mask into one per-byte shift; VPMADCSWD fuses the widening
+# accumulate. Together about a quarter of the inner loop by instruction count.
+# Selected at runtime by CPUID, with ZENDNNL_NATIVE_Q4K_NO_XOP to force the
+# portable flavour so both can be compared on one machine:
+#
+#   FX-8370E (bdver2)  XOP 62.57 62.98 62.40  portable 62.85 62.88 62.59  -> 1.00x
+#   A10-8770E (bdver4) XOP 32.05 31.95 32.06  portable 30.61 30.56 30.53  -> 1.047x
+#
+# The instructions are genuinely emitted -- 16 vpmadcswd and 16 vpshlb in the
+# object against 22 psrlw in the portable path -- so bdver2 is declining to
+# care, not falling back. That is the third kernel to give this verdict: XOP
+# pays on Excavator and not on Piledriver. Kept anyway, being never slower.
