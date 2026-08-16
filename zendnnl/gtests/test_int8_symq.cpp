@@ -2459,7 +2459,11 @@ TEST_P(Int8KquantDispatch, DecodeGemvHonoursAPerTensorScale) {
 // and K/32 is none of those. If that is why enabling Q6_K produced NaN under
 // llama-perplexity, it reproduces here.
 TEST_F(Int8SymqDispatch, GgmlQ6_KWithF32ActivationsComputes) {
-    const int M = 5, N = 64, K = kQ6kSuper * 2;
+    // M = 512 because that is llama-perplexity's chunk size, which is where the
+    // NaN appears; M = 5 passed and told us nothing. The GEMM tiles M at four,
+    // so a row count in the hundreds exercises the padded-tail and K-blocking
+    // paths that five never reaches.
+    const int M = 512, N = 64, K = kQ6kSuper * 2;
 
     std::mt19937 rng(6140);
     std::vector<int8_t> vals(static_cast<size_t>(N) * K);

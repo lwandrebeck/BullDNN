@@ -319,6 +319,18 @@ Q4K_GEMV_BODY
 } // namespace gemv_xop
 #pragma GCC pop_options
 
+#pragma GCC push_options
+#pragma GCC target("xop,ssse3,sse4.1")
+// VPSHLB with a count of -4: a per-byte logical right shift, which yields the
+// high nibble without the mask a 16-bit-lane shift would need. The builtin
+// rather than the intrinsic because xopintrin.h guards the latter behind
+// __XOP__, decided at include time -- before this pragma.
+__attribute__((always_inline)) inline __m128i q6_hi_nibble_xop(__m128i v) {
+    return (__m128i) __builtin_ia32_vpshlb(
+            (__v16qi) v, (__v16qi) _mm_set1_epi8(-4));
+}
+#pragma GCC pop_options
+
 // ===========================================================================
 // Q6_K decode, portable SSSE3 only for now. Kept out of the two-flavour macro
 // above deliberately: XOP's saving there is VPSHLB on the high nibble and a
@@ -340,6 +352,7 @@ Q4K_GEMV_BODY
 // Codes reach 63 and stay unsigned for PMADDUBSW: 63*127*2 = 16002, inside
 // int16. The -32 never enters the vector arithmetic; it comes out in the flush
 // as -32 * rowsum, exactly like Q4_K's min term.
+template <bool kXop>
 inline void superblock_dots_q6(
         const uint8_t *ql, const uint8_t *qh, const int8_t *a, __m128i *dots) {
     const __m128i mask0f = _mm_set1_epi8(0x0F);
@@ -367,12 +380,21 @@ inline void superblock_dots_q6(
             const __m128i w1 = _mm_or_si128(_mm_and_si128(q_hi, mask0f),
                     _mm_slli_epi16(
                             _mm_and_si128(_mm_srli_epi16(h, 2), mask03), 4));
-            const __m128i w2 = _mm_or_si128(
-                    _mm_and_si128(_mm_srli_epi16(q_lo, 4), mask0f),
+            // XOP: VPSHLB is a per-BYTE shift, so a count of -4 gives the
+            // high nibble directly and the mask that cleans up a 16-bit-lane
+            // shift is not needed. Two instructions become one, twice per
+            // 16-byte step -- about 2 of ~30 here, against 2 of ~12 in the
+            // Q4_K kernel, which is why this is expected to be worth much less.
+            const __m128i q_lo_hi = kXop ? q6_hi_nibble_xop(q_lo)
+                                         : _mm_and_si128(
+                                                 _mm_srli_epi16(q_lo, 4), mask0f);
+            const __m128i q_hi_hi = kXop ? q6_hi_nibble_xop(q_hi)
+                                         : _mm_and_si128(
+                                                 _mm_srli_epi16(q_hi, 4), mask0f);
+            const __m128i w2 = _mm_or_si128(q_lo_hi,
                     _mm_slli_epi16(
                             _mm_and_si128(_mm_srli_epi16(h, 4), mask03), 4));
-            const __m128i w3 = _mm_or_si128(
-                    _mm_and_si128(_mm_srli_epi16(q_hi, 4), mask0f),
+            const __m128i w3 = _mm_or_si128(q_hi_hi,
                     _mm_slli_epi16(
                             _mm_and_si128(_mm_srli_epi16(h, 6), mask03), 4));
 
@@ -401,6 +423,7 @@ inline void superblock_dots_q6(
     }
 }
 
+template <bool kXop>
 void run_q6(int N, int nsb, const int8_t *A, const void *blocks, float *C,
         const float *src_scale, int ss_grp, const int32_t *rowsum16, int nt) {
 #if defined(_OPENMP)
@@ -415,7 +438,7 @@ void run_q6(int N, int nsb, const int8_t *A, const void *blocks, float *C,
             const int8_t *a = A + static_cast<size_t>(sb) * Q4K_SUPER;
 
             __m128i dots[4];
-            superblock_dots_q6(b->ql, b->qh, a, dots);
+            superblock_dots_q6<kXop>(b->ql, b->qh, a, dots);
 
             const int g0 = sb * 16; // sixteen sub-blocks per super-block
             const __m128 vd = _mm_set1_ps(d);
@@ -506,7 +529,13 @@ bool int8_q4k_gemv_128(int N, int K, int ggml_type, const int8_t *A,
 
     if (is_q6) {
         // Portable only for now; see the note above run_q6.
-        run_q6(N, nsb, A, blocks, C, src_scale, ss_grp, rowsum.data(), nt);
+        if (s_use_xop) {
+            run_q6<true>(N, nsb, A, blocks, C, src_scale, ss_grp,
+                    rowsum.data(), nt);
+        } else {
+            run_q6<false>(N, nsb, A, blocks, C, src_scale, ss_grp,
+                    rowsum.data(), nt);
+        }
     } else if (s_use_xop) {
         gemv_xop::run(N, nsb, is_q5, A, blocks, C, src_scale, ss_grp,
                 rowsum.data(), nt);
