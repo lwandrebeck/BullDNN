@@ -17,7 +17,9 @@
 // ============================================================================
 // 128-bit BF16 GEMM microkernel for hosts without avx512bf16.
 //
-// Shape: MR=6 rows by eight columns at a time, so twelve __m128 accumulators.
+// Shape: kMR rows by eight columns at a time, so 2*kMR __m128 accumulators.
+// kMR runs 1..6; six is the maximum the register file allows, and the text
+// below describes that worst case.
 // With two widened B vectors and one A broadcast that is fifteen of sixteen XMM
 // registers, one short of the limit -- which is deliberate. The FP32 kernel next
 // door sits at fifteen too, and at that pressure GCC will rematerialize a load
@@ -172,22 +174,37 @@ bf16_ukernel_128_fn_t select_bf16_ukernel_128(int MR, int NR) {
         return Flavour::none;
     }();
 
-    if (s_flavour == Flavour::none || MR != 6) return nullptr;
+    if (s_flavour == Flavour::none) return nullptr;
+
+    // MR 1..4 and 6 are all instantiated. The planner asks for every one of
+    // them: MR=M for decode (M<=4), MR=4 for several M that divide by four, 6
+    // otherwise. MR=5 is absent because nothing selects it -- add it here and it
+    // will compile, the body is generic.
+#define ZENDNNL_BF16_PICK_MR(NS) \
+    switch (MR) { \
+        case 6: return &NS::bf16_ukernel_mrxnr_128<6, kNR>; \
+        case 4: return &NS::bf16_ukernel_mrxnr_128<4, kNR>; \
+        case 3: return &NS::bf16_ukernel_mrxnr_128<3, kNR>; \
+        case 2: return &NS::bf16_ukernel_mrxnr_128<2, kNR>; \
+        case 1: return &NS::bf16_ukernel_mrxnr_128<1, kNR>; \
+        default: return nullptr; \
+    }
 
     if (s_flavour == Flavour::fma3) {
         switch (NR) {
-            case 64: return &uk_fma3::bf16_ukernel_6xnr_128<64>;
-            case 32: return &uk_fma3::bf16_ukernel_6xnr_128<32>;
-            case 16: return &uk_fma3::bf16_ukernel_6xnr_128<16>;
+            case 64: { constexpr int kNR = 64; ZENDNNL_BF16_PICK_MR(uk_fma3) }
+            case 32: { constexpr int kNR = 32; ZENDNNL_BF16_PICK_MR(uk_fma3) }
+            case 16: { constexpr int kNR = 16; ZENDNNL_BF16_PICK_MR(uk_fma3) }
             default: return nullptr;
         }
     }
     switch (NR) {
-        case 64: return &uk_fma4::bf16_ukernel_6xnr_128<64>;
-        case 32: return &uk_fma4::bf16_ukernel_6xnr_128<32>;
-        case 16: return &uk_fma4::bf16_ukernel_6xnr_128<16>;
+        case 64: { constexpr int kNR = 64; ZENDNNL_BF16_PICK_MR(uk_fma4) }
+        case 32: { constexpr int kNR = 32; ZENDNNL_BF16_PICK_MR(uk_fma4) }
+        case 16: { constexpr int kNR = 16; ZENDNNL_BF16_PICK_MR(uk_fma4) }
         default: return nullptr;
     }
+#undef ZENDNNL_BF16_PICK_MR
 }
 
 void bf16_tail_kernel_128(const float *__restrict__ A_f32, int a_stride,

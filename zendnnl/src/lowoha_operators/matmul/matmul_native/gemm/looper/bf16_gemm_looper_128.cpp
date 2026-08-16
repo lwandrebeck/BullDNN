@@ -112,10 +112,17 @@ bool bf16_gemm_execute_128(const GemmDescriptor &desc, const UarchParams &uarch,
     // what the microkernel's b_stride assumes.
     const int panel_w = NR_PACK;
 
-    if (select_bf16_ukernel_128(MR, NR) == nullptr) {
-        // No 128-bit kernel for this shape; let the caller fall back.
-        return false;
-    }
+    // No early-out on a null microkernel. The tile loop below already handles
+    // `hot == nullptr` by calling bf16_tail_kernel_128, which is compiled
+    // outside the target pragmas and so runs anywhere -- it was simply
+    // unreachable, because this returned first.
+    //
+    // Declining here was worse than slow. native_matmul then reports that no
+    // 128-bit microkernel exists for the shape and falls back to AOCL-DLP; in a
+    // build without AOCL-DLP that is not another backend but none, and the
+    // destination is returned untouched. Every one of the 6306 AI GEMV cases
+    // failed exactly that way on the Piledriver box. A correct slow answer is
+    // the floor; no answer is not an acceptable one.
 
     const uint16_t *A = static_cast<const uint16_t *>(src);
     const uint16_t *B = static_cast<const uint16_t *>(weight);

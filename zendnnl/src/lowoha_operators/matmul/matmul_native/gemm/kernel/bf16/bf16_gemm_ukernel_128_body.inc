@@ -30,16 +30,31 @@
 //   widen_even_k/odd_k    BF16 -> FP32 placement
 //   load_b_pairs          unaligned 128-bit load
 
-// MR=6 by kNR columns. A is FP32 and row-major with a_stride; B is BF16 in VNNI
-// layout with b_stride counted in uint16 per k-pair row.
-template <int kNR>
-void bf16_ukernel_6xnr_128(const float *__restrict__ pa, int a_stride,
+// kMR rows by kNR columns. A is FP32 and row-major with a_stride; B is BF16 in
+// VNNI layout with b_stride counted in uint16 per k-pair row.
+//
+// kMR is a template parameter rather than a fixed 6 because the planner does not
+// only ask for 6: it sets MR=M outright for decode (M<=4) and MR=4 for several
+// M that divide by four. Only MR=6 existed, so every one of those shapes got a
+// null kernel and the looper declined -- which on a build without AOCL-DLP means
+// the output is never written at all. The register budget is what set 6 as the
+// maximum, not the minimum: at kMR=6 the twelve accumulators plus two B vectors
+// plus one A broadcast are fifteen of sixteen XMM. Smaller kMR uses strictly
+// fewer, so every value below 6 is free of that constraint.
+//
+// What smaller kMR does cost is instruction-level parallelism. The accumulator
+// count is 2*kMR, and each is a serial FMA dependency chain, so kMR=1 offers two
+// chains against the two 128-bit FMAC pipes' latency of roughly five cycles --
+// it will not saturate them. That is a real limit and it is still the right
+// trade: the alternative on this path is not a faster kernel, it is no output.
+template <int kMR, int kNR>
+void bf16_ukernel_mrxnr_128(const float *__restrict__ pa, int a_stride,
         const uint16_t *__restrict__ pb, int b_stride, float *__restrict__ C,
         int ldc, int k, float beta, const float *__restrict__ bias,
         fused_postop_t fused_op, uint16_t *__restrict__ C_bf16, int ldc_bf16) {
 
-    constexpr int kMR = 6;
     static_assert(kNR % 8 == 0, "kNR must be a multiple of the 8-column group");
+    static_assert(kMR >= 1 && kMR <= 6, "kMR beyond 6 would spill the XMM file");
 
     const int k_pairs = k / 2;
     const bool k_odd = (k & 1) != 0;
