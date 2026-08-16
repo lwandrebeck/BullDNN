@@ -31,15 +31,25 @@
 # column proves.
 # ---------------------------------------------------------------------------
 #
-# CPU against CPU, two passes each, agreeing to 0.2%:
+# CPU against CPU, two passes each, agreeing to 0.4% or better:
 model,arm,pp512,tg128,q4k_or_q5k_executed
 qwen2.5-1.5B-Q4_K_M,stock-ggml,32.65,15.29,0
 qwen2.5-1.5B-Q4_K_M,+bulldnn,44.40,16.17,43680
 qwen2.5-1.5B-Q5_K_M,stock-ggml,24.46,12.83,0
 qwen2.5-1.5B-Q5_K_M,+bulldnn,44.42,13.55,43680
+llama-3.2-1B-Q4_K_M,stock-ggml,45.85,19.08,0
+llama-3.2-1B-Q4_K_M,+bulldnn,60.31,20.10,24960
 #
-#   Q4_K   prompt 1.36x   generation 1.06x
-#   Q5_K   prompt 1.82x   generation 1.06x
+#   qwen Q4_K    prompt 1.36x   generation 1.06x
+#   qwen Q5_K    prompt 1.82x   generation 1.06x
+#   llama Q4_K   prompt 1.32x   generation 1.05x
+#
+# The second model is there because everything else was measured on one model
+# and one shape, and a gain that only exists at m=4096 k=14336 would look
+# identical from inside. Llama-3.2-1B is a different architecture with different
+# proportions -- hidden 2048 against qwen's 1536, different GQA ratio -- and
+# lands within a few points of the qwen Q4_K figure, so the win is a property of
+# the kernels rather than of one tensor shape.
 #
 # The executed column is not decoration. It is the difference between "this
 # fork made no measurable difference" and "this fork never ran", which look
@@ -57,3 +67,21 @@ qwen2.5-1.5B-Q5_K_M,+bulldnn,44.42,13.55,43680
 #
 # The dispatch gate that makes any of this reachable is patch 0003. Note that
 # it is deliberately NOT opened for 2 and 3 tokens; see the patch.
+#
+# ---------------------------------------------------------------------------
+# NOT REPRODUCED ON THE A10, AND THE REASON IS NOT YET KNOWN. Same protocol,
+# same patch, same commands, qwen Q4_K_M:
+#
+#     a10, -dev none, stock      pp512 20.97   tg128 8.48
+#     a10, -dev none, +bulldnn   pp512 20.95   tg128 8.29   EXECUTED 0
+#
+# The gate is live there -- the built .so contains the N == 2 || N == 3 test and
+# the counter reports 1848 ops ACCEPTED -- but zero are executed, meaning
+# ggml_zendnn_compute_forward is never invoked for them. The identical command
+# on the FX executes 336. So supports_op says yes on both boxes and the
+# scheduler only follows through on one, which is a llama.cpp-side difference
+# and not the gate.
+#
+# Until that is understood the numbers above are an FX result, not a family 15h
+# result. The A10 also has AVX2, so ggml's baseline there is stronger and the
+# margins would be thinner even once it dispatches.
