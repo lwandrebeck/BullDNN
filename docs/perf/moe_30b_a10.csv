@@ -4,7 +4,7 @@
 arm,pp128,tg32,executed,peak_rss_gb
 vulkan,14.36,5.56,0,0.2
 cpu-stock,8.11,4.52,0,30.5
-cpu-bulldnn,ABORTED,ABORTED,0,32.0
+cpu-bulldnn,8.11,3.93,875,32.0
 #
 # THE VULKAN NUMBER VALIDATES THE SETUP: 5.56 t/s against the 5.60 the homelab
 # registry records for this node, so this reproduces production rather than
@@ -22,26 +22,38 @@ cpu-bulldnn,ABORTED,ABORTED,0,32.0
 # So this is the case that justifies CPU work on Excavator, and the only one
 # found so far.
 #
-# THIS FORK CANNOT RUN IT. llama-bench aborts with signal 6 before the first
-# benchmark op:
+# THIS FORK RAN IT ONLY AFTER TWO CRASHES WERE FIXED, and then lost anyway.
+# llama-bench aborted with signal 6 before the first benchmarked op, twice, for
+# two different reasons -- in both cases supports_op accepted an op the library
+# then declined, dispatch fell through to aocl_dlp_blocked, and this backend
+# treats a gemm failure as FATAL rather than as a fallback:
 #
-#   Selected kernel aocl_dlp_blocked requires AOCL-DLP, but ZenDNNL was built
-#   without AOCL-DLP support
-#   ggml-zendnn.cpp:315: ZenDNN gemm failed  ->  GGML_ABORT
+#   1. MUL_MAT_ID -- the MoE expert form. 3-D per-expert weights match none of
+#      the per-group INT8 predicates.
+#   2. A plain f32 x f32 [2048,128] matmul. No accelerated route exists for f32
+#      on a host without AVX-512. The 1.5B never showed this because its f32
+#      matmuls sit below the size gate; this model has one above it.
 #
-# supports_op accepts an op the library then declines, dispatch falls through to
-# AOCL-DLP, and this backend treats a gemm failure as FATAL rather than as a
-# fallback. Same class as the destination-layout bug fixed earlier -- the gate
-# admits more than the library can serve -- but a different instance.
+# Finding the second cost a round trip per guess, because the dispatch counter
+# prints from a destructor and an abort skips it. The abort now names the tensor
+# (type, shape, m/n/k), which answered it immediately.
 #
-# It is NOT the expert path: declining MUL_MAT_ID on non-VNNI hosts (which is
-# correct on its own terms, since 3-D per-expert weights match none of the
-# per-group INT8 predicates) does not stop it. The failing op is a plain MUL_MAT
-# and it fires at t=0.059s, before any benchmarked work. Which weight type it
-# carries is not yet known: the dispatch counter prints from a destructor, and
-# an abort skips it.
+# With both declined the model runs, and is slower than stock:
 #
-# Peak RSS is worth noting separately: 30.5 GB for stock against a 17.28 GB
-# model, and 32.0 GB before this fork died. The unpack inflation that would
-# follow a working run has not been measured here and is a real question on a
-# 60 GB box.
+#   stock        pp128 8.11   tg32 4.52
+#   + fork       pp128 8.11   tg32 3.93   0.87x
+#
+# The counters say why. q4_K: 7392 accepted, 0 EXECUTED -- the expert tensors are
+# accepted and then never handed over, the same A10 scheduling behaviour seen
+# throughout. q6_K: 875 executed. So what this fork actually contributed was the
+# Q6_K path, which is its weakest on Excavator (sixteen reductions per
+# super-block against Q4_K's eight), and generation moved accordingly.
+#
+# So the MoE case is where CPU work is JUSTIFIED -- the GPU margin is only 1.23x
+# -- and this fork does not yet capture it. What would: getting the q4_K expert
+# ops actually executed, which is the same unexplained A10 dispatch behaviour
+# that has blocked every Excavator measurement, not a kernel problem.
+#
+# Peak RSS: 30.5 GB for stock against a 17.28 GB model, 32.0 GB for this fork.
+# The unpack inflation that a fully-dispatching run would add is still unmeasured
+# and remains a real question on a 60 GB box.

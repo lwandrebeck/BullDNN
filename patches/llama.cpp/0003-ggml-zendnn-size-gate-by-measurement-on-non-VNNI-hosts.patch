@@ -97,6 +97,31 @@ in-tree test passed too, because each one sets ggml_type_b = 14 by hand and
 so could not exercise the branch that gets it wrong. A two-way ternary
 extended by editing its condition is a trap worth remembering.
 
+TWO MORE DECLINES, both because accepting an op the library cannot serve is
+FATAL here rather than a fallback -- the gemm failure path is GGML_ABORT.
+qwen3-coder-30b-a3b killed llama-bench with signal 6 on each in turn.
+
+  MUL_MAT_ID declined. The MoE expert form carries 3-D per-expert weights,
+  which match none of the per-group INT8 predicates, so dispatch fell through
+  to AOCL-DLP.
+
+  Non-quantised weights declined. A plain f32 x f32 [2048,128] matmul has no
+  accelerated route on a host without AVX-512: kernel_select picks
+  aocl_dlp_blocked, which is absent in an AOCLDLP=OFF build. Only the types
+  this fork has kernels for are accepted now -- Q4_0, Q8_0, Q4_K, Q5_K, Q6_K.
+  The 1.5B never showed this because its f32 matmuls sit below the size gate;
+  the 30B has one above it.
+
+The abort message now names the tensor -- type, shape, m/n/k -- because
+finding this cost a round trip per guess otherwise. The dispatch counter
+prints from a destructor and an abort skips it, so the one diagnostic that
+would have answered immediately was the one unavailable.
+
+With both guards the 30B runs: pp128 8.11 and tg32 3.93 against stock
+8.11/4.52. Correct, and still slower, which on Excavator is the verdict
+everything else reached. The FX is unchanged: PPL 5.0537, pp512 49.31,
+tg128 16.32.
+
 
 --- a/ggml/src/ggml-zendnn/ggml-zendnn.cpp
 +++ b/ggml/src/ggml-zendnn/ggml-zendnn.cpp
@@ -165,7 +190,23 @@ extended by editing its condition is a trap worth remembering.
      if (src1->type != vec_dot_type && !zendnn_wants_f32_src1) {
          const size_t nbw1 = ggml_row_size(vec_dot_type, ne10);
          const size_t nbw2 = nbw1 * ne11;
-@@ -346,7 +361,8 @@
+@@ -297,7 +312,14 @@
+                                   src0->type,
+                                   zendnn_wants_f32_src1 ? GGML_TYPE_F32 : vec_dot_type,
+                                   dst->type))
+-                GGML_ABORT("%s: ZenDNN gemm failed\n", __func__);
++                GGML_ABORT("%s: ZenDNN gemm failed -- weight type %s (%d), "
++                           "shape [%lld,%lld,%lld,%lld], src1 %s, dst %s, "
++                           "m=%lld n=%lld k=%lld\n",
++                        __func__, ggml_type_name(src0->type), (int) src0->type,
++                        (long long) src0->ne[0], (long long) src0->ne[1],
++                        (long long) src0->ne[2], (long long) src0->ne[3],
++                        ggml_type_name(src1->type), ggml_type_name(dst->type),
++                        (long long) ne01, (long long) ne11, (long long) ne10);
+             if (zendnn_dispatch_stats::enabled()) g_zendnn_stats.executed[src0->type]++;
+         }
+     }
+@@ -346,7 +368,8 @@
          // src_scale.dims depends on this expert's row count, unlike the rest of base_params
          if constexpr (std::is_same_v<TA, block_q8_0> ||
                        std::is_same_v<TA, block_q4_K> ||
@@ -175,7 +216,7 @@ extended by editing its condition is a trap worth remembering.
              params[i].quant_params.src_scale.dims = {n[i], k / QK8_0};
          }
      }
-@@ -759,6 +775,49 @@
+@@ -759,6 +782,59 @@
      GGML_UNUSED(max_tensor_size);
  }
  
@@ -218,14 +259,24 @@ extended by editing its condition is a trap worth remembering.
 +// Piledriver, Steamroller) ggml is confined to SSSE3 and these 128-bit kernels
 +// beat it; with it (Excavator) they do not.
 +static bool ggml_zendnn_host_has_avx2() {
-+    static const bool v = __builtin_cpu_supports("avx2");
++    static const bool v = [] {
++        // GGML_ZENDNN_IGNORE_AVX2=1 makes an AVX2 host take the no-AVX2 branch,
++        // so the "is this fork worth dispatching on Excavator" question can be
++        // re-measured on one binary whenever the kernels change. The rule it
++        // bypasses was set when Excavator measured 0.98x prompt and 0.86x
++        // generation; anything that shifts those -- Q6_K support, for one --
++        // makes it worth asking again rather than assuming.
++        const char *ignore = std::getenv("GGML_ZENDNN_IGNORE_AVX2");
++        if (ignore != nullptr && std::atoi(ignore) != 0) return false;
++        return __builtin_cpu_supports("avx2") != 0;
++    }();
 +    return v;
 +}
 +
  static bool ggml_zendnn_adaptive_fallback_enabled() {
      static const bool enabled = std::getenv("GGML_ZENDNN_ADAPTIVE_FALLBACK") == nullptr ||
                                  std::atoi(std::getenv("GGML_ZENDNN_ADAPTIVE_FALLBACK")) != 0;
-@@ -790,11 +849,74 @@
+@@ -790,11 +866,106 @@
                  return false;
              }
  
@@ -279,6 +330,38 @@ extended by editing its condition is a trap worth remembering.
 +                // 1.03x and 0.99x above), and the decode GEMV is ahead on the
 +                // parts without AVX2.
 +                if (!ggml_zendnn_host_has_avx512vnni()) {
++                    // MUL_MAT_ID -- the MoE expert form -- has no native route
++                    // on this hardware. The weights are 3-D per-expert tensors,
++                    // which none of the per-group INT8 predicates accept, so
++                    // dispatch falls through to AOCL-DLP; and where AOCL-DLP is
++                    // absent the gemm returns failure, which this backend treats
++                    // as FATAL (GGML_ABORT at ggml_zendnn_compute_forward_mul_mat).
++                    // qwen3-coder-30b-a3b killed llama-bench with signal 6 that
++                    // way. Accepting an op the library cannot serve is worse
++                    // than declining it, so decline.
++                    if (op->op == GGML_OP_MUL_MAT_ID) {
++                        return false;
++                    }
++                    // Only the quantised types this fork actually has kernels
++                    // for. An f32 or bf16 weight has no accelerated route on a
++                    // host without AVX-512: dispatch picks aocl_dlp_blocked,
++                    // which is absent in an AOCLDLP=OFF build, and the gemm
++                    // failure is FATAL here rather than a fallback.
++                    //
++                    // qwen3-coder-30b-a3b died on exactly that -- a plain
++                    // f32 x f32 [2048,128] matmul, killed llama-bench with
++                    // signal 6 before the first benchmarked op. The 1.5B never
++                    // showed it because its f32 matmuls are below the size gate.
++                    // Accepting a type whose only route is a backend that is not
++                    // there is worse than declining it.
++                    switch (weights->type) {
++                        case GGML_TYPE_Q4_0:
++                        case GGML_TYPE_Q8_0:
++                        case GGML_TYPE_Q4_K:
++                        case GGML_TYPE_Q5_K:
++                        case GGML_TYPE_Q6_K: break;
++                        default: return false;
++                    }
 +                    if (K <= 256 || M <= 96) {
 +                        return false;
 +                    }
@@ -301,7 +384,7 @@ extended by editing its condition is a trap worth remembering.
                      return false;
                  }
  
-@@ -825,6 +947,7 @@
+@@ -825,6 +996,7 @@
                      ok = true;
                      break;
                  case GGML_TYPE_Q4_K:
