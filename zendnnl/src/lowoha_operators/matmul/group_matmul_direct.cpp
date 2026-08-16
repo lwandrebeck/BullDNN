@@ -28,6 +28,7 @@
 #include "group_matmul/group_matmul_direct.hpp"
 #include "group_matmul/group_matmul_parallel_common.hpp"
 #include "lowoha_matmul_utils.hpp"
+#include "matmul_native/common/cost_model.hpp" // detect_uarch, for the ISA gate below
 #include "lowoha_operators/common/omp_thread_control.hpp"
 #include "lowoha_operators/common/operator_instrumentation.hpp"
 #include "lowoha_operators/matmul/ggml_weight_unpack.hpp"
@@ -860,6 +861,50 @@ status_t group_matmul_direct(const std::vector<char> &layout,
             ? static_cast<size_t>(params[0].active_matmul)
             : num_ops_input;
     const bool single_expert_parallel = (src.size() == 1 && num_ops == 1);
+
+    // ── Family 15h has no group route for GGML per-group INT8 ─────────
+    // Two backends can serve such a group and neither exists here: the custom
+    // kernel gates on avx512bf16 (dispatch_supported()), and AOCL-DLP needs
+    // avx512vnni, without which its sym-quant GEMM answers "cannot perform
+    // s8s8s32 gemm" and RETURNS WITHOUT COMPUTING. The group dispatch below
+    // then completes successfully having written nothing, so the destinations
+    // keep whatever they held -- zeros, in every MoE test that exercises this,
+    // which is how it was found.
+    //
+    // The single-matmul path does have a route: the native 128-bit per-group
+    // INT8 kernels. So run the experts through it one at a time. That gives up
+    // what the group dispatch exists to provide -- one parallel region across
+    // all experts rather than one per expert -- and is still the correct answer
+    // instead of silence, which is the trade worth making.
+    //
+    // Restricted to the plain grouped matmul. The fused-MoE and gated-activation
+    // forms are not a sequence of independent matmuls and cannot be decomposed
+    // this way; they stay broken here rather than being served wrongly.
+    if (!native::detect_uarch().avx512vnni && moe_postop == nullptr
+            && gated_act == nullptr && fused_moe == nullptr && num_ops > 0) {
+        bool all_ggml_packed = true;
+        for (size_t i = 0; i < num_ops && all_ggml_packed; ++i)
+            all_ggml_packed = (params[i].packing.pack_format_b == 1);
+
+        if (all_ggml_packed) {
+            log_info("Group matmul: GGML per-group INT8 with no AVX-512 on this "
+                     "host; running ",
+                    num_ops, " experts through the single-matmul native path");
+            for (size_t i = 0; i < num_ops; ++i) {
+                if (M[i] == 0) continue; // cold expert, nothing routed to it
+                matmul_batch_params_t expert_batch;
+                const status_t st = matmul_direct(layout[i], transA[i],
+                        transB[i], M[i], N[i], K[i], alpha[i], src[i], lda[i],
+                        weight[i], ldb[i], (i < bias.size() ? bias[i] : nullptr),
+                        beta[i], dst[i], ldc[i],
+                        (i < is_weights_const.size() ? is_weights_const[i]
+                                                     : true),
+                        expert_batch, params[i]);
+                if (st != status_t::success) return st;
+            }
+            return status_t::success;
+        }
+    }
 
     // ── F16 ISA gate + reference-accum-type setup ────────────────────
     // The single-op path runs `kernel_select` per call, which both
