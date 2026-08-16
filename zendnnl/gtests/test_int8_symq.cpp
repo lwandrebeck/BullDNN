@@ -2447,6 +2447,90 @@ TEST_P(Int8KquantDispatch, DecodeGemvHonoursAPerTensorScale) {
 // The layout is the awkward part and is what this checks: four interleaved
 // streams per 128-weight chunk, sub-blocks of sixteen rather than 32, and a
 // symmetric -32 offset instead of a min term.
+// Q6_K AS LLAMA.CPP CALLS IT: f32 activations, dynamic quantisation, and an
+// activation scale per 32 elements. The existing Q6_K test hands over
+// pre-quantised s8 with its own scales, which is a different path -- exactly
+// the gap that let the Q8_0 silent-no-compute bug through.
+//
+// The mismatch this is built to expose: a Q6_K weight scales every SIXTEEN
+// elements, so the unpack declares wei_scale {K/16, N}, while llama.cpp's
+// activation scale is {M, K/32}. The symmetric adapter requires the source
+// scale to be per-tensor, {M,1} or {M, groups} with groups from the WEIGHT --
+// and K/32 is none of those. If that is why enabling Q6_K produced NaN under
+// llama-perplexity, it reproduces here.
+TEST_F(Int8SymqDispatch, GgmlQ6_KWithF32ActivationsComputes) {
+    const int M = 5, N = 64, K = kQ6kSuper * 2;
+
+    std::mt19937 rng(6140);
+    std::vector<int8_t> vals(static_cast<size_t>(N) * K);
+    std::uniform_int_distribution<int> vd(-32, 31);
+    for (auto &v : vals) v = static_cast<int8_t>(vd(rng));
+
+    std::vector<int8_t> sub_scales(kQ6kSuper / 16);
+    for (size_t i = 0; i < sub_scales.size(); ++i)
+        sub_scales[i] = static_cast<int8_t>(1 + (i % 5));
+    const float d = 0.03125f;
+
+    std::vector<uint8_t> blocks;
+    pack_q6_k(vals.data(), sub_scales.data(), d, N, K, blocks);
+
+    std::vector<float> A_f32(static_cast<size_t>(M) * K);
+    std::uniform_real_distribution<float> ad(-1.0f, 1.0f);
+    for (auto &v : A_f32) v = ad(rng);
+
+    std::vector<float> C = poisoned(static_cast<size_t>(M) * N);
+
+    matmul_params p;
+    p.dtypes.src = data_type_t::f32; // library must quantise
+    p.dtypes.wei = data_type_t::s8;
+    p.dtypes.dst = data_type_t::f32;
+    p.packing.pack_format_b = 1;
+    p.packing.ggml_type_b = 14; // Q6_K
+    // Exactly what ggml-zendnn sets: dynamic to s8, no buffer, bf16 scales,
+    // and dims keyed on QK8_0 = 32 regardless of the weight's grouping.
+    p.dtypes.compute = data_type_t::s8;
+    p.dynamic_quant = true;
+    p.quant_params.src_scale.buff = nullptr;
+    p.quant_params.src_scale.dt = data_type_t::bf16;
+    p.quant_params.src_scale.dims = {M, K / 32};
+    p.num_threads = 2;
+    matmul_batch_params_t batch;
+
+    ASSERT_EQ(matmul_direct('r', false, /*transB=*/true, M, N, K, 1.0f,
+                      A_f32.data(), K, blocks.data(), K, nullptr, 0.0f,
+                      C.data(), N, /*is_weights_const=*/true, batch, p),
+            status_t::success);
+
+    int nans = 0;
+    for (float x : C)
+        if (std::isnan(x)) ++nans;
+    ASSERT_EQ(nans, 0) << "destination holds NaN -- this is the llama-perplexity "
+                          "failure reproduced in tree";
+
+    // Reference: w = d * sc[j] * value over sixteen-wide sub-blocks.
+    std::vector<float> ref(static_cast<size_t>(M) * N, 0.0f);
+    for (int m = 0; m < M; ++m) {
+        for (int n = 0; n < N; ++n) {
+            double acc = 0.0;
+            for (int j = 0; j < K / 16; ++j) {
+                const int sc = sub_scales[j % (kQ6kSuper / 16)];
+                double gsum = 0.0;
+                for (int e = 0; e < 16; ++e) {
+                    const int k = j * 16 + e;
+                    gsum += static_cast<double>(A_f32[m * K + k])
+                            * static_cast<double>(
+                                    vals[static_cast<size_t>(n) * K + k]);
+                }
+                acc += static_cast<double>(d) * static_cast<double>(sc) * gsum;
+            }
+            ref[static_cast<size_t>(m) * N + n] = static_cast<float>(acc);
+        }
+    }
+    // Loose: the library quantises the activations to 8 bits, the reference
+    // does not.
+    EXPECT_LT(worst_scaled_error(C, N, ref, N, M, N, &nans), 0.05f);
+}
+
 TEST(Int8Q6KGemv, MatchesTheDequantiseThenMultiplyReference) {
     struct Shape {
         int N, K;

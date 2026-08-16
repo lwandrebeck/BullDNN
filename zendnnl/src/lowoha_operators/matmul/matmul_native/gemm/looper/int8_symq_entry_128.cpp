@@ -274,6 +274,10 @@ bool int8_symq_try_execute_128(const GemmDescriptor &desc, const void *src,
     // requires a source scale with more than one element, so a per-tensor-only
     // kernel is one the GGML path can never reach.
     int ss_row = 0, ss_grp = 0;
+    // How many weight groups share one activation scale. 1 for the usual case;
+    // 2 for Q6_K, whose weights scale every SIXTEEN elements while GGML's
+    // activations scale every 32. See the expansion below.
+    int groups_per_src_scale = 1;
     {
         const auto &d = qp.src_scale.dims;
         if (is_scalar_quant(d)) {
@@ -287,6 +291,28 @@ bool int8_symq_try_execute_128(const GemmDescriptor &desc, const void *src,
             ss_row = 1;
             ss_grp = 0;
         } else if (d.size() == 2 && d[0] == desc.M && d[1] == groups) {
+            ss_row = groups;
+            ss_grp = 1;
+        } else if (d.size() == 2 && d[0] == desc.M && d[1] > 0
+                && groups % d[1] == 0) {
+            // COARSER than the weight groups, which is not a mistake by the
+            // caller: a Q6_K weight carries a scale per sixteen elements, so
+            // the unpack declares {K/16, N}, while GGML quantises activations
+            // per 32 and llama.cpp passes {M, K/32}. Two weight groups then
+            // share one activation scale.
+            //
+            // Declining that is what sent Q6_K to AOCL-DLP, which cannot run
+            // per-group INT8 without VNNI and returns WITHOUT COMPUTING -- NaN
+            // where AOCL-DLP is present, an error where it is not. It is also
+            // why enabling Q6_K in the llama.cpp backend produced NaN under
+            // llama-perplexity while every in-tree Q6_K test passed: those
+            // tests all hand over pre-quantised s8 with matching scales.
+            //
+            // The microkernel indexes scales by a fixed stride and has no
+            // divisor, so rather than teach it one the scales are expanded
+            // below into the per-group form it already reads. That is
+            // M * groups floats against M*N*K multiply-adds.
+            groups_per_src_scale = groups / static_cast<int>(d[1]);
             ss_row = groups;
             ss_grp = 1;
         } else {
@@ -309,7 +335,35 @@ bool int8_symq_try_execute_128(const GemmDescriptor &desc, const void *src,
     const float *src_scale = nullptr;
     float src_scale_one = desc.alpha;
 
-    if (qp.src_scale.buff == nullptr) {
+    if (qp.src_scale.buff != nullptr && groups_per_src_scale > 1) {
+        // Replicate each activation scale across the weight groups it covers.
+        const size_t n_coarse = static_cast<size_t>(desc.M)
+                * static_cast<size_t>(groups / groups_per_src_scale);
+        src_scale_buf.resize(static_cast<size_t>(desc.M) * groups);
+        for (int m = 0; m < desc.M; ++m) {
+            for (int g = 0; g < groups; ++g) {
+                const size_t src_i = static_cast<size_t>(m)
+                                * (groups / groups_per_src_scale)
+                        + g / groups_per_src_scale;
+                if (src_i >= n_coarse) return false; // shape lied; decline
+                float v;
+                if (qp.src_scale.dt == data_type_t::f32) {
+                    v = static_cast<const float *>(qp.src_scale.buff)[src_i];
+                } else if (qp.src_scale.dt == data_type_t::bf16) {
+                    v = common::bfloat16_t::bf16_to_f32_val(static_cast<int16_t>(
+                            static_cast<const uint16_t *>(
+                                    qp.src_scale.buff)[src_i]));
+                } else {
+                    log_info("INT8 symq: unrecognised source scale dtype, "
+                             "declining");
+                    return false;
+                }
+                src_scale_buf[static_cast<size_t>(m) * groups + g]
+                        = v * desc.alpha;
+            }
+        }
+        src_scale = src_scale_buf.data();
+    } else if (qp.src_scale.buff == nullptr) {
         src_scale = &src_scale_one; // no scale supplied: alpha alone
         ss_row = 0;
         ss_grp = 0;
