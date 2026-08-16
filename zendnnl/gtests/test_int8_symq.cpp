@@ -2439,10 +2439,99 @@ TEST_P(Int8KquantDispatch, DecodeGemvHonoursAPerTensorScale) {
     EXPECT_EQ(nans, 0);
 }
 
+// Q6_K decode. It matters more than its share of tensors suggests: a "Q4_K_M"
+// model puts Q6_K on the output/lm_head and some attention tensors, and a
+// profile of generation on the A10 put a THIRD of the time in ggml's
+// vec_dot_q6_K_q8_K -- work this kernel did not touch before.
+//
+// The layout is the awkward part and is what this checks: four interleaved
+// streams per 128-weight chunk, sub-blocks of sixteen rather than 32, and a
+// symmetric -32 offset instead of a min term.
+TEST(Int8Q6KGemv, MatchesTheDequantiseThenMultiplyReference) {
+    struct Shape {
+        int N, K;
+        const char *why;
+    };
+    const Shape shapes[] = {
+            {64, 256, "one super-block"},
+            {16, 512, "two super-blocks"},
+            {33, 768, "ragged N"},
+    };
+
+    for (const Shape &sh : shapes) {
+        SCOPED_TRACE(std::string(sh.why));
+        std::mt19937 rng(9060 + sh.N + sh.K);
+
+        // Signed codes in [-32, 31]; pack_q6_k biases them to [0, 63].
+        std::vector<int8_t> vals(static_cast<size_t>(sh.N) * sh.K);
+        std::uniform_int_distribution<int> vd(-32, 31);
+        for (auto &v : vals) v = static_cast<int8_t>(vd(rng));
+
+        // Per-sub-block scales, exact so the comparison measures arithmetic
+        // rather than fp16 rounding.
+        std::vector<int8_t> sub_scales(kQ6kSuper / 16);
+        for (size_t i = 0; i < sub_scales.size(); ++i)
+            sub_scales[i] = static_cast<int8_t>(1 + (i % 5));
+        const float d = 0.03125f;
+
+        std::vector<uint8_t> blocks;
+        pack_q6_k(vals.data(), sub_scales.data(), d, sh.N, sh.K, blocks);
+
+        std::vector<int8_t> A(static_cast<size_t>(sh.K));
+        fill_s8(A, rng, false);
+
+        // ACTIVATION scales are per 32 elements -- that is what the GGML
+        // backend supplies (src_scale.dims = {n, k/QK8_0}) -- even though a
+        // Q6_K WEIGHT sub-block is sixteen wide, so each pair of sub-blocks
+        // shares one. Writing this test in the kernel's convention instead of
+        // the caller's is exactly how the first version passed while
+        // llama-perplexity returned NaN, so the granularities are kept
+        // deliberately distinct here.
+        const int n_sub = sh.K / 16;   // weight sub-blocks
+        const int n_groups = sh.K / 32; // activation scale groups
+        std::vector<float> ss(static_cast<size_t>(n_groups));
+        const float exact[4] = {0.03125f, 0.0625f, 0.125f, 0.25f};
+        for (size_t i = 0; i < ss.size(); ++i) ss[i] = exact[(i + 1) % 4];
+
+        std::vector<float> C = poisoned(static_cast<size_t>(sh.N));
+        ASSERT_TRUE(int8_q4k_gemv_128(sh.N, sh.K, /*ggml_type=*/14, A.data(),
+                blocks.data(), C.data(), ss.data(), /*ss_grp=*/1,
+                /*nthreads=*/2));
+
+        // Reference: w = d * sc[j] * value, straight from what the packer was
+        // given, summed per sixteen-wide group with that group's scale.
+        std::vector<float> ref(static_cast<size_t>(sh.N), 0.0f);
+        for (int n = 0; n < sh.N; ++n) {
+            double acc = 0.0;
+            for (int j = 0; j < n_sub; ++j) {
+                const int sc = sub_scales[j % (kQ6kSuper / 16)];
+                double gsum = 0.0;
+                for (int e = 0; e < 16; ++e) {
+                    const int k = j * 16 + e;
+                    gsum += static_cast<double>(A[k])
+                            * static_cast<double>(vals[static_cast<size_t>(n)
+                                            * sh.K
+                                    + k]);
+                }
+                // sub-block j sits inside activation group j/2
+                acc += static_cast<double>(ss[j / 2]) * static_cast<double>(d)
+                        * static_cast<double>(sc) * gsum;
+            }
+            ref[n] = static_cast<float>(acc);
+        }
+
+        int nans = 0;
+        EXPECT_LT(worst_scaled_error(C, sh.N, ref, sh.N, 1, sh.N, &nans),
+                kTolerance);
+        EXPECT_EQ(nans, 0) << "dst never written";
+    }
+}
+
 TEST(Int8Q4KGemvGate, DeclinesWhatItDoesNotExpress) {
     EXPECT_FALSE(int8_q4k_gemv_supported(2, 64, 256, 12)) << "M>1 is the GEMM's";
     EXPECT_FALSE(int8_q4k_gemv_supported(1, 64, 128, 12)) << "K not whole blocks";
     EXPECT_FALSE(int8_q4k_gemv_supported(1, 64, 256, 8)) << "Q8_0 is not a k-quant";
+    EXPECT_TRUE(int8_q4k_gemv_supported(1, 64, 256, 14)) << "Q6_K";
     EXPECT_TRUE(int8_q4k_gemv_supported(1, 64, 256, 12));
     EXPECT_TRUE(int8_q4k_gemv_supported(1, 64, 512, 13));
 }

@@ -48,6 +48,28 @@ Verified on one binary, FX-8370E:
 i.e. the win is kept where it is real and the 3.6x hybrid regression is gone.
 Nothing changes on a VNNI host.
 
+A DESTINATION-LAYOUT GUARD, added after the gate above turned a latent
+backend bug into a crash. The compute path asserts the destination is
+neither transposed nor permuted:
+
+    GGML_ASSERT(nb0 == sizeof(float));
+    GGML_ASSERT(nb0 <= nb1); nb1 <= nb2; nb2 <= nb3;
+
+but supports_op only ever checked the weights and inputs for contiguity, so
+an op with a permuted dst was accepted and then killed the process rather
+than falling back. Opening the size gate made one reachable:
+llama-perplexity aborted with SIGABRT while llama-bench, which never builds
+that shape, was unaffected -- so the failure was invisible to the benchmark
+that motivated the gate.
+
+An assert in a compute path is a statement about what the caller must not
+pass; the gate that admits the caller has to enforce it. With the guard,
+perplexity completes and six ops are declined instead of one aborting:
+
+    stock            PPL = 5.0436
+    + this fork      PPL = 5.0888   (q4_K 3696 accepted, 6 rejected)
+
+
 --- a/ggml/src/ggml-zendnn/ggml-zendnn.cpp
 +++ b/ggml/src/ggml-zendnn/ggml-zendnn.cpp
 @@ -759,6 +759,49 @@
@@ -100,7 +122,29 @@ Nothing changes on a VNNI host.
  static bool ggml_zendnn_adaptive_fallback_enabled() {
      static const bool enabled = std::getenv("GGML_ZENDNN_ADAPTIVE_FALLBACK") == nullptr ||
                                  std::atoi(std::getenv("GGML_ZENDNN_ADAPTIVE_FALLBACK")) != 0;
-@@ -794,7 +837,52 @@
+@@ -790,11 +833,74 @@
+                 return false;
+             }
+ 
++            // The compute path ASSERTS that the destination is neither
++            // transposed nor permuted:
++            //
++            //     GGML_ASSERT(nb0 == sizeof(float));
++            //     GGML_ASSERT(nb0 <= nb1); nb1 <= nb2; nb2 <= nb3;
++            //
++            // and supports_op never checked it, so such an op was accepted and
++            // then killed the process instead of falling back. llama-perplexity
++            // produces exactly one -- it aborted there while llama-bench, which
++            // never builds that shape, was fine. An assert in a compute path is
++            // a statement about what the CALLER must not pass; the gate that
++            // admits the caller has to enforce it.
++            if (!(op->nb[0] == sizeof(float) && op->nb[0] <= op->nb[1]
++                        && op->nb[1] <= op->nb[2] && op->nb[2] <= op->nb[3])) {
++                if (zendnn_dispatch_stats::enabled()) g_zendnn_stats.rejected[weights->type]++;
++                return false;
++            }
++
+             if (ggml_zendnn_adaptive_fallback_enabled()) {
                  const int64_t K = inputs->ne[0];
                  const int64_t N = (inputs->ne[1]*inputs->ne[2]*inputs->ne[3]);
                  const int64_t M = weights->ne[1];

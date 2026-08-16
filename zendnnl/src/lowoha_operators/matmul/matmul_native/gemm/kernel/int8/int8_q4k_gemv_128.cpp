@@ -54,6 +54,19 @@ struct block_q5_K {
 };
 static_assert(sizeof(block_q5_K) == 176, "block_q5_K must match GGML");
 
+// Q6_K is the odd one out. Six-bit codes split across two planes, sub-blocks of
+// SIXTEEN rather than 32, an 8-bit SIGNED scale per sub-block, and no min term
+// at all: it is symmetric about 32, so w = d * sc * (q - 32). That -32 folds
+// into a row sum, which is the same shape of correction Q4_K's min needs, so
+// the two share the idea if not the code.
+struct block_q6_K {
+    uint8_t ql[128]; // low 4 bits
+    uint8_t qh[64];  // high 2 bits
+    int8_t scales[16];
+    uint16_t d;
+};
+static_assert(sizeof(block_q6_K) == 210, "block_q6_K must match GGML");
+
 float fp16_to_fp32(uint16_t h) {
     const uint32_t sign = static_cast<uint32_t>(h & 0x8000u) << 16;
     const uint32_t exp = (h >> 10) & 0x1Fu;
@@ -306,11 +319,145 @@ Q4K_GEMV_BODY
 } // namespace gemv_xop
 #pragma GCC pop_options
 
+// ===========================================================================
+// Q6_K decode, portable SSSE3 only for now. Kept out of the two-flavour macro
+// above deliberately: XOP's saving there is VPSHLB on the high nibble and a
+// fused accumulate, and until this kernel is shown to be worth having at all,
+// carrying it in two flavours is two things to keep correct rather than one.
+//
+// A 128-weight chunk interleaves FOUR streams, which is what makes the layout
+// awkward:
+//
+//   weights   0..31   ql[l] low nibble   + qh[l] bits 0-1   scale sc[is+0]
+//   weights  32..63   ql[l+32] low       + qh[l] bits 2-3   scale sc[is+2]
+//   weights  64..95   ql[l] high nibble  + qh[l] bits 4-5   scale sc[is+4]
+//   weights  96..127  ql[l+32] high      + qh[l] bits 6-7   scale sc[is+6]
+//
+// with is = l/16. So one 16-byte step is exactly one sub-block of each stream
+// and needs no further splitting -- the sub-block IS the vector, which is why
+// there are sixteen reductions per super-block here against Q4_K's eight.
+//
+// Codes reach 63 and stay unsigned for PMADDUBSW: 63*127*2 = 16002, inside
+// int16. The -32 never enters the vector arithmetic; it comes out in the flush
+// as -32 * rowsum, exactly like Q4_K's min term.
+inline void superblock_dots_q6(
+        const uint8_t *ql, const uint8_t *qh, const int8_t *a, __m128i *dots) {
+    const __m128i mask0f = _mm_set1_epi8(0x0F);
+    const __m128i mask03 = _mm_set1_epi8(0x03);
+    const __m128i ones = _mm_set1_epi16(1);
+    __m128i acc[16];
+
+    for (int c = 0; c < 2; ++c) {
+        const uint8_t *QL = ql + 64 * c;
+        const uint8_t *QH = qh + 32 * c;
+        const int8_t *AA = a + 128 * c;
+        for (int l = 0; l < 32; l += 16) {
+            const __m128i q_lo = _mm_loadu_si128(
+                    reinterpret_cast<const __m128i *>(QL + l));
+            const __m128i q_hi = _mm_loadu_si128(
+                    reinterpret_cast<const __m128i *>(QL + l + 32));
+            const __m128i h = _mm_loadu_si128(
+                    reinterpret_cast<const __m128i *>(QH + l));
+
+            // The two high bits of each code, moved into position 4-5. The
+            // shifts are 16-bit lane shifts, but masking to 0x03 first and to
+            // the nibble after keeps every bit inside its own byte.
+            const __m128i w0 = _mm_or_si128(_mm_and_si128(q_lo, mask0f),
+                    _mm_slli_epi16(_mm_and_si128(h, mask03), 4));
+            const __m128i w1 = _mm_or_si128(_mm_and_si128(q_hi, mask0f),
+                    _mm_slli_epi16(
+                            _mm_and_si128(_mm_srli_epi16(h, 2), mask03), 4));
+            const __m128i w2 = _mm_or_si128(
+                    _mm_and_si128(_mm_srli_epi16(q_lo, 4), mask0f),
+                    _mm_slli_epi16(
+                            _mm_and_si128(_mm_srli_epi16(h, 4), mask03), 4));
+            const __m128i w3 = _mm_or_si128(
+                    _mm_and_si128(_mm_srli_epi16(q_hi, 4), mask0f),
+                    _mm_slli_epi16(
+                            _mm_and_si128(_mm_srli_epi16(h, 6), mask03), 4));
+
+            const int base = c * 8 + (l / 16);
+            const __m128i a0 = _mm_loadu_si128(
+                    reinterpret_cast<const __m128i *>(AA + l));
+            const __m128i a1 = _mm_loadu_si128(
+                    reinterpret_cast<const __m128i *>(AA + l + 32));
+            const __m128i a2 = _mm_loadu_si128(
+                    reinterpret_cast<const __m128i *>(AA + l + 64));
+            const __m128i a3 = _mm_loadu_si128(
+                    reinterpret_cast<const __m128i *>(AA + l + 96));
+
+            acc[base + 0] = _mm_madd_epi16(_mm_maddubs_epi16(w0, a0), ones);
+            acc[base + 2] = _mm_madd_epi16(_mm_maddubs_epi16(w1, a1), ones);
+            acc[base + 4] = _mm_madd_epi16(_mm_maddubs_epi16(w2, a2), ones);
+            acc[base + 6] = _mm_madd_epi16(_mm_maddubs_epi16(w3, a3), ones);
+        }
+    }
+
+    // Sixteen 4-lane accumulators to sixteen scalars, already in scale order.
+    for (int g = 0; g < 4; ++g) {
+        dots[g] = _mm_hadd_epi32(
+                _mm_hadd_epi32(acc[4 * g + 0], acc[4 * g + 1]),
+                _mm_hadd_epi32(acc[4 * g + 2], acc[4 * g + 3]));
+    }
+}
+
+void run_q6(int N, int nsb, const int8_t *A, const void *blocks, float *C,
+        const float *src_scale, int ss_grp, const int32_t *rowsum16, int nt) {
+#if defined(_OPENMP)
+#pragma omp parallel for schedule(static) num_threads(nt)
+#endif
+    for (int n = 0; n < N; ++n) {
+        __m128 accv = _mm_setzero_ps();
+        for (int sb = 0; sb < nsb; ++sb) {
+            const block_q6_K *b = static_cast<const block_q6_K *>(blocks)
+                    + static_cast<size_t>(n) * nsb + sb;
+            const float d = fp16_to_fp32(b->d);
+            const int8_t *a = A + static_cast<size_t>(sb) * Q4K_SUPER;
+
+            __m128i dots[4];
+            superblock_dots_q6(b->ql, b->qh, a, dots);
+
+            const int g0 = sb * 16; // sixteen sub-blocks per super-block
+            const __m128 vd = _mm_set1_ps(d);
+            const __m128 v32 = _mm_set1_ps(32.0f);
+            for (int g = 0; g < 4; ++g) {
+                const int j0 = g * 4;
+                const __m128 vdot = _mm_cvtepi32_ps(dots[g]);
+                const __m128 vsc = _mm_setr_ps(b->scales[j0], b->scales[j0 + 1],
+                        b->scales[j0 + 2], b->scales[j0 + 3]);
+                const __m128 vrs = _mm_cvtepi32_ps(_mm_loadu_si128(
+                        reinterpret_cast<const __m128i *>(rowsum16 + g0 + j0)));
+                // The ACTIVATION scales are per 32 elements -- the backend
+                // sets src_scale.dims = {n, k/QK8_0} -- while a Q6_K sub-block
+                // is SIXTEEN wide, so each pair of sub-blocks shares one. This
+                // is where the first version was wrong: it indexed one scale
+                // per sub-block, walked off the end of the buffer, and produced
+                // NaN in llama-perplexity while the unit test passed, because
+                // the test had been written to the kernel's convention rather
+                // than the caller's.
+                const int k0 = (g0 + j0) / 2;
+                const __m128 vss = ss_grp
+                        ? _mm_setr_ps(src_scale[k0], src_scale[k0],
+                                src_scale[k0 + 1], src_scale[k0 + 1])
+                        : _mm_set1_ps(src_scale[0]);
+                // d * sc * (dot - 32 * rowsum)
+                const __m128 term = _mm_mul_ps(_mm_mul_ps(vd, vsc),
+                        _mm_sub_ps(vdot, _mm_mul_ps(v32, vrs)));
+                accv = _mm_add_ps(accv, _mm_mul_ps(vss, term));
+            }
+        }
+        C[n] = hsum_ps(accv);
+    }
+}
+
 } // namespace
 
 bool int8_q4k_gemv_supported(int M, int N, int K, int ggml_type) {
     if (M != 1) return false;
-    if (ggml_type != 12 && ggml_type != 13) return false;
+    // 12 Q4_K, 13 Q5_K, 14 Q6_K. Q6_K matters more than its share of tensors
+    // suggests: a "Q4_K_M" model puts Q6_K on the output/lm_head and some
+    // attention tensors, and that was measured at a THIRD of decode time.
+    if (ggml_type != 12 && ggml_type != 13 && ggml_type != 14) return false;
     if (N <= 0 || K <= 0) return false;
     return K % Q4K_SUPER == 0;
 }
@@ -325,17 +472,21 @@ bool int8_q4k_gemv_128(int N, int K, int ggml_type, const int8_t *A,
         return false;
 
     const int nsb = K / Q4K_SUPER; // super-blocks per weight row
-    const int n_groups = K / Q4K_SUB;
     const bool is_q5 = (ggml_type == 13);
+    const bool is_q6 = (ggml_type == 14);
+    // Q6_K scales one sub-block of SIXTEEN; the others one of 32. The row sums
+    // and the activation scales both follow that granularity.
+    const int sub = is_q6 ? 16 : Q4K_SUB;
+    const int n_groups = K / sub;
 
     // The min term needs sum(a) per 32-wide group. It does not depend on the
     // weight column, so it is built once for the whole call rather than per row:
     // K additions against N*K multiply-adds.
     std::vector<int32_t> rowsum(static_cast<size_t>(n_groups), 0);
     for (int g = 0; g < n_groups; ++g) {
-        const int8_t *a = A + static_cast<size_t>(g) * Q4K_SUB;
+        const int8_t *a = A + static_cast<size_t>(g) * sub;
         int32_t s = 0;
-        for (int j = 0; j < Q4K_SUB; ++j) s += a[j];
+        for (int j = 0; j < sub; ++j) s += a[j];
         rowsum[g] = s;
     }
 
@@ -353,7 +504,10 @@ bool int8_q4k_gemv_128(int N, int K, int ggml_type, const int8_t *A,
         return !avoid && host_has_xop();
     }();
 
-    if (s_use_xop) {
+    if (is_q6) {
+        // Portable only for now; see the note above run_q6.
+        run_q6(N, nsb, A, blocks, C, src_scale, ss_grp, rowsum.data(), nt);
+    } else if (s_use_xop) {
         gemv_xop::run(N, nsb, is_q5, A, blocks, C, src_scale, ss_grp,
                 rowsum.data(), nt);
     } else {
