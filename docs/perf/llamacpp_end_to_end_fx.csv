@@ -69,19 +69,38 @@ llama-3.2-1B-Q4_K_M,+bulldnn,60.31,20.10,24960
 # it is deliberately NOT opened for 2 and 3 tokens; see the patch.
 #
 # ---------------------------------------------------------------------------
-# NOT REPRODUCED ON THE A10, AND THE REASON IS NOT YET KNOWN. Same protocol,
-# same patch, same commands, qwen Q4_K_M:
+# NOT REPRODUCED ON THE A10. The sources are identical -- every file under
+# zendnnl/src and zendnnl/gtests md5-matches the repo on both boxes, and
+# ggml-zendnn.cpp is byte-identical at the same llama.cpp commit -- and both are
+# now built AOCLDLP=OFF. So this is an integration difference, not code drift.
 #
-#     a10, -dev none, stock      pp512 20.97   tg128 8.48
-#     a10, -dev none, +bulldnn   pp512 20.95   tg128 8.29   EXECUTED 0
+# WHICH FLAG REACHES THE KERNELS DIFFERS PER BOX, which is the trap:
 #
-# The gate is live there -- the built .so contains the N == 2 || N == 3 test and
-# the counter reports 1848 ops ACCEPTED -- but zero are executed, meaning
-# ggml_zendnn_compute_forward is never invoked for them. The identical command
-# on the FX executes 336. So supports_op says yes on both boxes and the
-# scheduler only follows through on one, which is a llama.cpp-side difference
-# and not the gate.
+#   FX-8370E (RX 560, discrete)   -dev none              336 executed
+#   A10-8770E (R7 iGPU, uma:1)    -dev none                0 executed
+#                                 -dev ZenDNN -ngl 0       0 executed
+#                                 -dev ZenDNN (ngl 99)   336 executed
 #
-# Until that is understood the numbers above are an FX result, not a family 15h
-# result. The A10 also has AVX2, so ggml's baseline there is stronger and the
-# margins would be thinner even once it dispatches.
+# On the A10 the kernels run only when the weights are placed in ZenDNN's own
+# buffer. Removing AOCL-DLP was tested as a cause and refuted -- no change.
+#
+# In that one working A10 configuration, cooled, two passes, 43680 executed:
+#
+#     a10 stock (-dev none)           pp512 20.91   tg128 8.38
+#     a10 +bulldnn (-dev ZenDNN)      pp512 20.39   tg128 7.49
+#                                     0.98x         0.89x
+#
+# That is a REGRESSION, and it is not clean either: the two arms take different
+# buffer paths (plain CPU against ZenDNN-owned), so part of the difference may
+# be copies rather than kernels. It is reported because the alternative is
+# quoting the FX number as though it covered both parts.
+#
+# Kernel level, which IS apples-to-apples because test-backend-ops calls the
+# backend directly, the A10 is ahead (1.11x at one token, kernel_vs_ggml.csv).
+# So the kernels are fine on Excavator and the integration is not.
+#
+# The real fix is the one flagged earlier and not yet done: ZenDNN registers as
+# a DEVICE with 0 MiB rather than as a CPU extra-buffer-type. A device with no
+# buffer only receives ops when something forces weights onto it, which is why
+# the flag matters and why it differs with the GPU's UMA-ness. Until that is
+# changed, the end-to-end numbers above are an FX result.
