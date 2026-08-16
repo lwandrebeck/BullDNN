@@ -1,0 +1,51 @@
+# The five-configuration matrix on the FX-8370E, 2026-08-16, qwen2.5-coder-1.5B
+# Q4_K_M, 8 threads, RX 560. Produced by scripts/bench_matrix.sh, which verifies
+# engagement per row instead of assuming it.
+config,pp512,tg128,executed,implied_gflops,verdict
+cpu,32.66,15.18,0,101,ok
+cpu+bulldnn,44.53,16.02,43680,137,ok
+vulkan,421.22,56.72,0,1297,ok
+vulkan+cpu,313.78,23.15,0,966,ok
+vulkan+cpu+bulldnn,86.05,23.47,23660,265,ok
+#
+# CPU-ONLY: the fork wins, and this is the number to quote.
+#   prompt      32.66 -> 44.53   1.36x
+#   generation  15.18 -> 16.02   1.06x
+#
+# HYBRID: THE FORK IS A 3.6x LOSS ON PROMPT, and this is a real bug, not a
+# measurement artefact -- 23660 matmuls demonstrably executed.
+#   prompt      313.78 -> 86.05  0.27x
+#   generation   23.15 -> 23.47  1.01x
+#
+# The cause is dispatch greed. `supports_op` returns true for a shape this fork
+# can compute, and the scheduler then gives it to ZenDNN on the CPU -- taking it
+# away from a GPU that was doing it four times faster. Correct answer, wrong
+# machine. Prompt work at 512 tokens belongs on the RX 560 (313 t/s) and no CPU
+# kernel is going to beat that; generation is memory-bound and stays a CPU job,
+# which is why the tg column is unharmed.
+#
+# So `supports_op` accepting a shape must ALSO mean "and this is the right
+# device for it". Today it only means the first half. The fix is for the backend
+# to decline large-batch matmuls when a GPU device is present and would take
+# them -- roughly the inverse of the size gate in patch 0003, which exists to
+# stop the fork declining work it SHOULD take.
+#
+# Until that lands: run CPU-only configurations with this fork, and do not
+# enable it for hybrid offload.
+#
+# ---------------------------------------------------------------------------
+# HOW TO READ THE VERDICT COLUMN. Four different failures have produced
+# plausible-looking numbers in this project, none of which announced itself:
+#
+#   VOID:bulldnn-never-ran        the arm named "+bulldnn" did not run it
+#   VOID:bulldnn-ran-in-baseline  the control was contaminated
+#   VOID:implied-NNNGFLOPS...     a CPU-only arm exceeded what a CPU can do,
+#                                 i.e. the GPU computed it
+#
+# implied_gflops is 2 * params * tokens/s. The threshold is 400, which is not a
+# peak -- the fp32 ceiling here is ~106 and these INT8 kernels legitimately
+# reach 137 -- but a bar set between "fast CPU" and "obviously a GPU" (~1300).
+#
+# The device flag that engages the fork DIFFERS BY BOX: -dev none suffices on
+# this machine, while the A10 needs -dev ZenDNN. Same sources, md5-identical.
+# The script tries both and reports which engaged, rather than assuming.
