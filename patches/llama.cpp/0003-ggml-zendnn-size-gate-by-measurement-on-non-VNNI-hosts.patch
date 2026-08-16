@@ -69,10 +69,113 @@ perplexity completes and six ops are declined instead of one aborting:
     stock            PPL = 5.0436
     + this fork      PPL = 5.0888   (q4_K 3696 accepted, 6 rejected)
 
+Q6_K IS NOW ACCEPTED, which matters more than the type count suggests. A
+"Q4_K_M" model is not uniformly Q4_K -- llama.cpp puts Q6_K on the
+output/lm_head and some attention tensors -- and a profile of generation on
+the A10 put a THIRD of the time in ggml_vec_dot_q6_K_q8_K, work this fork
+did not touch. Enabling it took the FX from 1.36x to 1.52x on prompt.
+
+    FX-8370E, qwen2.5-1.5B Q4_K_M, CPU-only, 8 threads:
+      stock              pp512 32.66   tg128 15.18   PPL 5.0436
+      + fork, q4_K only        44.42         15.75       5.0888
+      + fork, q4_K+q6_K        49.61         16.03       5.0537
+
+Perplexity moves TOWARDS stock as more of the model goes through this fork,
+which is the direction a correct path should move it.
+
+One line of this took three attempts and is worth naming. The branch that
+builds the params for k-quants ends in
+
+    params.packing.ggml_type_b = std::is_same_v<TA, block_q4_K> ? 12 : 13;
+
+so adding block_q6_K to the branch CONDITION labelled it 13 -- Q5_K -- and
+the unpack then decoded Q6_K blocks as Q5_K. The result was NaN out of
+llama-perplexity with everything else looking healthy: the type was
+accepted, a kernel ran, matmul_direct returned success, and llama-bench
+reported a plausible 1.55x because it never checks its output. Every
+in-tree test passed too, because each one sets ggml_type_b = 14 by hand and
+so could not exercise the branch that gets it wrong. A two-way ternary
+extended by editing its condition is a trap worth remembering.
+
 
 --- a/ggml/src/ggml-zendnn/ggml-zendnn.cpp
 +++ b/ggml/src/ggml-zendnn/ggml-zendnn.cpp
-@@ -759,6 +759,49 @@
+@@ -59,6 +59,8 @@
+         return zendnnl::common::data_type_t::s8;
+     } else if constexpr (std::is_same_v<T, block_q4_K>) {
+         return zendnnl::common::data_type_t::s4;
++    } else if constexpr (std::is_same_v<T, block_q6_K>) {
++        return zendnnl::common::data_type_t::s8;
+     } else if constexpr (std::is_same_v<T, block_q5_K>) {
+         return zendnnl::common::data_type_t::s8;
+     } else {
+@@ -85,7 +87,8 @@
+         params.quant_params.src_scale.buff = nullptr;
+         params.quant_params.src_scale.dt   = zendnnl::common::data_type_t::bf16;
+         params.packing.pack_format_b = 1;
+-    } else if constexpr (std::is_same_v<TA, block_q4_K> || std::is_same_v<TA, block_q5_K>) {
++    } else if constexpr (std::is_same_v<TA, block_q4_K> || std::is_same_v<TA, block_q5_K>
++                         || std::is_same_v<TA, block_q6_K>) {
+         // Asymmetric per-group weights. Q8_0 gets away without naming its GGML
+         // type because the library infers it from the s8 weight dtype; a k-quant
+         // has to be named, and the unpack then produces the min array the
+@@ -95,7 +98,9 @@
+         params.quant_params.src_scale.buff = nullptr;
+         params.quant_params.src_scale.dt   = zendnnl::common::data_type_t::bf16;
+         params.packing.pack_format_b = 1;
+-        params.packing.ggml_type_b   = std::is_same_v<TA, block_q4_K> ? 12 : 13;
++        params.packing.ggml_type_b   = std::is_same_v<TA, block_q4_K> ? 12
++                : std::is_same_v<TA, block_q5_K>                        ? 13
++                                                                       : 14;
+     }
+     return params;
+ }
+@@ -123,7 +128,8 @@
+ 
+     if constexpr (std::is_same_v<TA, block_q8_0> ||
+                   std::is_same_v<TA, block_q4_K> ||
+-                  std::is_same_v<TA, block_q5_K>) {
++                  std::is_same_v<TA, block_q5_K> ||
++                  std::is_same_v<TA, block_q6_K>) {
+         // Group is 32 for all of these, so the per-token/per-group shape matches.
+         params.quant_params.src_scale.dims = {n, k / QK8_0};
+     }
+@@ -204,6 +210,14 @@
+                 (const block_q4_K *)A, lda,
+                 (const float *)B, ldb,
+                 (float *)C, ldc);
++        case GGML_TYPE_Q6_K:
++            if (Btype != GGML_TYPE_F32 || Ctype != GGML_TYPE_F32)
++                return false;
++            return ggml_zendnn_matmul<block_q6_K, float, float>(
++                ctx, m, n, k,
++                (const block_q6_K *)A, lda,
++                (const float *)B, ldb,
++                (float *)C, ldc);
+         case GGML_TYPE_Q5_K:
+             if (Btype != GGML_TYPE_F32 || Ctype != GGML_TYPE_F32)
+                 return false;
+@@ -255,7 +269,8 @@
+     // backend cannot consume, and the library quantises FP32 activations itself.
+     const bool zendnn_wants_f32_src1 = src0->type == GGML_TYPE_Q8_0 ||
+                                        src0->type == GGML_TYPE_Q4_K ||
+-                                       src0->type == GGML_TYPE_Q5_K;
++                                       src0->type == GGML_TYPE_Q5_K ||
++                                       src0->type == GGML_TYPE_Q6_K;
+     if (src1->type != vec_dot_type && !zendnn_wants_f32_src1) {
+         const size_t nbw1 = ggml_row_size(vec_dot_type, ne10);
+         const size_t nbw2 = nbw1 * ne11;
+@@ -346,7 +361,8 @@
+         // src_scale.dims depends on this expert's row count, unlike the rest of base_params
+         if constexpr (std::is_same_v<TA, block_q8_0> ||
+                       std::is_same_v<TA, block_q4_K> ||
+-                      std::is_same_v<TA, block_q5_K>) {
++                      std::is_same_v<TA, block_q5_K> ||
++                  std::is_same_v<TA, block_q6_K>) {
+             params[i].quant_params.src_scale.dims = {n[i], k / QK8_0};
+         }
+     }
+@@ -759,6 +775,49 @@
      GGML_UNUSED(max_tensor_size);
  }
  
@@ -122,7 +225,7 @@ perplexity completes and six ops are declined instead of one aborting:
  static bool ggml_zendnn_adaptive_fallback_enabled() {
      static const bool enabled = std::getenv("GGML_ZENDNN_ADAPTIVE_FALLBACK") == nullptr ||
                                  std::atoi(std::getenv("GGML_ZENDNN_ADAPTIVE_FALLBACK")) != 0;
-@@ -790,11 +833,74 @@
+@@ -790,11 +849,74 @@
                  return false;
              }
  
@@ -198,3 +301,11 @@ perplexity completes and six ops are declined instead of one aborting:
                      return false;
                  }
  
+@@ -825,6 +947,7 @@
+                     ok = true;
+                     break;
+                 case GGML_TYPE_Q4_K:
++                case GGML_TYPE_Q6_K:
+                 case GGML_TYPE_Q5_K:
+                     // The k-quant unpack needs whole 256-weight super-blocks.
+                     ok = (weights->ne[0] % 256) == 0;
