@@ -1,0 +1,47 @@
+# qwen3-coder-30b-a3b Q4_K_M (17.28 GiB, 30B total / ~3.3B active per token) on
+# the A10-8770E, 4 threads, measured 2026-08-16. This is the homelab's n4 model,
+# and the one configuration where the GPU's advantage was not obvious.
+arm,pp128,tg32,executed,peak_rss_gb
+vulkan,14.36,5.56,0,0.2
+cpu-stock,8.11,4.52,0,30.5
+cpu-bulldnn,ABORTED,ABORTED,0,32.0
+#
+# THE VULKAN NUMBER VALIDATES THE SETUP: 5.56 t/s against the 5.60 the homelab
+# registry records for this node, so this reproduces production rather than
+# something adjacent to it.
+#
+# AND IT QUALIFIES "the iGPU is always faster". For the 1.5B the GPU wins
+# generation by 2.2x (16.96 against 7.88). Here it wins by 1.23x -- 5.56 against
+# 4.52 -- which is close enough that a CPU path worth having would change the
+# answer. The reason is structural: MoE decode activates ~3.3B of 30B parameters
+# and is memory-bound, and on a UMA iGPU the CPU and GPU share ONE memory
+# controller, so the bandwidth advantage that wins everywhere else is absent.
+# Prompt still favours the GPU (14.36 against 8.11, 1.77x) but by much less than
+# the 5.6x seen on the 1.5B.
+#
+# So this is the case that justifies CPU work on Excavator, and the only one
+# found so far.
+#
+# THIS FORK CANNOT RUN IT. llama-bench aborts with signal 6 before the first
+# benchmark op:
+#
+#   Selected kernel aocl_dlp_blocked requires AOCL-DLP, but ZenDNNL was built
+#   without AOCL-DLP support
+#   ggml-zendnn.cpp:315: ZenDNN gemm failed  ->  GGML_ABORT
+#
+# supports_op accepts an op the library then declines, dispatch falls through to
+# AOCL-DLP, and this backend treats a gemm failure as FATAL rather than as a
+# fallback. Same class as the destination-layout bug fixed earlier -- the gate
+# admits more than the library can serve -- but a different instance.
+#
+# It is NOT the expert path: declining MUL_MAT_ID on non-VNNI hosts (which is
+# correct on its own terms, since 3-D per-expert weights match none of the
+# per-group INT8 predicates) does not stop it. The failing op is a plain MUL_MAT
+# and it fires at t=0.059s, before any benchmarked work. Which weight type it
+# carries is not yet known: the dispatch counter prints from a destructor, and
+# an abort skips it.
+#
+# Peak RSS is worth noting separately: 30.5 GB for stock against a 17.28 GB
+# model, and 32.0 GB before this fork died. The unpack inflation that would
+# follow a working run has not been measured here and is a real question on a
+# 60 GB box.
