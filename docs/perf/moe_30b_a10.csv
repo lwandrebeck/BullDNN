@@ -49,16 +49,26 @@ cpu-bulldnn,8.11,3.93,875,32.0
 #   stock        pp128 8.11   tg32 4.52
 #   + fork       pp128 8.11   tg32 3.93   0.87x
 #
-# The counters say why. q4_K: 7392 accepted, 0 EXECUTED -- the expert tensors are
-# accepted and then never handed over, the same A10 scheduling behaviour seen
-# throughout. q6_K: 875 executed. So what this fork actually contributed was the
-# Q6_K path, which is its weakest on Excavator (sixteen reductions per
-# super-block against Q4_K's eight), and generation moved accordingly.
+# The counters say why. q4_K: 7392 accepted, 0 EXECUTED. q6_K: 875 executed. So
+# what this fork actually contributed was the Q6_K path, which is its weakest on
+# Excavator (sixteen reductions per super-block against Q4_K's eight), and
+# generation moved accordingly.
 #
-# So the MoE case is where CPU work is JUSTIFIED -- the GPU margin is only 1.23x
-# -- and this fork does not yet capture it. What would: getting the q4_K expert
-# ops actually executed, which is the same unexplained A10 dispatch behaviour
-# that has blocked every Excavator measurement, not a kernel problem.
+# SOLVED 2026-08-16, and it was not a scheduling mystery. llama.cpp repacks Q4_K
+# into q4_K_8x8 on any AVX2 host and puts it in the CPU repack extra buffer
+# type, which reports is_host=false; ZenDNN's supports_buft IS that test, so the
+# scheduler skips it and gives the node to the CPU. supports_op is still called
+# from elsewhere, which is the whole of "accepted, 0 executed" -- the counter
+# was recording the question, not the answer. Proved by one flag:
+# --no-repack takes q4_K from 0 executed to 674 with the accepted count
+# unchanged. See a10_dispatch_mystery.csv.
+#
+# So this run compared ggml-repack against ggml-repack for every q4_K op, and
+# the 0.87x is the cost of handing Q6_K to the fork's weakest path, not a
+# verdict on its Q4_K. The MoE case is still where CPU work is JUSTIFIED -- the
+# GPU margin is only 1.23x -- but it has not yet been measured at all. Redo it
+# with --no-repack on both arms, which llama-bench cannot do; use
+# llama-perplexity or llama-cli.
 #
 # Peak RSS: 30.5 GB for stock against a 17.28 GB model, 32.0 GB for this fork.
 # The unpack inflation that a fully-dispatching run would add is still unmeasured

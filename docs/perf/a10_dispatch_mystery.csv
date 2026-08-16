@@ -1,0 +1,82 @@
+# THE A10 "ACCEPTED BUT NEVER EXECUTED" BEHAVIOUR, SOLVED 2026-08-16.
+#
+# For weeks the A10 reported q4_K ops accepted by supports_op and never executed,
+# which blocked every Excavator measurement and was assumed to be a scheduler
+# mystery. It is not a mystery and not the scheduler's fault. It is llama.cpp's
+# CPU repack extra buffer type taking the weights first.
+#
+# THE CONTROLLED EXPERIMENT. One binary, one model, one flag between the arms:
+# llama-cli, qwen2.5-1.5B Q4_K_M, -dev none -ngl 0 -t 4, with
+# GGML_ZENDNN_IGNORE_AVX2=1 GGML_ZENDNN_IGNORE_GPU=1 so the fork's own gates are
+# out of the way.
+arm,weight_type,accepted,rejected,executed
+default,q4_K,3698,0,0
+default,q6_K,640,0,118
+no-repack,q4_K,3698,0,674
+no-repack,q6_K,640,0,118
+#
+# Accepted is IDENTICAL. Only execution changes. --no-repack is the whole
+# difference between this fork running q4_K and not.
+#
+# THE CHAIN, each link read in the source rather than inferred:
+#
+#   1. repack.cpp:4600 -- Q4_K gets repack traits when ggml_cpu_has_avx2() and
+#      ne[1] % 8 == 0. The A10 is Excavator and HAS AVX2. The FX is Piledriver
+#      and does not, so nothing claims its Q4_K weights.
+#   2. Those weights are then allocated in the CPU repack extra buffer type.
+#   3. repack.cpp:4829 -- that buffer type sets .is_host = nullptr.
+#   4. ggml-backend.cpp:72 -- ggml_backend_buft_is_host() returns FALSE when the
+#      function pointer is null.
+#   5. ggml-zendnn.cpp:1021 -- supports_buft IS ggml_backend_buft_is_host(buft),
+#      so it returns false for a repacked weight.
+#   6. ggml-backend.cpp:884 -- backend_from_buffer takes the first backend where
+#      supports_buft && supports_op. ZenDNN fails the first test, so the node
+#      goes to CPU.
+#
+# supports_op still gets called from the scheduler's other paths, which is why
+# the counter says "accepted" for an op that was never ours to run. The counter
+# was measuring the question, not the answer.
+#
+# THE DIRECT EVIDENCE, from GGML_SCHED_DEBUG=2 on one layer. attn_k and attn_v
+# have IDENTICAL shapes [1536,256]; only their quantisation differs, and
+# Q4_K_M gives attn_v the wider type:
+#
+#   node #  7 (MUL_MAT) Vcur-0   blk.0.attn_v.weight (315K, Q6_K) [ZenDNN]
+#   node # 10 (MUL_MAT) Kcur-0   blk.0.attn_k.weight (216K, Q4_K) [CPU   ]
+#
+# Same shape, same gate verdict -- supports_op returns ok=(ne[0]%256)==0 for
+# both and 1536%256==0 -- and opposite assignments. Only the type differs, and
+# only Q4_K has an AVX2 repack variant. Q6_K's repack exists but is not selected
+# on this ISA, which is exactly why Q6_K was the one thing that did dispatch.
+#
+# WHAT THIS RETRACTS AND WHAT IT EXPLAINS.
+#
+#   The A10's "0.98x prompt / 0.86x generation" was never a measurement of this
+#   fork's Q4_K kernels. Q4_K ran on ggml's repacked kernels in BOTH arms. What
+#   the fork actually contributed was Q6_K -- its weakest k-quant, sixteen
+#   reductions per super-block against Q4_K's eight -- so the generation loss is
+#   explained by which ops it got, not by how fast its Q4_K is.
+#
+#   The same reading resolves moe_30b_a10.csv, which recorded "q4_K 7392
+#   accepted, 0 EXECUTED" and guessed at A10 scheduling. It was this.
+#
+#   It also explains why the FX and the A10 disagreed so persistently on the
+#   same source. The difference was never Excavator against Piledriver. It was
+#   AVX2 against no AVX2 deciding whether ggml's repack claims the weights first.
+#
+# WHAT NOT TO DO. Do not make supports_buft accept the repack buffer type. The
+# weights there are physically interleaved into q4_K_8x8 order; reading them as
+# row-major k-quant blocks would be silent garbage, which is the failure mode
+# this fork has spent the most effort avoiding.
+#
+# HOW TO MEASURE FROM NOW ON. Any CPU A/B on an AVX2 host must pass --no-repack
+# to BOTH arms, or it is comparing ggml-repack against ggml-repack and calling
+# the difference BullDNN. llama-bench has no such flag -- only llama-cli and
+# llama-perplexity do -- which is worth knowing before trusting a llama-bench
+# number on Excavator.
+#
+# AND THE OPEN QUESTION IT REPLACES. On an AVX2 host ggml's repacked q4_K_8x8
+# kernels are genuinely strong, which is what the fork's own AVX2 gate already
+# concluded from measurement. So the honest question is no longer "why does the
+# A10 not dispatch" but "does BullDNN's Q4_K beat repacked ggml on Excavator at
+# all" -- which is now measurable, with --no-repack, for the first time.
