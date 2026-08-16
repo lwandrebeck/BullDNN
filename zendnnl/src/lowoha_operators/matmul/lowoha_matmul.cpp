@@ -438,6 +438,8 @@ status_t matmul_direct(const char layout, const bool transA, const bool transB,
             && !native::detect_uarch().avx512vnni
             && native::int8_kquant_gemv_try_execute_128(M, N, K, transB,
                     exec_src, weight, dst, alpha, exec_params, num_threads)) {
+        log_info("Decode GEMV: served a one-row k-quant matmul from the packed "
+                 "blocks, skipping the unpack");
         return status_t::success;
     }
 

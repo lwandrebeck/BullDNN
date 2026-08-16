@@ -93,7 +93,9 @@
 // dynamic-kernels header included below.
 #include "lowoha_operators/matmul/quantization/reorder_quantization.hpp"
 #include "lowoha_operators/reorder/lowoha_reorder_utils.hpp" // float_to_bf16
+#include "common/platform_info.hpp"
 #include "lowoha_operators/reorder/reorder_data_type/dynamic_quant_impl/dynamic_kernels.hpp"
+#include "lowoha_operators/reorder/reorder_data_type/scalar_impl/scalar_kernels.hpp"
 
 namespace zendnnl {
 namespace lowoha {
@@ -406,16 +408,55 @@ inline void dqint8_compact_and_requant_slice(
     //   * per-group  (src_groups  > 1): per-K-group absmax → {slice_M, G},
     //     pairing with the per-group {G, N} down-weight scale.  Row-local, so
     //     the M-tile per-thread slicing stays race-free.
+    // The _native quant kernels are compiled `target("avx512f,avx512bw,
+    // avx512vl")`, so calling one on a host without AVX-512 is not a slow path
+    // or a wrong answer -- it is SIGILL and a dead process. The reorder
+    // dispatcher already declines them for exactly this reason
+    // (dispatch_fused_per_group, whose comment names AMD family 15h), but this
+    // call site bypasses the dispatcher and reaches the kernels directly, so it
+    // has to make the same check itself. It did not, and every family 15h part
+    // crashed here.
+    //
+    // The portable forms take the grouped (multi-expert) shape, so the single
+    // tile is passed as a one-element batch: contiguous rows, hence lda and
+    // dst_lda of k_w2, and one thread because this is already inside the M-tile
+    // per-thread slice.
+    static const bool s_has_avx512
+            = zendnnl::common::zendnnl_platform_info().get_avx512f_status();
+
     if (src_groups > 1) {
-        zendnnl::lowoha::reorder::dynamic_per_group_quant_bf16_s8_native(
-                reinterpret_cast<const uint16_t *>(compact_bf16_buf), int8_buf,
-                scale_buf, static_cast<int64_t>(slice_M),
-                static_cast<int64_t>(k_w2), static_cast<int64_t>(src_groups));
+        if (s_has_avx512) {
+            zendnnl::lowoha::reorder::dynamic_per_group_quant_bf16_s8_native(
+                    reinterpret_cast<const uint16_t *>(compact_bf16_buf),
+                    int8_buf, scale_buf, static_cast<int64_t>(slice_M),
+                    static_cast<int64_t>(k_w2),
+                    static_cast<int64_t>(src_groups));
+        } else {
+            const std::vector<const void *> s_src {compact_bf16_buf};
+            const std::vector<int> s_M {static_cast<int>(slice_M)};
+            const std::vector<int> s_K {static_cast<int>(k_w2)};
+            const std::vector<int> s_lda {static_cast<int>(k_w2)};
+            const std::vector<void *> s_dst {int8_buf};
+            const std::vector<int> s_dst_lda {static_cast<int>(k_w2)};
+            const std::vector<float *> s_scales {scale_buf};
+            zendnnl::lowoha::reorder::
+                    dynamic_per_group_group_quant_bf16_s8_ref(s_src, s_M, s_K,
+                            s_lda, s_dst, s_dst_lda, s_scales,
+                            static_cast<int64_t>(src_groups),
+                            /*num_threads=*/1);
+        }
     } else {
-        zendnnl::lowoha::reorder::dynamic_per_token_quant_bf16_s8_native(
-                reinterpret_cast<const uint16_t *>(compact_bf16_buf), int8_buf,
-                scale_buf, static_cast<int64_t>(slice_M),
-                static_cast<int64_t>(k_w2));
+        if (s_has_avx512) {
+            zendnnl::lowoha::reorder::dynamic_per_token_quant_bf16_s8_native(
+                    reinterpret_cast<const uint16_t *>(compact_bf16_buf),
+                    int8_buf, scale_buf, static_cast<int64_t>(slice_M),
+                    static_cast<int64_t>(k_w2));
+        } else {
+            zendnnl::lowoha::reorder::dynamic_per_token_quant_bf16_s8_ref(
+                    reinterpret_cast<const uint16_t *>(compact_bf16_buf),
+                    int8_buf, scale_buf, static_cast<int64_t>(slice_M),
+                    static_cast<int64_t>(k_w2));
+        }
     }
     // (3) Narrow f32 → bf16 in place when the GEMM expects bf16 src scales
     // (the GGML / AOCL-reordered weight carries a bf16 {G,N} wei_scale, and
