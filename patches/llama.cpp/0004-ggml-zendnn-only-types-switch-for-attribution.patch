@@ -1,0 +1,69 @@
+ggml-zendnn: GGML_ZENDNN_ONLY_TYPES, so a result can name one kernel
+
+An A/B gets whatever mixture the scheduler hands over. On qwen2.5-1.5B Q4_K_M
+that is 3866 Q4_K ops and 669 Q6_K ops, and a number measured over the mixture
+cannot say which kernel produced it. That mattered immediately: the Excavator
+generation deficit looked like Q6_K's fault, since Q6_K is this fork's weakest
+k-quant -- sixteen reductions per super-block against Q4_K's eight -- and it
+sits on the decode path of every layer.
+
+GGML_ZENDNN_ONLY_TYPES=q4_K restricts what supports_op will accept, so the
+question can be put directly. It answered it, and not the way expected: with
+Q6_K handed back to ggml, generation got WORSE, 4.8 against 5.5, because
+ggml's unrepacked Q6_K is slower than this fork's. The deficit is in the Q4_K
+decode path itself.
+
+Unset -- which is every production run -- this costs one predictable branch.
+The decline is counted as a rejection rather than returned silently, unlike
+several older paths in this function that return false without touching the
+counters and made "accepted but never executed" look like a mystery for weeks.
+
+See docs/perf/q4k_vs_repacked_ggml_a10.csv.
+
+--- a/b/ggml/src/ggml-zendnn/ggml-zendnn.cpp	2026-08-16 18:38:11.789784408 +0000
++++ b/ggml/src/ggml-zendnn/ggml-zendnn.cpp	2026-08-16 18:38:11.817527822 +0000
+@@ -835,6 +835,30 @@
+     return v;
+ }
+ 
++// GGML_ZENDNN_ONLY_TYPES=q4_K,q6_K restricts what this backend will accept.
++//
++// It exists for attribution, not for production. The scheduler hands over
++// whatever mixture it likes -- on qwen2.5-1.5B Q4_K_M that is 3866 Q4_K ops and
++// 669 Q6_K ops -- and a result measured over the mixture cannot say which
++// kernel moved it. Q6_K is this fork's weakest k-quant, sixteen reductions per
++// super-block against Q4_K's eight, and it sits on the decode path in every
++// layer, so it is exactly the one that could carry a generation loss on its own.
++// Unset, everything is allowed and this costs one predictable branch.
++static bool ggml_zendnn_type_allowed(enum ggml_type t) {
++    static const char *only = std::getenv("GGML_ZENDNN_ONLY_TYPES");
++    if (only == nullptr || only[0] == '\0') return true;
++    const char *name = ggml_type_name(t);
++    const size_t len = strlen(name);
++    for (const char *p = only; *p != '\0';) {
++        const char *end = strchr(p, ',');
++        const size_t n = end ? (size_t)(end - p) : strlen(p);
++        if (n == len && strncmp(p, name, n) == 0) return true;
++        if (!end) break;
++        p = end + 1;
++    }
++    return false;
++}
++
+ static bool ggml_zendnn_adaptive_fallback_enabled() {
+     static const bool enabled = std::getenv("GGML_ZENDNN_ADAPTIVE_FALLBACK") == nullptr ||
+                                 std::atoi(std::getenv("GGML_ZENDNN_ADAPTIVE_FALLBACK")) != 0;
+@@ -989,6 +1013,13 @@
+             }
+ 
+             bool ok;
++            if (!ggml_zendnn_type_allowed(weights->type)) {
++                if (zendnn_dispatch_stats::enabled()) {
++                    g_zendnn_stats.rejected[weights->type]++;
++                }
++                return false;
++            }
++
+             switch (weights->type) {
+                 case GGML_TYPE_F32:
+                 case GGML_TYPE_BF16:

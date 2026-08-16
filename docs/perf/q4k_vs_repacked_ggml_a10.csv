@@ -1,0 +1,87 @@
+# DOES BULLDNN'S Q4_K BEAT ggml's REPACKED Q4_K ON EXCAVATOR? Measured
+# 2026-08-16 on the A10-8770E, the first time this could be asked at all --
+# until a10_dispatch_mystery.csv was solved, the fork's Q4_K never ran here.
+#
+# THE ANSWER IS NO. It ties on prompt and loses about a tenth of generation.
+#
+# One binary (build-vkz), one model (qwen2.5-1.5B Q4_K_M), 4 threads, -dev none
+# -ngl 0, ~700-token prompt, 64 generated. Arms differ ONLY by flags, alternate
+# within each rep, and every run is preceded by 150 s at the powersave governor
+# -- this part throttles ~2x under sustained SIMD. Medians of 3.
+#
+#   A  stock +repack   default env; the A10 has AVX2 so the fork's own gate
+#                      declines everything. Verified by an empty stats table:
+#                      q4_K executed 0, q6_K executed 0. This is what a user
+#                      gets today and it is the arm to beat.
+#   B  stock -repack   --no-repack, fork still declining. Says what repack
+#                      itself is worth, so C is read against the right thing.
+#   C  bulldnn         --no-repack + IGNORE_AVX2/IGNORE_GPU. 3866 q4_K and
+#                      669 q6_K ops executed by the fork.
+#   D  bulldnn q4_K    as C plus GGML_ZENDNN_ONLY_TYPES=q4_K, so q6_K goes back
+#                      to ggml. Added to test whether the generation loss was
+#                      really Q6_K, this fork's weakest k-quant.
+run,arm,rep,pp_tps,tg_tps,q4k_executed,q6k_executed
+1,A_stock_repack,1,20.3,6.0,0,0
+1,A_stock_repack,2,20.5,5.9,0,0
+1,A_stock_repack,3,20.4,6.4,0,0
+1,B_stock_norepack,1,16.6,5.5,0,0
+1,B_stock_norepack,2,16.5,5.5,0,0
+1,B_stock_norepack,3,16.5,5.9,0,0
+1,C_bulldnn,1,20.4,4.7,3866,669
+1,C_bulldnn,2,20.5,5.8,3866,669
+1,C_bulldnn,3,20.5,5.5,3866,669
+2,A_stock_repack,1,20.4,6.3,0,0
+2,A_stock_repack,2,20.4,6.4,0,0
+2,A_stock_repack,3,20.4,6.5,0,0
+2,C_bulldnn,1,20.6,4.6,3866,669
+2,C_bulldnn,2,20.6,5.5,3866,669
+2,C_bulldnn,3,20.4,5.8,3866,669
+2,D_bulldnn_q4k_only,1,19.4,4.5,6386,0
+2,D_bulldnn_q4k_only,2,19.6,5.6,6386,0
+2,D_bulldnn_q4k_only,3,19.6,4.8,6386,0
+#
+# MEDIANS AND RATIOS
+#
+#   run 1   A 20.4 / 6.0     B 16.5 / 5.5     C 20.5 / 5.5
+#   run 2   A 20.4 / 6.4                      C 20.6 / 5.5    D 19.6 / 4.8
+#
+#   repack is worth      A/B prompt  1.24x     A/B generation 1.09x
+#   bulldnn vs repacked  C/A prompt  1.00x     C/A generation 0.86-0.92x
+#   bulldnn vs plain     C/B prompt  1.24x     C/B generation 1.00x
+#
+# WHAT THAT SAYS. On prompt these 128-bit SSSE3/XOP kernels land exactly on
+# ggml's AVX2 q4_K_8x8 repacked kernels -- 20.5 against 20.4, and 20.6 against
+# 20.4 in the second run, so if anything a hair ahead and certainly not behind.
+# That is a better result than it sounds: the fork matches a 256-bit repacked
+# kernel on a part whose AVX2 cracks into two 128-bit micro-ops, which is the
+# same reason the AVX2 INT8 arm measured nothing. Against ggml WITHOUT repack it
+# is 1.24x, and that 1.24x is the number every earlier "BullDNN wins prompt"
+# claim was really made against.
+#
+# Generation is the loss, and it is decode, not Q4_K arithmetic. It is also not
+# Q6_K, which was the obvious suspect -- sixteen reductions per super-block
+# against Q4_K's eight, on the decode path of every layer. Arm D removes Q6_K
+# from the fork and generation gets WORSE, 4.8 against C's 5.5, because ggml's
+# unrepacked Q6_K is slower than the fork's. So the fork's Q6_K is an
+# improvement here; the deficit sits in the Q4_K decode path itself, at M=1
+# where there is no batch to amortise the unpack.
+#
+# THE PRACTICAL VERDICT. The existing AVX2 gate -- decline on Excavator -- is
+# right, and now it is right for a measured reason rather than a guess about
+# dispatch. Prompt is a tie, so there is nothing to win there, and generation
+# costs about 10%. On the FX, with no AVX2 and so no repack, arm B IS the
+# baseline and the fork's 1.24x prompt stands.
+#
+# CAVEATS, because the numbers are not equally trustworthy. A's generation is
+# tight (6.3, 6.4, 6.5 in run 2) while C's is not (4.6, 5.5, 5.8) -- the first
+# rep of every bulldnn arm in both runs is the low outlier, which the cooldown
+# did not remove and which is not yet explained. Medians are used for that
+# reason. And this is ONE model at ONE size; qwen2.5-1.5B has small matmuls, and
+# the prompt tie could move either way on a 30B where K and M are larger.
+#
+# HOW IT WAS MEASURED. llama-bench cannot do this: it has no --no-repack and
+# ignores LLAMA_ARG_REPACK (measured, not assumed). llama-cli can, needs -st or
+# it drops into the chat UI and spins on EOF stdin -- that wrote a 395 MB log
+# into a RAM-backed /tmp the first time -- and prints
+# "[ Prompt: X t/s | Generation: Y t/s ]", with a comma decimal under a French
+# locale. Harness: scripts/a10_q4k_ab.sh.
