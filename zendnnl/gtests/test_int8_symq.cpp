@@ -2679,6 +2679,62 @@ TEST_P(Int8KquantDispatch, HonoursBetaAndBias) {
     EXPECT_EQ(nans, 0);
 }
 
+// A plain f32 matmul with NO ALGO NAMED. This is what llama.cpp issues, and it
+// is what killed llama-bench on qwen3-coder-30b-a3b: the default algo is
+// aocl_dlp_blocked, an AOCLDLP=OFF build has no such kernel, and the ggml
+// backend treats the resulting decline as fatal. The native fp32 kernel could
+// always run this shape -- nothing selected it.
+//
+// The assertion is on the arithmetic, not on the algo, so this is meaningful in
+// either build: with AOCL-DLP present that backend answers, without it the
+// native kernel must. What must never happen again is neither of them.
+TEST(NoAlgoNamed, PlainF32Computes) {
+    const int M = 128, N = 128, K = 2048; // the shape from the 30B
+
+    std::mt19937 rng(9021);
+    std::uniform_real_distribution<float> dist(-1.0f, 1.0f);
+    std::vector<float> A(static_cast<size_t>(M) * K);
+    std::vector<float> B(static_cast<size_t>(N) * K);
+    for (auto &v : A) v = dist(rng);
+    for (auto &v : B) v = dist(rng);
+    std::vector<float> C(static_cast<size_t>(M) * N, 12345.0f); // poison
+
+    std::vector<float> ref(static_cast<size_t>(M) * N, 0.0f);
+    for (int m = 0; m < M; ++m)
+        for (int n = 0; n < N; ++n) {
+            double acc = 0.0;
+            for (int k = 0; k < K; ++k)
+                acc += static_cast<double>(A[static_cast<size_t>(m) * K + k])
+                        * static_cast<double>(B[static_cast<size_t>(n) * K + k]);
+            ref[static_cast<size_t>(m) * N + n] = static_cast<float>(acc);
+        }
+
+    matmul_params p;
+    p.dtypes.src = data_type_t::f32;
+    p.dtypes.wei = data_type_t::f32;
+    p.dtypes.dst = data_type_t::f32;
+    p.num_threads = 2;
+    // p.lowoha_algo deliberately left at none -- that is the whole point.
+    ASSERT_EQ(p.lowoha_algo, matmul_algo_t::none);
+    matmul_batch_params_t batch;
+
+    ASSERT_EQ(matmul_direct('r', false, /*transB=*/true, M, N, K, 1.0f, A.data(),
+                      K, B.data(), K, nullptr, 0.0f, C.data(), N, true, batch, p),
+            status_t::success);
+
+    // Not kTolerance: that one is sized for the INT8 paths, whose arithmetic is
+    // exact, and f32 accumulation over K=2048 against a double reference lands
+    // around 1.5e-6 in a summation order the kernel is free to choose.
+    constexpr float kF32Tolerance = 1e-5f;
+    int nans = 0;
+    EXPECT_LT(worst_scaled_error(C, N, ref, N, M, N, &nans), kF32Tolerance);
+    EXPECT_EQ(nans, 0);
+    // Poison must be gone everywhere: a backend that returns success without
+    // touching dst is the exact failure this guards.
+    EXPECT_NE(C[0], 12345.0f);
+    EXPECT_NE(C[static_cast<size_t>(M) * N - 1], 12345.0f);
+}
+
 } // namespace
 } // namespace native
 } // namespace matmul

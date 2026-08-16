@@ -748,7 +748,9 @@ matmul_algo_t kernel_select(matmul_params &params, int Batch_A, int Batch_B,
     }
 
     // Default to AOCL DLP blocked kernel
-    matmul_algo_t kernel = (algo == static_cast<int>(matmul_algo_t::none))
+    const bool algo_is_library_default
+            = (algo == static_cast<int>(matmul_algo_t::none));
+    matmul_algo_t kernel = algo_is_library_default
             ? matmul_algo_t::aocl_dlp_blocked
             : static_cast<matmul_algo_t>(algo);
 
@@ -1005,6 +1007,49 @@ matmul_algo_t kernel_select(matmul_params &params, int Batch_A, int Batch_B,
             || (kernel >= matmul_algo_t::algo_count)) {
         kernel = matmul_algo_t::aocl_dlp;
     }
+
+#if !ZENDNNL_DEPENDS_AOCLDLP
+    // No AOCL-DLP in this build, so an AOCL-DLP choice is not a slower route --
+    // it is no route at all. matmul_direct rejects it up front and the ggml
+    // backend treats that as fatal, so a plain f32 x f32 matmul aborted
+    // llama.cpp on qwen3-coder-30b-a3b.
+    //
+    // The native kernels can express f32 and bf16 perfectly well; nothing was
+    // ever selecting them, because the default algo is aocl_dlp_blocked and a
+    // caller who names no algo has no way to say otherwise. This is the same
+    // failure the per-group INT8 rule above fixes, for the dense dtypes.
+    //
+    // Gated on the build rather than on the uarch on purpose: where AOCL-DLP
+    // exists it can run these shapes, and this rule must not take work away
+    // from it. Batched shapes are left alone -- native dispatch is per-matmul.
+    //
+    // Restricted to the case where NOBODY ASKED. A caller that names aocl_dlp
+    // explicitly and does not get it should hear about it; silently handing it
+    // a different kernel would make a test that pins an algo pass while
+    // measuring something else. The bug being fixed is the opposite situation
+    // -- a caller who named nothing, and so got a library default they had no
+    // way to decline.
+    if (algo_is_library_default
+            && (kernel == matmul_algo_t::aocl_dlp
+                    || kernel == matmul_algo_t::aocl_dlp_blocked)
+            && batch_count <= 1) {
+        const bool native_can_run
+                = (params.dtypes.src == data_type_t::f32
+                          && params.dtypes.wei == data_type_t::f32
+                          && params.dtypes.dst == data_type_t::f32)
+                || (params.dtypes.src == data_type_t::bf16
+                        && params.dtypes.wei == data_type_t::bf16
+                        && (params.dtypes.dst == data_type_t::bf16
+                                || params.dtypes.dst == data_type_t::f32));
+        if (native_can_run) {
+            log_info("AOCL-DLP absent from this build: routing ",
+                    dtype_info(params.dtypes.src),
+                    " to native_gemm, which is the only kernel that can run it "
+                    "here");
+            kernel = matmul_algo_t::native_gemm;
+        }
+    }
+#endif
 
     params.lowoha_algo = kernel;
 

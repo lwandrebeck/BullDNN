@@ -30,9 +30,15 @@ cpu-bulldnn,8.11,3.93,875,32.0
 #
 #   1. MUL_MAT_ID -- the MoE expert form. 3-D per-expert weights match none of
 #      the per-group INT8 predicates.
-#   2. A plain f32 x f32 [2048,128] matmul. No accelerated route exists for f32
-#      on a host without AVX-512. The 1.5B never showed this because its f32
-#      matmuls sit below the size gate; this model has one above it.
+#   2. A plain f32 x f32 [2048,128] matmul, which went to aocl_dlp_blocked --
+#      absent in an AOCLDLP=OFF build. The 1.5B never showed this because its
+#      f32 matmuls sit below the size gate; this model has one above it.
+#      Declining it was the stopgap; the cause was selection, not arithmetic.
+#      native_gemm has always supported f32 and nothing chose it, because the
+#      default algo is aocl_dlp_blocked and a caller naming no algo could not
+#      say otherwise. kernel_select now routes it -- see
+#      fp32_flavours_and_scaling.csv, which also records why no new f32 kernel
+#      is warranted: FMA4 measured slower than the shipped FMA3.
 #
 # Finding the second cost a round trip per guess, because the dispatch counter
 # prints from a destructor and an abort skips it. The abort now names the tensor

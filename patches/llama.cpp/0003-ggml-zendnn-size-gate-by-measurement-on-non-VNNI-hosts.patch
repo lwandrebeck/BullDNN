@@ -105,12 +105,20 @@ qwen3-coder-30b-a3b killed llama-bench with signal 6 on each in turn.
   which match none of the per-group INT8 predicates, so dispatch fell through
   to AOCL-DLP.
 
-  Non-quantised weights declined. A plain f32 x f32 [2048,128] matmul has no
-  accelerated route on a host without AVX-512: kernel_select picks
+  Non-quantised weights declined. A plain f32 x f32 [2048,128] matmul went to
   aocl_dlp_blocked, which is absent in an AOCLDLP=OFF build. Only the types
   this fork has kernels for are accepted now -- Q4_0, Q8_0, Q4_K, Q5_K, Q6_K.
   The 1.5B never showed this because its f32 matmuls sit below the size gate;
   the 30B has one above it.
+
+  That decline was the stopgap. The library-side cause is fixed separately:
+  native_gemm has supported f32 x f32 -> f32 all along and nothing selected
+  it, since the default algo is aocl_dlp_blocked and a caller naming no algo
+  had no way to say otherwise. kernel_select now routes it. So this whitelist
+  is no longer load-bearing against the crash, and re-admitting F32 is a
+  measurable experiment rather than a fix -- worth running once the A10
+  accepted-but-never-executed behaviour is understood, since until then an
+  end-to-end number from that box measures nothing.
 
 The abort message now names the tensor -- type, shape, m/n/k -- because
 finding this cost a round trip per guess otherwise. The dispatch counter
@@ -343,10 +351,12 @@ tg128 16.32.
 +                        return false;
 +                    }
 +                    // Only the quantised types this fork actually has kernels
-+                    // for. An f32 or bf16 weight has no accelerated route on a
-+                    // host without AVX-512: dispatch picks aocl_dlp_blocked,
-+                    // which is absent in an AOCLDLP=OFF build, and the gemm
-+                    // failure is FATAL here rather than a fallback.
++                    // for. An f32 or bf16 weight reached aocl_dlp_blocked,
++                    // absent in an AOCLDLP=OFF build, and the gemm failure is
++                    // FATAL here rather than a fallback. The library now routes
++                    // those to native_gemm instead, so this is a policy choice
++                    // -- no measured reason to send them here -- not a guard
++                    // against a crash.
 +                    //
 +                    // qwen3-coder-30b-a3b died on exactly that -- a plain
 +                    // f32 x f32 [2048,128] matmul, killed llama-bench with

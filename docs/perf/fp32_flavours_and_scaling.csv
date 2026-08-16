@@ -66,3 +66,41 @@ a10-8770e,bdver4,scaling,fma3_shipped,2,512,2048,2048,41.58
 a10-8770e,bdver4,scaling,fma3_shipped,4,512,2048,2048,29.18
 a10-8770e,bdver4,scaling,fma3_shipped,1,1,4096,4096,2.89
 a10-8770e,bdver4,scaling,fma3_shipped,4,1,4096,4096,6.15
+#
+# ASKED AGAIN 2026-08-16: is there an XOP or other family-15h instruction that
+# would justify writing a new f32 kernel? The rows above already answer it, and
+# the answer is no. Taking the family 15h f32 inventory in turn:
+#
+#   FMA4 -- the one f32 arithmetic instruction family 15h has and nothing else
+#     does. Measured here, and it LOSES to FMA3: 113.11 against 133.22 on
+#     bdver2, and the same direction on bdver4. Its only advantage is the
+#     non-destructive destination, which saves a register copy -- and the
+#     pinning has already removed those copies, so what is left is a longer
+#     encoding for the same work.
+#   XOP -- has no f32 GEMM instruction. Its float members are VFRCZ{PS,PD}
+#     (extract fraction), VPCMOV (bitwise select) and VPERMIL2PS (two-source
+#     permute with zeroing). The last could serve a pack or transpose step; none
+#     belongs in an FMA inner loop.
+#   AVX 256-bit -- cracks into two 128-bit micro-ops on this family, so it buys
+#     no throughput and costs instruction bytes. AMD's own 15h optimization
+#     guide says to prefer 128-bit, and the INT8 AVX2 arm measured exactly that.
+#
+# The lever that does matter is not instruction selection at all: the register
+# pinning is worth 100.94 -> 133.22, +32%, which is larger than every flavour
+# difference combined. And 133.22 is already about 63% of the bdver2 f32 peak
+# (4 modules x 2 128-bit FMAC pipes x 4 floats x 2 flops x 3.3 GHz ~= 211
+# GFLOPS). The missing third is blocking and bandwidth. A new kernel would be
+# chasing that, not an instruction.
+#
+# WHAT WAS ACTUALLY BROKEN was selection, not arithmetic. native_gemm has
+# supported f32 x f32 -> f32 all along and nothing ever chose it: the default
+# algo is aocl_dlp_blocked, and a caller that names no algo -- llama.cpp's
+# backend, for one -- had no way to say otherwise. In an AOCLDLP=OFF build that
+# is not a slower route but no route, which is how a plain f32 [2048,128]
+# matmul aborted llama-bench on qwen3-coder-30b-a3b. kernel_select now routes
+# f32 and bf16 to native_gemm when the build has no AOCL-DLP, gated on the build
+# rather than the uarch so it cannot take work from a backend that could run it.
+# Covered by gtest NoAlgoNamed.PlainF32Computes, which names no algo on purpose
+# and poisons dst first, because a backend returning success without writing was
+# the failure mode twice before.
+
