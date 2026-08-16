@@ -20,6 +20,7 @@
 #include <cstdlib>
 #include <cstring>
 #include <emmintrin.h>
+#include <immintrin.h>
 #include <tmmintrin.h>
 #include <vector>
 
@@ -121,6 +122,17 @@ inline float hsum_ps(__m128 v) {
 // comes from AOCL-utils and is Zen-oriented, and no Zen part has either. CPUID
 // Fn8000_0001_ECX bit 11 is the definitive answer. Family 15h is the only
 // silicon that has it.
+// Excavator is the only family 15h part with AVX2, and it is the one where
+// ggml's own kernels are 256-bit while these were 128-bit. That width, not
+// instruction selection, is what the Excavator measurements kept pointing at:
+// identical code wins by 1.52x on the FX, where ggml is confined to SSSE3 too,
+// and loses on the A10 where it is not.
+bool host_has_avx2() {
+    unsigned eax = 0, ebx = 0, ecx = 0, edx = 0;
+    if (!__get_cpuid_count(7, 0, &eax, &ebx, &ecx, &edx)) return false;
+    return (ebx & (1u << 5)) != 0;
+}
+
 bool host_has_xop() {
     unsigned eax = 0, ebx = 0, ecx = 0, edx = 0;
     if (!__get_cpuid(0x80000000u, &eax, &ebx, &ecx, &edx)) return false;
@@ -288,6 +300,147 @@ bool host_has_xop() {
             C[n] = hsum_ps(accv);                                              \
         }                                                                      \
     }
+
+#pragma GCC push_options
+#pragma GCC target("avx2")
+namespace gemv_avx2 {
+
+// A Q4_K sub-block is 32 weights, which is exactly a 256-bit register of bytes.
+// So where the 128-bit kernel splits each sub-block into two halves and pays two
+// loads, two PMADDUBSWs and two accumulates for it, this pays one of each -- the
+// sub-block IS the vector. That is the whole of the AVX2 advantage here and it
+// is a halving of the inner loop, not a widening of the arithmetic: Excavator's
+// FPU is two 128-bit pipes and a 256-bit op is cracked into two, so the gain is
+// in issue slots and loads rather than in FLOPs.
+//
+// The reduction is the awkward part, because _mm256_hadd_epi32 works WITHIN each
+// 128-bit lane. Four accumulators fold to four scalars with three hadds and a
+// cross-lane add, which is the standard idiom and no worse per sub-block than
+// the 128-bit path's.
+inline __m128i reduce4(__m256i a, __m256i b, __m256i c, __m256i d) {
+    const __m256i t0 = _mm256_hadd_epi32(a, b);
+    const __m256i t1 = _mm256_hadd_epi32(c, d);
+    const __m256i t = _mm256_hadd_epi32(t0, t1);
+    return _mm_add_epi32(
+            _mm256_castsi256_si128(t), _mm256_extracti128_si256(t, 1));
+}
+
+template <bool kIsQ5>
+inline void superblock_dots(const uint8_t *qs, const uint8_t *qh,
+        const int8_t *a, __m128i &d0123, __m128i &d4567) {
+    const __m256i mask0f = _mm256_set1_epi8(0x0F);
+    const __m256i ones = _mm256_set1_epi16(1);
+    const __m256i sixteen = _mm256_set1_epi8(16);
+    __m256i v[8];
+
+    for (int c = 0; c < 4; ++c) {
+        const __m256i qb = _mm256_loadu_si256(
+                reinterpret_cast<const __m256i *>(qs + 32 * c));
+        __m256i lo = _mm256_and_si256(qb, mask0f);
+        __m256i hi = _mm256_and_si256(_mm256_srli_epi16(qb, 4), mask0f);
+
+        if (kIsQ5) {
+            const __m256i hb = _mm256_loadu_si256(
+                    reinterpret_cast<const __m256i *>(qh));
+            const __m256i u1
+                    = _mm256_set1_epi8(static_cast<char>(1 << (2 * c)));
+            const __m256i u2
+                    = _mm256_set1_epi8(static_cast<char>(2 << (2 * c)));
+            lo = _mm256_add_epi8(lo,
+                    _mm256_and_si256(
+                            _mm256_cmpeq_epi8(_mm256_and_si256(hb, u1), u1),
+                            sixteen));
+            hi = _mm256_add_epi8(hi,
+                    _mm256_and_si256(
+                            _mm256_cmpeq_epi8(_mm256_and_si256(hb, u2), u2),
+                            sixteen));
+        }
+
+        const __m256i al = _mm256_loadu_si256(
+                reinterpret_cast<const __m256i *>(a + 64 * c));
+        const __m256i ah = _mm256_loadu_si256(
+                reinterpret_cast<const __m256i *>(a + 64 * c + 32));
+
+        v[2 * c] = _mm256_madd_epi16(_mm256_maddubs_epi16(lo, al), ones);
+        v[2 * c + 1] = _mm256_madd_epi16(_mm256_maddubs_epi16(hi, ah), ones);
+    }
+
+    d0123 = reduce4(v[0], v[1], v[2], v[3]);
+    d4567 = reduce4(v[4], v[5], v[6], v[7]);
+}
+
+inline float hsum_ps256(__m128 v) {
+    v = _mm_add_ps(v, _mm_shuffle_ps(v, v, 0x4E));
+    v = _mm_add_ps(v, _mm_shuffle_ps(v, v, 0xB1));
+    return _mm_cvtss_f32(v);
+}
+
+void run(int N, int nsb, bool is_q5, const int8_t *A, const void *blocks,
+        float *C, const float *src_scale, int ss_grp, const int32_t *rowsum,
+        int nt) {
+#if defined(_OPENMP)
+#pragma omp parallel for schedule(static) num_threads(nt)
+#endif
+    for (int n = 0; n < N; ++n) {
+        __m128 accv = _mm_setzero_ps();
+        for (int sb = 0; sb < nsb; ++sb) {
+            const uint8_t *scales;
+            const uint8_t *qs;
+            const uint8_t *qh = nullptr;
+            float d, dmin;
+            if (is_q5) {
+                const block_q5_K *b = static_cast<const block_q5_K *>(blocks)
+                        + static_cast<size_t>(n) * nsb + sb;
+                d = fp16_to_fp32(b->d);
+                dmin = fp16_to_fp32(b->dmin);
+                scales = b->scales;
+                qs = b->qs;
+                qh = b->qh;
+            } else {
+                const block_q4_K *b = static_cast<const block_q4_K *>(blocks)
+                        + static_cast<size_t>(n) * nsb + sb;
+                d = fp16_to_fp32(b->d);
+                dmin = fp16_to_fp32(b->dmin);
+                scales = b->scales;
+                qs = b->qs;
+            }
+            const int8_t *a = A + static_cast<size_t>(sb) * Q4K_SUPER;
+            __m128i d0123, d4567;
+            if (is_q5) {
+                superblock_dots<true>(qs, qh, a, d0123, d4567);
+            } else {
+                superblock_dots<false>(qs, nullptr, a, d0123, d4567);
+            }
+
+            uint8_t sc[8], mn[8];
+            for (int j = 0; j < 8; ++j)
+                get_scale_min_k4(j, scales, &sc[j], &mn[j]);
+
+            const int g0 = sb * 8;
+            const __m128 vd = _mm_set1_ps(d);
+            const __m128 vdmin = _mm_set1_ps(dmin);
+            for (int half = 0; half < 2; ++half) {
+                const int j0 = half * 4;
+                const __m128 vdot = _mm_cvtepi32_ps(half ? d4567 : d0123);
+                const __m128 vsc = _mm_setr_ps(
+                        sc[j0], sc[j0 + 1], sc[j0 + 2], sc[j0 + 3]);
+                const __m128 vmn = _mm_setr_ps(
+                        mn[j0], mn[j0 + 1], mn[j0 + 2], mn[j0 + 3]);
+                const __m128 vrs = _mm_cvtepi32_ps(_mm_loadu_si128(
+                        reinterpret_cast<const __m128i *>(rowsum + g0 + j0)));
+                const __m128 vss = ss_grp ? _mm_loadu_ps(src_scale + g0 + j0)
+                                          : _mm_set1_ps(src_scale[0]);
+                const __m128 term
+                        = _mm_sub_ps(_mm_mul_ps(_mm_mul_ps(vd, vsc), vdot),
+                                _mm_mul_ps(_mm_mul_ps(vdmin, vmn), vrs));
+                accv = _mm_add_ps(accv, _mm_mul_ps(vss, term));
+            }
+        }
+        C[n] = hsum_ps256(accv);
+    }
+}
+} // namespace gemv_avx2
+#pragma GCC pop_options
 
 // ---- portable: SSSE3, every family 15h part and anything newer -------------
 namespace gemv_sse {
@@ -520,6 +673,32 @@ bool int8_q4k_gemv_128(int N, int K, int ggml_type, const int8_t *A,
     // ZENDNNL_NATIVE_Q4K_NO_XOP forces the portable flavour so that the two can
     // be compared on one machine, which is the only way to attribute a
     // difference to the instruction selection rather than to the day.
+    // OPT-IN, not the default, because it was measured and lost. The 256-bit
+    // flavour exists on the theory that vector width was the remaining
+    // Excavator gap -- the same kernels win 1.52x on the FX, where ggml is
+    // confined to SSSE3, and lose on the A10 where ggml is AVX2. That theory
+    // is wrong. A10, cooled, two passes, against stock 20.05 / 7.88:
+    //
+    //     256-bit   pp 20.96 (1.05x)   tg 5.98 (0.76x)
+    //     128-bit   pp 20.96 (1.05x)   tg 6.24 (0.79x)
+    //
+    // Identical on prompt, slightly WORSE on generation. Which follows once
+    // stated properly: decode streams tens of megabytes of weights per token
+    // and is memory-bound, so widening the arithmetic buys nothing, and on
+    // Excavator a 256-bit op is cracked into two 128-bit micro-ops regardless
+    // -- AVX2 there reduces instruction count, not execution time, and
+    // instruction count is not what binds.
+    //
+    // Kept because it is correct, costs nothing when unused, and is the
+    // measurement anyone will otherwise want to redo. Set
+    // ZENDNNL_NATIVE_Q4K_AVX2=1 to select it.
+    static const bool s_use_avx2 = [] {
+        const char *on = std::getenv("ZENDNNL_NATIVE_Q4K_AVX2");
+        const bool want = on != nullptr && on[0] != '\0'
+                && std::strcmp(on, "0") != 0;
+        return want && host_has_avx2();
+    }();
+
     static const bool s_use_xop = [] {
         const char *no_xop = std::getenv("ZENDNNL_NATIVE_Q4K_NO_XOP");
         const bool avoid = no_xop != nullptr && no_xop[0] != '\0'
@@ -536,6 +715,11 @@ bool int8_q4k_gemv_128(int N, int K, int ggml_type, const int8_t *A,
             run_q6<false>(N, nsb, A, blocks, C, src_scale, ss_grp,
                     rowsum.data(), nt);
         }
+    } else if (s_use_avx2) {
+        // Preferred over XOP where both exist: XOP saves two instructions per
+        // 16-byte step, AVX2 halves the number of steps.
+        gemv_avx2::run(N, nsb, is_q5, A, blocks, C, src_scale, ss_grp,
+                rowsum.data(), nt);
     } else if (s_use_xop) {
         gemv_xop::run(N, nsb, is_q5, A, blocks, C, src_scale, ss_grp,
                 rowsum.data(), nt);
