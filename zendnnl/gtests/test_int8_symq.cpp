@@ -1948,9 +1948,15 @@ TEST_F(Int8SymqDispatch, DeclinesWhatItCannotExpress) {
                         p.quant_params.src_scale.buff = pt.data();
                         p.quant_params.src_scale.dims = {8, 3};
                     }},
-            {"weight scale that is not {groups, N}",
+            {"weight scale whose 1-D length is neither 1 nor N",
                     [](matmul_params &p, std::vector<float> &) {
-                        p.quant_params.wei_scale.dims = {64};
+                        // {N} and {1} are per-channel and per-tensor and are
+                        // now both run -- see WeightScale1DMatchesTheirTwoDForm.
+                        // A length that is neither stays inexpressible, and in
+                        // particular a {groups*N} flattening does: reading it
+                        // as per-channel would silently use group 0's scales
+                        // for every K.
+                        p.quant_params.wei_scale.dims = {7};
                     }},
             {"non-zero source zero point",
                     [](matmul_params &p, std::vector<float> &) {
@@ -1978,6 +1984,55 @@ TEST_F(Int8SymqDispatch, DeclinesWhatItCannotExpress) {
             if (std::isnan(x)) any_nan = true;
         EXPECT_TRUE(any_nan)
                 << "the kernel computed a call it does not implement";
+    }
+}
+
+// A per-channel {N} and a per-tensor {1} weight scale are the degenerate cases
+// of {groups, N} with groups=1, so they must give bit-identical results to
+// spelling that out. Declining them was not a neutral choice: nothing else on a
+// host without AVX-512 VNNI runs a per-tensor INT8 matmul, so the call reached
+// AOCL-DLP and, in a build without it, wrote nothing at all.
+TEST_F(Int8SymqDispatch, WeightScale1DMatchesTheirTwoDForm) {
+    std::mt19937 rng(9311);
+    // gs = K puts the whole of K in one group, so ws holds exactly N scales and
+    // {N} describes it exactly rather than by reinterpretation.
+    const int M = 8, N = 64, K = 128;
+
+    auto run = [&](bool one_d, bool per_tensor) {
+        std::mt19937 r(4242);
+        SymqCall c(M, N, K, K, true, r);
+        if (per_tensor)
+            for (auto &w : c.ws) w = c.ws[0];
+        matmul_params p = c.make_params();
+        if (one_d)
+            p.quant_params.wei_scale.dims = per_tensor
+                    ? std::vector<int64_t> {1}
+                    : std::vector<int64_t> {N};
+        p.lowoha_algo = matmul_algo_t::native_gemm;
+        p.num_threads = 2;
+        matmul_batch_params_t batch;
+        EXPECT_EQ(matmul_direct('r', false, true, M, N, K, 1.0f, c.A.data(), K,
+                          c.B.data(), K, nullptr, 0.0f, c.C.data(), N, true,
+                          batch, p),
+                status_t::success);
+        return c.C;
+    };
+
+    // Per-channel: {N} against {1, N} over the same scales.
+    const std::vector<float> two_d = run(false, false);
+    const std::vector<float> one_d = run(true, false);
+    ASSERT_EQ(two_d.size(), one_d.size());
+    for (size_t i = 0; i < two_d.size(); ++i) {
+        ASSERT_FALSE(std::isnan(one_d[i])) << "per-channel {N} did not compute";
+        EXPECT_EQ(one_d[i], two_d[i]) << "per-channel {N} diverged at " << i;
+    }
+
+    // Per-tensor: {1} against the same value written out across N.
+    const std::vector<float> two_d_pt = run(false, true);
+    const std::vector<float> one_d_pt = run(true, true);
+    for (size_t i = 0; i < two_d_pt.size(); ++i) {
+        ASSERT_FALSE(std::isnan(one_d_pt[i])) << "per-tensor {1} did not compute";
+        EXPECT_EQ(one_d_pt[i], two_d_pt[i]) << "per-tensor {1} diverged at " << i;
     }
 }
 

@@ -101,15 +101,40 @@ bool is_scalar_quant(const std::vector<int64_t> &dims) {
     return true;
 }
 
-// The per-group weight scale, as {groups, N}. Returns 0 when the layout is not
-// the two-dimensional per-group form this path needs.
+// The weight scale's group count. {groups, N} is the per-group form this path
+// was written for; the two one-dimensional forms are the degenerate cases of it
+// and are accepted as groups=1.
+//
+//   {N}   per-channel. Already the layout the kernel wants for one group.
+//   {1}   per-tensor. One value for the whole weight, which has to be
+//         broadcast to N before the kernel sees it -- see
+//         wei_scale_is_broadcast.
+//
+// Rejecting the 1-D forms was not a neutral decline. Nothing else on a host
+// without AVX-512 VNNI can run a per-tensor INT8 matmul, so the call reached
+// AOCL-DLP and, in a build without it, returned an untouched destination. That
+// is what 4124 of the AI GEMV cases were doing: test_gemv_ai.cpp sets
+// wei_scale.dims={1}, the commonest quantisation there is.
 int wei_scale_groups(const matmul_params &params, int N) {
     const auto &dims = params.quant_params.wei_scale.dims;
+    if (dims.size() == 1) {
+        const int64_t d = dims[0];
+        return (d == 1 || d == static_cast<int64_t>(N)) ? 1 : 0;
+    }
     if (dims.size() != 2) return 0;
     if (static_cast<int>(dims[1]) != N) return 0;
     const int64_t g = dims[0];
     if (g <= 0 || g > INT32_MAX) return 0;
     return static_cast<int>(g);
+}
+
+// True when the weight scale holds a single value that must be replicated
+// across N before the microkernel reads it. The kernel indexes the scale array
+// per column and has no broadcast stride, so this is materialised rather than
+// taught to the inner loop -- it is N floats against M*N*K multiply-adds.
+bool wei_scale_is_broadcast(const matmul_params &params, int N) {
+    const auto &dims = params.quant_params.wei_scale.dims;
+    return dims.size() == 1 && dims[0] == 1 && N != 1;
 }
 
 // -128 breaks the kernel silently, so the contract is verified rather than
@@ -408,6 +433,7 @@ bool int8_symq_try_execute_128(const GemmDescriptor &desc, const void *src,
     const int b_rows = desc.transB ? desc.N : desc.K;
     const int b_len = desc.transB ? desc.K : desc.N;
     const size_t n_scales = static_cast<size_t>(groups) * desc.N;
+    const bool wei_bcast = wei_scale_is_broadcast(params, desc.N);
 
     static const int32_t s_weight_cache
             = matmul_config_t::instance().get_weight_cache();
@@ -436,7 +462,7 @@ bool int8_symq_try_execute_128(const GemmDescriptor &desc, const void *src,
                     * INT8PrepackedWeight::stride();
             facts->in_contract
                     = bytes_within_contract(prepacked->data, packed_len);
-            if (qp.wei_scale.dt == data_type_t::bf16) {
+            if (qp.wei_scale.dt == data_type_t::bf16 && !wei_bcast) {
                 widen_bf16_scales(qp.wei_scale.buff, n_scales,
                         facts->widened_scales);
             }
@@ -455,12 +481,29 @@ bool int8_symq_try_execute_128(const GemmDescriptor &desc, const void *src,
                      "contract; declining");
             return false;
         }
-        if (qp.wei_scale.dt == data_type_t::bf16) {
+        if (qp.wei_scale.dt == data_type_t::bf16 && !wei_bcast) {
             widen_bf16_scales(qp.wei_scale.buff, n_scales, scratch_scales);
             wei_scale = scratch_scales.data();
         } else {
             wei_scale = static_cast<const float *>(qp.wei_scale.buff);
         }
+    }
+
+    // Per-tensor: replicate the one value across the N the kernel will index.
+    // Done after the branch above so it covers the cached and uncached paths
+    // alike, and so neither of them reads n_scales elements out of a buffer
+    // that holds one.
+    if (wei_bcast) {
+        float v;
+        if (qp.wei_scale.dt == data_type_t::bf16) {
+            std::vector<float> one;
+            widen_bf16_scales(qp.wei_scale.buff, 1, one);
+            v = one[0];
+        } else {
+            v = *static_cast<const float *>(qp.wei_scale.buff);
+        }
+        scratch_scales.assign(n_scales, v);
+        wei_scale = scratch_scales.data();
     }
 
     // The source is the activation: it changes every call, so it is checked
