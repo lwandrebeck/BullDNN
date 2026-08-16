@@ -142,7 +142,13 @@ bool host_has_xop() {
         const __m128i mask0f = _mm_set1_epi8(0x0F);                            \
         const __m128i ones = _mm_set1_epi16(1);                                \
         const __m128i sixteen = _mm_set1_epi8(16);                             \
-        __m128i v[8];                                                          \
+        /* Four accumulators live, not eight. Holding all eight until the end   \
+           spilled: eight of them plus the three constants plus u1/u2 plus the  \
+           four in-flight temps is past sixteen XMM registers, and the object   \
+           carried eleven spill stores in this loop. Reducing each half as soon \
+           as its two chunks are done costs nothing -- the hadds happen either  \
+           way -- and halves what has to stay live. */                          \
+        __m128i v0, v1, v2, v3;                                                \
         for (int c = 0; c < 4; ++c) {                                          \
             const uint8_t *q = qs + 32 * c;                                    \
             /* Q5_K's fifth bit is in a 32-byte qh shared by the super-block,   \
@@ -179,17 +185,24 @@ bool host_has_xop() {
                 acc_lo = Q4K_ACCUM(acc_lo, _mm_maddubs_epi16(lo, al), ones);   \
                 acc_hi = Q4K_ACCUM(acc_hi, _mm_maddubs_epi16(hi, ah), ones);   \
             }                                                                  \
-            v[2 * c] = acc_lo;                                                 \
-            v[2 * c + 1] = acc_hi;                                             \
+            if ((c & 1) == 0) {                                                \
+                v0 = acc_lo;                                                   \
+                v1 = acc_hi;                                                   \
+            } else {                                                           \
+                v2 = acc_lo;                                                   \
+                v3 = acc_hi;                                                   \
+                /* _mm_hadd_epi32(a, b) gives [a0+a1, a2+a3, b0+b1, b2+b3], so \
+                   a second pass over two such results finishes four sub-blocks \
+                   at once, packed in the order the flush wants. */            \
+                const __m128i d = _mm_hadd_epi32(                               \
+                        _mm_hadd_epi32(v0, v1), _mm_hadd_epi32(v2, v3));       \
+                if (c == 1) {                                                  \
+                    d0123 = d;                                                 \
+                } else {                                                       \
+                    d4567 = d;                                                 \
+                }                                                              \
+            }                                                                  \
         }                                                                      \
-        /* Eight 4-lane accumulators to eight scalars in six instructions.     \
-           _mm_hadd_epi32(a, b) gives [a0+a1, a2+a3, b0+b1, b2+b3], so a       \
-           second pass over two such results finishes four sub-blocks at once  \
-           and leaves them packed in the order the flush wants. */             \
-        d0123 = _mm_hadd_epi32(                                                \
-                _mm_hadd_epi32(v[0], v[1]), _mm_hadd_epi32(v[2], v[3]));       \
-        d4567 = _mm_hadd_epi32(                                                \
-                _mm_hadd_epi32(v[4], v[5]), _mm_hadd_epi32(v[6], v[7]));       \
     }                                                                          \
                                                                                \
     inline void run(int N, int nsb, bool is_q5, const int8_t *A,               \
