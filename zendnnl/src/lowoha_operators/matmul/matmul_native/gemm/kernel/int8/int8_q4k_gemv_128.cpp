@@ -94,10 +94,13 @@ inline void get_scale_min_k4(
     }
 }
 
-inline int32_t hsum_epi32(__m128i v) {
-    v = _mm_add_epi32(v, _mm_shuffle_epi32(v, 0x4E));
-    v = _mm_add_epi32(v, _mm_shuffle_epi32(v, 0xB1));
-    return _mm_cvtsi128_si32(v);
+// One reduction per ROW, not per sub-block. The per-sub-block version of this
+// was the kernel's largest single cost: eight shuffle/add latency chains per 256
+// weights, against about thirty instructions of actual work.
+inline float hsum_ps(__m128 v) {
+    v = _mm_add_ps(v, _mm_shuffle_ps(v, v, 0x4E));
+    v = _mm_add_ps(v, _mm_shuffle_ps(v, v, 0xB1));
+    return _mm_cvtss_f32(v);
 }
 
 // One super-block: eight 32-wide dot products of the unsigned codes against the
@@ -112,10 +115,11 @@ inline int32_t hsum_epi32(__m128i v) {
 // Q5_K, both far inside int16.
 template <bool kIsQ5>
 inline void superblock_dots(const uint8_t *qs, const uint8_t *qh,
-        const int8_t *a, int32_t *dots) {
+        const int8_t *a, __m128i &d0123, __m128i &d4567) {
     const __m128i mask0f = _mm_set1_epi8(0x0F);
     const __m128i ones = _mm_set1_epi16(1);
     const __m128i sixteen = _mm_set1_epi8(16);
+    __m128i v[8];
 
     for (int c = 0; c < 4; ++c) {
         const uint8_t *q = qs + 32 * c;
@@ -157,9 +161,19 @@ inline void superblock_dots(const uint8_t *qs, const uint8_t *qh,
             acc_hi = _mm_add_epi32(acc_hi,
                     _mm_madd_epi16(_mm_maddubs_epi16(hi, ah), ones));
         }
-        dots[2 * c] = hsum_epi32(acc_lo);
-        dots[2 * c + 1] = hsum_epi32(acc_hi);
+        v[2 * c] = acc_lo;
+        v[2 * c + 1] = acc_hi;
     }
+
+    // Eight 4-lane accumulators to eight scalars in six instructions rather than
+    // eight horizontal reductions. _mm_hadd_epi32(a, b) yields
+    // [a0+a1, a2+a3, b0+b1, b2+b3], so a second pass over two such results
+    // finishes four sub-blocks at once and leaves them already packed in the
+    // order the scale flush wants them.
+    d0123 = _mm_hadd_epi32(
+            _mm_hadd_epi32(v[0], v[1]), _mm_hadd_epi32(v[2], v[3]));
+    d4567 = _mm_hadd_epi32(
+            _mm_hadd_epi32(v[4], v[5]), _mm_hadd_epi32(v[6], v[7]));
 }
 
 } // namespace
@@ -201,7 +215,7 @@ bool int8_q4k_gemv_128(int N, int K, int ggml_type, const int8_t *A,
 #pragma omp parallel for schedule(static) num_threads(nt)
 #endif
     for (int n = 0; n < N; ++n) {
-        float acc = 0.0f;
+        __m128 accv = _mm_setzero_ps();
         for (int sb = 0; sb < nsb; ++sb) {
             const uint8_t *scales;
             const uint8_t *qs;
@@ -228,26 +242,46 @@ bool int8_q4k_gemv_128(int N, int K, int ggml_type, const int8_t *A,
             }
 
             const int8_t *a = A + static_cast<size_t>(sb) * Q4K_SUPER;
-            int32_t dots[8];
+            __m128i d0123, d4567;
             if (is_q5) {
-                superblock_dots<true>(qs, qh, a, dots);
+                superblock_dots<true>(qs, qh, a, d0123, d4567);
             } else {
-                superblock_dots<false>(qs, nullptr, a, dots);
+                superblock_dots<false>(qs, nullptr, a, d0123, d4567);
             }
 
+            // The six-bit scale and min pairs still come out one at a time --
+            // get_scale_min_k4's stitching does not vectorise usefully -- but
+            // they are only eight per 256 weights, and gathering them into
+            // registers lets the rest of the flush run four sub-blocks wide.
+            uint8_t sc[8], mn[8];
+            for (int j = 0; j < 8; ++j)
+                get_scale_min_k4(j, scales, &sc[j], &mn[j]);
+
             const int g0 = sb * 8;
-            for (int j = 0; j < 8; ++j) {
-                uint8_t sc = 0, mn = 0;
-                get_scale_min_k4(j, scales, &sc, &mn);
-                const float ss = ss_grp ? src_scale[g0 + j] : src_scale[0];
-                acc += ss
-                        * (d * static_cast<float>(sc)
-                                        * static_cast<float>(dots[j])
-                                - dmin * static_cast<float>(mn)
-                                        * static_cast<float>(rowsum[g0 + j]));
+            const __m128 vd = _mm_set1_ps(d);
+            const __m128 vdmin = _mm_set1_ps(dmin);
+
+            for (int half = 0; half < 2; ++half) {
+                const int j0 = half * 4;
+                const __m128 vdot = _mm_cvtepi32_ps(half ? d4567 : d0123);
+                const __m128 vsc = _mm_setr_ps(sc[j0], sc[j0 + 1], sc[j0 + 2],
+                        sc[j0 + 3]);
+                const __m128 vmn = _mm_setr_ps(mn[j0], mn[j0 + 1], mn[j0 + 2],
+                        mn[j0 + 3]);
+                const __m128 vrs = _mm_cvtepi32_ps(_mm_loadu_si128(
+                        reinterpret_cast<const __m128i *>(
+                                rowsum.data() + g0 + j0)));
+                const __m128 vss = ss_grp
+                        ? _mm_loadu_ps(src_scale + g0 + j0)
+                        : _mm_set1_ps(src_scale[0]);
+
+                const __m128 term = _mm_sub_ps(
+                        _mm_mul_ps(_mm_mul_ps(vd, vsc), vdot),
+                        _mm_mul_ps(_mm_mul_ps(vdmin, vmn), vrs));
+                accv = _mm_add_ps(accv, _mm_mul_ps(vss, term));
             }
         }
-        C[n] = acc;
+        C[n] = hsum_ps(accv);
     }
 
     return true;
