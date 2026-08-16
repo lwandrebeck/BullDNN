@@ -1,0 +1,47 @@
+# Why this fork still declines Excavator, re-asked after Q6_K support landed.
+# A10-8770E (bdver4, HAS AVX2), 4 threads, qwen2.5-1.5B Q4_K_M, CPU-only,
+# powersave cooldown before every measurement, 30B download SIGSTOPped for the
+# duration. GGML_ZENDNN_IGNORE_AVX2=1 bypasses the decline rule so the question
+# can be re-measured on one binary.
+pass,arm,pp512,tg128,executed
+1,stock,20.29,7.93,0
+1,bulldnn-xop,20.50,6.14,51220
+1,bulldnn-portable,20.29,6.38,51220
+2,stock,19.73,7.61,0
+2,bulldnn-xop,21.21,5.97,51220
+2,bulldnn-portable,20.90,6.31,51220
+#
+# Means, and the verdict:
+#
+#              pp512            tg128
+#   stock      20.01            7.77
+#   xop        20.86  1.04x     6.06  0.78x
+#   portable   20.60  1.03x     6.35  0.82x
+#
+# Q6_K DID move prompt: 0.98x before it, ~1.03x after. It also made generation
+# WORSE, 0.86x before, ~0.80x after. Net still a loss, so the rule that declines
+# AVX2 hosts stays, and the homelab's Excavator nodes remain unserved.
+#
+# The asymmetry is the interesting part and points at where the work is. Our
+# Q6_K decode does SIXTEEN reductions per super-block against Q4_K's eight,
+# because a Q6_K sub-block is sixteen weights and one 16-byte step IS a
+# sub-block -- the hadd restructure that doubled the Q4_K kernel has no room to
+# work here. Meanwhile ggml's q6_K vec_dot is AVX2 on this part and strong. So
+# adding Q6_K traded a prompt gain for a decode loss, which is exactly what a
+# reduction-heavy kernel against a wide-vector competitor should do.
+#
+# Compare the FX, which has no AVX2 and where the same code wins throughout:
+#   stock 32.66/15.18 -> 49.61/16.03, i.e. 1.52x prompt and 1.06x generation.
+#
+# XOP ON bdver4 FOR Q6_K, which is where XOP has been worth 4.7-20% before:
+# nothing, and arguably negative -- tg 6.06 with it against 6.35 without. The
+# saving is 2 instructions of ~30 (VPSHLB on the high nibbles; VPMADCSWD has no
+# running accumulator to fuse into), so there was little to find and the
+# reduction chain dominates regardless.
+#
+# WHAT WOULD ACTUALLY CLOSE THIS, since the answer is not more instruction
+# selection: an AVX2 flavour of the decode kernels. On this part ggml is 256-bit
+# and these kernels are 128-bit, and that is the whole remaining gap -- the same
+# reason the FX, where ggml is also confined to SSSE3, wins by 1.52x on
+# identical code. Excavator is the only family 15h part with AVX2, so such a
+# flavour would serve exactly the homelab and nothing else.
