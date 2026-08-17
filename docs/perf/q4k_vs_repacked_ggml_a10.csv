@@ -85,3 +85,72 @@ run,arm,rep,pp_tps,tg_tps,q4k_executed,q6k_executed
 # into a RAM-backed /tmp the first time -- and prints
 # "[ Prompt: X t/s | Generation: Y t/s ]", with a comma decimal under a French
 # locale. Harness: scripts/a10_q4k_ab.sh.
+#
+# ============================================================================
+# CORRECTED 2026-08-17. THE RUNS ABOVE ARE INVALID FOR GENERATION.
+# ============================================================================
+#
+# The arms did not generate the same number of tokens. The fork and ggml round
+# differently, so the sampled text diverges, EOS lands somewhere else, and the
+# KV cache grows by different amounts -- t/s is then measuring different work.
+# The evidence was in the table all along and I read past it: q4k_executed was
+# 3866 for arm C and 6386 for arm D, which cannot happen if the work is equal.
+#
+# --ignore-eos pins every arm to exactly 64 generated tokens. Redone that way,
+# same harness, same cooldown, alternating, medians of 3, and the executed
+# counts now agree across arms (10922) which is what says the work is equal:
+run,arm,rep,pp_tps,tg_tps,q4k_executed,q6k_executed
+3,A_stock_repack,1,20.5,6.0,0,0
+3,A_stock_repack,2,20.5,6.0,0,0
+3,A_stock_repack,3,20.5,6.3,0,0
+3,C_bulldnn,1,20.5,4.5,10922,1887
+3,C_bulldnn,2,20.6,4.5,10922,1887
+3,C_bulldnn,3,20.4,5.2,10922,1887
+3,D_bulldnn_q4k_only,1,19.4,4.4,10922,0
+3,D_bulldnn_q4k_only,2,19.5,5.3,10922,0
+3,D_bulldnn_q4k_only,3,19.7,5.4,10922,0
+#
+#   medians   A 20.5 / 6.0     C 20.5 / 4.5     D 19.5 / 5.3
+#
+#   prompt    C/A 1.00x  -- unchanged, and rock solid: 20.5 in every single run
+#   decode    C/A 0.75x  -- NOT the 0.86-0.92x reported above
+#             D/A 0.88x  -- q4_K alone
+#
+# TWO CONCLUSIONS ABOVE ARE WRONG AND ARE RETRACTED HERE.
+#
+#   1. The decode deficit is 0.75x, not 0.86-0.92x. The earlier figure was
+#      flattered by the fork's arm generating fewer tokens against a shorter KV
+#      cache. The gap is a quarter, not a tenth.
+#
+#   2. "The generation loss is not Q6_K" was exactly backwards. Handing Q6_K
+#      back to ggml RAISES decode from 4.5 to 5.3, so this fork's Q6_K is a
+#      real liability at M=1 -- as its arithmetic always suggested, sixteen
+#      reductions per super-block against Q4_K's eight. The earlier arm D
+#      appeared worse only because it generated more tokens than arm C.
+#      It costs prompt to do it, though: D is 19.5 against 20.5, because Q6_K
+#      prompt work then lands on unrepacked ggml.
+#
+# The prompt tie survives untouched, and is the one number here that never
+# moved across three runs and two harnesses: 20.5 against 20.5.
+#
+# WHAT THIS MEANS FOR THE KERNEL. There is a quarter of decode to recover, and
+# two of the five candidate causes in q4k_gemv_vs_ggml_structure.md are now
+# eliminated by measurement rather than argument:
+#
+#   - Deferring the s16 widening: worth nothing on either box. Q4K_ACCUM is
+#     already the XOP fused VPMADCSWD, so accumulating in s16 first would swap
+#     one instruction for an add_epi16, one for one.
+#   - The scalar 6-bit scale unpacking: worth nothing. Ablated it outright --
+#     get_scale_min_k4 and the _mm_setr_ps shuffling replaced by constants,
+#     wrong results on purpose -- and decode did not improve. Baseline
+#     4.9/4.3/4.5 against ablated 4.9/4.8/4.5 over identical work.
+#
+# That leaves the layout: eight outputs in eight lanes, no reduction tree. It
+# is now the only surviving candidate as well as the largest, which is a better
+# position to start from than the ranking I first wrote.
+#
+# MEASUREMENT NOTE. pp is reproducible to 0.1 t/s across every run ever done
+# here; tg is not, and the first rep of every fork arm is the low outlier in
+# all three runs, unexplained by the cooldown. Medians only, and treat a tg
+# difference under ~10% as unresolved.
+

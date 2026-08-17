@@ -16,6 +16,13 @@
 # -st is required or it drops into the chat UI and spins on EOF stdin, which
 # wrote a 395 MB log into a RAM-backed /tmp the first time.
 #
+# --ignore-eos is REQUIRED, and its absence invalidated the first run of this
+# experiment. Without it the arms generate different numbers of tokens: the
+# fork and ggml round differently, the sampled text diverges, EOS lands in a
+# different place, and the KV cache grows by different amounts, so t/s is not
+# comparable. The giveaway was q4k_exec differing between arms -- 3866 against
+# 6386 -- for what should have been identical work.
+#
 # Arms alternate and every one is preceded by a cooldown: this part throttles
 # ~2x under sustained SIMD and would otherwise measure the heatsink.
 set -u
@@ -51,7 +58,7 @@ run_arm() {
     # shellcheck disable=SC2086
     env $pfx ZENDNN_DISPATCH_STATS=1 timeout -s INT 400 \
         "$BIN" -m "$MODEL" -f "$PROMPT" -n $NGEN -t 4 -dev none -ngl 0 \
-               -no-cnv -st --seed 1234 $extra < /dev/null 2>&1 \
+               -no-cnv -st --seed 1234 --ignore-eos $extra < /dev/null 2>&1 \
       | grep -a --line-buffered -E "Prompt:.*Generation:|^q4_K|^q6_K" > "$log"
 
     # French locale prints the decimal as a comma.

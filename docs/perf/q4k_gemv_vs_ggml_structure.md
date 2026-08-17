@@ -115,8 +115,28 @@ this is issue bandwidth rather than memory, but it is N times the loads.
 None of this needs an instruction family 15h does not have. It needs ggml's
 data layout.
 
-**Measure first, as ever.** The ranking above is static reading, not profiling;
-item 1 is the only one whose cost is clearly large. Item 3 is the cheapest to
-try and the easiest to attribute, so it is the sensible first experiment even
-though it is ranked third by expected size. Use `--no-repack` on both arms of
-any comparison -- see `a10_dispatch_mystery.csv`.
+**Measured 2026-08-17, and two of these are now dead.** The ranking above was
+static reading. Two items were tested and neither is worth doing:
+
+- **Item 3, deferring the widening: worth nothing on either box.** `Q4K_ACCUM`
+  compiles to the XOP fused `VPMADCSWD` on all of family 15h, so accumulating
+  in s16 first replaces one instruction with an `add_epi16` -- one for one. The
+  headroom argument is correct and the saving is zero.
+- **Item 4, the scalar 6-bit scale unpacking: worth nothing.** Ablated
+  outright -- `get_scale_min_k4` and the `_mm_setr_ps` shuffling replaced by
+  constants, wrong results on purpose -- and decode did not move: baseline
+  4.9/4.3/4.5 against ablated 4.9/4.8/4.5 over identical work. It looked like
+  ~80 instructions against ~38 of real work and it is not on the critical path.
+
+So **item 1 is the whole story**, and the gap it has to explain is bigger than
+first reported: 0.75x on decode, not 0.86-0.92x, once both arms are forced to
+generate the same number of tokens with `--ignore-eos`. See
+`q4k_vs_repacked_ggml_a10.csv` for that correction.
+
+Also corrected there: this fork's Q6_K **is** a decode liability, the opposite
+of what the first run suggested. Handing Q6_K back to ggml lifts decode from
+4.5 to 5.3.
+
+Use `--no-repack` AND `--ignore-eos` on both arms of any comparison -- the
+first because of `a10_dispatch_mystery.csv`, the second because without it the
+arms diverge and measure different amounts of work.
