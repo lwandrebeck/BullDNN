@@ -1,0 +1,81 @@
+# WHERE DECODE TIME ACTUALLY GOES ON THE A10. perf, 2026-08-17, and it says the
+# wrong kernel has been getting the attention.
+#
+# perf record -F 499 -g on llama-cli, qwen2.5-1.5B Q4_K_M, 4 threads, -dev none
+# -ngl 0 --no-repack --ignore-eos, a two-token prompt and 96 generated so decode
+# dominates. 34298 samples. perf_event_paranoid is 4 on this box, so it needs
+# sudo. Shares are of the whole process, self time, no children.
+symbol,share_pct,note
+gemv_xop::run (Q4_K/Q5_K decode GEMV),36.18,the kernel three hypotheses were spent on
+run_q6<true> (Q6_K decode),27.75,14.7% of dispatched ops
+kq_xop::ukernel (k-quant GEMM),5.65,
+INT8PrepackedWeightCache::get_or_prepack,3.49,a hash lookup under a mutex, per call per token
+reorder_granular_scaler_impl_2d,2.97,activation quantisation
+__memset_avx2_unaligned_erms,1.50,
+ggml_vec_dot_q4_K_q8_K,1.36,ggml's own, for ops this fork declined
+ggml_unpack_kquant,1.19,
+uk_xop::ukernel (symq),1.12,
+compute_dynamic_quant_params,0.81,
+ggml_compute_forward_flash_attn_ext,0.71,
+#
+# THE HEADLINE. Q6_K decode is 27.75% of the run while being 1887 of 12809
+# dispatched ops -- 14.7%. So it is about 43% of the matmul time for 15% of the
+# work, roughly 4.5x its share. That is an independent confirmation of the
+# corrected arm-D result in q4k_vs_repacked_ggml_a10.csv, where handing Q6_K back
+# to ggml lifted decode from 4.5 to 5.3, and it means the Q4_K GEMV -- which
+# three hypotheses and one whole new kernel were spent on -- was never the
+# biggest item.
+#
+# perf annotate on run_q6 put the time in the 6-bit code stitching: vpsrlw,
+# vpand, vpsllw, vpor, vpshlb, rebuilding codes from the ql and qh planes. It
+# also showed STACK SPILLS inside the hot loop -- vmovdqa to and from
+# 0x40/0x50/0x60(%rsp) -- which the source explains: superblock_dots_q6 declared
+# __m128i acc[16] and held all sixteen sub-block accumulators across the whole
+# super-block. The Q4_K kernel a hundred lines above documents fixing exactly
+# this, and it was never applied here.
+#
+# SO IT WAS FIXED, AND THAT MADE IT SLOWER. dots[0..1] depend only on the c=0
+# half and dots[2..3] only on c=1, so a half can be reduced and discarded before
+# the other starts: acc[16] became acc[8] and the object went from spilling to
+# zero rsp traffic. Two binaries, alternating, cooled, --ignore-eos, medians of 3:
+arm,rep,pp_tps,tg_tps
+old_16_accumulators,1,20.6,5.0
+old_16_accumulators,2,20.5,4.5
+old_16_accumulators,3,20.6,4.4
+fix_8_accumulators,1,20.6,4.3
+fix_8_accumulators,2,20.6,4.2
+fix_8_accumulators,3,20.6,4.9
+#
+#   old  median 4.5     fix  median 4.3
+#
+# REVERTED. Removing a spill that perf pointed straight at made the kernel
+# slightly slower, consistently in two of three paired runs. The likely reason is
+# that the spill stores were never the problem: they go to L1 and the store queue
+# absorbs them while the sixteen independent PMADDUBSW chains keep the pipes
+# busy, whereas reducing early inserts two VPHADDD bursts into the middle of the
+# loop, and VPHADDD is multi-uop with a long latency. Fewer registers, worse
+# schedule.
+#
+# That is four hypotheses dead for this gap now: the s16 widening cadence, the
+# scalar six-bit scale unpack, the interleaved layout, and this. Every one of them
+# looked correct on paper and three of them were correct on paper -- the
+# instruction counts were right and the time is somewhere else.
+#
+# WHAT IS WORTH TRYING NEXT, in the order the profile supports rather than the
+# order that sounds clever:
+#
+#   1. Cache Q6_K's stitched codes. perf says the stitching dominates run_q6 and
+#      it is a pure function of the weight, so it can be precomputed once into a
+#      u8 buffer and the inner loop becomes load, PMADDUBSW, accumulate. Costs
+#      about 30% more bytes per block (210 to 274) and decode here is issue-bound
+#      rather than bandwidth-bound. This is the only remaining candidate perf
+#      points AT rather than one derived by reading.
+#   2. get_or_prepack at 3.49%. A hash under a mutex on every matmul of every
+#      token, to return a pointer that does not change. A thread-local memo of
+#      the last key would take most of it.
+#   3. Stop optimising Q4_K decode until 1 and 2 are done. It is 36% and four
+#      attempts have found nothing in it.
+#
+# METHOD NOTE. This profile is the first thing in the whole exercise that
+# redirected the work rather than confirming a guess, and it cost one command.
+# The three kernels written before it cost a day. Profile first.
