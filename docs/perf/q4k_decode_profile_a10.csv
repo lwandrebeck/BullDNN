@@ -79,3 +79,49 @@ fix_8_accumulators,3,20.6,4.9
 # METHOD NOTE. This profile is the first thing in the whole exercise that
 # redirected the work rather than confirming a guess, and it cost one command.
 # The three kernels written before it cost a day. Profile first.
+#
+# ============================================================================
+# ITEM 2 TRIED AND REVERTED: get_or_prepack's 3.49% is not in the decode loop.
+# ============================================================================
+#
+# The plan above called for a thread-local memo over
+# INT8PrepackedWeightCache::get_or_prepack, on the grounds that it takes a mutex,
+# hashes a key and splices an LRU node on every call to return a pointer that has
+# not changed since the model loaded. Built it, guarded by
+# weight_cache_generation() -- which the cache header says exists for exactly
+# that kind of fast path -- behind ZENDNNL_PREPACK_TL_MEMO so one binary serves
+# both arms. Functionally inert: 157 passed and 124 failed with the memo on AND
+# off, the same pre-existing group-matmul prepack failures either way.
+#
+# And no faster. One binary, arms alternating, cooled, --ignore-eos, medians of 3:
+arm,rep,pp_tps,tg_tps
+nomemo,1,20.7,5.1
+nomemo,2,20.6,4.4
+nomemo,3,20.7,5.0
+memo,1,20.5,5.0
+memo,2,20.6,4.5
+memo,3,20.5,5.1
+#
+#   nomemo median 5.0    memo median 5.0    a wash, on prompt as well as decode
+#
+# THE REASON IS IN THE CALL GRAPH, and it is the lesson worth keeping.
+# get_or_prepack is called from the k-quant GEMM looper -- int8_kquant_entry_128
+# around line 316 -- and decode never reaches it: M=1 dispatches to the GEMV,
+# which reads the packed GGML blocks in place and prepacks nothing. So the 3.49%
+# was prompt and warm-up work, effectively one-time in a 96-token run, and there
+# was no per-token mutex traffic to remove.
+#
+# A PROFILE SHARE IS NOT A PER-TOKEN COST. The profile was taken over a run that
+# contained a prompt phase, and 3.49% of it was silently attributed to the decode
+# loop because that was what the run was mostly doing. The fix is to attribute a
+# share to a PHASE before believing it is in the hot path -- either profile the
+# phases separately, or read the call graph first, which here would have taken
+# one grep and saved a build and six cooled runs.
+#
+# Reverted; the tree keeps the mutex on every call.
+#
+# So of the two candidates this profile produced, one paid (+4%, Q6_K
+# pre-stitching, q6k_prestitch_result.csv) and one was a misreading of the
+# profile rather than of the code. That is still a better hit rate than the four
+# derived by reading, all of which measured to zero or worse.
+
