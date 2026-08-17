@@ -1,0 +1,47 @@
+# Q6_K PRE-STITCHING DOES NOT REPRODUCE ON THE FX. 2026-08-17, commit 4578108.
+#
+# The +4% measured on the A10 (q6k_prestitch_result.csv) had to be confirmed on the
+# Piledriver box before the default could flip, because the FX is where this fork
+# actually dispatches: no AVX2 means no ggml repack competing for the weights, and
+# the AVX2 rule does not gate the path off. It does not reproduce. It is slightly
+# negative, and it is reproducible to 0.1 t/s in all three paired runs.
+#
+# One binary, arms by ZENDNNL_NATIVE_Q6K_PRESTITCH, alternating, 150 s powersave
+# cooldown before each, --ignore-eos, --no-repack, GGML_ZENDNN_IGNORE_GPU=1 (the FX
+# has an RX 560, and without it the fork declines all prompt-sized work). -t 4, not
+# 8: one FPU per module, so four threads on four modules is the throughput case.
+arm,rep,pp_tps,tg_tps,q4k_exec,q6k_exec
+stitch_on_the_fly,1,30.7,6.7,10922,1887
+stitch_on_the_fly,2,30.7,6.7,10922,1887
+stitch_on_the_fly,3,30.6,6.7,10922,1887
+prestitched,1,30.7,6.6,10922,1887
+prestitched,2,30.7,6.6,10922,1887
+prestitched,3,30.8,6.6,10922,1887
+#
+#   stitch median 6.7    pre median 6.6    0.99x -- worse in all three pairs
+#
+# SO THE DEFAULT STAYS OFF. A10 +4%, FX -1.5%, and the FX is the box that matters.
+# This is the fourth time a per-flavour result on one family 15h part has failed to
+# carry to the other: XOP was worth 1.13-1.20x on bdver4 and nothing on bdver2, the
+# power-of-two scale aliasing cost 20% on bdver2 and nothing on bdver4, AVX2 helped
+# neither, and now this. Treat every one as microarchitecture-specific until it is
+# measured on both, without exception.
+#
+# WHY IT MIGHT DIFFER, unmeasured: pre-stitching trades about 31% more Q6_K weight
+# bytes for the removal of the ql/qh bit work. That is a good trade only where the
+# kernel is issue-bound rather than bandwidth-bound. The FX has four modules against
+# the A10's two feeding a comparable memory system, so it has less bandwidth per
+# module to spare and more of the extra traffic to pay for. Plausible, not
+# established -- it would need a bandwidth measurement to claim.
+#
+# WORTH RECORDING SEPARATELY: THE FX IS THE FASTER BOX HERE BY A LOT. Same model,
+# same flags, same thread count:
+#
+#              prompt   decode
+#   FX  bdver2   30.7      6.7
+#   A10 bdver4   20.5      5.0
+#
+# 1.50x prompt and 1.34x decode, on the part with no AVX2 and no repack to compete
+# with. Four modules against two, and the fork's kernels get the work instead of
+# ggml's repacked ones. Any future effort on this fork should be measured here
+# first, and the A10 treated as the awkward case rather than the reference.

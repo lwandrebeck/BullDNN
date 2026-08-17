@@ -1,0 +1,63 @@
+# THE MoE EXPERT PATH CANNOT BE REACHED ON THIS MODEL, AND THE FORK LOSES ANYWAY.
+# qwen3-coder-30b-a3b Q4_K_M on the A10-8770E, 2026-08-17, commit 4578108.
+#
+# WHAT WAS BEING TESTED. moe_30b_a10.csv called MoE the one case where CPU work is
+# justified, because the iGPU's margin there is 1.23x against 2.2x on a dense model.
+# MUL_MAT_ID was declined in supports_op when a MoE run aborted, and that decline
+# predates 86d0937, which gave GGML per-group INT8 a per-expert matmul_direct route.
+# So the question was whether the decline is still needed.
+#
+# Three arms, one binary, alternating, cooled, --ignore-eos and --no-repack on all:
+#   stock   no IGNORE flags, so the AVX2 rule declines everything
+#   nommid  fork active, MUL_MAT_ID still declined -- dense matmuls only
+#   mmid    GGML_ZENDNN_ALLOW_MUL_MAT_ID=1 as well
+arm,rep,pp_tps,tg_tps,q4k_exec,q6k_exec,peak_rss_gb
+stock,1,5.9,3.0,0,0,41.4
+stock,2,6.1,3.6,0,0,41.4
+stock,3,6.0,3.6,0,0,41.4
+nommid,1,2.1,3.4,5376,802,43.3
+nommid,2,2.1,3.4,5376,802,43.3
+nommid,3,2.1,3.3,5376,802,43.3
+mmid,1,2.1,3.4,5376,802,43.3
+mmid,2,2.1,3.4,5376,802,43.3
+mmid,3,2.1,3.3,5376,802,43.3
+#
+#   stock  median 6.0 / 3.6      nommid 2.1 / 3.4      mmid 2.1 / 3.4
+#
+# TWO FINDINGS, AND THE FIRST IS A CORRECTION.
+#
+# 1. MUL_MAT_ID NEVER DISPATCHED, with the switch on or off. mmid and nommid are
+#    identical in every column INCLUDING the executed counts -- 5376 q4_K and 802
+#    q6_K both ways. An earlier reading of a single mmid run as "the experts now
+#    execute" was wrong: those counts are the DENSE matmuls, and they scale with
+#    the token count, which is what had actually changed.
+#
+#    The reason is a gate that has nothing to do with the decline that was lifted.
+#    ggml-zendnn.cpp:1014 sets max_experts = 32 and this model has 128, so
+#    n_experts > max_experts refuses it outright. The next line would refuse it
+#    too: N / n_experts <= 32, and MoE decode routes about eight active rows across
+#    128 experts, so that ratio is far below one.
+#
+#    That is not a bug to remove. The gather+matmul+scatter shape needs a moderate
+#    expert count and enough rows per expert to amortise a per-expert GEMM; a
+#    128-expert model in decode gives it a fraction of a row each. The mechanism
+#    does not fit the model. Capturing this opportunity would need a different
+#    shape -- per-active-expert GEMV with no gather or scatter, which is what ggml
+#    does and what this fork's decode kernel already is -- not a wider gate.
+#
+# 2. AND THE FORK LOSES HERE ANYWAY, on the parts it does take. Decode 3.4 against
+#    stock's 3.6, so 0.94x, with stock's 3.0 first rep discounted as the usual
+#    cold outlier. Prompt is 2.1 against 6.0, 0.35x -- but the prompt is two tokens
+#    on a 17 GB model, so that figure is almost entirely the one-time unpack and
+#    prepack of every weight touched, not steady-state prompt throughput. The +1.9
+#    GB of resident memory (43.3 against 41.4) is the same cost seen from the other
+#    side. A fair prompt number needs a prompt long enough to amortise it, and is
+#    not measured here.
+#
+# SO TASK 6 CLOSES with the opportunity intact and the mechanism ruled out. The
+# 1.23x iGPU margin on MoE decode is still the most CPU-shaped opportunity found,
+# and neither the current grouped path nor the dense path can take it on this
+# model. What would: dispatching each ACTIVE expert as its own decode GEMV, which
+# is a scheduling change in the ggml backend rather than a kernel -- and it should
+# be measured on the FX, where q6k_prestitch_fx.csv shows the fork runs 1.34x
+# faster at decode than on the A10 to begin with.
