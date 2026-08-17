@@ -1,0 +1,83 @@
+# PHASE-SEPARATED DECODE PROFILE, AND WHY FOUR HYPOTHESES DIED. A10, 2026-08-17.
+#
+# The earlier profile mixed prompt and decode and I misread a 3.49% prompt cost as
+# a per-token one. Done properly: one recording, perf record -F 999 --timestamp,
+# tiny prompt and 256 generated tokens with --no-warmup, then sliced by absolute
+# timestamp. perf 7.0.12 rejects percentage windows -- "Invalid time string" --
+# so the first and last sample times come out of perf script and the window is
+# computed from them. 163K samples over ~50 s.
+phase,symbol,share_pct
+whole_run,gemv_xop::run (Q4_K/Q5_K GEMV),43.19
+whole_run,run_q6<true> (Q6_K),32.68
+whole_run,reorder_granular_scaler_impl_2d,2.85
+whole_run,kq_xop::ukernel (k-quant GEMM),2.56
+whole_run,INT8PrepackedWeightCache::get_or_prepack,1.59
+whole_run,ggml_compute_forward_flash_attn_ext,1.46
+decode_only,gemv_xop::run (Q4_K/Q5_K GEMV),47.55
+decode_only,run_q6<true> (Q6_K),35.95
+decode_only,reorder_granular_scaler_impl_2d,2.84
+decode_only,ggml_compute_forward_flash_attn_ext,1.71
+decode_only,ggml_vec_dot_f16,0.88
+decode_only,compute_dynamic_quant_params,0.75
+#
+# kq_xop::ukernel and get_or_prepack DISAPPEAR from the decode window entirely,
+# which independently confirms why the thread-local prepack memo bought nothing:
+# both are prompt-phase only. Decode is 83.5% these two GEMV kernels and almost
+# nothing else.
+#
+# INSIDE gemv_xop::run. Every sample in it is decode already -- the GEMV is only
+# reached at M=1 -- so no window is needed. Grouped by mnemonic, as a share of the
+# kernel:
+category,mnemonics,share_of_kernel_pct
+horizontal_reduction,vphaddd 11.32 + vphaddwd 4.17,15.49
+the_multiply,vpmaddubsw 9.85 + vpmadcswd 8.91,18.76
+scalar_bookkeeping,movl 3.22 + vmovd 3.26 + andw 2.00 + andl 1.91 + shll 1.71,12.10
+nibble_extraction,vpand 6.29 + vpshlb 3.67,9.96
+float_epilogue,vcvtdq2ps 3.20 + vmulps 2.71,5.91
+shuffles,vpshufb 2.55 + vpmovzxbw 2.37,4.92
+prefetch,prefetcht0,4.80
+loads,vmovdqu,4.74
+#
+# ONLY ABOUT A FIFTH OF THE KERNEL IS THE MULTIPLY. The largest single category is
+# the horizontal reduction at 15.5% -- so 15.5% of 47.6%, about 7.4% of all decode
+# time, spent collapsing vectors to scalars.
+#
+# AND THIS EXPLAINS THE FOUR DEAD HYPOTHESES, which is worth more than the
+# numbers. VPHADDD is multi-uop with a long latency and the reduction is a SERIAL
+# dependency chain. If the kernel is latency-bound on those chains rather than
+# throughput-bound on its instruction count, then removing work that is NOT on the
+# chain changes nothing at all -- and that is exactly what was measured:
+#
+#   - deferring the s16 widening: removed instructions, off the chain, zero.
+#   - the scalar six-bit scale unpack: ablated outright, and perf still shows
+#     ~12% in scalar bookkeeping. Off the chain, zero. The instruction count was
+#     right and it was never the limit.
+#   - the Q6_K spill fix: removed every spill AND added VPHADDD bursts mid-loop.
+#     It put MORE on the chain, and it measured slower. Consistent.
+#   - the four-row interleaved layout: correctly removed the reduction, and paid
+#     for it with unpacking that landed on the new critical path. 0.94x.
+#
+# Four results that looked unrelated are one result: this kernel is bound by the
+# reduction chain, and only removing the reduction without replacing it helps.
+#
+# WHICH MAKES THE 256-BIT EIGHT-ROW VERSION THE CANDIDATE, and now for a measured
+# reason rather than because it is what ggml does. The interleave is the only idea
+# that attacks the 15.5% directly; it failed at 128 bits because building the
+# lane order cost as much as the reduction. At 256 bits the same unpack amortises
+# over EIGHT rows instead of four and a 32-byte load is still one instruction --
+# cracking into two 128-bit micro-ops affects the arithmetic, not the load or the
+# shuffle. The A10 has AVX2, and int8_q4k_gemv_ilv_128.cpp's packer and lane
+# algebra generalise directly: PMADDUBSW gives sixteen s16, PMADDWD eight s32,
+# so eight rows.
+#
+# The honest counter-argument, recorded so it is not forgotten: the 128-bit
+# interleave recovered 0.87x to 0.94x by halving its unpack cost, and 0.94x is
+# still a loss. Doubling the amortisation again has to find another ~6% before it
+# breaks even, and the reduction it deletes is only worth 7.4% of decode. So this
+# is worth ONE experiment, not three, and if it lands between 0.98x and 1.05x the
+# answer is that ggml's kernel is simply well matched to this problem and the
+# right move is to keep declining Q4_K on AVX2 hosts.
+#
+# METHOD. Phase-separate before attributing anything. Two of the six ideas tried
+# against this gap were aimed at costs that a phase-separated profile shows are
+# not in the decode loop at all.
