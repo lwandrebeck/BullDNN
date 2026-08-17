@@ -1,0 +1,53 @@
+# RAISING max_experts TO 128 MAKES THE MoE EXPERTS DISPATCH, AND IT IS 4-5x SLOWER.
+# qwen3-coder-30b-a3b Q4_K_M on the A10-8770E, 2026-08-17. Asked for directly, and
+# the answer is that both gates are right.
+#
+# Both thresholds are now env-settable so this is a one-binary experiment:
+# GGML_ZENDNN_MAX_EXPERTS and GGML_ZENDNN_MIN_ROWS_PER_EXPERT, defaults unchanged
+# at 32 and 32. Both refusals are also counted now, which is what made the first
+# half of this legible.
+#
+# -p hi -n 32, 4 threads, -dev none -ngl 0, --ignore-eos --no-repack,
+# IGNORE_AVX2/IGNORE_GPU so the fork is active. The prompt is two tokens, so pp is
+# dominated by one-time unpacking and is not a throughput figure; tg is the number.
+config,pp_tps,tg_tps,q4k_accepted,q4k_rejected,q4k_executed
+gates_at_default,2.1,3.4,3696,0,5376
+max_experts_128_only,1.0,1.0,3696,7998,1344
+max_experts_128_and_min_rows_0,0.9,0.7,4216,6438,5376
+max_experts_128_and_min_rows_0_rep2,,0.8,,,
+#
+# READ THE MIDDLE ROW CAREFULLY: raising max_experts ALONE changes nothing about
+# dispatch. 7998 rejections appear, because the ops now clear the expert-count gate
+# and are refused by the NEXT one -- N/n_experts <= 32, where MoE decode routes
+# about eight active rows across 128 experts, so the ratio is far below one. Its
+# 1.0/1.0 is an artefact of -n 8 on that row, where model load dominates; the
+# executed count is a quarter of the others for the same reason.
+#
+# WITH BOTH GATES LIFTED the experts really do dispatch: accepted rises 3696 to
+# 4216, the +520 being the MUL_MAT_ID ops. The executed column does NOT move
+# because that counter lives in the MUL_MAT compute path and the MUL_MAT_ID path
+# does not touch it -- worth fixing if this is ever revisited, since it hid the
+# effect at first.
+#
+# And decode collapses: 0.7 and 0.8 against 3.4, so about a quarter of the speed.
+# Not marginal, not noise, and not a thermal artefact -- 4-5x.
+#
+# WHY, and it is structural rather than a tuning miss. The grouped path is
+# gather + per-expert GEMM + scatter. With 128 experts and eight active rows a
+# token, each expert gets at most one row, so every per-expert call is a GEMV
+# wrapped in a gather and a scatter whose cost does not shrink with the work. The
+# shape is built for a moderate expert count with enough rows each to amortise a
+# GEMM, and this model is the opposite of that.
+#
+# SO THE ANSWER TO "check with max_experts=128 so the MoE model runs properly" is
+# that nothing was broken: the model already runs correctly with the gates in place
+# -- correctness never depended on them, only which backend gets the ops. Raising
+# the gate does not fix anything and costs 4-5x of decode. Both defaults stay.
+#
+# WHAT WOULD ACTUALLY CAPTURE THE MoE OPPORTUNITY, which is still real (the iGPU's
+# margin on MoE decode is 1.23x against 2.2x on a dense model): dispatch each
+# ACTIVE expert as its own decode GEMV, with no gather and no scatter, which is
+# what ggml does and what this fork's decode kernel already is. That is a change in
+# the ggml backend's MUL_MAT_ID path, not a kernel and not a threshold, and it
+# should be measured on the FX where the fork runs 1.34x faster at decode to begin
+# with.

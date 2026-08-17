@@ -1,0 +1,100 @@
+ggml-zendnn: make the MoE expert gates measurable, and they hold
+
+GGML_ZENDNN_MAX_EXPERTS and GGML_ZENDNN_MIN_ROWS_PER_EXPERT expose the two
+MUL_MAT_ID thresholds, defaults unchanged at 32 and 32, and both refusals are now
+counted rather than returned silently. Also GGML_ZENDNN_ALLOW_MUL_MAT_ID, which
+lifts the blanket decline.
+
+Asked to check max_experts=128 so a 128-expert MoE model "runs properly". It
+already ran properly -- correctness never depended on these gates, only on which
+backend gets the ops. Measured on qwen3-coder-30b-a3b:
+
+  gates at default                  tg 3.4
+  max_experts=128 only              no change in dispatch: 7998 rejections
+                                    appear because the NEXT gate refuses them
+  max_experts=128 + min_rows=0      tg 0.7, 0.8   -- experts dispatch, 4-5x slower
+
+Raising max_experts alone does nothing: the ops clear the expert-count gate and
+are refused by N/n_experts <= 32, since MoE decode routes about eight active rows
+across 128 experts. Lifting both makes them dispatch -- accepted rises 3696 to
+4216 -- and decode collapses to a quarter.
+
+Structural, not a tuning miss: the grouped path is gather + per-expert GEMM +
+scatter, and with 128 experts and eight active rows each expert gets at most one
+row, so every call is a GEMV wrapped in overhead that does not shrink with the
+work.
+
+Both defaults stay. Capturing the MoE opportunity -- still real, the iGPU margin
+there is 1.23x against 2.2x dense -- needs each ACTIVE expert dispatched as its own
+decode GEMV with no gather or scatter, which is a change to the backend's
+MUL_MAT_ID path rather than a threshold.
+
+Note for whoever revisits: the executed counter lives in the MUL_MAT compute path
+and MUL_MAT_ID does not touch it, so expert execution is invisible in the stats
+table. That hid the effect at first.
+
+--- a/ggml/src/ggml-zendnn/ggml-zendnn.cpp	2026-08-17 13:47:23.756733067 +0000
++++ ggml/src/ggml-zendnn/ggml-zendnn.cpp	2026-08-17 14:48:51.646320218 +0000
+@@ -948,7 +948,22 @@
+                     // qwen3-coder-30b-a3b killed llama-bench with signal 6 that
+                     // way. Accepting an op the library cannot serve is worse
+                     // than declining it, so decline.
+-                    if (op->op == GGML_OP_MUL_MAT_ID) {
++                    // GGML_ZENDNN_ALLOW_MUL_MAT_ID=1 lifts this to find out
++                    // whether it is still true. The decline was added when a
++                    // MUL_MAT_ID reached AOCL-DLP and aborted, BEFORE
++                    // group_matmul gained a per-expert matmul_direct route for
++                    // GGML per-group INT8 on non-VNNI hosts. The backend already
++                    // slices the weight per expert -- batch_wei is
++                    // src0->data + cur_a*nb02 -- so the shape reaching the
++                    // library is 2-D and may now be expressible.
++                    static const bool allow_mmid = [] {
++                        const char *e = std::getenv("GGML_ZENDNN_ALLOW_MUL_MAT_ID");
++                        return e != nullptr && std::atoi(e) != 0;
++                    }();
++                    if (op->op == GGML_OP_MUL_MAT_ID && !allow_mmid) {
++                        if (zendnn_dispatch_stats::enabled()) {
++                            g_zendnn_stats.rejected[weights->type]++;
++                        }
+                         return false;
+                     }
+                     // Only the quantised types this fork actually has kernels
+@@ -996,14 +1011,36 @@
+                 // MUL_MAT_ID's gather+matmul+scatter approach favors a moderate expert count
+                 if (op->op == GGML_OP_MUL_MAT_ID) {
+                     const int64_t n_experts = weights->ne[2];
+-                    const int64_t max_experts = 32;
++                    // GGML_ZENDNN_MAX_EXPERTS and GGML_ZENDNN_MIN_ROWS_PER_EXPERT
++                    // make both of these measurable instead of arguable. The
++                    // defaults are unchanged; qwen3-coder-30b-a3b has 128 experts
++                    // and so is refused by the first, and MoE decode routes about
++                    // eight active rows across all of them, so it is refused by
++                    // the second too -- which is why lifting only the earlier
++                    // blanket MUL_MAT_ID decline changed nothing at all.
++                    static const int64_t max_experts = [] {
++                        const char *e = std::getenv("GGML_ZENDNN_MAX_EXPERTS");
++                        const long v = (e != nullptr) ? std::atol(e) : 0;
++                        return (v > 0) ? (int64_t) v : (int64_t) 32;
++                    }();
++                    static const int64_t min_rows_per_expert = [] {
++                        const char *e = std::getenv("GGML_ZENDNN_MIN_ROWS_PER_EXPERT");
++                        const long v = (e != nullptr) ? std::atol(e) : -1;
++                        return (v >= 0) ? (int64_t) v : (int64_t) 32;
++                    }();
+                     if (n_experts > max_experts) {
++                        if (zendnn_dispatch_stats::enabled()) {
++                            g_zendnn_stats.rejected[weights->type]++;
++                        }
+                         return false;
+                     }
+ 
+                     // fall back once the average rows per expert (N / n_experts) is too thin
+                     // to amortize each per-expert GEMM's overhead
+-                    if (N / n_experts <= 32) {
++                    if (N / n_experts <= min_rows_per_expert) {
++                        if (zendnn_dispatch_stats::enabled()) {
++                            g_zendnn_stats.rejected[weights->type]++;
++                        }
+                         return false;
+                     }
+                 }
