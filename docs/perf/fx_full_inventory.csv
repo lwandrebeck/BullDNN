@@ -1,0 +1,55 @@
+# FX FULL-SUITE INVENTORY, AND IT CRASHES. Run at adf81bb, 2026-08-17.
+#
+# The first attempt at a complete gtest inventory on the Piledriver box, governor
+# pinned to performance. It did not complete: the binary took SIGILL after 2327
+# tests, roughly nine hours in.
+metric,value
+commit,adf81bb
+gtests_exit,132 (SIGILL)
+tests_begun,2327
+passed,343
+failed,1682
+crashed_in,Matmul/TestMatmul.BF16_F32/270
+#
+# THE CRASH IS IN LIBXSMM, NOT IN THIS FORK. gdb, reproduced deterministically
+# with --seed 1786947481 and a single-test filter:
+#
+#   Program received signal SIGILL
+#   0x4340bad in internal_diff_avx2 ()
+#   => vpcmpeqb (%rdi),%ymm0,%ymm1
+#   #1 libxsmm_diff_n  #2 internal_find_code  #3 libxsmm_xmmdispatch
+#   #4 libxsmm_dispatch_brgemm
+#   #5 zendnnl::lowoha::matmul::execute_brgemm_std
+#
+# vpcmpeqb on ymm is AVX2 and the FX is bdver2, which has none. So libxsmm's
+# runtime dispatch selected an AVX2 routine on a CPU that cannot execute it --
+# inside its own code-cache lookup, not in a microkernel. That is a property of how
+# the bundled libxsmm was built or how it detects the host, and this fork only
+# reaches it because a test names algo=libxsmm/libxsmm_blocked and the library
+# honours the request.
+#
+# NOT A REGRESSION FROM RECENT WORK. The path is execute_brgemm_std into libxsmm,
+# untouched by any change in this series, and it is reproducible from one test in
+# isolation. It has simply never been reached before: no full suite has ever
+# completed on this box, and the previous attempt stopped at test 686.
+#
+# WHAT THE PARTIAL NUMBERS ARE AND ARE NOT. 1682 failures with 1597 of them in
+# Matmul is dominated by the AOCLDLP=OFF condition this box is configured with --
+# a named aocl_dlp algo cannot run and the tail reports "output not computed", as
+# fx-gtest-known-failures records. They are not evidence of arithmetic errors. But
+# the counts are also NOT a baseline: the run aborted, so every suite ordered after
+# Matmul is missing entirely.
+#
+# TO FIX, in order of directness:
+#   1. Rebuild the bundled libxsmm on this box with correct arch detection, or
+#      configure it for bdver2 explicitly. This is a dependency problem.
+#   2. Failing that, have kernel_select decline libxsmm and libxsmm_blocked when
+#      the host lacks the ISA libxsmm was built against, the same shape of guard
+#      that 1990afd added for the AVX-512 quant kernels.
+#   3. Re-run the inventory afterwards. Until then this box has no complete
+#      baseline, and the targeted subsets in fx-gtest-known-failures remain the
+#      only trustworthy record.
+#
+# Harness: scripts/fx_inventory.sh, which writes a per-suite failure breakdown to
+# /tmp/inventory.status. Note that it reports exit=132 rather than hiding it --
+# that is how the crash was noticed at all.

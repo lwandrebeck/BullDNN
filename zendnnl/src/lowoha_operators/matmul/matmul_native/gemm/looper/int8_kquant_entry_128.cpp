@@ -46,6 +46,7 @@
 #include "lowoha_operators/matmul/matmul_native/gemm/kernel/int8/int8_kquant_ukernel_128.hpp"
 #include "lowoha_operators/matmul/matmul_native/gemm/kernel/int8/int8_q4k_gemv_128.hpp"
 #include "lowoha_operators/matmul/matmul_native/gemm/kernel/int8/int8_q4k_gemv_ilv_128.hpp"
+#include "lowoha_operators/matmul/matmul_native/gemm/kernel/int8/int8_q4k_gemv_ilv8_256.hpp"
 #include "operators/matmul/matmul_config.hpp"
 #include "lowoha_operators/matmul/matmul_native/gemm/looper/int8_epilogue_128.hpp"
 #include "lowoha_operators/matmul/matmul_native/gemm/looper/int8_kquant_looper_128.hpp"
@@ -169,11 +170,20 @@ bool int8_kquant_gemv_try_execute_128(int M, int N, int K, bool transB,
     // Same switch discipline as the kill switch above: one binary, so "the
     // layout is what made the difference" is measured rather than inferred from
     // two builds minutes apart on a box that throttles.
-    static const bool s_ilv = [] {
+    // 1 selects the four-row 128-bit layout, 2 the eight-row 256-bit one. Both
+    // measured against the row-at-a-time kernel on one binary; see
+    // q4k_gemv_interleaved_result.csv and q4k_gemv_phase_profile.csv.
+    static const int s_ilv = [] {
         const char *e = std::getenv("ZENDNNL_NATIVE_Q4K_GEMV_ILV");
-        return e != nullptr && std::atoi(e) != 0;
+        return e != nullptr ? std::atoi(e) : 0;
     }();
-    if (s_ilv
+    if (s_ilv == 2
+            && int8_q4k_gemv_ilv8_256(N, K, ggml_type,
+                    static_cast<const int8_t *>(src), weight,
+                    static_cast<float *>(dst), ss, ss_grp, nthreads)) {
+        return true;
+    }
+    if (s_ilv == 1
             && int8_q4k_gemv_ilv_128(N, K, ggml_type,
                     static_cast<const int8_t *>(src), weight,
                     static_cast<float *>(dst), ss, ss_grp, nthreads)) {

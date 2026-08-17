@@ -63,6 +63,7 @@
 #include "lowoha_operators/matmul/matmul_native/gemm/kernel/int8/int8_q4k_gemv_128.hpp"
 #include "lowoha_operators/matmul/matmul_native/gemm/kernel/int8/int8_q4k_gemv_ilv_128.hpp"
 #include "lowoha_operators/matmul/matmul_native/gemm/kernel/int8/int8_q6k_gemv_pre_128.hpp"
+#include "lowoha_operators/matmul/matmul_native/gemm/kernel/int8/int8_q4k_gemv_ilv8_256.hpp"
 #include "lowoha_operators/matmul/matmul_native/gemm/kernel/int8/int8_symq_ukernel_128.hpp"
 #include "lowoha_operators/matmul/matmul_native/gemm/looper/int8_kquant_entry_128.hpp"
 #include "lowoha_operators/matmul/matmul_native/gemm/looper/int8_kquant_looper_128.hpp"
@@ -2989,6 +2990,58 @@ TEST(Int8Q6KGemvPrestitched, RepeatedCallsAgreeAndTheCacheCanBeCleared) {
         EXPECT_EQ(a[n], b[n]) << "cached call diverged at " << n;
         EXPECT_EQ(a[n], c[n]) << "restitch diverged at " << n;
     }
+}
+
+// The eight-row 256-bit interleave against the row-at-a-time kernel. The nibble
+// plane is the risk: byte j carries group 2p's weight j low and group 2p+1's
+// high, and the scale vector is pre-duplicated per row, so a transposition
+// anywhere produces plausible floats rather than a crash.
+TEST(Int8Q4KGemvInterleaved8, AgreesWithTheRowAtATimeKernel) {
+    if (!int8_q4k_gemv_ilv8_supported(1, 8, 256, 12)) {
+        GTEST_SKIP() << "needs AVX2";
+    }
+    for (int N : {8, 16, 64}) {
+        for (int K : {256, 512, 1024}) {
+            for (int ss_grp : {0, 1}) {
+                SCOPED_TRACE("N=" + std::to_string(N) + " K=" + std::to_string(K)
+                        + " ss_grp=" + std::to_string(ss_grp));
+                std::mt19937 rng(7300 + N * 29 + K + ss_grp);
+                KquantSource src = build_kquant(12, N, K, rng);
+
+                std::vector<int8_t> A(static_cast<size_t>(K));
+                fill_s8(A, rng, false);
+
+                const int groups = K / kKsub;
+                std::vector<float> ss(ss_grp ? groups : 1);
+                const float exact[4] = {0.03125f, 0.0625f, 0.125f, 0.25f};
+                for (size_t i = 0; i < ss.size(); ++i) ss[i] = exact[i % 4];
+
+                std::vector<float> ref(N, std::numeric_limits<float>::quiet_NaN());
+                std::vector<float> got(N, std::numeric_limits<float>::quiet_NaN());
+
+                ASSERT_TRUE(int8_q4k_gemv_128(N, K, 12, A.data(),
+                        src.blocks.data(), ref.data(), ss.data(), ss_grp, 2));
+
+                int8_q4k_gemv_ilv8_clear_cache();
+                ASSERT_TRUE(int8_q4k_gemv_ilv8_256(N, K, 12, A.data(),
+                        src.blocks.data(), got.data(), ss.data(), ss_grp, 2));
+
+                for (int n = 0; n < N; ++n) {
+                    ASSERT_FALSE(std::isnan(got[n])) << "row " << n
+                            << " not written";
+                    const float tol = 1e-4f * std::max(1.0f, std::fabs(ref[n]));
+                    EXPECT_NEAR(got[n], ref[n], tol) << "row " << n;
+                }
+            }
+        }
+    }
+}
+
+TEST(Int8Q4KGemvInterleaved8, DeclinesWhatItDoesNotExpress) {
+    EXPECT_FALSE(int8_q4k_gemv_ilv8_supported(2, 8, 256, 12)) << "M>1 is the GEMM's";
+    EXPECT_FALSE(int8_q4k_gemv_ilv8_supported(1, 4, 256, 12)) << "N must be x8";
+    EXPECT_FALSE(int8_q4k_gemv_ilv8_supported(1, 8, 128, 12)) << "whole super-blocks";
+    EXPECT_FALSE(int8_q4k_gemv_ilv8_supported(1, 8, 256, 14)) << "Q6_K elsewhere";
 }
 
 } // namespace

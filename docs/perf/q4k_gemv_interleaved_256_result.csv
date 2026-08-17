@@ -1,0 +1,69 @@
+# EIGHT-ROW 256-BIT INTERLEAVE: WORSE THAN BOTH. A10, 2026-08-17. Experiment closed.
+#
+# This was the one experiment the phase-separated profile justified, run on the
+# terms set out there: 15.5% of the GEMV is VPHADDD/VPHADDWD, the interleave is
+# the only idea that attacks it directly, and the four-row 128-bit version failed
+# only because building lane order cost what the reduction saved. Twice the
+# amortisation was meant to fix that. It did the opposite.
+#
+# ONE binary, three arms by ZENDNNL_NATIVE_Q4K_GEMV_ILV (0/1/2), alternating,
+# 150 s powersave cooldown before each, --ignore-eos, medians of 3.
+arm,rep,pp_tps,tg_tps
+row_at_a_time,1,20.6,5.0
+row_at_a_time,2,20.5,5.0
+row_at_a_time,3,20.5,5.1
+ilv4_128bit,1,20.6,4.0
+ilv4_128bit,2,20.6,4.5
+ilv4_128bit,3,20.4,4.6
+ilv8_256bit,1,20.6,3.7
+ilv8_256bit,2,20.6,3.5
+ilv8_256bit,3,20.5,3.6
+#
+#   row   median 5.0
+#   ilv4  median 4.5   0.90x
+#   ilv8  median 3.6   0.72x   -- worse in all three paired runs, and by a lot
+#
+# Correct: Int8Q4KGemvInterleaved8.AgreesWithTheRowAtATimeKernel over N={8,16,64},
+# K={256,512,1024} and both scale granularities, first try. The nibble plane and
+# the pre-duplicated scale vector both work exactly as designed. The design is
+# right and the machine disagrees.
+#
+# THE PREMISE WAS WRONG, and it was written down as a premise so it can be
+# retracted cleanly. q4k_gemv_phase_profile.csv argued that 256-bit cracking into
+# two 128-bit micro-ops "affects the ARITHMETIC, not the load or the shuffle", so
+# a 32-byte load would stay one instruction and amortise the unpack over eight
+# rows. Monotonically worse results say otherwise: on this part the 256-bit loads,
+# the VPAND, the VPSRLW and the broadcast evidently all split too, so there is no
+# amortisation to gain -- and the wider form adds costs the narrow one does not
+# have. Candidates, unmeasured and listed only to say they were not ruled out:
+# VPBROADCASTD, the lane-crossing VPMOVSXWD in the epilogue, and any AVX-to-SSE
+# transition penalty against the 128-bit code either side of this kernel.
+#
+# WHAT THIS SETTLES. Six ideas have now been measured against the Excavator decode
+# gap and the interleave has been tried at both widths:
+#
+#   deferring the s16 widening            zero (already fused VPMADCSWD)
+#   scalar six-bit scale unpack           zero (ablated)
+#   Q6_K spill removal                    0.96x
+#   four-row 128-bit interleave           0.90-0.94x
+#   eight-row 256-bit interleave          0.72x
+#   prepack thread-local memo             zero (prompt-phase cost)
+#   Q6_K pre-stitched codes               1.04x  <-- the only win
+#
+# The reduction is 15.5% of the kernel and every attempt to remove it has cost
+# more than it saved, at two widths and two row counts. The conclusion the profile
+# doc offered as a possibility is now the answer: ggml's kernel is well matched to
+# this problem, and DECLINING Q4_K ON AVX2 HOSTS IS CORRECT. The AVX2 gate stays,
+# now for a reason that has been attacked from every direction rather than
+# assumed.
+#
+# Both interleaved kernels are kept, off by default, because they are correct and
+# because the next person to have this idea should find the measurement rather
+# than repeat it. ILV=1 is the four-row form, ILV=2 the eight-row.
+#
+# WHAT IS ACTUALLY LEFT, for the Q4_K decode path: nothing cheap. The kernel is
+# latency-bound on a reduction that cannot be removed at either width without
+# paying more elsewhere, and it already ties ggml on prompt. Effort is better
+# spent on the FX -- where there is no repack to compete with and the 1.24x prompt
+# win is real -- or on the MoE grouped path, which is the one case measured to
+# have a CPU-shaped opportunity at all.
