@@ -15,6 +15,7 @@
  ******************************************************************************/
 
 #include "lowoha_operators/matmul/matmul_native/gemm/kernel/int8/int8_q4k_gemv_128.hpp"
+#include "lowoha_operators/matmul/matmul_native/gemm/kernel/int8/int8_q6k_gemv_pre_128.hpp"
 
 #include <cpuid.h>
 #include <cstdlib>
@@ -707,6 +708,20 @@ bool int8_q4k_gemv_128(int N, int K, int ggml_type, const int8_t *A,
     }();
 
     if (is_q6) {
+        // Pre-stitched codes, off by default. perf put 27.75% of a decode
+        // profile in run_q6's bit work, so this is the one candidate a profiler
+        // pointed at rather than one derived by reading; the switch keeps the
+        // comparison to a single binary.
+        static const bool s_pre = [] {
+            const char *e = std::getenv("ZENDNNL_NATIVE_Q6K_PRESTITCH");
+            return e != nullptr && std::atoi(e) != 0;
+        }();
+        if (s_pre
+                && int8_q6k_gemv_pre_128(N, K, A, blocks, C, src_scale, ss_grp,
+                        rowsum.data(), nthreads)) {
+            return true;
+        }
+
         // Portable only for now; see the note above run_q6.
         if (s_use_xop) {
             run_q6<true>(N, nsb, A, blocks, C, src_scale, ss_grp,

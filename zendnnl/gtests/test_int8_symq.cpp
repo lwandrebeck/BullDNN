@@ -62,6 +62,7 @@
 #include "lowoha_operators/matmul/matmul_native/gemm/kernel/int8/int8_kquant_ukernel_128.hpp"
 #include "lowoha_operators/matmul/matmul_native/gemm/kernel/int8/int8_q4k_gemv_128.hpp"
 #include "lowoha_operators/matmul/matmul_native/gemm/kernel/int8/int8_q4k_gemv_ilv_128.hpp"
+#include "lowoha_operators/matmul/matmul_native/gemm/kernel/int8/int8_q6k_gemv_pre_128.hpp"
 #include "lowoha_operators/matmul/matmul_native/gemm/kernel/int8/int8_symq_ukernel_128.hpp"
 #include "lowoha_operators/matmul/matmul_native/gemm/looper/int8_kquant_entry_128.hpp"
 #include "lowoha_operators/matmul/matmul_native/gemm/looper/int8_kquant_looper_128.hpp"
@@ -1069,6 +1070,17 @@ struct KquantSource {
 // the six-bit factors are small integers, so d * sc survives fp16 exactly and the
 // comparison measures decoding rather than rounding.
 KquantSource build_kquant(int type, int N, int K, std::mt19937 &rng) {
+    // Q4_K and Q5_K ONLY. Q6_K is 210 bytes with 16-wide sub-blocks and codes to
+    // 63, none of which this builds -- passing 14 here silently produced
+    // 176-byte blocks that every kernel then strode 210 bytes through, which
+    // reads as "the kernel disagrees" rather than "the fixture is wrong". It cost
+    // a debugging round. Use pack_q6_k for Q6_K.
+    if (type != 12 && type != 13) {
+        ADD_FAILURE() << "build_kquant handles Q4_K (12) and Q5_K (13) only; "
+                         "got type "
+                      << type << " -- use pack_q6_k for Q6_K";
+        return KquantSource {};
+    }
     const int nsb = K / kKsuper;
     const int groups = K / kKsub;
     const size_t block_bytes = (type == 12) ? 144u : 176u;
@@ -2878,6 +2890,105 @@ TEST(Int8Q4KGemvInterleaved, DeclinesWhatItDoesNotExpress) {
     EXPECT_FALSE(int8_q4k_gemv_ilv_supported(1, 8, 256, 13)) << "Q5_K not packed here";
     EXPECT_FALSE(int8_q4k_gemv_ilv_supported(1, 8, 256, 14)) << "Q6_K not packed here";
     EXPECT_TRUE(int8_q4k_gemv_ilv_supported(1, 8, 256, 12));
+}
+
+// Pre-stitched Q6_K against the stitch-on-the-fly kernel. The mapping from the
+// ql/qh planes to k is the whole risk here: one qh byte feeds four codes that are
+// 64 apart in k, and getting it wrong produces plausible floats rather than a
+// crash. It is derived from the existing kernel's own activation offsets, so the
+// existing kernel is the reference.
+//
+// Driven through the public GEMV entry with ZENDNNL_NATIVE_Q6K_PRESTITCH rather
+// than by calling the two kernels directly, because the switch, the row sums and
+// the per-32-versus-per-16 scale indexing are all part of what has to agree.
+TEST(Int8Q6KGemvPrestitched, AgreesWithTheStitchOnTheFlyKernel) {
+    for (int N : {1, 4, 33}) {
+        for (int K : {256, 512, 768}) {
+            for (int ss_grp : {0, 1}) {
+                SCOPED_TRACE("N=" + std::to_string(N) + " K=" + std::to_string(K)
+                        + " ss_grp=" + std::to_string(ss_grp));
+                std::mt19937 rng(8100 + N * 17 + K + ss_grp);
+
+                // Real Q6_K: signed codes in [-32, 31] which pack_q6_k biases
+                // to [0, 63], one signed scale per SIXTEEN, 210 bytes a block.
+                std::vector<int8_t> vals(static_cast<size_t>(N) * K);
+                std::uniform_int_distribution<int> vd(-32, 31);
+                for (auto &v : vals) v = static_cast<int8_t>(vd(rng));
+                std::vector<int8_t> sub_scales(kQ6kSuper / 16);
+                std::uniform_int_distribution<int> sd(-40, 40);
+                for (auto &v : sub_scales) v = static_cast<int8_t>(sd(rng));
+                std::vector<uint8_t> blocks;
+                pack_q6_k(vals.data(), sub_scales.data(), 0.0625f, N, K, blocks);
+
+                std::vector<int8_t> A(static_cast<size_t>(K));
+                fill_s8(A, rng, false);
+
+                const int groups = K / kKsub;
+                std::vector<float> ss(ss_grp ? groups : 1);
+                const float exact[4] = {0.03125f, 0.0625f, 0.125f, 0.25f};
+                for (size_t i = 0; i < ss.size(); ++i) ss[i] = exact[i % 4];
+
+                std::vector<float> ref(N, std::numeric_limits<float>::quiet_NaN());
+                std::vector<float> got(N, std::numeric_limits<float>::quiet_NaN());
+
+                ASSERT_TRUE(int8_q4k_gemv_128(N, K, 14, A.data(), blocks.data(),
+                        ref.data(), ss.data(), ss_grp, 2));
+
+                int8_q6k_gemv_pre_clear_cache();
+                std::vector<int32_t> rs(static_cast<size_t>(K) / 16);
+                for (size_t i = 0; i < rs.size(); ++i) {
+                    int32_t t = 0;
+                    for (int j = 0; j < 16; ++j) t += A[i * 16 + j];
+                    rs[i] = t;
+                }
+                ASSERT_TRUE(int8_q6k_gemv_pre_128(N, K, A.data(), blocks.data(),
+                        got.data(), ss.data(), ss_grp, rs.data(), 2));
+
+                for (int n = 0; n < N; ++n) {
+                    ASSERT_FALSE(std::isnan(got[n])) << "row " << n
+                            << " not written";
+                    // Identical integer dot products; the slack is only the
+                    // order the fp32 lanes are summed in at the very end.
+                    const float tol = 1e-4f * std::max(1.0f, std::fabs(ref[n]));
+                    EXPECT_NEAR(got[n], ref[n], tol) << "row " << n;
+                }
+            }
+        }
+    }
+}
+
+TEST(Int8Q6KGemvPrestitched, RepeatedCallsAgreeAndTheCacheCanBeCleared) {
+    const int N = 4, K = 512;
+    std::mt19937 rng(8888);
+    std::vector<int8_t> vals(static_cast<size_t>(N) * K);
+    std::uniform_int_distribution<int> vd(-32, 31);
+    for (auto &v : vals) v = static_cast<int8_t>(vd(rng));
+    std::vector<int8_t> sub_scales(kQ6kSuper / 16, 17);
+    std::vector<uint8_t> blocks;
+    pack_q6_k(vals.data(), sub_scales.data(), 0.0625f, N, K, blocks);
+    std::vector<int8_t> A(static_cast<size_t>(K));
+    fill_s8(A, rng, false);
+    std::vector<float> ss(1, 0.0625f);
+    std::vector<int32_t> rs(static_cast<size_t>(K) / 16);
+    for (size_t i = 0; i < rs.size(); ++i) {
+        int32_t t = 0;
+        for (int j = 0; j < 16; ++j) t += A[i * 16 + j];
+        rs[i] = t;
+    }
+
+    std::vector<float> a(N, 0.f), b(N, 0.f), c(N, 0.f);
+    int8_q6k_gemv_pre_clear_cache();
+    ASSERT_TRUE(int8_q6k_gemv_pre_128(
+            N, K, A.data(), blocks.data(), a.data(), ss.data(), 0, rs.data(), 2));
+    ASSERT_TRUE(int8_q6k_gemv_pre_128(
+            N, K, A.data(), blocks.data(), b.data(), ss.data(), 0, rs.data(), 2));
+    int8_q6k_gemv_pre_clear_cache();
+    ASSERT_TRUE(int8_q6k_gemv_pre_128(
+            N, K, A.data(), blocks.data(), c.data(), ss.data(), 0, rs.data(), 2));
+    for (int n = 0; n < N; ++n) {
+        EXPECT_EQ(a[n], b[n]) << "cached call diverged at " << n;
+        EXPECT_EQ(a[n], c[n]) << "restitch diverged at " << n;
+    }
 }
 
 } // namespace

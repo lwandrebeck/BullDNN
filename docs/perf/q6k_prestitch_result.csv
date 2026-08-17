@@ -1,0 +1,61 @@
+# PRE-STITCHED Q6_K CODES: +4% DECODE, AND THE FIRST THING THAT WORKED.
+# Measured 2026-08-17 on the A10-8770E.
+#
+# Five structural ideas were tried against the Excavator decode gap before this
+# one and every one of them was derived by reading code. Four measured to zero or
+# worse. This one came from perf: 27.75% of a decode profile sat in run_q6, which
+# is 14.7% of the dispatched ops, and perf annotate put that time in the bit work
+# that rebuilds each six-bit code from the ql and qh planes.
+#
+# A code is a pure function of the weight, so the stitching moves to once per
+# weight. Codes are cached in natural k order -- which is the order the
+# activations are read -- so the inner loop becomes four 16-byte loads against
+# four activation loads, with no shifts, masks or ors at all.
+#
+# One binary, arms differ only by ZENDNNL_NATIVE_Q6K_PRESTITCH, alternating,
+# 150 s powersave cooldown before each run, --ignore-eos so both generate exactly
+# 64 tokens. qwen2.5-1.5B Q4_K_M, 4 threads, -dev none -ngl 0 --no-repack.
+arm,rep,pp_tps,tg_tps
+stitch_on_the_fly,1,20.7,4.9
+stitch_on_the_fly,2,20.3,5.1
+stitch_on_the_fly,3,20.6,5.0
+prestitched,1,20.6,5.2
+prestitched,2,20.6,5.2
+prestitched,3,20.6,5.1
+#
+#   stitch median 5.0    pre median 5.2    1.04x
+#
+# Faster in all THREE paired comparisons -- 5.2>4.9, 5.2>5.1, 5.1>5.0 -- which
+# matters more than the median here, because tg on this box has been the noisy
+# number all along while pp is reproducible to 0.1.
+#
+# It is a small win and it is proportionate. Q6_K decode was 27.75% of the run;
+# if the bit work were all of it, removing it would have bought ~14% overall.
+# 4% says the stitching was roughly a third of run_q6 and the rest is the
+# PMADDUBSW chain and the sixteen-wide reduction that go with 16-wide sub-blocks.
+#
+# THE COST is bytes: 256 code bytes plus 16 scales plus a 4-byte d against the
+# block's 210, so about 31% more of the Q6_K weight stream, bounded by
+# ZENDNNL_Q6K_PRE_CACHE_MB (2048 default). That trade is only sound because decode
+# here is issue-bound -- ~6 GB/s against a controller good for far more -- and it
+# would need re-checking on a box or a model where that is not true.
+#
+# CORRECTNESS. Int8Q6KGemvPrestitched.AgreesWithTheStitchOnTheFlyKernel over
+# N={1,4,33}, K={256,512,768} and both scale granularities, plus a cache
+# repeat/clear test. The mapping from the ql/qh planes to k was derived from the
+# existing kernel's own activation offsets rather than from GGML documentation,
+# because the existing kernel is what the scales and row sums already agree with.
+#
+# A FIXTURE BUG FOUND ON THE WAY, and it is the more useful finding. The first
+# version of the test used build_kquant(14, ...), which handles Q4_K and Q5_K
+# only: for type 14 it produced 176-byte blocks while every kernel strode 210
+# bytes through them. That reads as "the new kernel disagrees" and cost a
+# debugging round chasing a kernel bug that did not exist. build_kquant now calls
+# ADD_FAILURE on any type but 12 or 13, so the next person gets told rather than
+# misled. Q6_K fixtures must use pack_q6_k.
+#
+# STILL OFF BY DEFAULT, deliberately. The win is measured on the A10, where this
+# whole path is gated off in production anyway by the AVX2 rule. The FX is the box
+# where the fork actually dispatches, and it is mid-inventory; this should be
+# confirmed there before the default flips, and the memory growth is worth a
+# second look on the 30B where Q6_K tensors are larger.
