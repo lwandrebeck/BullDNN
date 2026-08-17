@@ -25,6 +25,28 @@ if (ZENDNNL_DEPENDS_LIBXSMM)
     list(APPEND LIBXSMM_MAKE_ARGS "NOFORTRAN=1")
     list(APPEND LIBXSMM_MAKE_ARGS "BLAS=0")
 
+    # CAP THE ISA EXPLICITLY ON FAMILY 15h. Left to itself libxsmm decides its own
+    # target, and on Piledriver it decides wrongly: the gtest suite died with
+    # SIGILL in internal_diff_avx2 executing `vpcmpeqb (%rdi),%ymm0,%ymm1` -- an
+    # AVX2 instruction on a part that has no AVX2 -- reached from
+    # libxsmm_dispatch_brgemm through its own code-cache lookup, not from a
+    # microkernel. Setting LIBXSMM_TARGET=snb or wsm at RUNTIME makes the same
+    # test pass, which is what identified it; this does the equivalent at build
+    # time so no caller has to know.
+    #
+    # AVX is libxsmm's own level: 1 = AVX, 2 = AVX2/FMA3, 3 = AVX-512. Within
+    # family 15h only Excavator (bdver4) has AVX2; bdver1..bdver3 stop at AVX.
+    # Anything else is left alone so Zen and native builds keep detecting.
+    if(BULLDNN_TARGET_ARCH STREQUAL "bdver4")
+      list(APPEND LIBXSMM_MAKE_ARGS "AVX=2")
+      message(STATUS "${ZENDNNL_MSG_PREFIX}LIBXSMM capped at AVX2 for bdver4")
+    elseif(BULLDNN_TARGET_ARCH MATCHES "^bdver[123]$")
+      list(APPEND LIBXSMM_MAKE_ARGS "AVX=1")
+      message(STATUS
+        "${ZENDNNL_MSG_PREFIX}LIBXSMM capped at AVX for ${BULLDNN_TARGET_ARCH} "
+        "(no AVX2 on this part; unpinned libxsmm SIGILLs here)")
+    endif()
+
     message(DEBUG "${ZENDNNL_MSG_PREFIX}LIBXSMM_MAKE_ARGS=${LIBXSMM_MAKE_ARGS}")
 
     get_property(LIBXSMM_INSTALL_DIR GLOBAL PROPERTY LIBXSMMROOT)

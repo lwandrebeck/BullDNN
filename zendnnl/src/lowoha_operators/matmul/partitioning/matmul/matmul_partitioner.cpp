@@ -352,6 +352,55 @@ static const PreDispatchedBrgemm &get_brgemm_context_blocked(
     return it->second.pd;
 }
 
+// ---------------------------------------------------------------------------
+// Stop libxsmm choosing an ISA this host cannot execute.
+//
+// The gtest suite died with SIGILL on the Piledriver box after 2327 tests,
+// reproducible from one:
+//
+//   gtests --seed 1786947481 --gtest_filter=Matmul/TestMatmul.BF16_F32/270
+//   => vpcmpeqb (%rdi),%ymm0,%ymm1   in libxsmm's internal_diff_avx2
+//      libxsmm_diff_n / internal_find_code / libxsmm_xmmdispatch /
+//      libxsmm_dispatch_brgemm / execute_brgemm_std
+//
+// An AVX2 instruction on bdver2, which has none, inside libxsmm's own code-cache
+// lookup rather than a generated microkernel: libxsmm decided the host was
+// AVX2-capable and bound its internal helpers to match.
+//
+// FOUR NARROWER FIXES FAILED FIRST, recorded so they are not retried:
+//
+//   AVX=1 in LIBXSMM_MAKE_ARGS -- bounds microkernel codegen, not the runtime
+//   archid. Crash survived.
+//
+//   libxsmm_set_target_arch() from can_use_libxsmm() -- never reached, because a
+//   caller naming algo=libxsmm goes straight to dispatch without that gate, which
+//   is exactly how the failing test arrives.
+//
+//   libxsmm_set_target_arch() immediately before libxsmm_dispatch_brgemm -- too
+//   late. libxsmm initialises lazily on first API use and binds these helpers
+//   then. This is also why the LIBXSMM_TARGET environment variable DOES work: it
+//   is read during that init.
+//
+//   The same constructor in its own translation unit -- never ran. A
+//   constructor-only object in a static archive has no referenced symbol, so the
+//   linker drops it; nm showed the symbol present in libzendnnl_archive.a and
+//   absent from the test binary.
+//
+// So it lives here, beside execute_brgemm_std: a TU that is always linked and is
+// itself on the crashing path. setenv with overwrite=0, so an explicit
+// LIBXSMM_TARGET from the caller still wins. __builtin_cpu_supports rather than
+// the platform_info singleton because this runs during static initialisation.
+// ---------------------------------------------------------------------------
+namespace {
+__attribute__((constructor)) void zendnnl_cap_libxsmm_target() {
+#if ZENDNNL_DEPENDS_LIBXSMM
+    if (__builtin_cpu_supports("avx2")) return; // libxsmm's choice is runnable
+    setenv("LIBXSMM_TARGET", __builtin_cpu_supports("avx") ? "snb" : "wsm",
+            /*overwrite=*/0);
+#endif
+}
+} // namespace
+
 void execute_brgemm_std(const char trans_input, const char trans_weight,
         const void *src, const void *weight, void *dst, const void *bias,
         const matmul_partition_config_t &config, matmul_params &params,
