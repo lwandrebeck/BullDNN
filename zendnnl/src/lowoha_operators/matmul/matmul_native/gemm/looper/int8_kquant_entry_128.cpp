@@ -45,6 +45,7 @@
 #include "lowoha_operators/matmul/matmul_native/common/kernel_cache.hpp"
 #include "lowoha_operators/matmul/matmul_native/gemm/kernel/int8/int8_kquant_ukernel_128.hpp"
 #include "lowoha_operators/matmul/matmul_native/gemm/kernel/int8/int8_q4k_gemv_128.hpp"
+#include "lowoha_operators/matmul/matmul_native/gemm/kernel/int8/int8_q4k_gemv_ilv_128.hpp"
 #include "operators/matmul/matmul_config.hpp"
 #include "lowoha_operators/matmul/matmul_native/gemm/looper/int8_epilogue_128.hpp"
 #include "lowoha_operators/matmul/matmul_native/gemm/looper/int8_kquant_looper_128.hpp"
@@ -162,6 +163,21 @@ bool int8_kquant_gemv_try_execute_128(int M, int N, int K, bool transB,
         ss = scale_buf.data();
     } else {
         return false;
+    }
+
+    // The four-row interleaved layout, off by default until it is shown to pay.
+    // Same switch discipline as the kill switch above: one binary, so "the
+    // layout is what made the difference" is measured rather than inferred from
+    // two builds minutes apart on a box that throttles.
+    static const bool s_ilv = [] {
+        const char *e = std::getenv("ZENDNNL_NATIVE_Q4K_GEMV_ILV");
+        return e != nullptr && std::atoi(e) != 0;
+    }();
+    if (s_ilv
+            && int8_q4k_gemv_ilv_128(N, K, ggml_type,
+                    static_cast<const int8_t *>(src), weight,
+                    static_cast<float *>(dst), ss, ss_grp, nthreads)) {
+        return true;
     }
 
     return int8_q4k_gemv_128(N, K, ggml_type,

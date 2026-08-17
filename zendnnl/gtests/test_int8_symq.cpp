@@ -61,6 +61,7 @@
 #include "lowoha_operators/matmul/matmul_native/common/kernel_cache.hpp"
 #include "lowoha_operators/matmul/matmul_native/gemm/kernel/int8/int8_kquant_ukernel_128.hpp"
 #include "lowoha_operators/matmul/matmul_native/gemm/kernel/int8/int8_q4k_gemv_128.hpp"
+#include "lowoha_operators/matmul/matmul_native/gemm/kernel/int8/int8_q4k_gemv_ilv_128.hpp"
 #include "lowoha_operators/matmul/matmul_native/gemm/kernel/int8/int8_symq_ukernel_128.hpp"
 #include "lowoha_operators/matmul/matmul_native/gemm/looper/int8_kquant_entry_128.hpp"
 #include "lowoha_operators/matmul/matmul_native/gemm/looper/int8_kquant_looper_128.hpp"
@@ -2788,6 +2789,95 @@ TEST(NoAlgoNamed, PlainF32Computes) {
     // touching dst is the exact failure this guards.
     EXPECT_NE(C[0], 12345.0f);
     EXPECT_NE(C[static_cast<size_t>(M) * N - 1], 12345.0f);
+}
+
+// The four-row interleaved Q4_K GEMV must agree with the row-at-a-time kernel
+// EXACTLY, not approximately. Both accumulate the same integers in the same
+// order within a sub-block and apply the same fp32 term per sub-block, so any
+// difference means the repacked layout is being read wrong -- which is a silent
+// failure, since a transposed nibble still produces plausible-looking floats.
+//
+// The nibble mapping is the part that invites it: GGML packs Q4_K per 64-weight
+// CHUNK, so inside chunk c the low nibbles of bytes 32c..32c+31 are k=64c..+31
+// and the high nibbles of the SAME bytes are k=64c+32..+63. Getting that wrong
+// costs nothing at build time and everything at run time.
+TEST(Int8Q4KGemvInterleaved, AgreesWithTheRowAtATimeKernel) {
+    for (int N : {4, 8, 64}) {
+        for (int K : {256, 512, 1024}) {
+            for (int ss_grp : {0, 1}) {
+                SCOPED_TRACE("N=" + std::to_string(N) + " K=" + std::to_string(K)
+                        + " ss_grp=" + std::to_string(ss_grp));
+                std::mt19937 rng(7000 + N * 31 + K + ss_grp);
+                KquantSource src = build_kquant(12, N, K, rng);
+
+                std::vector<int8_t> A(static_cast<size_t>(K));
+                fill_s8(A, rng, false);
+
+                const int groups = K / kKsub;
+                std::vector<float> ss(ss_grp ? groups : 1);
+                const float exact[4] = {0.03125f, 0.0625f, 0.125f, 0.25f};
+                for (size_t i = 0; i < ss.size(); ++i) ss[i] = exact[i % 4];
+
+                std::vector<float> ref(N, std::numeric_limits<float>::quiet_NaN());
+                std::vector<float> got(N, std::numeric_limits<float>::quiet_NaN());
+
+                ASSERT_TRUE(int8_q4k_gemv_128(N, K, 12, A.data(),
+                        src.blocks.data(), ref.data(), ss.data(), ss_grp, 2));
+
+                int8_q4k_gemv_ilv_clear_cache();
+                ASSERT_TRUE(int8_q4k_gemv_ilv_128(N, K, 12, A.data(),
+                        src.blocks.data(), got.data(), ss.data(), ss_grp, 2));
+
+                for (int n = 0; n < N; ++n) {
+                    ASSERT_FALSE(std::isnan(got[n])) << "row " << n
+                            << " not written";
+                    // Same integer accumulation, same per-sub-block fp32 term,
+                    // so the only slack is fp32 summation order across
+                    // sub-blocks. Relative, because the magnitudes vary with K.
+                    const float tol = 1e-4f * std::max(1.0f, std::fabs(ref[n]));
+                    EXPECT_NEAR(got[n], ref[n], tol) << "row " << n;
+                }
+            }
+        }
+    }
+}
+
+// The cache is keyed on the weight POINTER plus the shape, which is only sound
+// because a GGML weight is loaded once and never moves. Prove a second call on
+// the same address returns the same answer rather than something stale, and that
+// clearing works -- the pointer-keyed caches in this tree have served stale
+// packed data before.
+TEST(Int8Q4KGemvInterleaved, RepeatedCallsAgreeAndTheCacheCanBeCleared) {
+    const int N = 8, K = 512;
+    std::mt19937 rng(7777);
+    KquantSource src = build_kquant(12, N, K, rng);
+    std::vector<int8_t> A(static_cast<size_t>(K));
+    fill_s8(A, rng, false);
+    std::vector<float> ss(1, 0.0625f);
+
+    std::vector<float> first(N, 0.0f), second(N, 0.0f), afterClear(N, 0.0f);
+    int8_q4k_gemv_ilv_clear_cache();
+    ASSERT_TRUE(int8_q4k_gemv_ilv_128(
+            N, K, 12, A.data(), src.blocks.data(), first.data(), ss.data(), 0, 2));
+    ASSERT_TRUE(int8_q4k_gemv_ilv_128(
+            N, K, 12, A.data(), src.blocks.data(), second.data(), ss.data(), 0, 2));
+    int8_q4k_gemv_ilv_clear_cache();
+    ASSERT_TRUE(int8_q4k_gemv_ilv_128(N, K, 12, A.data(), src.blocks.data(),
+            afterClear.data(), ss.data(), 0, 2));
+
+    for (int n = 0; n < N; ++n) {
+        EXPECT_EQ(first[n], second[n]) << "cached call diverged at " << n;
+        EXPECT_EQ(first[n], afterClear[n]) << "repack diverged at " << n;
+    }
+}
+
+TEST(Int8Q4KGemvInterleaved, DeclinesWhatItDoesNotExpress) {
+    EXPECT_FALSE(int8_q4k_gemv_ilv_supported(2, 8, 256, 12)) << "M>1 is the GEMM's";
+    EXPECT_FALSE(int8_q4k_gemv_ilv_supported(1, 6, 256, 12)) << "N must be x4";
+    EXPECT_FALSE(int8_q4k_gemv_ilv_supported(1, 8, 128, 12)) << "K whole super-blocks";
+    EXPECT_FALSE(int8_q4k_gemv_ilv_supported(1, 8, 256, 13)) << "Q5_K not packed here";
+    EXPECT_FALSE(int8_q4k_gemv_ilv_supported(1, 8, 256, 14)) << "Q6_K not packed here";
+    EXPECT_TRUE(int8_q4k_gemv_ilv_supported(1, 8, 256, 12));
 }
 
 } // namespace

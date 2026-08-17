@@ -1,0 +1,75 @@
+# FOUR-ROW INTERLEAVED Q4_K DECODE GEMV: BUILT, CORRECT, AND SLOWER.
+# Measured 2026-08-17 on the A10-8770E.
+#
+# This was the last of five structural candidates from
+# q4k_gemv_vs_ggml_structure.md and the only one still standing -- the other two
+# that were testable had already been measured to zero. It is ggml's own trick:
+# interleave rows so the lanes of the accumulator ARE the outputs, and never
+# reduce horizontally. It does not pay at 128 bits on this part.
+#
+# One binary per version, arms alternating, 150 s powersave cooldown before every
+# run, --ignore-eos so both generate exactly 64 tokens, medians of 3. The arms
+# differ ONLY by ZENDNNL_NATIVE_Q4K_GEMV_ILV, so no build or thermal difference
+# can be blamed.
+version,arm,rep,pp_tps,tg_tps
+v1_8byte_loads,row,1,20.5,5.3
+v1_8byte_loads,row,2,20.5,5.3
+v1_8byte_loads,row,3,20.6,5.1
+v1_8byte_loads,ilv,1,20.7,4.6
+v1_8byte_loads,ilv,2,20.6,4.5
+v1_8byte_loads,ilv,3,20.5,4.6
+v2_16byte_loads,row,1,20.6,4.9
+v2_16byte_loads,row,2,20.7,5.1
+v2_16byte_loads,row,3,20.6,5.0
+v2_16byte_loads,ilv,1,20.6,4.7
+v2_16byte_loads,ilv,2,20.6,4.7
+v2_16byte_loads,ilv,3,20.6,4.6
+#
+#   v1  row 5.3   ilv 4.6   0.87x
+#   v2  row 5.0   ilv 4.7   0.94x
+#
+# Correct, not approximately: Int8Q4KGemvInterleaved.AgreesWithTheRowAtATimeKernel
+# checks it against the row-at-a-time kernel over N={4,8,64}, K={256,512,1024}
+# and both scale granularities, and they agree to fp32 summation order.
+#
+# WHY v1 WAS SLOW, and it is instructive. The lane algebra needs the sixteen
+# weight bytes in row-major-by-four order, which takes an unpacklo of the low and
+# high nibbles. v1 built one operand from an eight-byte load, so it paid a
+# half-width load plus an extra unpack for every PMADDUBSW -- against a
+# row-at-a-time kernel that gets a full sixteen-weight operand from ONE 16-byte
+# load and a single AND. It handed back more than the reduction saved. v2 takes
+# both operands out of one 16-byte load via unpacklo and unpackhi of the same
+# lo/hi pair, which recovered most of it: 0.87x to 0.94x.
+#
+# WHY IT STILL LOSES, and this corrects something in
+# q4k_gemv_vs_ggml_structure.md. That document argued the multiply is a wash
+# because ggml's 256-bit ops crack into two 128-bit micro-ops on this family.
+# True for the ARITHMETIC and false for everything else: a 32-byte LOAD is still
+# one instruction, and a 256-bit shuffle still rearranges 32 bytes at once. ggml
+# unpacks eight rows' nibbles once per sub-block pair and then issues sixteen
+# PMADDUBSW against them with cheap blends, so its unpack amortises over twice
+# the weights AND over eight rows instead of four. At 128 bits there is no width
+# to amortise with, and the cost of getting bytes into lane order is what the
+# reduction tree cost in the first place.
+#
+# So the deficit is not the reduction and not the scales and not the widening
+# cadence. It is that ggml has 256-bit loads and shuffles for the data movement
+# around the multiply, and cracking only removes the advantage on the multiply.
+#
+# THE HONEST STATE. Three of the five candidates are now measured to zero or
+# worse, and the decode gap is unexplained and unclosed at 0.75x. What is left
+# to try, in the order I would try it:
+#
+#   1. The same layout at 256 bits with EIGHT rows. The A10 has AVX2; the packer
+#      and the lane algebra generalise directly (PMADDUBSW gives sixteen s16,
+#      PMADDWD eight s32, so eight rows). This is the version that would test the
+#      width explanation above rather than assume it, and the reason the kernel
+#      and its repacker are kept rather than deleted.
+#   2. Profile instead of reasoning. Three hypotheses have now died here and the
+#      static reading has been wrong every time. perf on the decode loop would
+#      cost less than another kernel.
+#
+# The kernel is OFF by default and reachable with
+# ZENDNNL_NATIVE_Q4K_GEMV_ILV=1. It is kept because it is correct, because the
+# repacker is the reusable part, and because a negative result that is not
+# recorded gets rediscovered.
