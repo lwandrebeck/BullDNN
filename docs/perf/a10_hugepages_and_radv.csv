@@ -1,0 +1,96 @@
+# A10 iGPU: HUGEPAGES (nothing) AND RADV_PERFTEST (one large, real effect).
+# 2026-08-18, llama.cpp b10470, qwen2.5-1.5B Q4_K_M, -ngl 99 -t 4 -c 4096,
+# ~700-token prompt, 96 generated, --ignore-eos, cooled between runs.
+#
+# ===========================================================================
+# 1. TRANSPARENT HUGE PAGES: NO EFFECT, AND THE MECHANISM IS CLEAR
+# ===========================================================================
+# THP was in madvise mode on this box, so llama.cpp got none of it. Both THP mode
+# and the mmap/anonymous choice were varied, because file-backed mmap gets THP
+# weakly at best while --no-mmap makes the weights anonymous and eligible.
+thp_mode,mmap,rep,pp_tps,tg_tps,anonhuge_peak_mb
+madvise,mmap,1,78.8,15.9,0
+madvise,--no-mmap,1,78.1,15.9,0
+always,mmap,1,77.8,15.9,10
+always,--no-mmap,1,78.2,15.5,10
+madvise,mmap,2,77.9,15.9,0
+madvise,--no-mmap,2,77.9,15.6,0
+always,mmap,2,78.1,15.9,10
+always,--no-mmap,2,77.7,15.9,10
+#
+# Every arm is 77.7-78.8 prompt and 15.5-16.0 decode. Nothing.
+#
+# The AnonHugePages column is why, and it is worth more than the null result:
+# with THP set to `always`, the peak was 10 MB against a 934 MB model. THP barely
+# engaged even when enabled, because at -ngl 99 the weights end up in RADV's
+# device allocations, which do not come from the THP-eligible anonymous pool at
+# all. So this is not "hugepages did not help" but "hugepages were never applied
+# to the memory that matters", and no THP setting can change that from userspace.
+# THP was restored to madvise afterwards.
+#
+# ===========================================================================
+# 2. RADV_PERFTEST: nogttspill IS REAL AND LARGE, AND I PREDICTED IT WOULD NOT BE
+# ===========================================================================
+# Option names read out of the installed driver binary rather than guessed:
+# cswave32 pswave32 gewave32 rtwave64 dccmsaa dmashaders localbos nircache
+# nogttspill nosam transfer_queue video_decode video_encode.
+#
+# RADV_EXPERIMENTAL DOES NOT EXIST in this driver -- the only RADV_* variables it
+# defines are RADV_DEBUG, RADV_FORCE_FAMILY, RADV_FORCE_VRS(_CONFIG_FILE),
+# RADV_PERFTEST, RADV_PRINTF_BUFFER_SIZE, RADV_PROFILE_PSTATE, the RADV_RRA_TRACE_*
+# and RADV_THREAD_TRACE_* families, RADV_TEX_ANISO and RADV_TRAP_HANDLER(_EXCP).
+# So `RADV_EXPERIMENTAL=sparse` is not a knob here.
+perftest,rep,pp_tps,tg_tps
+baseline,1,76.9,16.0
+baseline,2,77.7,15.9
+nogttspill,1,114.8,11.1
+nogttspill,2,115.0,11.2
+localbos,1,77.6,15.9
+localbos,2,77.3,16.0
+dmashaders,1,87.1,15.9
+dmashaders,2,79.4,16.0
+transfer_queue,1,77.7,15.9
+transfer_queue,2,77.4,16.0
+cswave32,1,77.8,16.0
+cswave32,2,79.0,15.9
+"nogttspill,localbos",1,115.2,11.4
+"nogttspill,localbos",2,115.1,11.4
+#
+# nogttspill: prompt 77.3 -> 114.9, so +48%. Decode 16.0 -> 11.2, so -30%.
+# Reproducible to 0.2 t/s across both reps. A genuine trade, not noise.
+#
+# I EXPECTED NOTHING FROM IT. The reasoning was that on a UMA APU the VRAM
+# carve-out and GTT are the same physical memory at the same bandwidth, so buffer
+# placement could not matter. That is wrong: they evidently differ in caching or
+# access attributes, and prompt (compute-bound, large tiles) and decode
+# (latency-bound, streams every weight) land on opposite sides of the trade.
+#
+# THE CAVEAT THAT MATTERS MORE THAN THE NUMBER. Baseline llama-cli prompt here is
+# ~78 t/s, but llama-batched-bench on the same model and flags gets 112-119, and
+# nogttspill brings llama-cli to ~115 -- i.e. it RECOVERS what the other harness
+# already achieves rather than exceeding it. So this looks like a fix for a
+# llama-cli allocation pathology, not a universal +48%. Before deploying it,
+# measure nogttspill under llama-server or batched-bench, where the baseline is
+# already 112; the decode cost may then be all that is left.
+#
+# localbos, transfer_queue: inert, both reps.
+# nogttspill,localbos == nogttspill alone: localbos contributes nothing.
+# cswave32: inert, as predicted architecturally -- wave32 is an RDNA feature and
+#   Carrizo is gfx8, wave64-only. Included solely to close the question.
+#
+# dmashaders: NO EFFECT. It looked like a free +13% on the first run (87.1) and
+# that was an outlier. Six paired reps, alternating with baseline:
+arm,rep,pp_tps,tg_tps
+baseline,3,78.1,16.0
+dmashaders,3,77.3,15.9
+baseline,4,78.2,16.0
+dmashaders,4,77.6,16.0
+baseline,5,78.2,16.0
+dmashaders,5,81.3,16.0
+baseline,6,78.5,16.0
+dmashaders,6,77.3,16.0
+#
+#   baseline median 78.15    dmashaders median 78.5    -- the distributions overlap
+#
+# Worth noting how nearly this became a false positive: one run at 87.1 against a
+# 77-78 baseline is a 13% "win" that four more reps erased.
