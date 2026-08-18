@@ -1,0 +1,68 @@
+# A10 iGPU: BATCHING DEPTH, CONTEXT GROWTH, AND A 13-HOUR LESSON. 2026-08-18.
+#
+# llama.cpp b10470, qwen2.5-1.5B Q4_K_M, -ngl 99 -t 4, llama-batched-bench.
+# Three full repeats of the batching sweep, which is what corrected the earlier
+# single-run recommendation.
+#
+# THE HEADLINE CORRECTION: use -np 16, not -np 4. An earlier single run tested
+# only up to 8 and read the dip there as a plateau. With 16 included and three
+# repeats, 16 is clearly best and the dip at 8 is real and reproducible.
+#
+#   B    tg median   vs B=1
+#   1      16.47       --
+#   2      23.36      1.42x
+#   4      29.15      1.77x
+#   8      26.27      1.60x   <- reproducible dip, all three reps
+#  16      33.32      2.02x   <- best
+#
+section,batch,npp,ntg,pp_tps,tg_tps,total_tps
+batching_rep1,B=1,npp=128,ntg=64,112.07,16.59,38.41
+batching_rep1,B=2,npp=128,ntg=64,115.78,23.69,50.43
+batching_rep1,B=4,npp=128,ntg=64,118.96,29.52,59.18
+batching_rep1,B=8,npp=128,ntg=64,119.07,26.38,54.84
+batching_rep1,B=16,npp=128,ntg=64,117.18,35.33,66.12
+batching_rep2,B=1,npp=128,ntg=64,111.51,16.47,38.14
+batching_rep2,B=2,npp=128,ntg=64,114.18,23.18,49.45
+batching_rep2,B=4,npp=128,ntg=64,117.14,29.15,58.38
+batching_rep2,B=8,npp=128,ntg=64,117.26,26.27,54.42
+batching_rep2,B=16,npp=128,ntg=64,113.44,33.32,62.96
+batching_rep3,B=1,npp=128,ntg=64,111.90,16.39,38.03
+batching_rep3,B=2,npp=128,ntg=64,114.86,23.36,49.82
+batching_rep3,B=4,npp=128,ntg=64,117.13,29.14,58.37
+batching_rep3,B=8,npp=128,ntg=64,116.74,26.25,54.33
+batching_rep3,B=16,npp=128,ntg=64,110.22,33.08,62.02
+ctx_128,B=1,npp=128,ntg=512,113.14,16.65,20.08
+ctx_1024,B=1,npp=1024,ntg=512,111.92,16.01,37.34
+ctx_4096,B=1,npp=4096,ntg=512,90.40,14.09,56.44
+#
+# CONTEXT GROWTH degrades gracefully. Decode against prompt length, B=1, ntg=512:
+# 128 -> 16.65, 1024 -> 16.01 (-4%), 4096 -> 14.09 (-15%). Prompt throughput falls
+# harder, 113 -> 90 at 4096 (-20%). A long coding session is not cheap but it is
+# not a cliff either.
+#
+# THE 30B WAS NEVER BROKEN; llama-cli's DEFAULT CONTEXT WAS THE PROBLEM.
+# An overnight run burned 13 hours and produced nothing. Root cause: llama-cli
+# defaults to the model's full training context, and Qwen3-Coder-30B declares
+# 262144, so it tried to allocate a KV cache for a quarter-million tokens. Pass -c
+# and it runs immediately:
+#
+#   llama-bench (small internal ctx)      pp64 7.17    tg16 6.17
+#   llama-cli -c 4096                     pp   3.4     tg   6.0
+#   llama-cli -c 8192                     pp   3.7     tg   6.0
+#   llama-cli, no -c                      stalled, no result in 240 s
+#
+# Both build trees stalled identically, so it was NOT the b10470 Vulkan shader
+# rewrite. ALWAYS PASS -c EXPLICITLY on a long-context model.
+#
+# THREE MORE PROCESS ERRORS worth recording so they are not repeated:
+#   1. timeout without --kill-after. llama.cpp treats the first SIGINT as "cancel
+#      generation", not exit, so the orphan survived 13 hours.
+#   2. An unbounded `while pgrep -x llama-cli; do sleep 60; done` guard in the
+#      queue script: one orphan blocked every later section.
+#   3. pkill -f with a pattern that matched the invoking ssh command line, which
+#      killed the session. Already recorded in memory from a previous session and
+#      repeated anyway. Use pkill -x, or match on an absolute script path.
+#
+# One section produced no rows at all: long_prompt at npl=8 needs
+# 8 x (2048+128) = 17408 KV tokens against -c 16384, so it failed to allocate.
+# Re-run at -c 32768 is appended below when it lands.
